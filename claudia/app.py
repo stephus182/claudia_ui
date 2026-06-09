@@ -60,18 +60,21 @@ async def api_status():
 
 
 # Chainlit's /public/{filename} handler uses anyio.to_thread which breaks on
-# Python 3.14. Serve our custom assets directly via plain Response instead.
+# Python 3.14. Serve our custom assets via plain Response from claudia/assets/
+# (CSS/JS) and public/ (logo). Files are NOT in public/ so Chainlit's broken
+# FileResponse handler can never intercept them.
+_ASSETS = Path(__file__).parent / "assets"
 _PUBLIC = Path(__file__).parent.parent / "public"
 
 
 @_server_app.get("/cl/custom.css")
 async def serve_css():
-    return Response((_PUBLIC / "custom.css").read_bytes(), media_type="text/css")
+    return Response((_ASSETS / "custom.css").read_bytes(), media_type="text/css")
 
 
 @_server_app.get("/cl/custom.js")
 async def serve_js():
-    return Response((_PUBLIC / "custom.js").read_bytes(), media_type="application/javascript")
+    return Response((_ASSETS / "custom.js").read_bytes(), media_type="application/javascript")
 
 
 @_server_app.get("/cl/claudia-logo.png")
