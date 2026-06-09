@@ -19,7 +19,7 @@
 
     // Logo
     var logo = document.createElement('img');
-    logo.src = '/public/claudia-logo.png';
+    logo.src = '/cl/claudia-logo.png';
     logo.className = 'cl-logo';
     logo.alt = 'ClaudIA';
     bar.appendChild(logo);

@@ -15,7 +15,7 @@ from pathlib import Path
 import chainlit as cl
 from chainlit.server import app as _server_app
 from dotenv import load_dotenv
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from ibkr_core_mcp import (
     BrowserCookieAuth,
@@ -57,6 +57,28 @@ async def api_status():
     if _connectivity_checker:
         return JSONResponse(_connectivity_checker.get_status())
     return JSONResponse({"ibkr": "unknown", "gdrive": "unknown", "tv": "unknown"})
+
+
+# Chainlit's /public/{filename} handler uses anyio.to_thread which breaks on
+# Python 3.14. Serve our custom assets directly via plain Response instead.
+_PUBLIC = Path(__file__).parent.parent / "public"
+
+
+@_server_app.get("/cl/custom.css")
+async def serve_css():
+    return Response((_PUBLIC / "custom.css").read_bytes(), media_type="text/css")
+
+
+@_server_app.get("/cl/custom.js")
+async def serve_js():
+    return Response((_PUBLIC / "custom.js").read_bytes(), media_type="application/javascript")
+
+
+@_server_app.get("/cl/claudia-logo.png")
+async def serve_logo():
+    import asyncio
+    content = await asyncio.to_thread((_PUBLIC / "claudia-logo.png").read_bytes)
+    return Response(content, media_type="image/png")
 
 
 def _get_toolkit() -> ClaudeToolkit:
