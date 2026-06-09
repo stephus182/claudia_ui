@@ -13,7 +13,9 @@ import os
 from pathlib import Path
 
 import chainlit as cl
+from chainlit.server import app as _server_app
 from dotenv import load_dotenv
+from starlette.responses import JSONResponse
 
 from ibkr_core_mcp import (
     BrowserCookieAuth,
@@ -30,8 +32,6 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.status import ConnectivityChecker
 from claudia.tradingview import TradingViewBridge
-from chainlit.server import app as _server_app
-from starlette.responses import JSONResponse
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +143,7 @@ async def on_chat_start():
             gdrive_token_file=cfg.gdrive_token_file,
             tv_bridge=_tv_bridge,
         )
+    # Call unconditionally — start() is idempotent and restarts a cancelled task
     _connectivity_checker.start()
 
     # Build agent for this session
