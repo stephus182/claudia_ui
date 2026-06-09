@@ -1,0 +1,26 @@
+project:
+  name: ClaudIA
+  # Set to true to disable telemetry (no data sent to Chainlit)
+  enable_telemetry: false
+
+ui:
+  name: ClaudIA
+  description: AI Trading Research Assistant
+  # Theme: light or dark
+  default_theme: dark
+  # Custom CSS (optional)
+  # custom_css: /public/custom.css
+
+# Code execution environment
+code:
+  disable_human_eval: true
+
+# File upload settings
+features:
+  multi_modal: true    # Allow image uploads (TradingView screenshots)
+  unsafe_allow_html: false
+
+# Server settings
+server:
+  host: 0.0.0.0
+  port: 8000
