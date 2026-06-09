@@ -52,14 +52,14 @@ class ConnectivityChecker:
         self._gateway_url = gateway_url.rstrip("/")
         self._gdrive_token_file = Path(gdrive_token_file)
         self._tv_bridge = tv_bridge
-        self._status: dict[str, str] = {
+        self._status: dict[str, ServiceStatus] = {
             "ibkr":   ServiceStatus.UNKNOWN,
             "gdrive": ServiceStatus.UNKNOWN,
             "tv":     ServiceStatus.UNKNOWN,
         }
         self._task: asyncio.Task | None = None
 
-    def get_status(self) -> dict[str, str]:
+    def get_status(self) -> dict[str, ServiceStatus]:
         return dict(self._status)
 
     # ── Individual checks (synchronous, cheap) ──────────────────────────────
@@ -102,7 +102,10 @@ class ConnectivityChecker:
     # ── Internal ────────────────────────────────────────────────────────────
 
     async def _poll_loop(self) -> None:
-        await self._run_checks()          # run once immediately on start
+        try:
+            await self._run_checks()      # run once immediately on start
+        except Exception as exc:
+            log.warning("ConnectivityChecker initial poll error: %s", exc)
         while True:
             try:
                 await asyncio.sleep(POLL_INTERVAL)
