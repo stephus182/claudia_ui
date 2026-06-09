@@ -1,0 +1,197 @@
+/*
+  ClaudIA custom theme — Chainlit 2.11.x
+  Targets Chainlit's MUI/React structure. If a selector stops working after
+  a Chainlit upgrade, inspect the element in DevTools and update the selector.
+*/
+
+/* ── Design tokens ───────────────────────────────────────────── */
+:root {
+  --cl-accent:        #e11d48;
+  --cl-accent-dim:    rgba(225, 29, 72, 0.15);
+  --cl-bg:            #0f0f0f;
+  --cl-surface:       #161616;
+  --cl-surface-2:     #1e1e1e;
+  --cl-border:        #2a2a2a;
+  --cl-text:          #e5e7eb;
+  --cl-muted:         #9ca3af;
+  --cl-green:         #22c55e;
+  --cl-red:           #ef4444;
+  --cl-status-bar-h:  36px;
+}
+
+/* ── Status bar spacer — push everything below our fixed bar ─── */
+body {
+  padding-top: var(--cl-status-bar-h) !important;
+  background-color: var(--cl-bg) !important;
+}
+
+/* ── Chainlit header: shift down so it sits below our bar ─────── */
+header {
+  top: var(--cl-status-bar-h) !important;
+  background-color: var(--cl-surface) !important;
+  border-bottom: 1px solid var(--cl-border) !important;
+  box-shadow: none !important;
+}
+
+/* ── Page background ─────────────────────────────────────────── */
+#root,
+[class*="MuiBox-root"] {
+  background-color: var(--cl-bg);
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────── */
+nav,
+[data-testid="thread-history"] {
+  background-color: var(--cl-surface) !important;
+  border-right: 1px solid var(--cl-border) !important;
+}
+
+/* ── Message column — Claude-style centered width ────────────── */
+[class*="message-container"],
+[data-testid="messages-container"],
+.cl-chat-messages {
+  max-width: 760px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  padding-left: 16px !important;
+  padding-right: 16px !important;
+}
+
+/* ── User message — subtle dark card ────────────────────────── */
+[data-testid="user-message"],
+[class*="userMessage"] {
+  background-color: var(--cl-surface-2) !important;
+  border-radius: 12px !important;
+  border: 1px solid var(--cl-border) !important;
+  padding: 12px 16px !important;
+}
+
+/* ── Assistant message — no bubble, clean text ───────────────── */
+[data-testid="assistant-message"],
+[class*="assistantMessage"] {
+  background-color: transparent !important;
+  border: none !important;
+}
+
+/* ── Tool steps — red left accent ───────────────────────────── */
+[data-testid="step"],
+.step {
+  border-left: 2px solid var(--cl-accent) !important;
+  padding-left: 12px !important;
+  margin: 4px 0 8px 0 !important;
+  background-color: var(--cl-surface) !important;
+  border-radius: 0 6px 6px 0 !important;
+}
+
+/* ── Chat input area ─────────────────────────────────────────── */
+[data-testid="chat-input"],
+[class*="chatInput"],
+form[class*="chat"] {
+  background-color: var(--cl-surface) !important;
+  border-top: 1px solid var(--cl-border) !important;
+  padding: 12px 16px !important;
+}
+
+[data-testid="chat-input"] textarea,
+[data-testid="chat-input"] input[type="text"],
+[class*="chatInput"] textarea {
+  background-color: var(--cl-surface-2) !important;
+  border-radius: 24px !important;
+  border: 1px solid var(--cl-border) !important;
+  color: var(--cl-text) !important;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif !important;
+  padding: 10px 18px !important;
+  transition: border-color 0.2s ease !important;
+}
+
+[data-testid="chat-input"] textarea:focus,
+[data-testid="chat-input"] input[type="text"]:focus {
+  border-color: var(--cl-accent) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 2px var(--cl-accent-dim) !important;
+}
+
+/* ── Send button ─────────────────────────────────────────────── */
+button[data-testid="send-button"],
+[class*="sendButton"] {
+  background-color: var(--cl-accent) !important;
+  color: #fff !important;
+  border-radius: 50% !important;
+}
+
+button[data-testid="send-button"]:hover {
+  background-color: #be1238 !important;
+}
+
+/* ── Typography ──────────────────────────────────────────────── */
+body, p, span, div {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont,
+               "Segoe UI", Roboto, sans-serif;
+  color: var(--cl-text);
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: var(--cl-bg); }
+::-webkit-scrollbar-thumb  { background: var(--cl-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cl-accent); }
+
+/* ── Status bar (DOM injected by custom.js) ──────────────────── */
+#claudia-status-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--cl-status-bar-h);
+  background-color: #111111;
+  border-bottom: 1px solid var(--cl-accent);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  z-index: 99999;
+  box-sizing: border-box;
+}
+
+#claudia-status-bar .cl-logo {
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+  display: block;
+}
+
+#claudia-status-bar .cl-services {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+#claudia-status-bar .cl-service {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#claudia-status-bar .cl-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #6b7280;   /* gray = unknown/checking */
+  flex-shrink: 0;
+  transition: background-color 0.4s ease;
+}
+
+#claudia-status-bar .cl-dot.ok    { background-color: #22c55e; }
+#claudia-status-bar .cl-dot.error {
+  background-color: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+}
+
+#claudia-status-bar .cl-label {
+  font-size: 11px;
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #9ca3af;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  user-select: none;
+}
