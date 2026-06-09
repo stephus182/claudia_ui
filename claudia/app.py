@@ -28,7 +28,10 @@ from claudia.agent import ClaudIAAgent
 from claudia.alert_manager import AlertManager
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
+from claudia.status import ConnectivityChecker
 from claudia.tradingview import TradingViewBridge
+from chainlit.server import app as _server_app
+from starlette.responses import JSONResponse
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +48,15 @@ _toolkit: ClaudeToolkit | None = None
 _conv_store: ConversationStore | None = None
 _tv_bridge: TradingViewBridge | None = None
 _alert_manager: AlertManager | None = None
+_connectivity_checker: ConnectivityChecker | None = None
+
+
+@_server_app.get("/api/status")
+async def api_status():
+    """Returns cached connectivity status — instant, non-blocking."""
+    if _connectivity_checker:
+        return JSONResponse(_connectivity_checker.get_status())
+    return JSONResponse({"ibkr": "unknown", "gdrive": "unknown", "tv": "unknown"})
 
 
 def _get_toolkit() -> ClaudeToolkit:
@@ -121,6 +133,17 @@ async def on_chat_start():
         log.warning("tradingview-mcp sidecar not available: %s", exc)
         tv_tools = []
         tv_status = "TradingView: unavailable (screenshot mode active)"
+
+    # Start connectivity monitor (singleton — persists across sessions)
+    global _connectivity_checker
+    if _connectivity_checker is None:
+        cfg = _config or Config.from_env()
+        _connectivity_checker = ConnectivityChecker(
+            gateway_url=cfg.gateway_url,
+            gdrive_token_file=cfg.gdrive_token_file,
+            tv_bridge=_tv_bridge,
+        )
+    _connectivity_checker.start()
 
     # Build agent for this session
     agent = ClaudIAAgent(
