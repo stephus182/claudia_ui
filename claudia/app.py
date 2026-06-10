@@ -163,6 +163,30 @@ async def serve_logo():
     return Response((_ASSETS / "claudia-logo.png").read_bytes(), media_type="image/png")
 
 
+# Chainlit registers /{full_path:path} (SPA catch-all) before our routes are
+# added, so it intercepts every request including /api/status and /cl/*.
+# Fix: move our specific routes immediately before the catch-all in the router.
+def _fix_route_priority() -> None:
+    _OUR_PATHS = {"/api/status", "/cl/custom.css", "/cl/custom.js", "/cl/claudia-logo.png"}
+    routes = _server_app.router.routes
+    spa_idx = next(
+        (i for i, r in enumerate(routes) if getattr(r, "path", None) == "/{full_path:path}"),
+        None,
+    )
+    if spa_idx is None:
+        return
+    our = [r for r in routes if getattr(r, "path", None) in _OUR_PATHS]
+    for r in our:
+        routes.remove(r)
+    spa_idx = next(
+        i for i, r in enumerate(routes) if getattr(r, "path", None) == "/{full_path:path}"
+    )
+    for offset, r in enumerate(our):
+        routes.insert(spa_idx + offset, r)
+
+_fix_route_priority()
+
+
 def _get_toolkit() -> ClaudeToolkit:
     global _config, _toolkit
     if _toolkit is None:
