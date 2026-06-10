@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import socket
 from enum import Enum
 from pathlib import Path
@@ -18,7 +17,7 @@ from typing import TYPE_CHECKING, Optional
 
 import requests
 
-_TV_DEBUG_PORT = int(os.environ.get("TRADINGVIEW_DEBUG_PORT", "9222"))
+from claudia.tradingview import _TV_DEBUG_PORT
 
 if TYPE_CHECKING:
     from claudia.tradingview import TradingViewBridge
@@ -125,7 +124,7 @@ class ConnectivityChecker:
     async def _run_checks(self) -> None:
         ibkr_ok = await asyncio.to_thread(self.check_ibkr)
         gdrive_ok = await asyncio.to_thread(self.check_gdrive)
-        tv_ok = self.check_tradingview()
+        tv_ok = await asyncio.to_thread(self.check_tradingview)
         new = {
             "ibkr":   ServiceStatus.OK if ibkr_ok else ServiceStatus.ERROR,
             "gdrive": ServiceStatus.OK if gdrive_ok else ServiceStatus.ERROR,

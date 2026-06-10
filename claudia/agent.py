@@ -23,6 +23,7 @@ from anthropic.types import MessageParam, ToolUseBlock, TextBlock
 if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
     from claudia.context_loader import ContextLoader
+    from claudia.tradingview import TradingViewBridge
     from ibkr_core_mcp import ClaudeToolkit
 
 log = logging.getLogger(__name__)
@@ -126,6 +127,7 @@ class ClaudIAAgent:
         session_id: str,
         model: str = "claude-opus-4-8",
         extra_tools: list[dict] | None = None,
+        tv_bridge: "TradingViewBridge | None" = None,
     ) -> None:
         self._toolkit = toolkit
         self._store = store
@@ -133,7 +135,15 @@ class ClaudIAAgent:
         self._session_id = session_id
         self._model = model
         self._extra_tools = extra_tools or []
+        self._tv_bridge = tv_bridge
+        self._tv_tool_names: set[str] = {t["name"] for t in self._extra_tools}
         self._client = AsyncAnthropic()
+
+    def set_tv_bridge(self, bridge: "TradingViewBridge", tools: list[dict]) -> None:
+        """Update TradingView connection mid-session (called by on_launch_tradingview)."""
+        self._tv_bridge = bridge
+        self._extra_tools = tools
+        self._tv_tool_names = {t["name"] for t in tools}
 
     @property
     def _all_tools(self) -> list[dict]:
@@ -240,9 +250,12 @@ class ClaudIAAgent:
             for tc in tool_calls:
                 async with cl.Step(name=tc["name"], type="tool") as step:
                     step.input = json.dumps(tc["input"], indent=2)
-                    result_text, _ = await cl.make_async(self._toolkit.execute)(
-                        tc["name"], tc["input"]
-                    )
+                    if tc["name"] in self._tv_tool_names and self._tv_bridge is not None:
+                        result_text = await self._tv_bridge.execute(tc["name"], tc["input"])
+                    else:
+                        result_text, _ = await cl.make_async(self._toolkit.execute)(
+                            tc["name"], tc["input"]
+                        )
                     step.output = result_text
 
                 self._store.add_message(

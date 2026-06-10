@@ -130,7 +130,7 @@ async def launch_tradingview() -> bool:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + 30
     while loop.time() < deadline:
         await asyncio.sleep(1.0)
@@ -157,6 +157,7 @@ class TradingViewBridge:
     def __init__(self) -> None:
         self._session: ClientSession | None = None
         self._tools: list[dict] = []
+        self._curated_tools: list[dict] = []
         self._process: subprocess.Popen | None = None
         self._cm = None  # async context manager for stdio_client
 
@@ -203,10 +204,11 @@ class TradingViewBridge:
                 }
                 for t in response.tools
             ]
+            self._curated_tools = [t for t in self._tools if t["name"] in _CURATED_TOOLS]
             log.info(
                 "tradingview-mcp connected: %d total tools, %d curated",
                 len(self._tools),
-                len([t for t in self._tools if t["name"] in _CURATED_TOOLS]),
+                len(self._curated_tools),
             )
 
         except Exception as exc:
@@ -216,7 +218,7 @@ class TradingViewBridge:
 
     def get_tools(self) -> list[dict]:
         """Return the curated subset of tools for the Anthropic tools= list."""
-        return [t for t in self._tools if t["name"] in _CURATED_TOOLS]
+        return list(self._curated_tools)
 
     def get_all_tools(self) -> list[dict]:
         """Return all available tools (bypasses the curated filter)."""
@@ -249,6 +251,7 @@ class TradingViewBridge:
             pass
         self._session = None
         self._tools = []
+        self._curated_tools = []
 
 
 # ── PineScript display helpers ────────────────────────────────────────────────
