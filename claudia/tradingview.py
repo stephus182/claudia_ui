@@ -4,7 +4,7 @@ TradingView integration for ClaudIA.
 Phase 1 (this module):
   - Spawns the tradingview-mcp Node.js sidecar process on startup.
   - Connects to it via MCP stdio transport using the `mcp` Python client.
-  - Merges tradingview-mcp tools into the Anthropic tools= list.
+  - Merges a curated subset of tradingview-mcp tools into the Anthropic tools= list.
   - Renders PineScript output as a formatted Chainlit message with action buttons.
   - Falls back gracefully when TradingView Desktop is not running.
 
@@ -13,10 +13,14 @@ Phase 1 fallback (always available):
   - Handled in app.py / agent.py; no code in this module required.
 
 Prerequisites (user must install once):
-  npm install -g @mxstbr/tradingview-mcp
-  Open TradingView Desktop with --remote-debugging-port=9222
+  git clone https://github.com/tradesdontlie/tradingview-mcp
+  cd tradingview-mcp && npm install && npm run build
+  # Add to .env:  TRADINGVIEW_MCP_PATH=/path/to/tradingview-mcp/build/index.js
 
-tradingview-mcp repo: https://github.com/mxstbr/tradingview-mcp
+  Open TradingView Desktop with remote debugging enabled:
+  open -a "Trading View" --args --remote-debugging-port=9222
+
+tradingview-mcp repo: https://github.com/tradesdontlie/tradingview-mcp
 """
 
 from __future__ import annotations
@@ -25,7 +29,9 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -36,9 +42,92 @@ from mcp.client.stdio import stdio_client
 
 log = logging.getLogger(__name__)
 
-_TV_MCP_BIN = os.environ.get("TRADINGVIEW_MCP_PATH") or shutil.which("tradingview-mcp")
 _TV_DEBUG_PORT = int(os.environ.get("TRADINGVIEW_DEBUG_PORT", "9222"))
 
+
+def _find_tv_mcp_bin() -> str | None:
+    """Find the tradingview-mcp binary: env var → PATH → ~/.tradingview-mcp/build/index.js."""
+    if path := os.environ.get("TRADINGVIEW_MCP_PATH"):
+        return path
+    if which := shutil.which("tradingview-mcp"):
+        return which
+    default = Path.home() / ".tradingview-mcp" / "build" / "index.js"
+    if default.exists():
+        return str(default)
+    return None
+
+
+_TV_MCP_BIN = _find_tv_mcp_bin()
+
+# 15-tool curated subset exposed to Claude by default.
+# Covers chart reading, control, Pine Script IDE, strategy results, and utility.
+# Full 78-tool set is available but kept out of the Anthropic context window to
+# reduce token cost and avoid tool-choice noise.
+_CURATED_TOOLS = {
+    # Chart reading
+    "chart_get_state",
+    "quote_get",
+    "data_get_ohlcv",
+    "data_get_study_values",
+    # Chart control
+    "chart_set_symbol",
+    "chart_set_timeframe",
+    "indicator_set_inputs",
+    # Pine Script IDE
+    "pine_set_source",
+    "pine_smart_compile",
+    "pine_get_errors",
+    "pine_get_source",
+    # Strategy results
+    "data_get_strategy_results",
+    "data_get_equity_curve",
+    # Utility
+    "tv_health_check",
+    "capture_screenshot",
+}
+
+
+# ── CDP health check + launch helpers ────────────────────────────────────────
+
+def check_cdp_running() -> bool:
+    """TCP check if TradingView Desktop's CDP debug port is accepting connections."""
+    try:
+        with socket.create_connection(("localhost", _TV_DEBUG_PORT), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
+async def launch_tradingview() -> bool:
+    """
+    Launch TradingView Desktop with --remote-debugging-port on macOS.
+    Returns True if the CDP port becomes available within 30s.
+    """
+    if check_cdp_running():
+        return True
+    if platform.system() != "Darwin":
+        raise RuntimeError(
+            "Automatic TradingView launch is only supported on macOS. "
+            f"Start it manually: open -a 'Trading View' --args --remote-debugging-port={_TV_DEBUG_PORT}"
+        )
+    log.info("Launching TradingView Desktop with --remote-debugging-port=%d", _TV_DEBUG_PORT)
+    subprocess.Popen(
+        ["open", "-a", "Trading View", "--args", f"--remote-debugging-port={_TV_DEBUG_PORT}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + 30
+    while loop.time() < deadline:
+        await asyncio.sleep(1.0)
+        if check_cdp_running():
+            log.info("TradingView CDP port %d is ready", _TV_DEBUG_PORT)
+            return True
+    log.warning("TradingView Desktop did not open CDP port %d within 30s", _TV_DEBUG_PORT)
+    return False
+
+
+# ── TradingViewBridge ─────────────────────────────────────────────────────────
 
 class TradingViewBridge:
     """
@@ -46,7 +135,7 @@ class TradingViewBridge:
 
     Lifecycle:
       await bridge.start()        — spawn sidecar, list available tools
-      bridge.get_tools()          — returns tool definitions for Anthropic SDK
+      bridge.get_tools()          — returns curated tool definitions for Anthropic SDK
       await bridge.execute(name, inputs)  — call a tradingview-mcp tool
       await bridge.stop()         — shut down sidecar gracefully
     """
@@ -58,17 +147,28 @@ class TradingViewBridge:
         self._cm = None  # async context manager for stdio_client
 
     async def start(self) -> None:
-        if not _TV_MCP_BIN:
+        bin_path = _TV_MCP_BIN or _find_tv_mcp_bin()
+        if not bin_path:
             raise RuntimeError(
                 "tradingview-mcp binary not found. "
-                "Install with: npm install -g @mxstbr/tradingview-mcp"
+                "Clone and build: git clone https://github.com/tradesdontlie/tradingview-mcp "
+                "&& cd tradingview-mcp && npm install && npm run build; "
+                "then set TRADINGVIEW_MCP_PATH in .env"
             )
 
         env = {**os.environ, "CHROME_REMOTE_DEBUG_PORT": str(_TV_DEBUG_PORT)}
 
+        # node path/to/index.js for a built .js file; direct binary otherwise
+        if bin_path.endswith(".js"):
+            cmd = "node"
+            args = [bin_path]
+        else:
+            cmd = bin_path
+            args = []
+
         server_params = StdioServerParameters(
-            command=_TV_MCP_BIN,
-            args=[],
+            command=cmd,
+            args=args,
             env=env,
         )
 
@@ -89,7 +189,11 @@ class TradingViewBridge:
                 }
                 for t in response.tools
             ]
-            log.info("tradingview-mcp connected: %d tools available", len(self._tools))
+            log.info(
+                "tradingview-mcp connected: %d total tools, %d curated",
+                len(self._tools),
+                len([t for t in self._tools if t["name"] in _CURATED_TOOLS]),
+            )
 
         except Exception as exc:
             log.warning("tradingview-mcp sidecar failed to start: %s", exc)
@@ -97,6 +201,11 @@ class TradingViewBridge:
             raise
 
     def get_tools(self) -> list[dict]:
+        """Return the curated subset of tools for the Anthropic tools= list."""
+        return [t for t in self._tools if t["name"] in _CURATED_TOOLS]
+
+    def get_all_tools(self) -> list[dict]:
+        """Return all available tools (bypasses the curated filter)."""
         return list(self._tools)
 
     async def execute(self, name: str, inputs: dict) -> str:
@@ -139,18 +248,13 @@ async def render_pinescript(code: str, title: str = "PineScript Strategy") -> No
             label="Copy to clipboard",
             description="Copy PineScript code",
         ),
-    ]
-
-    # Add inject button only if TradingView bridge has inject tool available
-    # (This is detected at runtime via the tool name)
-    actions.append(
         cl.Action(
             name="inject_pinescript",
             value=code,
             label="Inject into TradingView",
             description="Paste directly into TradingView Pine Editor",
-        )
-    )
+        ),
+    ]
 
     await cl.Message(
         content=f"**{title}**\n\n```pine\n{code}\n```",
@@ -161,8 +265,7 @@ async def render_pinescript(code: str, title: str = "PineScript Strategy") -> No
 
 @cl.action_callback("copy_pinescript")
 async def on_copy_pinescript(action: cl.Action):
-    # Chainlit doesn't have clipboard access server-side; we display the code
-    # in a focused message so the user can manually copy it.
+    # Chainlit doesn't have clipboard access server-side; display for manual copy.
     await cl.Message(
         content=f"Copy this PineScript:\n\n```pine\n{action.value}\n```",
         author="ClaudIA",
@@ -172,19 +275,17 @@ async def on_copy_pinescript(action: cl.Action):
 
 @cl.action_callback("inject_pinescript")
 async def on_inject_pinescript(action: cl.Action):
-    """Attempt to inject PineScript into TradingView via the sidecar."""
+    """Inject PineScript into TradingView Pine Editor via pine_set_source."""
     code = action.value
-    # Try to call tradingview-mcp's pine_editor or equivalent tool
-    # The exact tool name depends on the tradingview-mcp version
     await cl.Message(
-        content="Attempting to inject PineScript into TradingView Pine Editor…",
+        content="Injecting PineScript into TradingView Pine Editor…",
         author="System",
     ).send()
     try:
         from claudia.app import _tv_bridge
         if _tv_bridge and _tv_bridge._session:
-            result = await _tv_bridge.execute("open_pine_editor", {"code": code})
-            await cl.Message(content=f"Injected. TradingView response: {result}", author="ClaudIA").send()
+            result = await _tv_bridge.execute("pine_set_source", {"source": code})
+            await cl.Message(content=f"Injected. Response: {result}", author="ClaudIA").send()
         else:
             await cl.Message(
                 content="TradingView Desktop is not connected. Copy the script manually.",

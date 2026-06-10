@@ -186,12 +186,14 @@ from ibkr_core_mcp import (
     SQLiteStore,
 )
 
+from ibkr_core_mcp.gateway import GatewayManager
+
 from claudia.agent import ClaudIAAgent
 from claudia.alert_manager import AlertManager
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.status import ConnectivityChecker
-from claudia.tradingview import TradingViewBridge
+from claudia.tradingview import TradingViewBridge, launch_tradingview
 
 log = logging.getLogger(__name__)
 
@@ -337,6 +339,7 @@ async def on_chat_start():
     store.create_session(session_id, context_hash=loader.compute_hash())
 
     # Connect tradingview-mcp sidecar
+    tv_offline = False
     try:
         tv = await _get_tv_bridge()
         tv_tools = tv.get_tools()
@@ -345,6 +348,7 @@ async def on_chat_start():
         log.warning("tradingview-mcp sidecar not available: %s", exc)
         tv_tools = []
         tv_status = "TradingView: unavailable (screenshot mode active)"
+        tv_offline = True
 
     # Start connectivity monitor (singleton — persists across sessions)
     global _connectivity_checker, _config
@@ -380,6 +384,7 @@ async def on_chat_start():
     # Emit opening status
     # toolkit.execute() swallows all exceptions and returns an error string instead of raising,
     # so we pre-check with ping() and skip the calls when the gateway is unreachable.
+    ibkr_offline = False
     try:
         gateway_up = await cl.make_async(toolkit.client.ping)()
         if not gateway_up:
@@ -397,6 +402,24 @@ async def on_chat_start():
     except Exception as exc:
         log.warning("Could not load IBKR opening status: %s", exc)
         status_block = "*IBKR gateway not connected — data will load when gateway is online.*"
+        ibkr_offline = True
+
+    # Build action buttons for offline services
+    actions = []
+    if ibkr_offline:
+        actions.append(cl.Action(
+            name="start_gateway",
+            value="start",
+            label="Start IBKR Gateway",
+            description="Launch the IBKR Client Portal Gateway Docker container",
+        ))
+    if tv_offline:
+        actions.append(cl.Action(
+            name="launch_tradingview",
+            value="launch",
+            label="Launch TradingView",
+            description="Launch TradingView Desktop with remote debugging enabled",
+        ))
 
     await cl.Message(
         content=(
@@ -404,6 +427,7 @@ async def on_chat_start():
             f"{status_block}\n\n"
             "_Ask me anything about your portfolio, markets, or strategy._"
         ),
+        actions=actions or None,
         author="ClaudIA",
     ).send()
 
@@ -478,3 +502,103 @@ async def on_stage_order(action: cl.Action):
 async def on_cancel_proposal(action: cl.Action):
     await cl.Message(content="Order proposal cancelled.", author="ClaudIA").send()
     await action.remove()
+
+
+# ── IBKR Gateway startup callback ─────────────────────────────────────────────
+
+@cl.action_callback("start_gateway")
+async def on_start_gateway(action: cl.Action):
+    """Non-interactively launch the IBKR Client Portal Gateway container."""
+    await action.remove()
+
+    async def _run() -> None:
+        gm = GatewayManager()
+        try:
+            await cl.Message(content="▶ Ensuring Docker is running…", author="System").send()
+            await cl.make_async(gm.ensure_docker_running)()
+
+            await cl.Message(content="▶ Starting IBKR gateway container…", author="System").send()
+            await cl.make_async(gm.start)()
+
+            await cl.Message(
+                content="▶ Waiting for gateway to be reachable (up to 120s)…",
+                author="System",
+            ).send()
+            reachable = await cl.make_async(gm.wait_for_gateway)()
+            if not reachable:
+                await cl.Message(
+                    content="✕ Gateway did not start within timeout. Check Docker logs.",
+                    author="System",
+                ).send()
+                return
+
+            gm.open_login_page()
+            await cl.Message(
+                content=(
+                    "✅ IBKR Gateway is reachable. **https://localhost:5055** opened in your browser.\n\n"
+                    "Complete the IBKR login and 2FA. "
+                    "ClaudIA will notify you here once the session is authenticated."
+                ),
+                author="System",
+            ).send()
+        except Exception as exc:
+            log.error("Gateway startup failed: %s", exc)
+            await cl.Message(
+                content=f"✕ Gateway startup failed: {exc}",
+                author="System",
+            ).send()
+
+    _asyncio.create_task(_run())
+
+
+# ── TradingView launch callback ────────────────────────────────────────────────
+
+@cl.action_callback("launch_tradingview")
+async def on_launch_tradingview(action: cl.Action):
+    """Launch TradingView Desktop and connect the MCP sidecar."""
+    await action.remove()
+
+    async def _run() -> None:
+        global _tv_bridge
+        try:
+            await cl.Message(
+                content="▶ Launching TradingView Desktop with remote debugging…",
+                author="System",
+            ).send()
+            launched = await launch_tradingview()
+            if not launched:
+                await cl.Message(
+                    content=(
+                        "✕ TradingView Desktop did not open its debug port within 30s.\n\n"
+                        "Try launching it manually:\n"
+                        "```\nopen -a 'Trading View' --args --remote-debugging-port=9222\n```"
+                    ),
+                    author="System",
+                ).send()
+                return
+
+            await cl.Message(content="▶ Connecting tradingview-mcp sidecar…", author="System").send()
+            async with _tv_bridge_lock:
+                if _tv_bridge is not None:
+                    await _tv_bridge.stop()
+                    _tv_bridge = None
+                bridge = TradingViewBridge()
+                await bridge.start()
+                _tv_bridge = bridge
+
+            if _connectivity_checker is not None:
+                _connectivity_checker.set_tv_bridge(_tv_bridge)
+
+            tv_tools = _tv_bridge.get_tools()
+            await cl.Message(
+                content=f"✅ TradingView connected ({len(tv_tools)} tools available).",
+                author="System",
+            ).send()
+        except Exception as exc:
+            log.error("TradingView launch failed: %s", exc)
+            await cl.Message(
+                content=f"✕ TradingView launch failed: {exc}",
+                author="System",
+            ).send()
+
+    _asyncio.create_task(_run())
