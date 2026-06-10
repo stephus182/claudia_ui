@@ -69,7 +69,7 @@ class ConnectivityChecker:
             resp = requests.get(
                 f"{self._gateway_url}/tickle",
                 timeout=3,
-                verify=False,
+                verify=False,  # IBKR gateway uses a self-signed cert on localhost
             )
             return resp.status_code == 200
         except Exception:
@@ -88,6 +88,10 @@ class ConnectivityChecker:
         return proc.poll() is None  # None = process still alive
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
+
+    def set_tv_bridge(self, bridge: "TradingViewBridge") -> None:
+        """Update the TradingView bridge reference after checker construction."""
+        self._tv_bridge = bridge
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -116,10 +120,18 @@ class ConnectivityChecker:
                 log.warning("ConnectivityChecker poll error: %s", exc)
 
     async def _run_checks(self) -> None:
+        ibkr_ok = await asyncio.to_thread(self.check_ibkr)
+        gdrive_ok = await asyncio.to_thread(self.check_gdrive)
+        tv_ok = self.check_tradingview()
         new = {
-            "ibkr":   ServiceStatus.OK if await asyncio.to_thread(self.check_ibkr) else ServiceStatus.ERROR,
-            "gdrive": ServiceStatus.OK if self.check_gdrive() else ServiceStatus.ERROR,
-            "tv":     ServiceStatus.OK if self.check_tradingview() else ServiceStatus.ERROR,
+            "ibkr":   ServiceStatus.OK if ibkr_ok else ServiceStatus.ERROR,
+            "gdrive": ServiceStatus.OK if gdrive_ok else ServiceStatus.ERROR,
+            # Not configured → UNKNOWN (gray dot), not ERROR (red dot)
+            "tv": (
+                ServiceStatus.OK if tv_ok
+                else ServiceStatus.UNKNOWN if self._tv_bridge is None
+                else ServiceStatus.ERROR
+            ),
         }
         for service, new_state in new.items():
             prev_state = self._status[service]
@@ -127,7 +139,7 @@ class ConnectivityChecker:
                 self._status[service] = new_state
                 await self._send_alert(service, prev_state, new_state)
 
-    async def _send_alert(self, service: str, prev: str, new: str) -> None:
+    async def _send_alert(self, service: str, prev: ServiceStatus, new: ServiceStatus) -> None:
         import chainlit as cl
         if new == ServiceStatus.ERROR:
             msg = _DISCONNECT_MESSAGES.get(service, f"⚠️ {service} disconnected.")
