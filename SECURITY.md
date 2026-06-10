@@ -161,9 +161,40 @@ ClaudIA runs entirely on `localhost`. By default:
 **Never expose these ports to external networks.** If remote access is required,
 use a VPN or Tailscale tunnel — never a public-facing reverse proxy without authentication.
 
+**CORS:** `.chainlit/config.toml` restricts `allow_origins` to `["http://localhost:8000"]`.
+Do not widen this to `"*"` — the app connects to a live brokerage account.
+
 ---
 
-## 9. Audit Checklist
+## 9. Custom UI Endpoints
+
+The following HTTP endpoints are added by `claudia/app.py` on top of Chainlit's built-in routes:
+
+| Endpoint | Purpose | Data exposed |
+|---|---|---|
+| `GET /api/status` | Connectivity lights (JS polling) | Service reachability only: `"ok"`, `"error"`, `"unknown"` for IBKR, GDrive, TradingView |
+| `GET /cl/custom.css` | Dark theme stylesheet | Static asset, no user data |
+| `GET /cl/custom.js` | Status bar DOM injector | Static asset, no user data |
+| `GET /cl/claudia-logo.png` | Logo image | Static asset, no user data |
+
+**`/api/status` data sensitivity:** The endpoint reveals whether IBKR is reachable and
+whether Google Drive credentials exist on disk. This is operational metadata, not account
+data or credentials. It requires no authentication because ClaudIA has no auth layer
+(localhost-only, single user). Do not proxy this endpoint externally.
+
+**Custom JS security:** `claudia/assets/custom.js` only uses `document.createElement`,
+`textContent`, `className`, and `title` for DOM manipulation. It never calls `eval`,
+never uses `innerHTML`, and never injects user-controlled data into the DOM. Review this
+file after any modification for XSS vectors.
+
+**IBKR gateway TLS:** `claudia/status.py → check_ibkr()` sets `verify=False` because
+the IBKR Client Portal Gateway uses a self-signed certificate on localhost. This is
+intentional and scoped to the single keepalive request (`/tickle`). No credentials are
+sent in this request.
+
+---
+
+## 10. Audit Checklist
 
 Run this checklist before any significant code change to ClaudIA:
 
@@ -174,3 +205,5 @@ Run this checklist before any significant code change to ClaudIA:
 - [ ] `docs/context.md` and `docs/principles.md` have `chmod 600` permissions
 - [ ] `.env` is in `.gitignore` and was not staged for commit
 - [ ] Any new `IBKRClient` usage goes through `ClaudeToolkit` (not direct calls in tool handlers)
+- [ ] Any new HTTP endpoint does not expose credentials, API keys, or account data
+- [ ] Any new custom JS reviewed for `eval`, `innerHTML`, and user-data injection (XSS)
