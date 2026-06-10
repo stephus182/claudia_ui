@@ -430,7 +430,14 @@ async def on_message(message: cl.Message):
                 except Exception as exc:
                     log.warning("Could not read image attachment: %s", exc)
 
-    await agent.handle_message(message.content, images=images if images else None)
+    try:
+        await agent.handle_message(message.content, images=images if images else None)
+    except Exception as exc:
+        log.exception("Error handling message: %s", exc)
+        await cl.Message(
+            content=f"Error: {exc!s}\n\nCheck the server logs for details.",
+            author="System",
+        ).send()
 
 
 # ── Session end ────────────────────────────────────────────────────────────────

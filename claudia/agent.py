@@ -17,7 +17,7 @@ import re
 from typing import TYPE_CHECKING
 
 import chainlit as cl
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, APIError
 from anthropic.types import MessageParam, ToolUseBlock, TextBlock
 
 if TYPE_CHECKING:
@@ -194,8 +194,6 @@ class ClaudIAAgent:
                         delta = event.delta
                         if delta.type == "text_delta":
                             response_text += delta.text
-                            # Stream text to Chainlit in real time
-                            await cl.get_current_task_list()  # noop keep alive
                         elif delta.type == "input_json_delta" and tool_calls:
                             tool_calls[-1]["input_json"] += delta.partial_json
 
