@@ -211,8 +211,9 @@ def _get_store() -> ConversationStore:
 async def _get_tv_bridge() -> TradingViewBridge:
     global _tv_bridge
     if _tv_bridge is None:
-        _tv_bridge = TradingViewBridge()
-        await _tv_bridge.start()
+        bridge = TradingViewBridge()
+        await bridge.start()  # only assign if start() succeeds; keeps _tv_bridge None on failure
+        _tv_bridge = bridge
     return _tv_bridge
 
 
@@ -294,7 +295,12 @@ async def on_chat_start():
     cl.user_session.set("session_id", session_id)
 
     # Emit opening status
+    # toolkit.execute() swallows all exceptions and returns an error string instead of raising,
+    # so we pre-check with ping() and skip the calls when the gateway is unreachable.
     try:
+        gateway_up = await cl.make_async(toolkit.client.ping)()
+        if not gateway_up:
+            raise ConnectionError("IBKR gateway not reachable")
         opening_text, _ = await cl.make_async(toolkit.execute)("get_account_summary", {})
         orders_text, _ = await cl.make_async(toolkit.execute)("get_live_orders", {})
         positions_text, _ = await cl.make_async(toolkit.execute)("get_positions", {})
