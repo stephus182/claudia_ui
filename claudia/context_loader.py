@@ -12,8 +12,25 @@ from typing import Callable
 
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from watchdog.observers import Observer
+from watchdog.observers.api import ObservedWatch
 
 log = logging.getLogger(__name__)
+
+# Single long-lived Observer shared across all ContextLoader instances.
+# Creating + stopping Observers per session causes macOS FSEvents to raise
+# "already scheduled" because the kernel-level watch isn't freed between
+# stop() and the next Observer's start(). Scheduling/unscheduling on one
+# persistent Observer avoids this entirely.
+_shared_observer: Observer | None = None
+
+
+def _get_shared_observer() -> Observer:
+    global _shared_observer
+    if _shared_observer is None or not _shared_observer.is_alive():
+        _shared_observer = Observer()
+        _shared_observer.daemon = True
+        _shared_observer.start()
+    return _shared_observer
 
 _CONTEXT_HEADER = "# ROLE & CONTEXT\n\n"
 _PRINCIPLES_HEADER = "\n\n# TRADING PRINCIPLES & STRATEGIES\n\n"
@@ -31,7 +48,7 @@ class ContextLoader:
         self.docs_path = Path(docs_path)
         self._context_path = self.docs_path / "context.md"
         self._principles_path = self.docs_path / "principles.md"
-        self._observer: Observer | None = None
+        self._watch: ObservedWatch | None = None
         self._reload_callback: Callable[[str, str], None] | None = None
 
     def load_system_prompt(self) -> str:
@@ -50,10 +67,10 @@ class ContextLoader:
 
     def start_watching(self, on_reload: Callable[[str, str], None]) -> None:
         """
-        Start a background watchdog thread. Calls on_reload(filename, new_prompt)
-        whenever context.md or principles.md changes.  If a watcher is already
-        running (e.g. a previous session's) it is stopped first so macOS FSEvents
-        doesn't raise "already scheduled" on the same path.
+        Register a watchdog handler on the shared module-level Observer.
+        Unschedules any previous watch for this instance first.
+        Uses a shared Observer so macOS FSEvents never sees the same path
+        added twice (which raises RuntimeError "already scheduled").
         """
         self.stop_watching()
         self._reload_callback = on_reload
@@ -61,15 +78,17 @@ class ContextLoader:
             watched={self._context_path, self._principles_path},
             on_change=self._handle_change,
         )
-        self._observer = Observer()
-        self._observer.schedule(handler, str(self.docs_path), recursive=False)
-        self._observer.start()
+        obs = _get_shared_observer()
+        self._watch = obs.schedule(handler, str(self.docs_path), recursive=False)
         log.info("Watching %s for document changes", self.docs_path)
 
     def stop_watching(self) -> None:
-        if self._observer and self._observer.is_alive():
-            self._observer.stop()
-            self._observer.join()
+        if self._watch is not None:
+            try:
+                _get_shared_observer().unschedule(self._watch)
+            except Exception:
+                pass
+            self._watch = None
 
     def _handle_change(self, changed_file: str) -> None:
         if self._reload_callback:
