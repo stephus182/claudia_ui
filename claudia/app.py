@@ -110,6 +110,44 @@ async def _asyncio_wait_for_compat(fut, timeout=None, **kwargs):
     return next(iter(done)).result()
 
 _asyncio.wait_for = _asyncio_wait_for_compat
+
+# ── Python 3.14 + anyio _task_states compatibility fix ───────────────────────
+# anyio's CancelScope.__enter__ does:
+#     task_state = _task_states[host_task]  (WeakKeyDictionary)
+# …with only `except KeyError` around it.  When asyncio.current_task() is None
+# (uvicorn ASGI context, Python 3.14), WeakKeyDictionary[None] raises TypeError
+# ("cannot create weak reference to 'NoneType' object") — not KeyError — so
+# anyio's handler is bypassed and the exception propagates, crashing every
+# httpcore connection teardown and every anyio.to_thread call in the app.
+#
+# Fix: replace _task_states with a proxy that raises KeyError for None keys.
+# anyio's existing `except KeyError` branch then creates a fresh TaskState and
+# execution continues normally (no cancellation scope for taskless context, which
+# is the correct no-op behaviour in a development setting).
+import anyio._backends._asyncio as _anyio_be
+
+class _SafeTaskStates:
+    def __init__(self, wrapped):
+        self._d = wrapped
+    def __getitem__(self, key):
+        if key is None:
+            raise KeyError(None)
+        return self._d[key]
+    def __setitem__(self, key, value):
+        if key is not None:
+            self._d[key] = value
+    def __delitem__(self, key):
+        if key is not None:
+            del self._d[key]
+    def __contains__(self, key):
+        return key is not None and key in self._d
+    def get(self, key, default=None):
+        if key is None:
+            return default
+        return self._d.get(key, default)
+
+if hasattr(_anyio_be, "_task_states"):
+    _anyio_be._task_states = _SafeTaskStates(_anyio_be._task_states)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import chainlit as cl
