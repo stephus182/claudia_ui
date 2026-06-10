@@ -30,3 +30,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# TradingView MCP vendor archive — binary artifact, not source-controlled
+# ARCHIVE_INFO (metadata) is committed; index.js is not
+vendor/tradingview-mcp/index.js

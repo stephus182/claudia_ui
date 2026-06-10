@@ -46,7 +46,13 @@ _TV_DEBUG_PORT = int(os.environ.get("TRADINGVIEW_DEBUG_PORT", "9222"))
 
 
 def _find_tv_mcp_bin() -> str | None:
-    """Find the tradingview-mcp binary: env var → PATH → ~/.tradingview-mcp/build/index.js."""
+    """
+    Find the tradingview-mcp binary, in priority order:
+      1. TRADINGVIEW_MCP_PATH env var
+      2. tradingview-mcp on PATH
+      3. ~/.tradingview-mcp/build/index.js  (standard clone location)
+      4. vendor/tradingview-mcp/index.js    (archived fallback — see docs/tradingview-mcp-recovery.md)
+    """
     if path := os.environ.get("TRADINGVIEW_MCP_PATH"):
         return path
     if which := shutil.which("tradingview-mcp"):
@@ -54,6 +60,14 @@ def _find_tv_mcp_bin() -> str | None:
     default = Path.home() / ".tradingview-mcp" / "build" / "index.js"
     if default.exists():
         return str(default)
+    vendor = Path(__file__).parent.parent / "vendor" / "tradingview-mcp" / "index.js"
+    if vendor.exists():
+        log.warning(
+            "Using archived vendor tradingview-mcp build — "
+            "run scripts/archive-tv-mcp.sh after upgrading. "
+            "See docs/tradingview-mcp-recovery.md"
+        )
+        return str(vendor)
     return None
 
 
