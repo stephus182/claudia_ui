@@ -26,7 +26,24 @@ from pathlib import Path
 import asyncio as _asyncio
 import anyio as _anyio
 import anyio.to_thread as _anyio_to_thread
+import sniffio as _sniffio
 from starlette.responses import FileResponse as _FileResponse
+
+# ── Python 3.14 + sniffio/Anthropic SDK compatibility fix ────────────────────
+# uvicorn does not set the sniffio ContextVar, so sniffio.current_async_library()
+# raises AsyncLibraryNotFoundError in every ASGI-dispatched coroutine.
+# The Anthropic SDK calls this on its first request (asyncify(get_platform)).
+# Patch: return "asyncio" as fallback — correct because uvicorn always uses asyncio.
+_orig_sniffio_cal = _sniffio.current_async_library
+
+def _sniffio_cal_compat() -> str:
+    try:
+        return _orig_sniffio_cal()
+    except _sniffio.AsyncLibraryNotFoundError:
+        return "asyncio"
+
+_sniffio.current_async_library = _sniffio_cal_compat
+# ─────────────────────────────────────────────────────────────────────────────
 
 _orig_anyio_run_sync = _anyio_to_thread.run_sync
 
