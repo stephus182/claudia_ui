@@ -374,6 +374,7 @@ async def on_chat_start():
         session_id=session_id,
         model=_MODEL,
         extra_tools=tv_tools,
+        tv_bridge=_tv_bridge,
     )
 
     cl.user_session.set("agent", agent)
@@ -532,7 +533,7 @@ async def on_start_gateway(action: cl.Action):
                 ).send()
                 return
 
-            gm.open_login_page()
+            await cl.make_async(gm.open_login_page)()
             await cl.Message(
                 content=(
                     "✅ IBKR Gateway is reachable. **https://localhost:5055** opened in your browser.\n\n"
@@ -582,14 +583,17 @@ async def on_launch_tradingview(action: cl.Action):
                 if _tv_bridge is not None:
                     await _tv_bridge.stop()
                     _tv_bridge = None
-                bridge = TradingViewBridge()
-                await bridge.start()
-                _tv_bridge = bridge
+            await _get_tv_bridge()  # creates new bridge under its own lock
 
             if _connectivity_checker is not None:
                 _connectivity_checker.set_tv_bridge(_tv_bridge)
 
             tv_tools = _tv_bridge.get_tools()
+
+            agent: ClaudIAAgent | None = cl.user_session.get("agent")
+            if agent is not None:
+                agent.set_tv_bridge(_tv_bridge, tv_tools)
+
             await cl.Message(
                 content=f"✅ TradingView connected ({len(tv_tools)} tools available).",
                 author="System",
