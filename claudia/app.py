@@ -56,6 +56,38 @@ def _fr_init_with_stat(self, path, *args, stat_result=None, **kwargs):
     _orig_fr_init(self, path, *args, stat_result=stat_result, **kwargs)
 
 _FileResponse.__init__ = _fr_init_with_stat
+
+# ── Python 3.14 + engineio compatibility fix ─────────────────────────────────
+# asyncio.wait_for() uses asyncio.timeout() internally. Python 3.14 added a
+# strict check: asyncio.timeout().__aenter__ raises RuntimeError if
+# asyncio.current_task() is None.  In uvicorn's ASGI context current_task()
+# can return None, which crashes engineio's _service_task and drops the
+# WebSocket connection ("Could not reach the server").
+#
+# Fix: patch asyncio.wait_for to fall back to asyncio.wait() (which does NOT
+# use asyncio.timeout) when current_task() is None.  The fallback fully
+# preserves TimeoutError semantics.
+_orig_asyncio_wait_for = _asyncio.wait_for
+
+async def _asyncio_wait_for_compat(fut, timeout=None, **kwargs):
+    if timeout is None or _asyncio.current_task() is not None:
+        return await _orig_asyncio_wait_for(fut, timeout=timeout, **kwargs)
+    # No current task: asyncio.timeout() would fail.  Use asyncio.wait()
+    # which cancels via loop.call_later() and doesn't need a current task.
+    if _asyncio.iscoroutine(fut):
+        fut = _asyncio.ensure_future(fut)
+    done, pending = await _asyncio.wait({fut}, timeout=timeout)
+    if pending:
+        for p in pending:
+            p.cancel()
+            try:
+                await p
+            except (_asyncio.CancelledError, Exception):
+                pass
+        raise _asyncio.TimeoutError()
+    return next(iter(done)).result()
+
+_asyncio.wait_for = _asyncio_wait_for_compat
 # ─────────────────────────────────────────────────────────────────────────────
 
 import chainlit as cl
