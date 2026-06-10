@@ -50,6 +50,13 @@ _orig_anyio_run_sync = _anyio_to_thread.run_sync
 async def _anyio_run_sync_compat(
     func, *args, abandon_on_cancel: bool = False, cancellable=None, limiter=None
 ):
+    # anyio's run_sync_in_worker_thread acquires a CapacityLimiter which calls
+    # CancelScope, which needs asyncio.current_task() to be non-None.  In
+    # uvicorn's ASGI context (Python 3.14) current_task() is None for many
+    # request-handling coroutines, so anyio fails with TypeError or AssertionError
+    # deep inside its internals.  Detect upfront and bypass anyio entirely.
+    if _asyncio.current_task() is None:
+        return await _asyncio.to_thread(func, *args)
     try:
         return await _orig_anyio_run_sync(
             func, *args,
@@ -148,6 +155,21 @@ class _SafeTaskStates:
 
 if hasattr(_anyio_be, "_task_states"):
     _anyio_be._task_states = _SafeTaskStates(_anyio_be._task_states)
+
+# CancelScope.__exit__ has `assert self._host_task is not None` (line 460) and
+# a `_task_states.get(self._host_task)` check that raises RuntimeError when
+# host_task is None.  Patch __exit__ to short-circuit cleanly in that case.
+_orig_cs_exit = _anyio_be.CancelScope.__exit__
+
+def _cs_exit_compat(self, extype, value, tb):
+    if self._host_task is None:
+        if self._active:
+            self._active = False
+            self._tasks.discard(None)
+        return False
+    return _orig_cs_exit(self, extype, value, tb)
+
+_anyio_be.CancelScope.__exit__ = _cs_exit_compat
 # ─────────────────────────────────────────────────────────────────────────────
 
 import chainlit as cl
