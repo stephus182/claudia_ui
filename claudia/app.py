@@ -12,12 +12,38 @@ import logging
 import os
 from pathlib import Path
 
-# ── Python 3.14 + anyio compatibility fix ────────────────────────────────────
-# anyio.to_thread.run_sync fails on Python 3.14 + uvicorn because sniffio
-# can't detect the asyncio backend (ContextVar not set by uvicorn).
-# Fix: pre-compute os.stat() synchronously in FileResponse.__init__ so
-# FileResponse.__call__ never reaches the anyio.to_thread code path.
+# ── Python 3.14 + anyio/sniffio compatibility fix ────────────────────────────
+# anyio.to_thread.run_sync fails in every Chainlit static-file route (/assets/,
+# /logo, /favicon) because sniffio cannot detect the asyncio backend — uvicorn
+# does not set sniffio's ContextVar.  The error surfaces in two places inside
+# FileResponse: the os.stat() call in __call__ AND the anyio.open_file() call
+# in _handle_simple that actually streams the file bytes.
+#
+# Root fix: patch anyio.to_thread.run_sync to fall back to asyncio.to_thread
+# on NoEventLoopError.  This covers all internal anyio I/O at once.
+# The FileResponse.__init__ pre-stat patch is kept as a cheap optimisation
+# (avoids dispatching to a thread for a stat call that would succeed anyway).
+import asyncio as _asyncio
+import anyio as _anyio
+import anyio.to_thread as _anyio_to_thread
 from starlette.responses import FileResponse as _FileResponse
+
+_orig_anyio_run_sync = _anyio_to_thread.run_sync
+
+async def _anyio_run_sync_compat(
+    func, *args, abandon_on_cancel: bool = False, cancellable=None, limiter=None
+):
+    try:
+        return await _orig_anyio_run_sync(
+            func, *args,
+            abandon_on_cancel=abandon_on_cancel,
+            cancellable=cancellable,
+            limiter=limiter,
+        )
+    except _anyio.NoEventLoopError:
+        return await _asyncio.to_thread(func, *args)
+
+_anyio_to_thread.run_sync = _anyio_run_sync_compat
 
 _orig_fr_init = _FileResponse.__init__
 
