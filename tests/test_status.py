@@ -55,30 +55,22 @@ def test_check_gdrive_file_missing(checker, tmp_path):
     assert checker.check_gdrive() is False
 
 
-def test_check_tradingview_no_bridge(checker):
-    assert checker.check_tradingview() is False
+def test_check_tradingview_cdp_port_open(checker):
+    """CDP port accepting connections → True."""
+    with patch("claudia.status.socket.create_connection"):
+        assert checker.check_tradingview() is True
 
 
-def test_check_tradingview_process_running(checker):
-    bridge = MagicMock()
-    bridge._process = MagicMock()
-    bridge._process.poll.return_value = None   # None = still running
-    checker._tv_bridge = bridge
-    assert checker.check_tradingview() is True
+def test_check_tradingview_cdp_port_closed(checker):
+    """CDP port refused → False."""
+    with patch("claudia.status.socket.create_connection", side_effect=OSError("refused")):
+        assert checker.check_tradingview() is False
 
 
-def test_check_tradingview_process_exited(checker):
-    bridge = MagicMock()
-    bridge._process = MagicMock()
-    bridge._process.poll.return_value = 1      # non-None = exited
-    checker._tv_bridge = bridge
-    assert checker.check_tradingview() is False
-
-
-def test_check_tradingview_no_process_attr(checker):
-    bridge = MagicMock(spec=[])                # no _process attribute
-    checker._tv_bridge = bridge
-    assert checker.check_tradingview() is False
+def test_check_tradingview_cdp_timeout(checker):
+    """CDP port timeout → False."""
+    with patch("claudia.status.socket.create_connection", side_effect=OSError("timed out")):
+        assert checker.check_tradingview() is False
 
 
 def test_get_status_initial(checker):

@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import requests
+
+_TV_DEBUG_PORT = int(os.environ.get("TRADINGVIEW_DEBUG_PORT", "9222"))
 
 if TYPE_CHECKING:
     from claudia.tradingview import TradingViewBridge
@@ -79,13 +83,12 @@ class ConnectivityChecker:
         return self._gdrive_token_file.exists()
 
     def check_tradingview(self) -> bool:
-        bridge = self._tv_bridge
-        if bridge is None:
+        """TCP connect to TradingView Desktop's CDP port — more reliable than proc.poll()."""
+        try:
+            with socket.create_connection(("localhost", _TV_DEBUG_PORT), timeout=1.0):
+                return True
+        except OSError:
             return False
-        proc = getattr(bridge, "_process", None)
-        if proc is None:
-            return False
-        return proc.poll() is None  # None = process still alive
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
 
