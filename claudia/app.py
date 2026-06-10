@@ -70,12 +70,17 @@ _FileResponse.__init__ = _fr_init_with_stat
 _orig_asyncio_wait_for = _asyncio.wait_for
 
 async def _asyncio_wait_for_compat(fut, timeout=None, **kwargs):
-    if timeout is None or _asyncio.current_task() is not None:
+    if _asyncio.current_task() is not None:
+        # Normal case: task context exists, original works fine.
         return await _orig_asyncio_wait_for(fut, timeout=timeout, **kwargs)
-    # No current task: asyncio.timeout() would fail.  Use asyncio.wait()
-    # which cancels via loop.call_later() and doesn't need a current task.
+    # No current task: asyncio.timeout().__aenter__ raises RuntimeError even
+    # for timeout=None (Python 3.14 always uses asyncio.timeout internally).
     if _asyncio.iscoroutine(fut):
         fut = _asyncio.ensure_future(fut)
+    if timeout is None:
+        return await fut
+    # With a real timeout: use asyncio.wait() (loop.call_later-based, no
+    # current_task requirement).
     done, pending = await _asyncio.wait({fut}, timeout=timeout)
     if pending:
         for p in pending:

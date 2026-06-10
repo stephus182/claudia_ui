@@ -51,8 +51,11 @@ class ContextLoader:
     def start_watching(self, on_reload: Callable[[str, str], None]) -> None:
         """
         Start a background watchdog thread. Calls on_reload(filename, new_prompt)
-        whenever context.md or principles.md changes.
+        whenever context.md or principles.md changes.  If a watcher is already
+        running (e.g. a previous session's) it is stopped first so macOS FSEvents
+        doesn't raise "already scheduled" on the same path.
         """
+        self.stop_watching()
         self._reload_callback = on_reload
         handler = _DocChangeHandler(
             watched={self._context_path, self._principles_path},
