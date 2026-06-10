@@ -169,10 +169,10 @@ def _get_toolkit() -> ClaudeToolkit:
         _config = Config.from_env()
         ibkr = IBKRClient(
             config=_config,
-            auth=BrowserCookieAuth(_config.gateway_url),
+            auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
         )
         cache = GDriveCache(_config)
-        store = SQLiteStore(_config.sqlite_path)
+        store = SQLiteStore(_config)
         _toolkit = ClaudeToolkit(client=ibkr, cache=cache, store=store, config=_config)
     return _toolkit
 
