@@ -12,6 +12,26 @@ import logging
 import os
 from pathlib import Path
 
+# ── Python 3.14 + anyio compatibility fix ────────────────────────────────────
+# anyio.to_thread.run_sync fails on Python 3.14 + uvicorn because sniffio
+# can't detect the asyncio backend (ContextVar not set by uvicorn).
+# Fix: pre-compute os.stat() synchronously in FileResponse.__init__ so
+# FileResponse.__call__ never reaches the anyio.to_thread code path.
+from starlette.responses import FileResponse as _FileResponse
+
+_orig_fr_init = _FileResponse.__init__
+
+def _fr_init_with_stat(self, path, *args, stat_result=None, **kwargs):
+    if stat_result is None:
+        try:
+            stat_result = os.stat(path)
+        except OSError:
+            pass  # missing file — FileResponse will raise a clearer error later
+    _orig_fr_init(self, path, *args, stat_result=stat_result, **kwargs)
+
+_FileResponse.__init__ = _fr_init_with_stat
+# ─────────────────────────────────────────────────────────────────────────────
+
 import chainlit as cl
 from chainlit.server import app as _server_app
 from dotenv import load_dotenv
@@ -55,16 +75,14 @@ _connectivity_checker: ConnectivityChecker | None = None
 async def api_status():
     """Returns cached connectivity status — instant, non-blocking."""
     if _connectivity_checker:
-        return JSONResponse(_connectivity_checker.get_status())
+        return JSONResponse({k: v.value for k, v in _connectivity_checker.get_status().items()})
     return JSONResponse({"ibkr": "unknown", "gdrive": "unknown", "tv": "unknown"})
 
 
-# Chainlit's /public/{filename} handler uses anyio.to_thread which breaks on
-# Python 3.14. Serve our custom assets via plain Response from claudia/assets/
-# (CSS/JS) and public/ (logo). Files are NOT in public/ so Chainlit's broken
-# FileResponse handler can never intercept them.
+# Chainlit's /public/{filename} handler uses anyio.to_thread which fails on
+# Python 3.14. Serve all custom assets via plain Response so FileResponse
+# is never called. No files live in public/ — nothing for Chainlit to serve.
 _ASSETS = Path(__file__).parent / "assets"
-_PUBLIC = Path(__file__).parent.parent / "public"
 
 
 @_server_app.get("/cl/custom.css")
@@ -79,9 +97,7 @@ async def serve_js():
 
 @_server_app.get("/cl/claudia-logo.png")
 async def serve_logo():
-    import asyncio
-    content = await asyncio.to_thread((_PUBLIC / "claudia-logo.png").read_bytes)
-    return Response(content, media_type="image/png")
+    return Response((_ASSETS / "claudia-logo.png").read_bytes(), media_type="image/png")
 
 
 def _get_toolkit() -> ClaudeToolkit:
@@ -160,9 +176,10 @@ async def on_chat_start():
         tv_status = "TradingView: unavailable (screenshot mode active)"
 
     # Start connectivity monitor (singleton — persists across sessions)
-    global _connectivity_checker
+    global _connectivity_checker, _config
     if _connectivity_checker is None:
         cfg = _config or Config.from_env()
+        _config = cfg  # cache so subsequent sessions don't call Config.from_env() again
         _connectivity_checker = ConnectivityChecker(
             gateway_url=cfg.gateway_url,
             gdrive_token_file=cfg.gdrive_token_file,
@@ -170,6 +187,9 @@ async def on_chat_start():
         )
     # Call unconditionally — start() is idempotent and restarts a cancelled task
     _connectivity_checker.start()
+    # Update bridge if TradingView became available after the checker was constructed
+    if _tv_bridge is not None:
+        _connectivity_checker.set_tv_bridge(_tv_bridge)
 
     # Build agent for this session
     agent = ClaudIAAgent(
