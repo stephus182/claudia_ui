@@ -17,7 +17,7 @@ conversation memory. The new principals and threats are:
 | `docs/context.md` | Prompt injection: attacker modifies the file to override ClaudIA's behavior | File permissions (0o600); SHA-256 hash logged at session start; file is never executable |
 | `docs/principles.md` | Prompt injection: attacker weakens risk rules | Same mitigations as context.md; ClaudIA cannot modify this file |
 | Conversation history | Re-injection: past messages contained adversarial content that gets fed back | History loaded as structured `role:user/assistant` blocks, not raw system prompt injection |
-| TradingView sidecar | Supply chain: `tradingview-mcp` binary is a third-party Node.js package | Review the package before install; sidecar runs without network access to IBKR credentials |
+| TradingView sidecar | Supply chain: `tradingview-mcp` npm package has full CDP access to TradingView Desktop | Accepted risk (personal local tool); sidecar has no IBKR credentials; vendor archive provides known-good fallback; `docs/tradingview-mcp-recovery.md` covers incident response |
 | Voice output (Phase 2) | Voice commands: TTS output is purely advisory | No voice-to-action path exists; voice only speaks finalized assistant text |
 
 ---
@@ -123,18 +123,42 @@ developer action — not a document edit.
 
 ## 6. TradingView MCP Sidecar
 
-The `tradingview-mcp` Node.js process is spawned as a subprocess by `claudia/tradingview.py`.
-It communicates via MCP stdio transport (no network port exposed).
+The `tradingview-mcp` Node.js process ([`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontlie/tradingview-mcp))
+is spawned as a subprocess by `claudia/tradingview.py`. It communicates with ClaudIA
+via MCP stdio (local pipe, no network port). It communicates with TradingView Desktop
+via Chrome DevTools Protocol on `localhost:9222`.
 
 **Security properties:**
-- The sidecar has no access to IBKR credentials (`.env` vars are not passed to the subprocess
-  except `CHROME_REMOTE_DEBUG_PORT`).
-- The sidecar controls the TradingView Desktop UI only — it cannot trade.
-- The sidecar is optional: if it fails to start, ClaudIA operates in screenshot mode.
-- PineScript injection via the sidecar modifies the Pine Editor only; it does not execute trades.
 
-**Third-party risk:** `tradingview-mcp` is a community package. Review its source code
-before installation. Pin the version in your npm install.
+- **No IBKR credential access.** The subprocess environment passes only `CHROME_REMOTE_DEBUG_PORT`.
+  IBKR credentials, `ANTHROPIC_API_KEY`, and GDrive credentials are never passed to the sidecar.
+- **CDP scope is TradingView Desktop only.** Port 9222 is TradingView's Electron debug port.
+  The sidecar can read and manipulate the TradingView UI — it cannot access IBKR or place trades.
+- **Full CDP access accepted.** The sidecar has full Chrome DevTools Protocol access to TradingView
+  Desktop — it can read DOM, execute JavaScript in the renderer, and inspect TradingView's internal
+  state. This is intentional (required for 78-tool functionality) and accepted for a personal local
+  tool with no remote access.
+- **Tool surface area reduced.** `_CURATED_TOOLS` in `tradingview.py` limits what Claude can call
+  to 15 high-value tools. The sidecar process itself has full access regardless of this filter.
+- **PineScript injection** modifies the Pine Editor only. It does not execute strategies or trades.
+- **Fallback.** If the sidecar fails to start, ClaudIA degrades to screenshot mode.
+
+**Third-party risk and supply chain:**
+
+`tradesdontlie/tradingview-mcp` is an actively maintained community package (3,500+ stars,
+CDP injection hardening added April 2026). The project intentionally tracks `HEAD` to receive
+TradingView API compatibility updates automatically.
+
+Risk acceptance: this is a personal local tool with no remote access, and TradingView
+cannot place IBKR orders. Financial blast radius is limited to TradingView UI data exposure.
+
+**Controls in place:**
+- `vendor/tradingview-mcp/index.js` — archived known-good build, gitignored binary, created
+  by `scripts/archive-tv-mcp.sh` after each verified upgrade. `_find_tv_mcp_bin()` falls back
+  to this automatically if `~/.tradingview-mcp/build/index.js` is missing.
+- `docs/tradingview-mcp-recovery.md` — incident response guide: 5 break patterns with exact
+  log signatures, per-pattern fixes, and a direct CDP from Python fallback for the
+  "sidecar permanently unavailable" scenario.
 
 ---
 
