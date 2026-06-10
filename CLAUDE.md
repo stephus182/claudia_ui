@@ -9,22 +9,26 @@ ClaudIA is a Chainlit-based trading assistant chatbot that connects to Interacti
 ```
 Chainlit UI (localhost:8000)
     ↓
-claudia/app.py              — session lifecycle, action callbacks
+claudia/app.py              — session lifecycle, action callbacks, startup buttons
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, relationships
 claudia/order_flow.py       — cl.Action order staging → ibkr_core_mcp biometric gates
 claudia/alert_manager.py    — background price alert monitor
-claudia/tradingview.py      — tradingview-mcp sidecar + PineScript display
-    ↓
-ibkr_core_mcp (local editable install)
-    ↓
-IBKR Client Portal Gateway (https://localhost:5055)
+claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health
+claudia/tradingview.py      — tradingview-mcp sidecar + CDP health + PineScript display
+    ↓                               ↓
+ibkr_core_mcp               tradingview-mcp (Node.js, stdio)
+(local editable install)            ↓
+    ↓                       TradingView Desktop (CDP, localhost:9222)
+IBKR Client Portal Gateway
+(Docker, localhost:5055)
 ```
 
 **ibkr_core_mcp** is a direct Python import — not an MCP server. The `ClaudeToolkit`
-exposes 22 IBKR tools that drop straight into the Anthropic SDK `tools=` parameter.
-TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar.
+exposes IBKR tools that drop straight into the Anthropic SDK `tools=` parameter.
+TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (curated
+15-tool subset by default — see `_CURATED_TOOLS` in `claudia/tradingview.py`).
 
 ---
 
@@ -49,9 +53,17 @@ cp .env.example .env
 cp docs/context.example.md docs/context.md
 cp docs/principles.example.md docs/principles.md
 # Edit both files to configure ClaudIA's persona and your trading rules
+chmod 600 docs/context.md docs/principles.md
 
-# 6. Run ClaudIA
-chainlit run claudia/app.py
+# 6. TradingView sidecar (optional)
+git clone https://github.com/tradesdontlie/tradingview-mcp ~/.tradingview-mcp
+cd ~/.tradingview-mcp && npm install && npm run build && cd -
+./scripts/archive-tv-mcp.sh   # snapshot the working build to vendor/
+
+# 7. Run ClaudIA
+./start-claudia.sh            # recommended: IBKR gateway + ClaudIA
+# or:
+chainlit run claudia/app.py   # ClaudIA only (in-chat "Start IBKR Gateway" button available)
 # → Open http://localhost:8000
 ```
 
@@ -73,7 +85,7 @@ chainlit run claudia/app.py
 | `CLAUDIA_DOCS_PATH` | optional | Path to context.md / principles.md (default: `docs/`) |
 | `CLAUDIA_DB_PATH` | optional | ClaudIA SQLite DB path (default: `data/claudia.db`) |
 | `CLAUDIA_VOICE_ENABLED` | optional | Enable TTS output (Phase 2) |
-| `TRADINGVIEW_MCP_PATH` | optional | Path to `tradingview-mcp` binary |
+| `TRADINGVIEW_MCP_PATH` | optional | Path to `tradingview-mcp` built `index.js`; auto-discovered if unset |
 | `TRADINGVIEW_DEBUG_PORT` | optional | Chrome debugging port (default: `9222`) |
 
 ---
@@ -124,22 +136,83 @@ ClaudIA **cannot** place orders autonomously. When ClaudIA suggests a trade:
 
 ---
 
+## IBKR Gateway Startup
+
+`start-claudia.sh` is the recommended launcher for a fresh session — it calls
+`GatewayManager.startup()` then starts Chainlit.
+
+If you launch `chainlit run claudia/app.py` directly and the gateway is offline,
+the welcome message shows a **"Start IBKR Gateway"** action button. Clicking it:
+
+1. Ensures Docker Desktop is running (launches it on macOS if needed)
+2. Starts the gateway container
+3. Waits up to 120s for the Java process to be reachable
+4. Opens `https://localhost:5055` in your browser
+5. You complete the IBKR login + 2FA; `ConnectivityChecker` sends the "reconnected" alert
+
+This uses `ibkr_core_mcp.gateway.GatewayManager` — no changes to ibkr_core_mcp needed.
+
+---
+
 ## TradingView Integration
 
-**Phase 1 — Screenshot analysis (always available):**  
+**Screenshot analysis (always available):**
 Drag or paste any TradingView chart screenshot into the chat. ClaudIA receives it as a
 Claude vision content block and analyzes indicators, patterns, and price action.
 
-**Phase 1 — Live integration (requires TradingView Desktop):**
-```bash
-npm install -g @mxstbr/tradingview-mcp
-# Open TradingView Desktop, then start it with remote debugging:
-# On macOS: open -a "Trading View" --args --remote-debugging-port=9222
-chainlit run claudia/app.py   # sidecar starts automatically
-```
+**Live integration (requires TradingView Desktop):**
 
-**PineScript:** ClaudIA generates PineScript v5 directly. Use the **"Inject into TradingView"** 
-button to paste it directly into the Pine Editor (requires live integration).
+The sidecar is [`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontlie/tradingview-mcp)
+(78 tools, actively maintained). ClaudIA exposes a curated 15-tool subset by default
+to control token cost; the full set is available via `bridge.get_all_tools()`.
+
+Binary discovery order (`_find_tv_mcp_bin()`):
+1. `TRADINGVIEW_MCP_PATH` env var
+2. `tradingview-mcp` on PATH
+3. `~/.tradingview-mcp/build/index.js`
+4. `vendor/tradingview-mcp/index.js` (archived fallback — see below)
+
+If TradingView Desktop is not running at session start, the welcome message shows a
+**"Launch TradingView"** action button. Clicking it runs `launch_tradingview()` (macOS
+`open -a "Trading View" --args --remote-debugging-port=9222`), polls for CDP port 9222
+for up to 30s, then reconnects the MCP sidecar.
+
+**PineScript:** ClaudIA generates PineScript v5 directly. Use the **"Inject into TradingView"**
+button to paste it into the Pine Editor via the `pine_set_source` MCP tool.
+
+**Curated 15-tool subset** (`_CURATED_TOOLS` in `claudia/tradingview.py`):
+
+| Category | Tools |
+|---|---|
+| Chart reading | `chart_get_state`, `quote_get`, `data_get_ohlcv`, `data_get_study_values` |
+| Chart control | `chart_set_symbol`, `chart_set_timeframe`, `indicator_set_inputs` |
+| Pine Script IDE | `pine_set_source`, `pine_smart_compile`, `pine_get_errors`, `pine_get_source` |
+| Strategy results | `data_get_strategy_results`, `data_get_equity_curve` |
+| Utility | `tv_health_check`, `capture_screenshot` |
+
+**Break recovery:** If the sidecar breaks after a TradingView or npm update, see
+[`docs/tradingview-mcp-recovery.md`](docs/tradingview-mcp-recovery.md) for the error
+signature catalog and recovery steps.
+
+**Vendor archive:** Run `./scripts/archive-tv-mcp.sh` after every verified build to snapshot
+`build/index.js` into `vendor/tradingview-mcp/`. ClaudIA automatically falls back to this
+archive if `~/.tradingview-mcp/build/index.js` is missing or broken.
+
+---
+
+## Connectivity Status
+
+`claudia/status.py` — `ConnectivityChecker` polls three services every 60s:
+
+| Service | Check method | Transitions |
+|---|---|---|
+| IBKR | HTTP GET `/tickle` | Sends "reconnected" / "disconnected" chat alert |
+| GDrive | Token file exists | Sends alert on state change |
+| TradingView | TCP connect to port 9222 | Sends alert on state change |
+
+The cached status is served by `GET /api/status` (used by the UI connectivity lights).
+TradingView status is `UNKNOWN` (gray) when no bridge is configured, `ERROR` (red) when
+the bridge exists but CDP port 9222 is unreachable.
 
 ---
 
@@ -185,6 +258,6 @@ When updating ibkr_core_mcp (e.g. after adding new tools), re-run `pip install -
 No restart of the Chainlit app is needed for tool definition changes; restart required for
 Python module changes.
 
-Tools added in claudia_ui's plan:
+Tools planned for ibkr_core_mcp:
 - `preview_order` — read-only whatif order preview (in `ibkr_core_mcp/claude_tools.py`)
 - `get_pnl` — real-time partitioned P&L (in `ibkr_core_mcp/claude_tools.py`)
