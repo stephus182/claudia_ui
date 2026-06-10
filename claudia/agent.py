@@ -17,7 +17,7 @@ import re
 from typing import TYPE_CHECKING
 
 import chainlit as cl
-from anthropic import AsyncAnthropic, APIError
+from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam, ToolUseBlock, TextBlock
 
 if TYPE_CHECKING:
@@ -170,6 +170,7 @@ class ClaudIAAgent:
         while True:
             response_text = ""
             tool_calls: list[dict] = []
+            stop_reason: str | None = None
 
             async with self._client.messages.stream(
                 model=self._model,
@@ -201,6 +202,13 @@ class ClaudIAAgent:
                         stop_reason = event.delta.stop_reason
 
             # --- Stream complete ---
+
+            if stop_reason == "max_tokens":
+                await cl.Message(
+                    content="_⚠ Response truncated — token limit reached. "
+                            "Ask me to continue if the answer is incomplete._",
+                    author="System",
+                ).send()
 
             # Append assistant turn to the running message list
             assistant_content: list = []

@@ -207,6 +207,7 @@ _config: Config | None = None
 _toolkit: ClaudeToolkit | None = None
 _conv_store: ConversationStore | None = None
 _tv_bridge: TradingViewBridge | None = None
+_tv_bridge_lock = _asyncio.Lock()
 _alert_manager: AlertManager | None = None
 _connectivity_checker: ConnectivityChecker | None = None
 
@@ -251,6 +252,10 @@ def _fix_route_priority() -> None:
         None,
     )
     if spa_idx is None:
+        log.warning(
+            "_fix_route_priority: SPA catch-all route '/{full_path:path}' not found — "
+            "/api/* and /cl/* routes may be shadowed by Chainlit's SPA handler"
+        )
         return
     our = [r for r in routes if getattr(r, "path", None) in _OUR_PATHS]
     for r in our:
@@ -287,10 +292,11 @@ def _get_store() -> ConversationStore:
 
 async def _get_tv_bridge() -> TradingViewBridge:
     global _tv_bridge
-    if _tv_bridge is None:
-        bridge = TradingViewBridge()
-        await bridge.start()  # only assign if start() succeeds; keeps _tv_bridge None on failure
-        _tv_bridge = bridge
+    async with _tv_bridge_lock:
+        if _tv_bridge is None:
+            bridge = TradingViewBridge()
+            await bridge.start()  # only assign if start() succeeds; keeps _tv_bridge None on failure
+            _tv_bridge = bridge
     return _tv_bridge
 
 
@@ -378,9 +384,11 @@ async def on_chat_start():
         gateway_up = await cl.make_async(toolkit.client.ping)()
         if not gateway_up:
             raise ConnectionError("IBKR gateway not reachable")
-        opening_text, _ = await cl.make_async(toolkit.execute)("get_account_summary", {})
-        orders_text, _ = await cl.make_async(toolkit.execute)("get_live_orders", {})
-        positions_text, _ = await cl.make_async(toolkit.execute)("get_positions", {})
+        (opening_text, _), (orders_text, _), (positions_text, _) = await _asyncio.gather(
+            cl.make_async(toolkit.execute)("get_account_summary", {}),
+            cl.make_async(toolkit.execute)("get_live_orders", {}),
+            cl.make_async(toolkit.execute)("get_positions", {}),
+        )
         status_block = (
             f"**Account Summary**\n```\n{opening_text}\n```\n\n"
             f"**Open Positions**\n{positions_text}\n\n"

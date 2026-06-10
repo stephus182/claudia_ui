@@ -7,7 +7,7 @@ can hot-reload without restart.
 import hashlib
 import logging
 from pathlib import Path
-from threading import Event
+import threading
 from typing import Callable
 
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
@@ -89,6 +89,7 @@ class ContextLoader:
             except Exception:
                 pass
             self._watch = None
+        self._reload_callback = None
 
     def _handle_change(self, changed_file: str) -> None:
         if self._reload_callback:
@@ -109,16 +110,29 @@ class ContextLoader:
 
 
 class _DocChangeHandler(FileSystemEventHandler):
+    _DEBOUNCE_SECS = 0.3
+
     def __init__(self, watched: set[Path], on_change: Callable[[str], None]):
         super().__init__()
         self._watched = {str(p) for p in watched}
         self._on_change = on_change
-        self._debounce: dict[str, Event] = {}
+        self._timer: threading.Timer | None = None
+        self._lock = threading.Lock()
 
     def on_modified(self, event: FileSystemEvent) -> None:
         if not event.is_directory and event.src_path in self._watched:
             log.info("Document changed: %s", event.src_path)
-            self._on_change(Path(event.src_path).name)
+            self._schedule(Path(event.src_path).name)
 
     def on_created(self, event: FileSystemEvent) -> None:
         self.on_modified(event)
+
+    def _schedule(self, filename: str) -> None:
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(
+                self._DEBOUNCE_SECS, self._on_change, args=(filename,)
+            )
+            self._timer.daemon = True
+            self._timer.start()
