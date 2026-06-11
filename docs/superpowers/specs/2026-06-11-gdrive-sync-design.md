@@ -70,8 +70,8 @@ Watchdog hot-reload is unchanged — it still watches the local file path. Since
 | `claudia/gdrive_sync.py` | **New** — `GDriveSync` class |
 | `claudia/app.py` | Call `download_db` before `_get_store()`; call `upload_db` in `on_stop`; pass drive text to `ContextLoader` |
 | `claudia/context_loader.py` | Accept optional `context_text` / `principles_text` strings to override file reads |
-| `CLAUDE.md` | Document Drive sync in architecture section; file layout in Drive folder |
-| `SECURITY.md` | Note `claudia.db` now lives on Drive; conversation history privacy implications |
+| `CLAUDE.md` | Document Drive sync in architecture section; Drive folder layout |
+| `SECURITY.md` | Add Drive sync threat model section: poisoned DB, poisoned context/principles, OAuth token theft, hard guarantees |
 | `.env.example` | Add comment to `GOOGLE_DRIVE_FOLDER_ID` noting it enables `claudia.db` sync |
 
 ## Error Handling
@@ -98,6 +98,42 @@ All files share the same folder (`GOOGLE_DRIVE_FOLDER_ID`):
 ```
 
 No subfolders — keeps it simple. File names are distinct from parquet cache files.
+
+## Security
+
+Drive sync introduces three attack surfaces. All are mitigated without relaxing the existing order execution barriers.
+
+### 1. Poisoned `context.md` / `principles.md` — prompt injection (HIGH)
+
+**Threat:** An attacker with Drive access modifies `principles.md` to weaken trading rules or inject adversarial instructions into the system prompt.
+
+**Mitigations:**
+- The hardcoded `_SAFETY_BLOCK` in `agent.py` cannot be overridden by anything from Drive. Order execution still requires physical button click + Touch ID + tkinter dialog regardless of what is in `principles.md`.
+- On each Drive fetch, compute `SHA-256(context.md + principles.md)` and compare against the hash stored in `claudia.db → sessions.context_hash` from the previous session. If the hash changed, send a visible alert in chat: *"⚠️ Your context.md / principles.md on Drive changed since last session — please verify before continuing."*
+- This extends the hash verification already applied to local files (see `context_loader.py`).
+
+### 2. Poisoned `claudia.db` — conversation history injection (MEDIUM)
+
+**Threat:** A malicious actor replaces `claudia.db` on Drive with a crafted file containing fake conversation history designed to influence ClaudIA's responses.
+
+**Mitigations:**
+- After downloading, run `PRAGMA integrity_check` on the SQLite file before opening it. A structurally tampered file will fail this check; ClaudIA falls back to an empty local DB and logs a warning.
+- Even with poisoned conversation history, no order can be placed without the physical button click + biometric + confirmation dialog. The conversation history injection vector has no path to autonomous order execution.
+
+### 3. Drive OAuth token theft (LOW — scoped blast radius)
+
+**Threat:** Stolen `GDRIVE_TOKEN_FILE` grants Drive access.
+
+**Mitigations:**
+- The `drive.file` OAuth scope limits the token to files this app created — it cannot access the rest of the user's Drive.
+- `GDRIVE_TOKEN_FILE` is already `chmod 600`.
+- The token covers only `claudia.db`, `context.md`, `principles.md`, and market data parquets — no IBKR credentials, no `ANTHROPIC_API_KEY`.
+
+### Hard guarantees unchanged
+
+These two properties hold regardless of what is on Drive:
+- The hardcoded `_SAFETY_BLOCK` in `agent.py` cannot be overridden by Drive content.
+- No order can be placed without physical button click + Touch ID + tkinter dialog.
 
 ## What Does NOT Change
 
