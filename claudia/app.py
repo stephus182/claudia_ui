@@ -534,6 +534,12 @@ async def on_start_gateway(action: cl.Action):
                 return
 
             await cl.make_async(gm.open_login_page)()
+
+            # Trigger an immediate status re-check so the IBKR dot goes green
+            # right now without waiting for the next poll cycle.
+            if _connectivity_checker is not None:
+                await _connectivity_checker._run_checks()
+
             await cl.Message(
                 content=(
                     "✅ IBKR Gateway is reachable. **https://localhost:5055** opened in your browser.\n\n"
