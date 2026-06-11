@@ -13,6 +13,7 @@ claudia/app.py              — session lifecycle, action callbacks, startup but
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, relationships
+claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / upload at stop
 claudia/order_flow.py       — cl.Action order staging → ibkr_core_mcp biometric gates
 claudia/alert_manager.py    — background price alert monitor
 claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health
@@ -29,6 +30,54 @@ IBKR Client Portal Gateway
 exposes IBKR tools that drop straight into the Anthropic SDK `tools=` parameter.
 TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (curated
 15-tool subset by default — see `_CURATED_TOOLS` in `claudia/tradingview.py`).
+
+---
+
+## GDrive Sync
+
+`claudia/gdrive_sync.py` — `GDriveSync` class, auto-enabled when `GOOGLE_DRIVE_FOLDER_ID` is set. No new env vars required.
+
+### What syncs
+
+| File | Direction | When |
+|---|---|---|
+| `claudia.db` | Drive → local | Session start (first session per process, before DB opens) |
+| `claudia.db` | local → Drive | Session stop (after `close_session`, with WAL checkpoint) |
+| `context.md` | Drive → memory | Every session start (overrides local file if present on Drive) |
+| `principles.md` | Drive → memory | Every session start (overrides local file if present on Drive) |
+
+### Drive folder layout
+
+All files share `GOOGLE_DRIVE_FOLDER_ID`:
+
+```
+<Drive folder>/
+  manifest.json                    ← market data index (GDriveCache, ibkr_core_mcp)
+  AAPL_1D_1Y_2026-01-01.parquet    ← market data (GDriveCache)
+  claudia.db                       ← conversation history (GDriveSync)
+  context.md                       ← ClaudIA persona (optional, upload manually)
+  principles.md                    ← trading rules (optional, upload manually)
+```
+
+### First-time setup on a new machine
+
+1. `GOOGLE_DRIVE_FOLDER_ID` is already set from your `.env` (market data uses it)
+2. Start ClaudIA — it downloads `claudia.db` if it exists on Drive (skipped on first ever run)
+3. To enable Drive context/principles: upload `docs/context.md` and `docs/principles.md` via the Drive web UI
+
+### Hot-reload behaviour
+
+Drive texts are fetched once per session start. The watchdog still watches local files — editing `docs/context.md` while a session runs clears the Drive override and uses the local file from the next message.
+
+### Error handling
+
+All Drive operations are non-fatal. On any failure (no token, network error, tampered file):
+
+| Operation | On failure |
+|---|---|
+| `download_db` at start | Log warning; use existing local `claudia.db` |
+| `upload_db` at stop | Log warning; local copy preserved; syncs next session |
+| `read_text` for context/principles | Log warning; fall back to local `docs/` files |
 
 ---
 
