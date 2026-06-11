@@ -410,16 +410,16 @@ async def on_chat_start():
     if ibkr_offline:
         actions.append(cl.Action(
             name="start_gateway",
-            value="start",
+            payload={"value": "start"},
             label="Start IBKR Gateway",
-            description="Launch the IBKR Client Portal Gateway Docker container",
+            tooltip="Launch the IBKR Client Portal Gateway Docker container",
         ))
     if tv_offline:
         actions.append(cl.Action(
             name="launch_tradingview",
-            value="launch",
+            payload={"value": "launch"},
             label="Launch TradingView",
-            description="Launch TradingView Desktop with remote debugging enabled",
+            tooltip="Launch TradingView Desktop with remote debugging enabled",
         ))
 
     await cl.Message(
