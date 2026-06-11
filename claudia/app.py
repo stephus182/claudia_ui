@@ -203,6 +203,7 @@ load_dotenv(override=False)
 
 _MODEL = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
 _DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))
+_VERSIONS_PATH = _DOCS_PATH / "versions"
 _DB_PATH = Path(os.environ.get("CLAUDIA_DB_PATH", "data/claudia.db"))
 
 # Shared singletons (initialized once at module load, safe to share across sessions)
@@ -304,6 +305,22 @@ async def _get_tv_bridge() -> TradingViewBridge:
     return _tv_bridge
 
 
+def _write_version_snapshot(version: str, context_text: str, principles_text: str) -> None:
+    """Write human-readable snapshot to docs/versions/{version}/. No-op if already exists."""
+    try:
+        version_dir = _VERSIONS_PATH / version
+        ctx_file = version_dir / "context.md"
+        pri_file = version_dir / "principles.md"
+        if ctx_file.exists() and pri_file.exists():
+            return
+        version_dir.mkdir(parents=True, exist_ok=True)
+        ctx_file.write_text(context_text, encoding="utf-8")
+        pri_file.write_text(principles_text, encoding="utf-8")
+        log.info("Written version snapshot: docs/versions/%s/", version)
+    except Exception as exc:
+        log.warning("Could not write version snapshot for %s: %s", version, exc)
+
+
 # ── Session start ─────────────────────────────────────────────────────────────
 
 @cl.on_chat_start
@@ -359,19 +376,27 @@ async def on_chat_start():
     # Init conversation store, open session
     store = _get_store()
 
-    # Hash-change security alert: warn if context/principles changed since last session
-    prev_hash = store.get_last_context_hash()
+    # Register document version (idempotent — safe to call every session start)
+    context_text, principles_text = loader.get_effective_texts()
     current_hash = loader.compute_hash()
+    version_label = store.register_doc_version_if_new(current_hash, context_text, principles_text)
+    log.info("Active document version: %s", version_label)
+    _write_version_snapshot(version_label, context_text, principles_text)
+
+    # Hash-change security alert with version labels
+    prev_hash = store.get_last_context_hash()
     if prev_hash is not None and prev_hash != current_hash:
+        prev_version = store.get_version_label(prev_hash) or f"unknown ({prev_hash[:8]})"
         await cl.Message(
             content=(
-                "**WARNING: context.md / principles.md changed since your last session.**\n"
+                f"**WARNING: context.md / principles.md changed: "
+                f"{prev_version} → {version_label}.**\n"
                 "Please verify the content before continuing."
             ),
             author="System",
         ).send()
 
-    store.create_session(session_id, context_hash=current_hash)
+    store.create_session(session_id, context_hash=current_hash, doc_version=version_label)
 
     # Connect tradingview-mcp sidecar
     tv_offline = False
@@ -410,6 +435,7 @@ async def on_chat_start():
         model=_MODEL,
         extra_tools=tv_tools,
         tv_bridge=_tv_bridge,
+        doc_version=version_label,
     )
 
     cl.user_session.set("agent", agent)

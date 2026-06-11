@@ -6,6 +6,7 @@ can hot-reload without restart.
 
 import hashlib
 import logging
+from contextlib import suppress
 from pathlib import Path
 import threading
 from typing import Callable
@@ -65,6 +66,13 @@ class ContextLoader:
             return override.strip()  # match _read_required's strip() for hash stability
         return self._read_required(path, name)
 
+    def get_effective_texts(self) -> tuple[str, str]:
+        """Return (context_text, principles_text) as actually loaded (Drive override or file)."""
+        return (
+            self._get_text(self._context_override, self._context_path, "context.md"),
+            self._get_text(self._principles_override, self._principles_path, "principles.md"),
+        )
+
     def load_system_prompt(self) -> str:
         """Return concatenated context + principles as a single system prompt string."""
         context = self._get_text(self._context_override, self._context_path, "context.md")
@@ -106,10 +114,8 @@ class ContextLoader:
 
     def stop_watching(self) -> None:
         if self._watch is not None:
-            try:
+            with suppress(Exception):
                 _get_shared_observer().unschedule(self._watch)
-            except Exception:
-                pass
             self._watch = None
         self._reload_callback = None
 

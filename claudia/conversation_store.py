@@ -6,6 +6,7 @@ Tables:
   messages     — full conversation history (user / assistant / tool)
   decisions    — extracted trade decisions and key moments
   relationships — accumulated symbol-level insights over time
+  doc_versions  — versioned snapshots of context.md + principles.md
 
 FTS5 virtual tables on messages.content and decisions.summary_text
 enable "what did I decide about NVDA last month?" without a vector DB.
@@ -13,7 +14,7 @@ enable "what did I decide about NVDA last month?" without a vector DB.
 
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,14 @@ class ConversationStore:
                 CREATE INDEX IF NOT EXISTS idx_relationships_symbol
                     ON relationships(symbol, created_at);
 
+                CREATE TABLE IF NOT EXISTS doc_versions (
+                    version         TEXT PRIMARY KEY,
+                    context_hash    TEXT UNIQUE NOT NULL,
+                    context_text    TEXT NOT NULL,
+                    principles_text TEXT NOT NULL,
+                    created_at      TEXT NOT NULL
+                );
+
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                     USING fts5(content, content=messages, content_rowid=id);
                 CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts
@@ -117,14 +126,21 @@ class ConversationStore:
                         VALUES ('delete', old.id, old.summary_text);
                 END;
             """)
+        # Migration for existing DBs that predate the doc_version column
+        with self._conn() as conn:
+            with suppress(sqlite3.OperationalError):
+                conn.execute("ALTER TABLE sessions ADD COLUMN doc_version TEXT")
 
     # ── Sessions ──────────────────────────────────────────────────────────────
 
-    def create_session(self, session_id: str, context_hash: str = "") -> None:
+    def create_session(
+        self, session_id: str, context_hash: str = "", doc_version: str | None = None
+    ) -> None:
         with self._conn() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO sessions(id, started_at, context_hash) VALUES (?,?,?)",
-                (session_id, _utcnow(), context_hash),
+                "INSERT OR IGNORE INTO sessions(id, started_at, context_hash, doc_version) "
+                "VALUES (?,?,?,?)",
+                (session_id, _utcnow(), context_hash, doc_version),
             )
 
     def close_session(self, session_id: str, metadata: dict | None = None) -> None:
@@ -143,6 +159,54 @@ class ConversationStore:
                 "ORDER BY ended_at DESC LIMIT 1"
             ).fetchone()
         return row["context_hash"] if row else None
+
+    # ── Doc versions ──────────────────────────────────────────────────────────
+
+    def register_doc_version_if_new(
+        self, context_hash: str, context_text: str, principles_text: str
+    ) -> str:
+        """Register a new version if hash is unknown. Returns version label (e.g. 'v1')."""
+        with self._conn() as conn:
+            if row := conn.execute(
+                "SELECT version FROM doc_versions WHERE context_hash = ?", (context_hash,)
+            ).fetchone():
+                return row["version"]
+            count = conn.execute("SELECT COUNT(*) FROM doc_versions").fetchone()[0]
+            version = f"v{count + 1}"
+            conn.execute(
+                "INSERT INTO doc_versions "
+                "(version, context_hash, context_text, principles_text, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (version, context_hash, context_text, principles_text, _utcnow()),
+            )
+            return version
+
+    def get_version_label(self, context_hash: str) -> str | None:
+        """Return version label for a given hash, or None if unregistered."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT version FROM doc_versions WHERE context_hash = ?", (context_hash,)
+            ).fetchone()
+            return row["version"] if row else None
+
+    def get_doc_version(self, version: str) -> dict | None:
+        """Return full snapshot for a version label, or None if not found."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT version, context_text, principles_text, created_at "
+                "FROM doc_versions WHERE version = ?",
+                (version,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_doc_versions(self) -> list[dict]:
+        """Return all registered versions ordered oldest first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT version, context_hash, created_at FROM doc_versions "
+                "ORDER BY created_at ASC"
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def get_session(self, session_id: str) -> dict | None:
         with self._conn() as conn:
@@ -254,12 +318,13 @@ class ConversationStore:
             return cur.lastrowid  # type: ignore[return-value]
 
     def search_decisions(self, query: str, max_results: int = 5) -> list[dict]:
-        """FTS5 search across trade decisions and key moments."""
+        """FTS5 search across trade decisions. Results include doc_version from the session."""
         with self._conn() as conn:
             rows = conn.execute(
-                """SELECT d.*, highlight(decisions_fts, 0, '[', ']') AS snippet
+                """SELECT d.*, s.doc_version, highlight(decisions_fts, 0, '[', ']') AS snippet
                    FROM decisions_fts
                    JOIN decisions d ON d.id = decisions_fts.rowid
+                   JOIN sessions s ON s.id = d.session_id
                    WHERE decisions_fts MATCH ?
                    ORDER BY rank
                    LIMIT ?""",
@@ -270,8 +335,10 @@ class ConversationStore:
     def get_decisions_for_symbol(self, symbol: str, limit: int = 10) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(
-                """SELECT * FROM decisions WHERE symbol=?
-                   ORDER BY created_at DESC LIMIT ?""",
+                """SELECT d.*, s.doc_version FROM decisions d
+                   JOIN sessions s ON s.id = d.session_id
+                   WHERE d.symbol=?
+                   ORDER BY d.created_at DESC LIMIT ?""",
                 (symbol, limit),
             ).fetchall()
             return [dict(r) for r in rows]
