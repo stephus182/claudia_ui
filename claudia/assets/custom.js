@@ -1,12 +1,12 @@
 /**
  * ClaudIA UI — status bar injector
  * Injects a fixed top bar with live connectivity dots.
- * Polls /api/status every 60s (matches backend poll interval).
+ * Polls /api/status every 5s (backend caches in memory — this is cheap).
  */
 (function () {
   'use strict';
 
-  var POLL_MS = 60000;
+  var POLL_MS = 5000;
   var SERVICES = [
     { key: 'gdrive', label: 'GDrive' },
     { key: 'ibkr',   label: 'IBKR' },

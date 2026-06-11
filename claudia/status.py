@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-POLL_INTERVAL = 60  # seconds
+POLL_INTERVAL = 15  # seconds
 
 
 class ServiceStatus(str, Enum):
