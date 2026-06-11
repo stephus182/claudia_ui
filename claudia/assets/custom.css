@@ -136,6 +136,51 @@ body, p, span, div {
 ::-webkit-scrollbar-thumb  { background: var(--cl-border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--cl-accent); }
 
+/* ── Collapsible code blocks (auto-collapsed when > 8 lines) ─── */
+.cl-code-wrap {
+  position: relative;
+  margin: 8px 0;
+}
+
+.cl-code-wrap.collapsed pre {
+  max-height: 100px;   /* ~5 visible lines */
+  overflow: hidden;
+}
+
+/* Gradient fade-out at the bottom of a collapsed block */
+.cl-code-wrap.collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 28px;
+  left: 0;
+  right: 0;
+  height: 52px;
+  background: linear-gradient(to bottom, transparent, #1a1a1a);
+  pointer-events: none;
+}
+
+.cl-code-toggle {
+  display: block;
+  width: 100%;
+  text-align: center;
+  font-size: 11px;
+  font-family: system-ui, -apple-system, sans-serif;
+  color: var(--cl-muted);
+  background: #1a1a1a;
+  border: 1px solid var(--cl-border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  padding: 4px 0;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: color 0.15s;
+}
+
+.cl-code-toggle:hover {
+  color: var(--cl-text);
+  background: var(--cl-surface-2);
+}
+
 /* ── Status bar (DOM injected by custom.js) ──────────────────── */
 #claudia-status-bar {
   position: fixed;
