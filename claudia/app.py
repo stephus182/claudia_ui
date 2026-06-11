@@ -192,6 +192,7 @@ from claudia.agent import ClaudIAAgent
 from claudia.alert_manager import AlertManager
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
+from claudia.gdrive_sync import GDriveSync
 from claudia.status import ConnectivityChecker
 from claudia.tradingview import TradingViewBridge, launch_tradingview
 
@@ -212,6 +213,7 @@ _tv_bridge: TradingViewBridge | None = None
 _tv_bridge_lock = _asyncio.Lock()
 _alert_manager: AlertManager | None = None
 _connectivity_checker: ConnectivityChecker | None = None
+_gdrive_sync: GDriveSync | None = None
 
 
 @_server_app.get("/api/status")
@@ -308,8 +310,28 @@ async def _get_tv_bridge() -> TradingViewBridge:
 async def on_chat_start():
     session_id = cl.context.session.id
 
+    # GDrive sync — download DB on first session start (before store is opened)
+    global _gdrive_sync, _config
+    if _gdrive_sync is None and os.environ.get("GOOGLE_DRIVE_FOLDER_ID"):
+        cfg = _config or Config.from_env()
+        _config = cfg
+        try:
+            _gdrive_sync = GDriveSync(cfg)
+            if _conv_store is None:
+                _gdrive_sync.download_db(_DB_PATH)
+        except Exception as exc:
+            log.warning("GDriveSync setup failed: %s — continuing without Drive sync", exc)
+
+    # Read context/principles from Drive on every session start so each session
+    # picks up the latest version (unlike the DB download, which is once-per-process).
+    drive_context: str | None = None
+    drive_principles: str | None = None
+    if _gdrive_sync is not None:
+        drive_context = _gdrive_sync.read_text("context.md")
+        drive_principles = _gdrive_sync.read_text("principles.md")
+
     # Load documents
-    loader = ContextLoader(_DOCS_PATH)
+    loader = ContextLoader(_DOCS_PATH, context_text=drive_context, principles_text=drive_principles)
     try:
         loader.load_system_prompt()  # validate docs exist before proceeding
     except FileNotFoundError as exc:
@@ -336,7 +358,20 @@ async def on_chat_start():
 
     # Init conversation store, open session
     store = _get_store()
-    store.create_session(session_id, context_hash=loader.compute_hash())
+
+    # Hash-change security alert: warn if context/principles changed since last session
+    prev_hash = store.get_last_context_hash()
+    current_hash = loader.compute_hash()
+    if prev_hash is not None and prev_hash != current_hash:
+        await cl.Message(
+            content=(
+                "**WARNING: context.md / principles.md changed since your last session.**\n"
+                "Please verify the content before continuing."
+            ),
+            author="System",
+        ).send()
+
+    store.create_session(session_id, context_hash=current_hash)
 
     # Connect tradingview-mcp sidecar
     tv_offline = False
@@ -351,10 +386,10 @@ async def on_chat_start():
         tv_offline = True
 
     # Start connectivity monitor (singleton — persists across sessions)
-    global _connectivity_checker, _config
+    global _connectivity_checker
     if _connectivity_checker is None:
         cfg = _config or Config.from_env()
-        _config = cfg  # cache so subsequent sessions don't call Config.from_env() again
+        _config = cfg  # cache for future sessions; may already be set by GDriveSync block above
         _connectivity_checker = ConnectivityChecker(
             gateway_url=cfg.gateway_url,
             gdrive_token_file=cfg.gdrive_token_file,
@@ -486,6 +521,9 @@ async def on_stop():
 
     if store and session_id:
         store.close_session(session_id, metadata={"model": _MODEL})
+
+    if _gdrive_sync is not None:
+        await cl.make_async(_gdrive_sync.upload_db)(_DB_PATH)
 
 
 # ── Order staging action callback ──────────────────────────────────────────────
