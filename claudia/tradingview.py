@@ -261,15 +261,15 @@ async def render_pinescript(code: str, title: str = "PineScript Strategy") -> No
     actions = [
         cl.Action(
             name="copy_pinescript",
-            value=code,
+            payload={"code": code},
             label="Copy to clipboard",
-            description="Copy PineScript code",
+            tooltip="Copy PineScript code",
         ),
         cl.Action(
             name="inject_pinescript",
-            value=code,
+            payload={"code": code},
             label="Inject into TradingView",
-            description="Paste directly into TradingView Pine Editor",
+            tooltip="Paste directly into TradingView Pine Editor",
         ),
     ]
 
@@ -283,8 +283,9 @@ async def render_pinescript(code: str, title: str = "PineScript Strategy") -> No
 @cl.action_callback("copy_pinescript")
 async def on_copy_pinescript(action: cl.Action):
     # Chainlit doesn't have clipboard access server-side; display for manual copy.
+    code = action.payload["code"]
     await cl.Message(
-        content=f"Copy this PineScript:\n\n```pine\n{action.value}\n```",
+        content=f"Copy this PineScript:\n\n```pine\n{code}\n```",
         author="ClaudIA",
     ).send()
     await action.remove()
@@ -293,7 +294,7 @@ async def on_copy_pinescript(action: cl.Action):
 @cl.action_callback("inject_pinescript")
 async def on_inject_pinescript(action: cl.Action):
     """Inject PineScript into TradingView Pine Editor via pine_set_source."""
-    code = action.value
+    code = action.payload["code"]
     await cl.Message(
         content="Injecting PineScript into TradingView Pine Editor…",
         author="System",

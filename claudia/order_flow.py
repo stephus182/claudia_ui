@@ -61,15 +61,15 @@ async def render_order_proposal(proposal: dict, session_id: str | None = None) -
     actions = [
         cl.Action(
             name="stage_order",
-            value=proposal_json,
+            payload={"order": proposal_json},
             label="Stage this order",
-            description="Opens IBKR Touch ID + confirmation dialog",
+            tooltip="Opens IBKR Touch ID + confirmation dialog",
         ),
         cl.Action(
             name="cancel_proposal",
-            value="cancel",
+            payload={},
             label="Cancel",
-            description="Dismiss this proposal",
+            tooltip="Dismiss this proposal",
         ),
     ]
 
@@ -91,8 +91,8 @@ async def execute_staged_order(
     This function is only called from a physical button click action callback.
     """
     try:
-        proposal = json.loads(action.value)
-    except (json.JSONDecodeError, TypeError):
+        proposal = json.loads(action.payload["order"])
+    except (json.JSONDecodeError, TypeError, KeyError):
         await cl.Message(content="Invalid order proposal data.", author="System").send()
         return
 
