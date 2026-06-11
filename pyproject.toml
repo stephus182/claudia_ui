@@ -40,3 +40,7 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint.per-file-ignores]
+# app.py imports Chainlit after an asyncio patch that must run at module level first
+"claudia/app.py" = ["E402"]

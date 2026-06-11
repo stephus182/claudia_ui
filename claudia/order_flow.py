@@ -167,7 +167,7 @@ async def execute_staged_order(
         elif "cancelled" in error_msg.lower():
             display_error = "Order was cancelled at the confirmation dialog."
         else:
-            display_error = f"Order staging failed. Check IBKR gateway connection."
+            display_error = "Order staging failed. Check IBKR gateway connection."
         await cl.Message(content=f"**Order not placed:** {display_error}", author="System").send()
 
     await action.remove()
