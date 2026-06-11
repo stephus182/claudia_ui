@@ -134,6 +134,16 @@ class ConversationStore:
                 (_utcnow(), json.dumps(metadata or {}), session_id),
             )
 
+    def get_last_context_hash(self) -> str | None:
+        """Return context_hash from the most recently completed session, or None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT context_hash FROM sessions "
+                "WHERE ended_at IS NOT NULL "
+                "ORDER BY ended_at DESC LIMIT 1"
+            ).fetchone()
+        return row["context_hash"] if row else None
+
     def get_session(self, session_id: str) -> dict | None:
         with self._conn() as conn:
             row = conn.execute(

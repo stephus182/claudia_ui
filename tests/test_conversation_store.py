@@ -103,3 +103,33 @@ def test_history_limit(store):
         store.add_message("sess-limit", "user", f"message {i}")
     history = store.get_history("sess-limit", limit=10)
     assert len(history) == 10
+
+
+def test_get_last_context_hash_no_sessions(tmp_path):
+    store = ConversationStore(tmp_path / "claudia.db")
+    assert store.get_last_context_hash() is None
+
+
+def test_get_last_context_hash_no_completed_sessions(tmp_path):
+    store = ConversationStore(tmp_path / "claudia.db")
+    store.create_session("sess-open", context_hash="abc123")
+    # Session not closed — ended_at is NULL
+    assert store.get_last_context_hash() is None
+
+
+def test_get_last_context_hash_returns_most_recent_completed(tmp_path):
+    store = ConversationStore(tmp_path / "claudia.db")
+    store.create_session("sess-1", context_hash="hash-old")
+    store.close_session("sess-1")
+    store.create_session("sess-2", context_hash="hash-new")
+    store.close_session("sess-2")
+    assert store.get_last_context_hash() == "hash-new"
+
+
+def test_get_last_context_hash_ignores_open_session(tmp_path):
+    store = ConversationStore(tmp_path / "claudia.db")
+    store.create_session("sess-closed", context_hash="hash-closed")
+    store.close_session("sess-closed")
+    store.create_session("sess-open", context_hash="hash-open")
+    # Open session has no ended_at — only closed session is returned
+    assert store.get_last_context_hash() == "hash-closed"
