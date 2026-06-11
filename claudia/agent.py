@@ -97,19 +97,12 @@ def _history_to_messages(history: list[dict]) -> list[MessageParam]:
             messages.append({"role": "user", "content": row["content"] or ""})
         elif role == "assistant":
             messages.append({"role": "assistant", "content": row["content"] or ""})
-        elif role == "tool":
-            # Tool results are included as user-role tool_result blocks
-            # We reconstruct a minimal tool_result content block
-            messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": row.get("tool_name", "unknown"),
-                        "content": row.get("tool_result_json", ""),
-                    }
-                ],
-            })
+        # tool rows are intentionally skipped: the DB does not store the
+        # tool_use_id UUIDs assigned by Anthropic, and the intermediate
+        # assistant messages containing the matching tool_use blocks are
+        # not persisted either. Injecting orphaned tool_result blocks causes
+        # Anthropic API 400 errors. The assistant's text response already
+        # captures what each tool returned.
     return messages
 
 
