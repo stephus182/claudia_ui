@@ -218,7 +218,53 @@ sent in this request.
 
 ---
 
-## 10. Audit Checklist
+## 10. GDrive Sync Threat Model
+
+Drive sync introduces three new attack surfaces. All are mitigated without relaxing the order execution barriers.
+
+### 1. Poisoned `context.md` / `principles.md` — prompt injection (HIGH)
+
+**Threat:** An attacker with Drive access modifies `principles.md` to weaken trading rules or inject adversarial instructions into the system prompt.
+
+**Mitigations:**
+- The hardcoded `_SAFETY_BLOCK` in `agent.py` cannot be overridden by anything from Drive.
+  Order execution still requires physical button click + Touch ID + tkinter dialog regardless
+  of what is in `principles.md`.
+- On each session start with Drive content, `SHA-256(context + principles)` is compared against
+  the hash stored in the previous session's `sessions.context_hash`. A mismatch triggers a
+  visible **WARNING** message in chat before the session continues.
+
+### 2. Poisoned `claudia.db` — conversation history injection (MEDIUM)
+
+**Threat:** A malicious actor replaces `claudia.db` on Drive with a crafted file containing
+fake conversation history designed to influence responses.
+
+**Mitigations:**
+- After downloading, `PRAGMA integrity_check` runs on the SQLite file. A structurally
+  tampered file fails this check; ClaudIA falls back to the existing local DB.
+- Conversation history cannot initiate an order — the physical button + biometric path
+  is the only execution route.
+
+### 3. Drive OAuth token theft (LOW — scoped blast radius)
+
+**Threat:** Stolen `GDRIVE_TOKEN_FILE` grants Drive access.
+
+**Mitigations:**
+- The `drive.file` OAuth scope limits the token to files this app created — it cannot access
+  the rest of the user's Drive.
+- `GDRIVE_TOKEN_FILE` is `chmod 600`.
+- The token covers only `claudia.db`, `context.md`, `principles.md`, and market data
+  parquets — no IBKR credentials, no `ANTHROPIC_API_KEY`.
+
+### Hard guarantees unchanged
+
+These two properties hold regardless of what is on Drive:
+- The hardcoded `_SAFETY_BLOCK` in `agent.py` cannot be overridden by Drive content.
+- No order can be placed without physical button click + Touch ID + tkinter dialog.
+
+---
+
+## 11. Audit Checklist
 
 Run this checklist before any significant code change to ClaudIA:
 
