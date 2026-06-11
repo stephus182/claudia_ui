@@ -34,7 +34,6 @@ import shutil
 import socket
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import chainlit as cl
 from mcp import ClientSession, StdioServerParameters

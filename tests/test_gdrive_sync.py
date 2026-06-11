@@ -1,6 +1,5 @@
 """Tests for GDriveSync — Drive download/upload for claudia.db and text files."""
 
-import io
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 import chainlit as cl
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam, ToolUseBlock, TextBlock
+from anthropic.types import MessageParam
 
 if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore

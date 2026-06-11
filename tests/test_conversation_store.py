@@ -1,7 +1,5 @@
 """Tests for ConversationStore — SQLite schema, FTS5 search, CRUD."""
 
-import tempfile
-from pathlib import Path
 
 import pytest
 
