@@ -1,8 +1,6 @@
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-import pytest_asyncio
 import requests as req
 
 from claudia.status import ConnectivityChecker, ServiceStatus

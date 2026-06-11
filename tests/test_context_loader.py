@@ -1,7 +1,6 @@
 """Tests for ContextLoader — document loading, hashing, watchdog."""
 
 import time
-from pathlib import Path
 
 import pytest
 

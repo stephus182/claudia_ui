@@ -2,7 +2,6 @@
 
 import json
 
-import pytest
 
 from claudia.agent import _strip_order_proposal, _build_system_prompt
 
