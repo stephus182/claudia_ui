@@ -69,5 +69,65 @@ def test_watchdog_fires_callback(docs_dir):
     finally:
         loader.stop_watching()
 
-    assert len(fired) >= 1
+    assert fired
     assert any("principles.md" in f or "context.md" in f for f in fired)
+
+
+def test_context_text_override_used_instead_of_file(docs_dir):
+    loader = ContextLoader(docs_dir, context_text="# Drive Context\nDrive role.")
+    prompt = loader.load_system_prompt()
+    assert "Drive Context" in prompt
+    assert "Drive role" in prompt
+    # Local file content should NOT appear
+    assert "I am ClaudIA" not in prompt
+
+
+def test_principles_text_override_used_instead_of_file(docs_dir):
+    loader = ContextLoader(docs_dir, principles_text="# Drive Principles\n- Drive rule.")
+    prompt = loader.load_system_prompt()
+    assert "Drive Principles" in prompt
+    assert "Drive rule" in prompt
+    assert "Risk first" not in prompt
+
+
+def test_both_overrides_no_local_files_needed(tmp_path):
+    # When both overrides are provided, local files are not read at all
+    loader = ContextLoader(tmp_path, context_text="Context text", principles_text="Principles text")
+    prompt = loader.load_system_prompt()
+    assert "Context text" in prompt
+    assert "Principles text" in prompt
+
+
+def test_compute_hash_reflects_override_text(docs_dir):
+    loader_local = ContextLoader(docs_dir)
+    loader_drive = ContextLoader(docs_dir, context_text="# Different Drive context")
+    assert loader_local.compute_hash() != loader_drive.compute_hash()
+
+
+def test_compute_hash_stable_across_drive_and_local_sources(docs_dir):
+    # Drive content with surrounding whitespace must hash the same as the
+    # equivalent local file (which _read_required always strips). Prevents
+    # spurious security alerts when switching between Drive and local sources.
+    local_content = (docs_dir / "context.md").read_text()
+    loader_local = ContextLoader(docs_dir)
+    loader_drive = ContextLoader(docs_dir, context_text=f"\n{local_content}\n")
+    assert loader_local.compute_hash() == loader_drive.compute_hash()
+
+
+def test_file_change_clears_context_override(docs_dir):
+    loader = ContextLoader(docs_dir, context_text="# Drive Context\nDrive role.")
+    fired_prompts = []
+
+    def on_reload(filename, new_prompt):
+        fired_prompts.append(new_prompt)
+
+    loader.start_watching(on_reload)
+    try:
+        (docs_dir / "context.md").write_text("# Local Context\nNew local role.")
+        time.sleep(1.5)
+    finally:
+        loader.stop_watching()
+
+    assert fired_prompts
+    assert "Local Context" in fired_prompts[-1]
+    assert "Drive Context" not in fired_prompts[-1]

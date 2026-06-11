@@ -41,28 +41,50 @@ class ContextLoader:
     Manages the two user-written documents that form ClaudIA's system prompt.
 
     Documents are loaded from CLAUDIA_DOCS_PATH (default: docs/).
-    Both files must exist; missing files produce a clear error.
+    Optional context_text / principles_text override local file reads (used
+    when Drive versions are fetched at session start). A local file-change
+    event clears the overrides so hot-reload reverts to the local files.
     """
 
-    def __init__(self, docs_path: str | Path = "docs"):
+    def __init__(
+        self,
+        docs_path: str | Path = "docs",
+        context_text: str | None = None,
+        principles_text: str | None = None,
+    ) -> None:
         self.docs_path = Path(docs_path)
         self._context_path = self.docs_path / "context.md"
         self._principles_path = self.docs_path / "principles.md"
+        self._context_override: str | None = context_text
+        self._principles_override: str | None = principles_text
         self._watch: ObservedWatch | None = None
         self._reload_callback: Callable[[str, str], None] | None = None
 
+    def _get_text(self, override: str | None, path: Path, name: str) -> str:
+        if override is not None:
+            return override.strip()  # match _read_required's strip() for hash stability
+        return self._read_required(path, name)
+
     def load_system_prompt(self) -> str:
         """Return concatenated context + principles as a single system prompt string."""
-        context = self._read_required(self._context_path, "context.md")
-        principles = self._read_required(self._principles_path, "principles.md")
+        context = self._get_text(self._context_override, self._context_path, "context.md")
+        principles = self._get_text(
+            self._principles_override, self._principles_path, "principles.md"
+        )
         return _CONTEXT_HEADER + context + _PRINCIPLES_HEADER + principles
 
     def compute_hash(self) -> str:
-        """SHA-256 of context.md + principles.md content, for integrity tracking."""
-        combined = (
-            self._context_path.read_text(encoding="utf-8", errors="replace")
-            + self._principles_path.read_text(encoding="utf-8", errors="replace")
+        """SHA-256 of context + principles content (stripped), for integrity tracking.
+
+        Note: uses stripped content via _get_text/_read_required. Any session that stored
+        a hash with the old raw-bytes path will see a one-time hash mismatch on upgrade;
+        subsequent sessions compare stripped-vs-stripped and are stable.
+        """
+        context = self._get_text(self._context_override, self._context_path, "context.md")
+        principles = self._get_text(
+            self._principles_override, self._principles_path, "principles.md"
         )
+        combined = context + principles
         return hashlib.sha256(combined.encode()).hexdigest()
 
     def start_watching(self, on_reload: Callable[[str, str], None]) -> None:
@@ -92,6 +114,10 @@ class ContextLoader:
         self._reload_callback = None
 
     def _handle_change(self, changed_file: str) -> None:
+        # Both overrides are cleared atomically regardless of which file changed —
+        # local files become the sole source of truth after any edit.
+        self._context_override = None
+        self._principles_override = None
         if self._reload_callback:
             try:
                 new_prompt = self.load_system_prompt()
