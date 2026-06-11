@@ -84,8 +84,57 @@ def _strip_order_proposal(text: str) -> tuple[str, dict | None]:
     return clean, proposal
 
 
-def _build_system_prompt(context_prompt: str) -> str:
-    return context_prompt + _SAFETY_BLOCK
+_LOCAL_TOOL_NAMES = {"get_doc_version", "list_doc_versions"}
+
+_LOCAL_TOOLS: list[dict] = [
+    {
+        "name": "list_doc_versions",
+        "description": (
+            "List all registered context/principles document versions with their dates. "
+            "Use this before calling get_doc_version to see which versions exist."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_doc_version",
+        "description": (
+            "Retrieve the full context.md and principles.md content for a specific document version. "
+            "Use when a past decision was made under a different version and you need to compare "
+            "rules to identify potential contradictions with the current version."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "version": {
+                    "type": "string",
+                    "description": "Version label, e.g. 'v1'. Use list_doc_versions first.",
+                }
+            },
+            "required": ["version"],
+        },
+    },
+]
+
+
+def _build_version_note(doc_version: str | None, store: "ConversationStore | None") -> str:
+    if not doc_version:
+        return ""
+    versions = store.list_doc_versions() if store else []
+    current_idx = next((i for i, v in enumerate(versions) if v["version"] == doc_version), -1)
+    if current_idx > 0:
+        prev = versions[current_idx - 1]
+        prev_note = f", previous: {prev['version']} (until {prev['created_at'][:10]})"
+    else:
+        prev_note = ""
+    return f"**Active document version: {doc_version}{prev_note}**\n\n"
+
+
+def _build_system_prompt(
+    context_prompt: str,
+    doc_version: str | None = None,
+    store: "ConversationStore | None" = None,
+) -> str:
+    return _build_version_note(doc_version, store) + context_prompt + _SAFETY_BLOCK
 
 
 def _history_to_messages(history: list[dict]) -> list[MessageParam]:
@@ -121,6 +170,7 @@ class ClaudIAAgent:
         model: str = "claude-opus-4-8",
         extra_tools: list[dict] | None = None,
         tv_bridge: "TradingViewBridge | None" = None,
+        doc_version: str | None = None,
     ) -> None:
         self._toolkit = toolkit
         self._store = store
@@ -129,6 +179,7 @@ class ClaudIAAgent:
         self._model = model
         self._extra_tools = extra_tools or []
         self._tv_bridge = tv_bridge
+        self._doc_version = doc_version
         self._tv_tool_names: set[str] = {t["name"] for t in self._extra_tools}
         self._client = AsyncAnthropic()
 
@@ -140,7 +191,7 @@ class ClaudIAAgent:
 
     @property
     def _all_tools(self) -> list[dict]:
-        return self._toolkit.tools + self._extra_tools
+        return self._toolkit.tools + self._extra_tools + _LOCAL_TOOLS
 
     async def handle_message(self, user_text: str, images: list[dict] | None = None) -> None:
         """
@@ -164,7 +215,9 @@ class ClaudIAAgent:
                 content = list(content) + images  # type: ignore[operator]
                 messages[-1] = {"role": "user", "content": content}
 
-        system = _build_system_prompt(self._loader.load_system_prompt())
+        system = _build_system_prompt(
+            self._loader.load_system_prompt(), self._doc_version, self._store
+        )
 
         # Multi-turn tool loop
         full_response_text = ""
@@ -243,7 +296,9 @@ class ClaudIAAgent:
             for tc in tool_calls:
                 async with cl.Step(name=tc["name"], type="tool") as step:
                     step.input = json.dumps(tc["input"], indent=2)
-                    if tc["name"] in self._tv_tool_names and self._tv_bridge is not None:
+                    if tc["name"] in _LOCAL_TOOL_NAMES:
+                        result_text = self._handle_local_tool(tc["name"], tc["input"])
+                    elif tc["name"] in self._tv_tool_names and self._tv_bridge is not None:
                         result_text = await self._tv_bridge.execute(tc["name"], tc["input"])
                     else:
                         result_text, _ = await cl.make_async(self._toolkit.execute)(
@@ -286,6 +341,30 @@ class ClaudIAAgent:
 
         # Extract and log decisions from the response
         self._extract_decisions(display_text, order_proposal, msg_id)
+
+    def _handle_local_tool(self, name: str, inputs: dict) -> str:
+        if name == "list_doc_versions":
+            versions = self._store.list_doc_versions()
+            if not versions:
+                return "No document versions registered yet."
+            lines = [f"- {v['version']}: registered {v['created_at'][:10]}" for v in versions]
+            return "Document versions:\n" + "\n".join(lines)
+        if name == "get_doc_version":
+            version = inputs.get("version", "")
+            data = self._store.get_doc_version(version)
+            if data is None:
+                available = [v["version"] for v in self._store.list_doc_versions()]
+                return (
+                    f"Version '{version}' not found. "
+                    f"Available: {', '.join(available) or 'none'}."
+                )
+            return (
+                f"## context.md ({data['version']}, as of {data['created_at'][:10]})\n\n"
+                f"{data['context_text']}\n\n"
+                f"## principles.md ({data['version']}, as of {data['created_at'][:10]})\n\n"
+                f"{data['principles_text']}"
+            )
+        return f"Unknown local tool: {name}"
 
     def _extract_decisions(
         self, text: str, order_proposal: dict | None, msg_id: int

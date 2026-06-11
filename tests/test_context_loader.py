@@ -104,6 +104,20 @@ def test_compute_hash_reflects_override_text(docs_dir):
     assert loader_local.compute_hash() != loader_drive.compute_hash()
 
 
+def test_get_effective_texts_returns_file_content(docs_dir):
+    loader = ContextLoader(docs_dir)
+    ctx, pri = loader.get_effective_texts()
+    assert "ClaudIA" in ctx
+    assert "Risk first" in pri
+
+
+def test_get_effective_texts_returns_overrides(docs_dir):
+    loader = ContextLoader(docs_dir, context_text="override ctx", principles_text="override pri")
+    ctx, pri = loader.get_effective_texts()
+    assert ctx == "override ctx"
+    assert pri == "override pri"
+
+
 def test_compute_hash_stable_across_drive_and_local_sources(docs_dir):
     # Drive content with surrounding whitespace must hash the same as the
     # equivalent local file (which _read_required always strips). Prevents

@@ -133,3 +133,70 @@ def test_get_last_context_hash_ignores_open_session(tmp_path):
     store.create_session("sess-open", context_hash="hash-open")
     # Open session has no ended_at — only closed session is returned
     assert store.get_last_context_hash() == "hash-closed"
+
+
+# ── Doc versions ──────────────────────────────────────────────────────────────
+
+def test_register_doc_version_first_time_is_v1(store):
+    label = store.register_doc_version_if_new("hash-a", "context text", "principles text")
+    assert label == "v1"
+
+
+def test_register_doc_version_same_hash_returns_same_label(store):
+    store.register_doc_version_if_new("hash-a", "context", "principles")
+    label2 = store.register_doc_version_if_new("hash-a", "context", "principles")
+    assert label2 == "v1"
+
+
+def test_register_doc_version_new_hash_increments(store):
+    store.register_doc_version_if_new("hash-a", "context v1", "principles v1")
+    label2 = store.register_doc_version_if_new("hash-b", "context v2", "principles v2")
+    assert label2 == "v2"
+
+
+def test_get_version_label_known_hash(store):
+    store.register_doc_version_if_new("hash-x", "ctx", "pri")
+    assert store.get_version_label("hash-x") == "v1"
+
+
+def test_get_version_label_unknown_hash_returns_none(store):
+    assert store.get_version_label("nonexistent-hash") is None
+
+
+def test_get_doc_version_returns_content(store):
+    store.register_doc_version_if_new("hash-v1", "my context", "my principles")
+    data = store.get_doc_version("v1")
+    assert data is not None
+    assert data["context_text"] == "my context"
+    assert data["principles_text"] == "my principles"
+    assert data["version"] == "v1"
+
+
+def test_get_doc_version_unknown_returns_none(store):
+    assert store.get_doc_version("v99") is None
+
+
+def test_list_doc_versions_empty(store):
+    assert store.list_doc_versions() == []
+
+
+def test_list_doc_versions_ordered_oldest_first(store):
+    store.register_doc_version_if_new("hash-1", "ctx1", "pri1")
+    store.register_doc_version_if_new("hash-2", "ctx2", "pri2")
+    versions = store.list_doc_versions()
+    assert [v["version"] for v in versions] == ["v1", "v2"]
+
+
+def test_create_session_stores_doc_version(store):
+    store.create_session("sess-v1", context_hash="hash-a", doc_version="v1")
+    session = store.get_session("sess-v1")
+    assert session["doc_version"] == "v1"
+
+
+def test_search_decisions_includes_doc_version(store):
+    store.register_doc_version_if_new("hash-v1", "ctx", "pri")
+    store.create_session("sess-dec", context_hash="hash-v1", doc_version="v1")
+    store.add_decision("sess-dec", "trade_proposed", "BUY 100 AAPL: strong breakout", symbol="AAPL")
+    results = store.search_decisions("AAPL breakout")
+    assert results
+    assert results[0]["doc_version"] == "v1"
