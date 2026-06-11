@@ -12,7 +12,7 @@ Chainlit UI (localhost:8000)
 claudia/app.py              — session lifecycle, action callbacks, startup buttons
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
-claudia/conversation_store.py — SQLite: sessions, messages, decisions, relationships
+claudia/conversation_store.py — SQLite: sessions, messages, decisions, relationships, doc_versions
 claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / upload at stop
 claudia/order_flow.py       — cl.Action order staging → ibkr_core_mcp biometric gates
 claudia/alert_manager.py    — background price alert monitor
@@ -151,8 +151,19 @@ personal trading rules.
 **Hot-reload:** Edit and save either file while a session is running. ClaudIA will notify
 you in chat and apply the new content from the next message onwards.
 
-**Integrity:** On every session start, a SHA-256 hash of both documents is stored in
-`claudia.db → sessions.context_hash`. If the hash changes, it is logged.
+**Versioning:** On every session start, a SHA-256 hash of both documents is computed. If
+the hash is new, it is automatically registered as the next version (`v1`, `v2`, …) in
+`claudia.db → doc_versions`, and a human-readable snapshot is written to
+`docs/versions/{label}/`. ClaudIA's system prompt always includes the active version label
+so it knows which rules are in effect. If the version changed since the last session, a
+`WARNING: v1 → v2` alert appears in chat.
+
+ClaudIA has two tools to reason about version history:
+- `list_doc_versions` — enumerate registered versions with dates
+- `get_doc_version("v1")` — retrieve the full content of any past version to check for contradictions with current rules
+
+Past decisions retrieved from memory always include which version was active when they
+were made, so ClaudIA can flag if a prior decision conflicts with updated principles.
 
 ---
 
@@ -162,12 +173,15 @@ All interactions are stored in `data/claudia.db` (separate from ibkr_core_mcp's 
 
 | Table | Contents |
 |---|---|
-| `sessions` | One row per Chainlit session, with start/end time and document hash |
+| `sessions` | One row per Chainlit session, with start/end time, document hash, and `doc_version` |
 | `messages` | Full message history (user, assistant, tool calls and results) |
-| `decisions` | Extracted key moments: trade proposals, backtests run, alerts set |
+| `decisions` | Extracted key moments: trade proposals, backtests run, alerts set — each tagged with `doc_version` |
 | `relationships` | Accumulated symbol-level observations built over time |
+| `doc_versions` | Versioned snapshots of `context.md` + `principles.md` — full text, hash, date |
 
-**Search:** ClaudIA uses SQLite FTS5 to search past decisions. Ask: *"What did I decide about NVDA last month?"*
+**Search:** ClaudIA uses SQLite FTS5 to search past decisions. Ask: *"What did I decide about NVDA last month?"* Results include the doc version active at decision time.
+
+**Version snapshots** are also written to `docs/versions/{label}/` as human-readable files for reference.
 
 ---
 
