@@ -55,7 +55,13 @@ def _find_tv_mcp_bin() -> str | None:
       6. vendor/tradingview-mcp/index.js    (legacy single-bundle archived fallback)
     """
     if path := os.environ.get("TRADINGVIEW_MCP_PATH"):
-        return path
+        p = Path(path)
+        if not p.exists():
+            log.warning("TRADINGVIEW_MCP_PATH=%r does not exist — ignoring", path)
+        elif not path.endswith(".js") and not p.is_file():
+            log.warning("TRADINGVIEW_MCP_PATH=%r is not a .js file — ignoring", path)
+        else:
+            return path
     if which := shutil.which("tradingview-mcp"):
         return which
     js_src = Path.home() / ".tradingview-mcp" / "src" / "server.js"
@@ -182,8 +188,17 @@ class TradingViewBridge:
                 "&& cd tradingview-mcp && npm install && npm run build; "
                 "then set TRADINGVIEW_MCP_PATH in .env"
             )
+        log.info("tradingview-mcp binary: %s", bin_path)
 
-        env = {**os.environ, "CHROME_REMOTE_DEBUG_PORT": str(_TV_DEBUG_PORT)}
+        # Pass only the vars the sidecar actually needs — never the full process env,
+        # which would leak ANTHROPIC_API_KEY and all other secrets to the Node subprocess.
+        env = {
+            k: os.environ[k]
+            for k in ("PATH", "HOME", "USER", "TMPDIR", "TEMP", "TMP",
+                      "NODE_PATH", "NODE_ENV", "XDG_RUNTIME_DIR")
+            if k in os.environ
+        }
+        env["CHROME_REMOTE_DEBUG_PORT"] = str(_TV_DEBUG_PORT)
 
         # node path/to/index.js for a built .js file; direct binary otherwise
         if bin_path.endswith(".js"):

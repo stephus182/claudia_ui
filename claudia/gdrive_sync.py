@@ -16,6 +16,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -39,31 +40,35 @@ class GDriveSync:
         self._config = config
         self._service: Any = None
         self._resolved_db_folder: str = ""
+        self._lock = threading.Lock()
 
     def _get_service(self) -> Any:
-        if self._service:
-            return self._service
-        token_file = self._config.gdrive_token_file
-        if not token_file.exists():
-            raise RuntimeError(
-                f"GDrive token file not found: {token_file}. "
-                "Authenticate via GDriveCache (ibkr_core_mcp) first."
-            )
-        creds = Credentials.from_authorized_user_file(str(token_file), _SCOPES)
-        if not creds.valid:
-            if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                token_path = str(self._config.gdrive_token_file)
-                fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with os.fdopen(fd, "w") as fh:
-                    fh.write(creds.to_json())
-            else:
+        with self._lock:
+            if self._service:
+                return self._service
+            token_file = self._config.gdrive_token_file
+            if not token_file.exists():
                 raise RuntimeError(
-                    "GDrive credentials are invalid and cannot be refreshed. "
-                    "Re-authenticate via GDriveCache (ibkr_core_mcp)."
+                    f"GDrive token file not found: {token_file}. "
+                    "Authenticate via GDriveCache (ibkr_core_mcp) first."
                 )
-        self._service = build("drive", "v3", credentials=creds)
-        return self._service
+            creds = Credentials.from_authorized_user_file(str(token_file), _SCOPES)
+            if not creds.valid:
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                    token_path = str(self._config.gdrive_token_file)
+                    fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "w") as fh:
+                        fh.write(creds.to_json())
+                    # chmod separately: O_CREAT mode only applies on creation, not on existing files.
+                    os.chmod(token_path, 0o600)
+                else:
+                    raise RuntimeError(
+                        "GDrive credentials are invalid and cannot be refreshed. "
+                        "Re-authenticate via GDriveCache (ibkr_core_mcp)."
+                    )
+            self._service = build("drive", "v3", credentials=creds)
+            return self._service
 
     def _resolve_db_folder(self) -> str:
         """Return the Drive folder ID for claudia.db, auto-creating 'db/' if needed."""
@@ -189,15 +194,20 @@ class GDriveSync:
             svc = self._get_service()
             db_folder = self._resolve_db_folder()
             media = MediaFileUpload(str(local_path), mimetype="application/x-sqlite3")
-            file_id = self._find_file(_DB_FILENAME, db_folder)
-            if file_id:
-                svc.files().update(fileId=file_id, media_body=media).execute()
-            else:
-                metadata = {"name": _DB_FILENAME, "parents": [db_folder]}
-                svc.files().create(body=metadata, media_body=media, fields="id").execute()
+            # Lock around find+create/update to prevent duplicate-file race when two
+            # sessions close concurrently and both observe file_id=None simultaneously.
+            with self._lock:
+                file_id = self._find_file(_DB_FILENAME, db_folder)
+                if file_id:
+                    svc.files().update(fileId=file_id, media_body=media).execute()
+                else:
+                    metadata = {"name": _DB_FILENAME, "parents": [db_folder]}
+                    svc.files().create(body=metadata, media_body=media, fields="id").execute()
             log.info("Uploaded claudia.db to Drive")
         except Exception as exc:
             log.warning("GDriveSync.upload_db failed: %s — local copy preserved", exc)
+
+    _MAX_TEXT_BYTES = 1 * 1024 * 1024  # 1 MB — generous for context/principles docs
 
     def read_text(self, filename: str) -> str | None:
         """
@@ -208,6 +218,14 @@ class GDriveSync:
             svc = self._get_service()
             file_id = self._find_file(filename)
             if file_id is None:
+                return None
+            meta = svc.files().get(fileId=file_id, fields="size").execute()
+            size = int(meta.get("size", 0))
+            if size > self._MAX_TEXT_BYTES:
+                log.warning(
+                    "GDriveSync.read_text(%r): file is %d bytes (limit %d) — skipping",
+                    filename, size, self._MAX_TEXT_BYTES,
+                )
                 return None
             buf = io.BytesIO()
             downloader = MediaIoBaseDownload(buf, svc.files().get_media(fileId=file_id))
