@@ -49,27 +49,28 @@ TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (cura
 
 ```
 <GOOGLE_DRIVE_FOLDER_ID>/              ← root ClaudIA folder
-  claudia.db                           ← conversation history (GDriveSync)
   context.md                           ← ClaudIA persona (optional, upload manually)
   principles.md                        ← trading rules (optional, upload manually)
-  market_data/                         ← GDRIVE_CACHE_FOLDER_ID (auto-created on first use)
-    manifest.json                      ← market data index (GDriveCache)
-    AAPL_1D_1Y_2026-01-01.parquet      ← OHLCV cache (GDriveCache)
+  db/                                  ← GDRIVE_DB_FOLDER_ID (auto-created by GDriveSync)
+    claudia.db                         ← conversation history
+  market_data/                         ← GDRIVE_CACHE_FOLDER_ID (auto-created by GDriveCache)
+    manifest.json                      ← market data index
+    AAPL_1D_1Y_2026-01-01.parquet      ← OHLCV cache
     ...
 ```
 
-`market_data/` is auto-created by `GDriveCache` on first cache write if it does not exist.
-Set `GDRIVE_CACHE_FOLDER_ID` explicitly to point to a pre-existing folder instead.
+Both subfolders are auto-created on first use. Set `GDRIVE_DB_FOLDER_ID` or
+`GDRIVE_CACHE_FOLDER_ID` explicitly to point to pre-existing folders instead.
 
 ### First-time setup on a new machine
 
 1. Create (or reuse) a Google Drive folder for ClaudIA. Get its ID from the URL:
    `drive.google.com/drive/folders/<FOLDER_ID>`
 2. Set `GOOGLE_DRIVE_FOLDER_ID=<FOLDER_ID>` in `.env`
-3. Start ClaudIA — it downloads `claudia.db` if it exists on Drive (skipped on first ever run).
-   The `market_data/` subfolder is auto-created on the first `fetch_market_data` call.
+3. Start ClaudIA — it downloads `claudia.db` (from the `db/` subfolder) on session start.
+   Both `db/` and `market_data/` subfolders are auto-created on first use.
 4. To enable Drive context/principles: upload `docs/context.md` and `docs/principles.md`
-   via the Drive web UI
+   to the **root** folder via the Drive web UI (not inside `db/`)
 
 ### Hot-reload behaviour
 
@@ -112,8 +113,10 @@ chmod 600 docs/context.md docs/principles.md
 
 # 6. TradingView sidecar (optional)
 git clone https://github.com/tradesdontlie/tradingview-mcp ~/.tradingview-mcp
-cd ~/.tradingview-mcp && npm install && npm run build && cd -
-./scripts/archive-tv-mcp.sh   # snapshot the working build to vendor/
+cd ~/.tradingview-mcp && npm install && cd -   # pure JS — no build step
+./scripts/archive-tv-mcp.sh   # snapshot the working version to vendor/
+# Launch TradingView Desktop with CDP debug port:
+# open -a "Trading View" --args --remote-debugging-port=9222
 
 # 7. Run ClaudIA
 ./start-claudia.sh            # recommended: IBKR gateway + ClaudIA
@@ -130,7 +133,8 @@ chainlit run claudia/app.py   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 |---|---|---|
 | `ANTHROPIC_API_KEY` | ✅ | Claude API key |
 | `IBKR_GATEWAY_URL` | ✅ | IBKR Client Portal Gateway URL |
-| `GOOGLE_DRIVE_FOLDER_ID` | ✅ | Root Drive folder — claudia.db + context/principles |
+| `GOOGLE_DRIVE_FOLDER_ID` | ✅ | Root Drive folder — parent of `db/` and `market_data/` subfolders |
+| `GDRIVE_DB_FOLDER_ID` | optional | Drive folder for claudia.db (auto-created as `db/` inside root if unset) |
 | `GDRIVE_CACHE_FOLDER_ID` | optional | Drive folder for Parquet cache (auto-created as `market_data/` inside root if unset) |
 | `GDRIVE_TOKEN_FILE` | ✅ | OAuth2 token file path |
 | `GDRIVE_CREDENTIALS_FILE` | ✅ | OAuth2 credentials file path |
@@ -141,7 +145,7 @@ chainlit run claudia/app.py   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 | `CLAUDIA_DOCS_PATH` | optional | Path to context.md / principles.md (default: `docs/`) |
 | `CLAUDIA_DB_PATH` | optional | ClaudIA SQLite DB path (default: `data/claudia.db`) |
 | `CLAUDIA_VOICE_ENABLED` | optional | Enable TTS output (Phase 2) |
-| `TRADINGVIEW_MCP_PATH` | optional | Path to `tradingview-mcp` built `index.js`; auto-discovered if unset |
+| `TRADINGVIEW_MCP_PATH` | optional | Path to `tradingview-mcp` entry point (`src/server.js`); auto-discovered if unset |
 | `TRADINGVIEW_DEBUG_PORT` | optional | Chrome debugging port (default: `9222`) |
 
 ---
@@ -256,8 +260,10 @@ to control token cost; the full set is available via `bridge.get_all_tools()`.
 Binary discovery order (`_find_tv_mcp_bin()`):
 1. `TRADINGVIEW_MCP_PATH` env var
 2. `tradingview-mcp` on PATH
-3. `~/.tradingview-mcp/build/index.js`
-4. `vendor/tradingview-mcp/index.js` (archived fallback — see below)
+3. `~/.tradingview-mcp/src/server.js` (pure JS layout — current)
+4. `~/.tradingview-mcp/build/index.js` (TypeScript build output — legacy)
+5. `vendor/tradingview-mcp/src/server.js` (archived fallback, needs `node_modules/`)
+6. `vendor/tradingview-mcp/index.js` (legacy single-bundle archive)
 
 If TradingView Desktop is not running at session start, the welcome message shows a
 **"Launch TradingView"** action button. Clicking it runs `launch_tradingview()` (macOS
@@ -281,9 +287,10 @@ button to paste it into the Pine Editor via the `pine_set_source` MCP tool.
 [`docs/tradingview-mcp-recovery.md`](docs/tradingview-mcp-recovery.md) for the error
 signature catalog and recovery steps.
 
-**Vendor archive:** Run `./scripts/archive-tv-mcp.sh` after every verified build to snapshot
-`build/index.js` into `vendor/tradingview-mcp/`. ClaudIA automatically falls back to this
-archive if `~/.tradingview-mcp/build/index.js` is missing or broken.
+**Vendor archive:** Run `./scripts/archive-tv-mcp.sh` after every verified install to snapshot
+the working version to `vendor/tradingview-mcp/`. For the JS layout it copies `src/` + installs
+prod deps; for legacy TS it copies the single bundle. ClaudIA automatically falls back to this
+archive if the live install at `~/.tradingview-mcp/` is missing or broken.
 
 ---
 
