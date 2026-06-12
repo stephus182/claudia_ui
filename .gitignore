@@ -31,6 +31,8 @@ Thumbs.db
 .idea/
 *.swp
 
-# TradingView MCP vendor archive — binary artifact, not source-controlled
-# ARCHIVE_INFO (metadata) is committed; index.js is not
+# TradingView MCP vendor archive — ARCHIVE_INFO committed; binaries/deps are not
 vendor/tradingview-mcp/index.js
+vendor/tradingview-mcp/src/
+vendor/tradingview-mcp/node_modules/
+vendor/tradingview-mcp/package-lock.json

@@ -14,6 +14,47 @@ The Node.js sidecar translates MCP tool calls into CDP commands against
 TradingView's internal Electron renderer. Both the MCP tool names and the CDP
 paths inside TradingView are internal APIs — they can change with any update.
 
+## Binary layout (current version)
+
+This is a **pure JavaScript** package — no TypeScript compilation step.
+
+```
+~/.tradingview-mcp/
+  src/
+    server.js          ← MCP stdio entry point (node src/server.js)
+    connection.js      ← CDP connection (hardcoded port 9222)
+    tools/             ← 78 tool implementations
+  package.json
+  node_modules/        ← npm install (only @modelcontextprotocol/sdk + chrome-remote-interface)
+```
+
+`_find_tv_mcp_bin()` in `tradingview.py` resolves the entry point in this order:
+1. `TRADINGVIEW_MCP_PATH` env var
+2. `tradingview-mcp` on PATH
+3. `~/.tradingview-mcp/src/server.js` ← normal install location
+4. `~/.tradingview-mcp/build/index.js` ← legacy TypeScript build output
+5. `vendor/tradingview-mcp/src/server.js` (needs `node_modules/` present)
+6. `vendor/tradingview-mcp/index.js` (legacy single-bundle archive)
+
+---
+
+## Prerequisites
+
+TradingView Desktop must be launched with the CDP debug port open:
+
+```bash
+# Quit existing instance first, then:
+open -a "Trading View" --args --remote-debugging-port=9222
+```
+
+Verify the port is open:
+```bash
+nc -zv localhost 9222   # should print "succeeded"
+```
+
+Without this flag, `check_cdp_running()` returns `False` and ClaudIA shows the
+"Launch TradingView" button in the welcome message.
+
 ---
 
 ## Known break patterns
@@ -32,19 +73,18 @@ tradingview-mcp tool 'chart_get_state' failed:
 
 **Symptoms in ClaudIA chat:** Tool calls return `"TradingView tool 'X' failed."` with no data.
 
-**Fix:** Update tradingview-mcp to the latest commit, which will have updated the internal CDP paths.
+**Fix:** Update tradingview-mcp to the latest commit and reinstall:
 ```bash
 cd ~/.tradingview-mcp
 git pull
 npm install
-npm run build
-# Restart ClaudIA
+# Restart ClaudIA — no build step needed
 ```
-Then archive the new working build (see "Archiving a working version" below).
+Then archive the working version (see below).
 
 ---
 
-### 2. tradingview-mcp tool names changed (breaking npm/git update)
+### 2. tradingview-mcp tool names changed (breaking update)
 
 **Trigger:** The package renamed tools (e.g. `chart_get_state` → `get_chart_state`) in a breaking update.
 
@@ -57,7 +97,7 @@ Zero curated tools means none of the names in `_CURATED_TOOLS` matched the new t
 **Symptoms in ClaudIA chat:** TradingView shows as connected but Claude never calls any TV tools.
 
 **Fix:**
-1. Restore the archived build (see below) so you stay on the working version.
+1. Restore the archived build (see below) to stay on the working version.
 2. Then update `_CURATED_TOOLS` in `claudia/tradingview.py` to match the new names:
    ```python
    # Check what names the new sidecar actually exposes:
@@ -69,7 +109,7 @@ Zero curated tools means none of the names in `_CURATED_TOOLS` matched the new t
 
 ### 3. Node.js version incompatibility after system upgrade
 
-**Trigger:** `brew upgrade node` or macOS update installs a new Node.js major version incompatible with the built sidecar.
+**Trigger:** `brew upgrade node` or macOS update installs a new Node.js major version.
 
 **Symptoms in ClaudIA logs:**
 ```
@@ -79,18 +119,17 @@ tradingview-mcp sidecar failed to start:
   Error: Cannot find module '...'
 ```
 
-**Fix:**
+**Fix** (pure JS — no build step):
 ```bash
 cd ~/.tradingview-mcp
-npm install          # rebuilds native deps for current Node
-npm run build        # re-bundles
+npm install   # rebuilds native deps for current Node version
+# Restart ClaudIA
 ```
-If the build still fails, check the Node version required:
+If it still fails, check the engines field:
 ```bash
-cat ~/.tradingview-mcp/package.json | grep '"node"'
+node -e "const p=require('./package.json'); console.log(p.engines)"
 node --version
 ```
-Install the required version via `nvm` or `brew install node@XX`.
 
 ---
 
@@ -141,26 +180,38 @@ Run after every successful update to snapshot the working build:
 ./scripts/archive-tv-mcp.sh
 ```
 
-The script:
-- Copies `build/index.js` to `vendor/tradingview-mcp/index.js`
-- Records the git commit, date, and Node version in `vendor/tradingview-mcp/ARCHIVE_INFO`
+The script detects the layout automatically:
+- **JS layout** (`src/server.js`): copies `src/` + `package.json` + installs prod deps into `vendor/`
+- **TS layout** (`build/index.js`): copies the single bundle to `vendor/tradingview-mcp/index.js`
 
-The archive is gitignored (binary artifact) but lives in the repo directory so it survives `git pull` on claudia_ui.
+The archive lives in the repo directory — `src/` and `node_modules/` are gitignored, but `ARCHIVE_INFO` (metadata) is committed so you can see what version was archived.
 
 ---
 
 ## Restoring the archived version
 
+**JS layout (current):**
 ```bash
-# Option A: point env var at the archive (no file changes needed)
+# Option A: point env var at the archive
+export TRADINGVIEW_MCP_PATH=/path/to/claudia_ui/vendor/tradingview-mcp/src/server.js
+
+# Option B: copy archive over the broken install
+cp -r vendor/tradingview-mcp/src ~/.tradingview-mcp/src
+cp vendor/tradingview-mcp/package.json ~/.tradingview-mcp/package.json
+cd ~/.tradingview-mcp && npm install
+```
+
+**Legacy TS bundle:**
+```bash
+# Option A: point env var at the archive
 export TRADINGVIEW_MCP_PATH=/path/to/claudia_ui/vendor/tradingview-mcp/index.js
 
 # Option B: copy archive over the broken build
 cp vendor/tradingview-mcp/index.js ~/.tradingview-mcp/build/index.js
 ```
 
-`_find_tv_mcp_bin()` in `tradingview.py` automatically falls back to `vendor/tradingview-mcp/index.js`
-if the env var is unset and `~/.tradingview-mcp/build/index.js` does not exist.
+`_find_tv_mcp_bin()` in `tradingview.py` automatically falls back to the vendor directory
+if the env var is unset and `~/.tradingview-mcp/src/server.js` does not exist.
 
 ---
 
@@ -216,8 +267,7 @@ The CDP API paths for common operations:
 - **Set Pine source**: `page.evaluate(f"() => window.tvWidget?.activeChart()?.getStudyById(...).applyOverrides(...)")`
 
 These paths are TradingView's semi-public widget API — more stable than CDP internal IDs
-but still subject to change. The `_study_id` needed for Pine injection requires navigating
-TradingView's internal study model, which is where most maintenance effort goes.
+but still subject to change.
 
 ---
 
@@ -227,16 +277,17 @@ TradingView's internal study model, which is where most maintenance effort goes.
 # Before any upgrade, check what changed
 git -C ~/.tradingview-mcp log HEAD..origin/main --oneline
 
-# Upgrade + rebuild
-cd ~/.tradingview-mcp && git pull && npm install && npm run build
+# Upgrade (no build step for pure JS version)
+cd ~/.tradingview-mcp && git pull && npm install
 
-# Quick smoke test (TradingView Desktop must be open)
+# Quick smoke test (TradingView Desktop must be open with --remote-debugging-port=9222)
 cd /path/to/claudia_ui
+source .venv/bin/activate
 python - <<'EOF'
 import asyncio
 from claudia.tradingview import TradingViewBridge, check_cdp_running
 async def test():
-    assert check_cdp_running(), "TradingView CDP port not open"
+    assert check_cdp_running(), "TradingView CDP port not open — relaunch with --remote-debugging-port=9222"
     b = TradingViewBridge()
     await b.start()
     tools = b.get_tools()
@@ -245,6 +296,6 @@ async def test():
 asyncio.run(test())
 EOF
 
-# Archive the verified build
+# Archive the verified version
 ./scripts/archive-tv-mcp.sh
 ```

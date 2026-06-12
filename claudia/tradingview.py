@@ -46,27 +46,40 @@ _TV_DEBUG_PORT = int(os.environ.get("TRADINGVIEW_DEBUG_PORT", "9222"))
 
 def _find_tv_mcp_bin() -> str | None:
     """
-    Find the tradingview-mcp binary, in priority order:
+    Find the tradingview-mcp entry point, in priority order:
       1. TRADINGVIEW_MCP_PATH env var
       2. tradingview-mcp on PATH
-      3. ~/.tradingview-mcp/build/index.js  (standard clone location)
-      4. vendor/tradingview-mcp/index.js    (archived fallback — see docs/tradingview-mcp-recovery.md)
+      3. ~/.tradingview-mcp/src/server.js   (JS version — no build step)
+      4. ~/.tradingview-mcp/build/index.js  (TypeScript build output)
+      5. vendor/tradingview-mcp/src/server.js  (archived fallback, needs node_modules/)
+      6. vendor/tradingview-mcp/index.js    (legacy single-bundle archived fallback)
     """
     if path := os.environ.get("TRADINGVIEW_MCP_PATH"):
         return path
     if which := shutil.which("tradingview-mcp"):
         return which
-    default = Path.home() / ".tradingview-mcp" / "build" / "index.js"
-    if default.exists():
-        return str(default)
-    vendor = Path(__file__).parent.parent / "vendor" / "tradingview-mcp" / "index.js"
-    if vendor.exists():
+    js_src = Path.home() / ".tradingview-mcp" / "src" / "server.js"
+    if js_src.exists():
+        return str(js_src)
+    ts_build = Path.home() / ".tradingview-mcp" / "build" / "index.js"
+    if ts_build.exists():
+        return str(ts_build)
+    vendor_base = Path(__file__).parent.parent / "vendor" / "tradingview-mcp"
+    vendor_js = vendor_base / "src" / "server.js"
+    if vendor_js.exists() and (vendor_base / "node_modules").exists():
+        log.warning(
+            "Using archived vendor tradingview-mcp — "
+            "run scripts/archive-tv-mcp.sh after upgrading."
+        )
+        return str(vendor_js)
+    vendor_bundle = vendor_base / "index.js"
+    if vendor_bundle.exists():
         log.warning(
             "Using archived vendor tradingview-mcp build — "
             "run scripts/archive-tv-mcp.sh after upgrading. "
             "See docs/tradingview-mcp-recovery.md"
         )
-        return str(vendor)
+        return str(vendor_bundle)
     return None
 
 
