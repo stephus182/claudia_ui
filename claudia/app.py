@@ -443,10 +443,13 @@ async def on_chat_start():
 
     # Emit opening status
     # toolkit.execute() swallows all exceptions and returns an error string instead of raising,
-    # so we pre-check with ping() and skip the calls when the gateway is unreachable.
+    # so we pre-check reachability and skip the calls when the gateway is unreachable.
+    # Use tickle() rather than ping(): /iserver/auth/status returns authenticated=false on the
+    # first request of a new session (IBKR gateway quirk) even when the user is logged in.
+    # /tickle is a pure HTTP keepalive that reliably returns 200 when the gateway is running.
     ibkr_offline = False
     try:
-        gateway_up = await cl.make_async(toolkit.client.ping)()
+        gateway_up = await cl.make_async(toolkit.client.tickle)()
         if not gateway_up:
             raise ConnectionError("IBKR gateway not reachable")
         (opening_text, _), (orders_text, _), (positions_text, _) = await _asyncio.gather(

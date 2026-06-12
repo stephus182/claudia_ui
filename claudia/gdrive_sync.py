@@ -38,6 +38,7 @@ class GDriveSync:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._service: Any = None
+        self._resolved_db_folder: str = ""
 
     def _get_service(self) -> Any:
         if self._service:
@@ -64,14 +65,47 @@ class GDriveSync:
         self._service = build("drive", "v3", credentials=creds)
         return self._service
 
-    def _find_file(self, name: str) -> str | None:
-        """Return Drive file ID for name in the configured folder, or None."""
+    def _resolve_db_folder(self) -> str:
+        """Return the Drive folder ID for claudia.db, auto-creating 'db/' if needed."""
+        if self._config.gdrive_db_folder_id:
+            return self._config.gdrive_db_folder_id
+        if self._resolved_db_folder:
+            return self._resolved_db_folder
         svc = self._get_service()
-        folder_id = self._config.gdrive_folder_id
+        parent = self._config.gdrive_folder_id
         results = (
             svc.files()
             .list(
-                q=f"name='{name}' and '{folder_id}' in parents and trashed=false",
+                q=(
+                    f"name='db' and '{parent}' in parents "
+                    "and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                ),
+                fields="files(id)",
+            )
+            .execute()
+        )
+        files = results.get("files", [])
+        if files:
+            self._resolved_db_folder = files[0]["id"]
+        else:
+            meta = {
+                "name": "db",
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent],
+            }
+            f = svc.files().create(body=meta, fields="id").execute()
+            self._resolved_db_folder = f["id"]
+            log.info("Created 'db/' subfolder in Drive for claudia.db")
+        return self._resolved_db_folder
+
+    def _find_file(self, name: str, folder_id: str | None = None) -> str | None:
+        """Return Drive file ID for name in folder_id (default: root folder), or None."""
+        svc = self._get_service()
+        fid = folder_id if folder_id is not None else self._config.gdrive_folder_id
+        results = (
+            svc.files()
+            .list(
+                q=f"name='{name}' and '{fid}' in parents and trashed=false",
                 fields="files(id)",
             )
             .execute()
@@ -88,7 +122,8 @@ class GDriveSync:
         """
         try:
             svc = self._get_service()
-            file_id = self._find_file(_DB_FILENAME)
+            db_folder = self._resolve_db_folder()
+            file_id = self._find_file(_DB_FILENAME, db_folder)
             if file_id is None:
                 log.info("claudia.db not found on Drive (first run or not yet uploaded)")
                 return False
@@ -152,13 +187,13 @@ class GDriveSync:
                 conn.close()
 
             svc = self._get_service()
-            folder_id = self._config.gdrive_folder_id
+            db_folder = self._resolve_db_folder()
             media = MediaFileUpload(str(local_path), mimetype="application/x-sqlite3")
-            file_id = self._find_file(_DB_FILENAME)
+            file_id = self._find_file(_DB_FILENAME, db_folder)
             if file_id:
                 svc.files().update(fileId=file_id, media_body=media).execute()
             else:
-                metadata = {"name": _DB_FILENAME, "parents": [folder_id]}
+                metadata = {"name": _DB_FILENAME, "parents": [db_folder]}
                 svc.files().create(body=metadata, media_body=media, fields="id").execute()
             log.info("Uploaded claudia.db to Drive")
         except Exception as exc:
