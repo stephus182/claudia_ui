@@ -15,7 +15,6 @@ claudia/context_loader.py   — docs/context.md + docs/principles.md → system 
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, relationships, doc_versions
 claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / upload at stop
 claudia/order_flow.py       — cl.Action order staging → ibkr_core_mcp biometric gates
-claudia/alert_manager.py    — background price alert monitor
 claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health
 claudia/tradingview.py      — tradingview-mcp sidecar + CDP health + PineScript display
     ↓                               ↓
@@ -175,7 +174,7 @@ All interactions are stored in `data/claudia.db` (separate from ibkr_core_mcp's 
 |---|---|
 | `sessions` | One row per Chainlit session, with start/end time, document hash, and `doc_version` |
 | `messages` | Full message history (user, assistant, tool calls and results) |
-| `decisions` | Extracted key moments: trade proposals, backtests run, alerts set — each tagged with `doc_version` |
+| `decisions` | Extracted key moments: trade proposals, backtests run — each tagged with `doc_version` |
 | `relationships` | Accumulated symbol-level observations built over time |
 | `doc_versions` | Versioned snapshots of `context.md` + `principles.md` — full text, hash, date |
 
@@ -196,6 +195,23 @@ ClaudIA **cannot** place orders autonomously. When ClaudIA suggests a trade:
 5. **Gate 1:** Apple Touch ID / biometric authentication (macOS LocalAuthentication).
 6. **Gate 2:** tkinter modal dialog with order details + 60-second countdown. Enter key disabled.
 7. Order is submitted to IBKR only after both gates pass.
+
+---
+
+## Price Alerts
+
+Alerts are managed exclusively through IBKR's native server-side alert system — they fire even when ClaudIA is not running, and appear on the IBKR mobile app.
+
+ClaudIA has four alert tools (via `ibkr_core_mcp.ClaudeToolkit`):
+
+| Tool | What it does |
+|---|---|
+| `create_price_alert` | Resolves symbol → conid, posts alert to IBKR server |
+| `get_alerts` | List all configured alerts with status |
+| `delete_alert` | Remove an alert by ID |
+| `activate_alert` | Toggle an alert on/off without deleting it |
+
+There is no background polling loop in claudia_ui — IBKR delivers the notification directly to the mobile app and desktop.
 
 ---
 
