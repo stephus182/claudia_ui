@@ -47,22 +47,29 @@ TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (cura
 
 ### Drive folder layout
 
-All files share `GOOGLE_DRIVE_FOLDER_ID`:
+```
+<GOOGLE_DRIVE_FOLDER_ID>/              ← root ClaudIA folder
+  claudia.db                           ← conversation history (GDriveSync)
+  context.md                           ← ClaudIA persona (optional, upload manually)
+  principles.md                        ← trading rules (optional, upload manually)
+  market_data/                         ← GDRIVE_CACHE_FOLDER_ID (auto-created on first use)
+    manifest.json                      ← market data index (GDriveCache)
+    AAPL_1D_1Y_2026-01-01.parquet      ← OHLCV cache (GDriveCache)
+    ...
+```
 
-```
-<Drive folder>/
-  manifest.json                    ← market data index (GDriveCache, ibkr_core_mcp)
-  AAPL_1D_1Y_2026-01-01.parquet    ← market data (GDriveCache)
-  claudia.db                       ← conversation history (GDriveSync)
-  context.md                       ← ClaudIA persona (optional, upload manually)
-  principles.md                    ← trading rules (optional, upload manually)
-```
+`market_data/` is auto-created by `GDriveCache` on first cache write if it does not exist.
+Set `GDRIVE_CACHE_FOLDER_ID` explicitly to point to a pre-existing folder instead.
 
 ### First-time setup on a new machine
 
-1. `GOOGLE_DRIVE_FOLDER_ID` is already set from your `.env` (market data uses it)
-2. Start ClaudIA — it downloads `claudia.db` if it exists on Drive (skipped on first ever run)
-3. To enable Drive context/principles: upload `docs/context.md` and `docs/principles.md` via the Drive web UI
+1. Create (or reuse) a Google Drive folder for ClaudIA. Get its ID from the URL:
+   `drive.google.com/drive/folders/<FOLDER_ID>`
+2. Set `GOOGLE_DRIVE_FOLDER_ID=<FOLDER_ID>` in `.env`
+3. Start ClaudIA — it downloads `claudia.db` if it exists on Drive (skipped on first ever run).
+   The `market_data/` subfolder is auto-created on the first `fetch_market_data` call.
+4. To enable Drive context/principles: upload `docs/context.md` and `docs/principles.md`
+   via the Drive web UI
 
 ### Hot-reload behaviour
 
@@ -123,7 +130,8 @@ chainlit run claudia/app.py   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 |---|---|---|
 | `ANTHROPIC_API_KEY` | ✅ | Claude API key |
 | `IBKR_GATEWAY_URL` | ✅ | IBKR Client Portal Gateway URL |
-| `GOOGLE_DRIVE_FOLDER_ID` | ✅ | GDrive folder for market data cache |
+| `GOOGLE_DRIVE_FOLDER_ID` | ✅ | Root Drive folder — claudia.db + context/principles |
+| `GDRIVE_CACHE_FOLDER_ID` | optional | Drive folder for Parquet cache (auto-created as `market_data/` inside root if unset) |
 | `GDRIVE_TOKEN_FILE` | ✅ | OAuth2 token file path |
 | `GDRIVE_CREDENTIALS_FILE` | ✅ | OAuth2 credentials file path |
 | `IBKR_SQLITE_PATH` | ✅ | ibkr_core_mcp SQLite store path |
