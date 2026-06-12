@@ -17,7 +17,7 @@ conversation memory. The new principals and threats are:
 | `docs/context.md` | Prompt injection: attacker modifies the file to override ClaudIA's behavior | File permissions (0o600); SHA-256 hash logged at session start; file is never executable |
 | `docs/principles.md` | Prompt injection: attacker weakens risk rules | Same mitigations as context.md; ClaudIA cannot modify this file |
 | Conversation history | Re-injection: past messages contained adversarial content that gets fed back | History loaded as structured `role:user/assistant` blocks, not raw system prompt injection |
-| TradingView sidecar | Supply chain: `tradingview-mcp` npm package has full CDP access to TradingView Desktop | Accepted risk (personal local tool); sidecar has no IBKR credentials; vendor archive provides known-good fallback; `docs/tradingview-mcp-recovery.md` covers incident response |
+| TradingView sidecar | Supply chain: `tradingview-mcp` npm package has full CDP access to TradingView Desktop | Accepted risk (personal local tool); subprocess env is a strict allowlist (`PATH`, `HOME`, `USER`, `TMPDIR`, `NODE_*`) — `ANTHROPIC_API_KEY`, GDrive tokens, and IBKR credentials are never passed; vendor archive provides known-good fallback; `docs/tradingview-mcp-recovery.md` covers incident response |
 | Voice output (Phase 2) | Voice commands: TTS output is purely advisory | No voice-to-action path exists; voice only speaks finalized assistant text |
 
 ---
@@ -130,8 +130,16 @@ via Chrome DevTools Protocol on `localhost:9222`.
 
 **Security properties:**
 
-- **No IBKR credential access.** The subprocess environment passes only `CHROME_REMOTE_DEBUG_PORT`.
-  IBKR credentials, `ANTHROPIC_API_KEY`, and GDrive credentials are never passed to the sidecar.
+- **Minimal subprocess environment.** `TradingViewBridge.start()` passes a strict allowlist to the
+  sidecar: `PATH`, `HOME`, `USER`, `TMPDIR`, `TEMP`, `TMP`, `NODE_PATH`, `NODE_ENV`,
+  `XDG_RUNTIME_DIR`, and `CHROME_REMOTE_DEBUG_PORT`. `ANTHROPIC_API_KEY`, `GDRIVE_TOKEN_FILE`,
+  `IBKR_FLEX_TOKEN`, and all other secrets are never inherited by the sidecar process.
+- **CDP port end-to-end configurable.** `TRADINGVIEW_DEBUG_PORT` (default: `9222`) flows through
+  to the sidecar via `CHROME_REMOTE_DEBUG_PORT`; `connection.js` reads this env var instead of
+  hardcoding the port.
+- **Binary path validated.** `TRADINGVIEW_MCP_PATH` is validated for existence and `.js` extension
+  before use; invalid values fall through to the next discovery candidate with a warning log.
+  The selected binary path is always logged at INFO level on start.
 - **CDP scope is TradingView Desktop only.** Port 9222 is TradingView's Electron debug port.
   The sidecar can read and manipulate the TradingView UI — it cannot access IBKR or place trades.
 - **Full CDP access accepted.** The sidecar has full Chrome DevTools Protocol access to TradingView
@@ -169,6 +177,10 @@ cannot place IBKR orders. Financial blast radius is limited to TradingView UI da
   and never passed to the LLM as text.
 - `claudia.db` does not store API keys or IBKR credentials.
 - Google Drive credentials follow the same `0o600` permission pattern as `ibkr_core_mcp`.
+  Token refresh explicitly calls `os.chmod(token_path, 0o600)` after every write because
+  `os.open(O_CREAT, 0o600)` only sets the mode on newly created files.
+- `GDriveSync` is guarded by a `threading.Lock` — concurrent session stops cannot race on
+  the token refresh write or the Drive create/update check.
 
 ---
 
@@ -245,14 +257,37 @@ fake conversation history designed to influence responses.
 - Conversation history cannot initiate an order — the physical button + biometric path
   is the only execution route.
 
-### 3. Drive OAuth token theft (LOW — scoped blast radius)
+### 3. Oversized Drive file — memory exhaustion (LOW)
+
+**Threat:** A malicious or accidentally large `context.md` or `principles.md` on Drive
+causes an OOM kill by being downloaded into an unbounded in-memory buffer.
+
+**Mitigations:**
+- `read_text()` checks the Drive file's `size` metadata field before downloading.
+  Files larger than 1 MB are rejected with a warning; ClaudIA falls back to the local file.
+
+---
+
+### 4. Concurrent session race on Drive upload (LOW)
+
+**Threat:** Two sessions closing simultaneously both find no existing `claudia.db` on Drive
+and both call `files().create()`, producing duplicate Drive entries.
+
+**Mitigations:**
+- `GDriveSync` holds a `threading.Lock` that serialises the find-then-create/update block
+  in `upload_db()` and the token refresh in `_get_service()`.
+
+---
+
+### 5. Drive OAuth token theft (LOW — scoped blast radius)
 
 **Threat:** Stolen `GDRIVE_TOKEN_FILE` grants Drive access.
 
 **Mitigations:**
 - The `drive.file` OAuth scope limits the token to files this app created — it cannot access
   the rest of the user's Drive.
-- `GDRIVE_TOKEN_FILE` is `chmod 600`.
+- `GDRIVE_TOKEN_FILE` is `chmod 600`. Token refresh calls `os.chmod(token_path, 0o600)`
+  explicitly after every write, since `O_CREAT` mode only applies on file creation.
 - The token covers only `claudia.db`, `context.md`, `principles.md`, and market data
   parquets — no IBKR credentials, no `ANTHROPIC_API_KEY`.
 
@@ -277,3 +312,6 @@ Run this checklist before any significant code change to ClaudIA:
 - [ ] Any new `IBKRClient` usage goes through `ClaudeToolkit` (not direct calls in tool handlers)
 - [ ] Any new HTTP endpoint does not expose credentials, API keys, or account data
 - [ ] Any new custom JS reviewed for `eval`, `innerHTML`, and user-data injection (XSS)
+- [ ] Any new subprocess call uses an env allowlist — never `{**os.environ}` or `env=None`
+- [ ] Any new Drive download has a size guard before the download loop
+- [ ] Any new shared state accessed from `cl.make_async()` handlers is protected by a `threading.Lock`

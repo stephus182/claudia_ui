@@ -258,7 +258,7 @@ The sidecar is [`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontli
 to control token cost; the full set is available via `bridge.get_all_tools()`.
 
 Binary discovery order (`_find_tv_mcp_bin()`):
-1. `TRADINGVIEW_MCP_PATH` env var
+1. `TRADINGVIEW_MCP_PATH` env var (validated: file must exist and end in `.js`)
 2. `tradingview-mcp` on PATH
 3. `~/.tradingview-mcp/src/server.js` (pure JS layout — current)
 4. `~/.tradingview-mcp/build/index.js` (TypeScript build output — legacy)
