@@ -189,7 +189,6 @@ from ibkr_core_mcp import (
 from ibkr_core_mcp.gateway import GatewayManager
 
 from claudia.agent import ClaudIAAgent
-from claudia.alert_manager import AlertManager
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.gdrive_sync import GDriveSync
@@ -212,7 +211,6 @@ _toolkit: ClaudeToolkit | None = None
 _conv_store: ConversationStore | None = None
 _tv_bridge: TradingViewBridge | None = None
 _tv_bridge_lock = _asyncio.Lock()
-_alert_manager: AlertManager | None = None
 _connectivity_checker: ConnectivityChecker | None = None
 _gdrive_sync: GDriveSync | None = None
 
