@@ -58,7 +58,7 @@ def _find_tv_mcp_bin() -> str | None:
         p = Path(path)
         if not p.exists():
             log.warning("TRADINGVIEW_MCP_PATH=%r does not exist — ignoring", path)
-        elif not path.endswith(".js") and not p.is_file():
+        elif not path.endswith(".js"):
             log.warning("TRADINGVIEW_MCP_PATH=%r is not a .js file — ignoring", path)
         else:
             return path
