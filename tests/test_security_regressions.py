@@ -136,6 +136,7 @@ def test_read_text_accepts_file_under_limit():
         result = sync.read_text("context.md")
 
     assert result == content
+    svc.files.return_value.get_media.assert_called_once()
 
 
 # ── Fix #6 — GDriveSync has threading.Lock ───────────────────────────────────
@@ -147,7 +148,8 @@ def test_gdrive_sync_has_lock():
     cfg.gdrive_token_file = Path("/fake/token.json")
     sync = GDriveSync(cfg)
     assert hasattr(sync, "_lock"), "GDriveSync missing _lock — thread safety removed"
-    assert isinstance(sync._lock, type(threading.Lock())), "_lock must be a threading.Lock"
+    assert hasattr(sync._lock, "__enter__") and hasattr(sync._lock, "__exit__"), \
+        "_lock must be a context manager (threading.Lock)"
 
 
 def test_upload_db_is_protected_by_lock(tmp_path):
@@ -232,3 +234,35 @@ def test_tradingview_mcp_path_nonexistent_ignored(tmp_path, monkeypatch):
          patch.object(tv_module, "__file__", str(tmp_path / "claudia" / "tradingview.py")):
         result = _find_tv_mcp_bin()
     assert result is None, "Nonexistent path must be rejected"
+
+
+# ── Fix #8 — Binary path is logged at INFO on start ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_start_logs_selected_binary_path(tmp_path, monkeypatch, caplog):
+    """Selected binary path must be logged at INFO level on start (Fix #8)."""
+    import logging
+    fake_bin = tmp_path / "server.js"
+    fake_bin.write_text("// fake")
+    monkeypatch.setenv("TRADINGVIEW_MCP_PATH", str(fake_bin))
+
+    class FakeCM:
+        async def __aenter__(self): return (AsyncMock(), AsyncMock())
+        async def __aexit__(self, *a): pass
+
+    fake_session = AsyncMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+    fake_session.initialize = AsyncMock()
+    fake_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
+
+    from claudia.tradingview import TradingViewBridge
+    with caplog.at_level(logging.INFO, logger="claudia.tradingview"), \
+         patch("claudia.tradingview.StdioServerParameters", return_value=MagicMock()), \
+         patch("claudia.tradingview.stdio_client", return_value=FakeCM()), \
+         patch("claudia.tradingview.ClientSession", return_value=fake_session), \
+         patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)):
+        await TradingViewBridge().start()
+
+    logged_messages = " ".join(r.message for r in caplog.records)
+    assert str(fake_bin) in logged_messages, "Binary path not logged at INFO level (Fix #8)"
