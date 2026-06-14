@@ -1,6 +1,5 @@
 """Unit tests for claudia/tradingview.py — binary discovery, env, tool filtering, CDP."""
 
-import socket as _socket
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,9 +19,6 @@ def test_find_bin_env_var_valid_js(tmp_path, monkeypatch):
     fake = tmp_path / "server.js"
     fake.write_text("// fake")
     monkeypatch.setenv("TRADINGVIEW_MCP_PATH", str(fake))
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setenv("HOME", str(fake_home))
     with patch("claudia.tradingview.shutil.which", return_value=None):
         result = _find_tv_mcp_bin()
     assert result == str(fake)
@@ -133,6 +129,21 @@ def test_find_bin_vendor_js_with_node_modules(tmp_path, monkeypatch):
     assert result == str(vendor_js)
 
 
+def test_find_bin_vendor_bundle_fallback(tmp_path, monkeypatch):
+    """Vendor legacy bundle (no node_modules required) is the last resort."""
+    monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(tv_module, "__file__", str(tmp_path / "claudia" / "tradingview.py"))
+    vendor_bundle = tmp_path / "vendor" / "tradingview-mcp" / "index.js"
+    vendor_bundle.parent.mkdir(parents=True)
+    vendor_bundle.write_text("// legacy bundle")
+    with patch("claudia.tradingview.shutil.which", return_value=None):
+        result = _find_tv_mcp_bin()
+    assert result == str(vendor_bundle)
+
+
 def test_find_bin_returns_none_when_nothing_found(tmp_path, monkeypatch):
     monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
     fake_home = tmp_path / "home"
@@ -164,6 +175,7 @@ def test_get_tools_returns_only_curated_subset():
         {"name": "chart_get_state", "description": "", "input_schema": {}},
         {"name": "quote_get", "description": "", "input_schema": {}},
         {"name": "some_unlisted_tool", "description": "", "input_schema": {}},
+        {"name": "another_unlisted", "description": "", "input_schema": {}},
     ]
     bridge._tools = all_tools
     bridge._curated_tools = [t for t in all_tools if t["name"] in tv_module._CURATED_TOOLS]
@@ -172,6 +184,7 @@ def test_get_tools_returns_only_curated_subset():
     assert "chart_get_state" in names
     assert "quote_get" in names
     assert "some_unlisted_tool" not in names
+    assert "another_unlisted" not in names
 
 
 def test_get_all_tools_returns_everything():
@@ -191,6 +204,7 @@ def test_curated_tools_set_has_15_entries():
 
 # ── TradingViewBridge — subprocess env allowlist ─────────────────────────────
 
+@pytest.mark.asyncio
 async def test_start_env_excludes_secrets(tmp_path, monkeypatch):
     """ANTHROPIC_API_KEY and other secrets must not reach the Node subprocess."""
     fake_bin = tmp_path / "server.js"
@@ -225,6 +239,7 @@ async def test_start_env_excludes_secrets(tmp_path, monkeypatch):
         bridge = TradingViewBridge()
         await bridge.start()
 
+    assert captured_env, "StdioServerParameters was never called — env not captured"
     assert "ANTHROPIC_API_KEY" not in captured_env
     assert "GDRIVE_TOKEN_FILE" not in captured_env
     assert "PATH" in captured_env
