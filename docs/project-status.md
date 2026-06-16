@@ -127,7 +127,12 @@ Everything below is unit-tested but has not been verified with a real running se
 
 ## Live Test Log
 
-| Date | Tester | Items tested | Issues found | Outcome |
+> **Auto-logging:** every session end writes `data/test-sessions/YYYY-MM-DD-HHmm.md`
+> with tools called, decisions, errors, and inferred test coverage.  
+> After a test session, tell Claude: *"update project-status.md with the latest test session"*
+> and it will read the report, check off the items above, and add a row below.
+
+| Date | Session report | Items tested | Issues found | Outcome |
 |---|---|---|---|---|
 | — | — | — | — | — |
 
