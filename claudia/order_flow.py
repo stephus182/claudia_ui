@@ -94,6 +94,7 @@ async def execute_staged_order(
         proposal = json.loads(action.payload["order"])
     except (json.JSONDecodeError, TypeError, KeyError):
         await cl.Message(content="Invalid order proposal data.", author="System").send()
+        await action.remove()
         return
 
     symbol = proposal.get("symbol", "?")
@@ -169,5 +170,5 @@ async def execute_staged_order(
         else:
             display_error = "Order staging failed. Check IBKR gateway connection."
         await cl.Message(content=f"**Order not placed:** {display_error}", author="System").send()
-
-    await action.remove()
+    finally:
+        await action.remove()
