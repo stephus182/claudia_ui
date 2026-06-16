@@ -317,6 +317,15 @@ class ConversationStore:
             )
             return cur.lastrowid  # type: ignore[return-value]
 
+    def get_decisions(self, session_id: str) -> list[dict]:
+        """Return all decisions recorded for a session, oldest first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM decisions WHERE session_id=? ORDER BY created_at",
+                (session_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def search_decisions(self, query: str, max_results: int = 5) -> list[dict]:
         """FTS5 search across trade decisions. Results include doc_version from the session."""
         with self._conn() as conn:
