@@ -5,7 +5,7 @@ Reads tool calls, decisions, and connectivity state from the current session
 and writes a Markdown report to data/test-sessions/YYYY-MM-DD-HHmm.md.
 
 Usage: tell Claude "update docs/project-status.md with the latest test session"
-and it will read the report and check off the live test items.
+and it will read the report and add a row to the Live Test Log.
 """
 
 from __future__ import annotations
@@ -55,19 +55,6 @@ _TOOL_LABELS: dict[str, str] = {
     "get_doc_version": "Docs: retrieve version",
 }
 
-# Map tool names → live test plan section items (matches wording in project-status.md)
-_LIVE_TEST_COVERAGE: list[tuple[set[str], str]] = [
-    ({"get_positions"}, "IBKR tools: get_positions"),
-    ({"get_orders"}, "IBKR tools: get_orders"),
-    ({"create_price_alert"}, "IBKR tools: create_price_alert"),
-    ({"get_alerts"}, "IBKR tools: get_alerts"),
-    ({"chart_get_state", "quote_get", "data_get_ohlcv"}, "TradingView: chart/quote tools"),
-    ({"chart_set_symbol", "chart_set_timeframe"}, "TradingView: chart control"),
-    ({"pine_set_source"}, "TradingView: Pine Script inject"),
-    ({"data_get_strategy_results", "data_get_equity_curve"}, "TradingView: strategy results"),
-    ({"list_doc_versions", "get_doc_version"}, "Doc versioning tools"),
-]
-
 
 def generate_session_report(
     session_id: str,
@@ -79,7 +66,6 @@ def generate_session_report(
     Generate a Markdown session report and write it to data/test-sessions/.
 
     Called from app.py on_stop. Returns the report path, or None on error.
-    The report is readable by Claude to update docs/project-status.md.
     """
     try:
         report_dir = Path("data/test-sessions")
@@ -111,22 +97,6 @@ def generate_session_report(
             ):
                 snippet = result.replace("\n", " ")[:180]
                 error_lines.append(f"`{m['tool_name']}` → {snippet}")
-
-        # Infer live test coverage from tools called
-        tool_set = set(tool_names)
-        covered: list[str] = []
-        for required_tools, label in _LIVE_TEST_COVERAGE:
-            if required_tools & tool_set:  # any intersection
-                covered.append(label)
-
-        proposed = [d for d in decisions if d.get("decision_type") == "trade_proposed"]
-        staged   = [d for d in decisions if d.get("decision_type") == "trade_staged"]
-        if proposed:
-            symbols = ", ".join(d.get("symbol", "?") for d in proposed)
-            covered.append(f"Order proposed ({symbols})")
-        if staged:
-            symbols = ", ".join(d.get("symbol", "?") for d in staged)
-            covered.append(f"Order staged — full gate flow ({symbols})")
 
         # Connectivity at session end
         conn = connectivity or {}
@@ -170,13 +140,6 @@ def generate_session_report(
                 lines.append(f"- {e}")
         else:
             lines.append("- None detected")
-
-        lines += ["", "## Live Test Coverage Inferred"]
-        if covered:
-            for item in covered:
-                lines.append(f"- [x] {item}")
-        else:
-            lines.append("- (no test items inferred — check manually)")
 
         lines += [
             "",
