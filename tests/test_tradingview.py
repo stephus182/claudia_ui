@@ -29,6 +29,7 @@ def test_find_bin_env_var_missing_file_falls_through(tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(tv_module, "__file__", str(tmp_path / "claudia" / "tradingview.py"))
     with patch("claudia.tradingview.shutil.which", return_value=None):
         result = _find_tv_mcp_bin()
     assert result is None
@@ -41,6 +42,7 @@ def test_find_bin_env_var_not_js_falls_through(tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(tv_module, "__file__", str(tmp_path / "claudia" / "tradingview.py"))
     with patch("claudia.tradingview.shutil.which", return_value=None):
         result = _find_tv_mcp_bin()
     assert result is None
