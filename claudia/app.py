@@ -548,6 +548,16 @@ async def on_stop():
     if store and session_id:
         store.close_session(session_id, metadata={"model": _MODEL})
 
+        connectivity = (
+            {k: v.value for k, v in _connectivity_checker.get_status().items()}
+            if _connectivity_checker else {}
+        )
+        session_meta = store.get_session(session_id) or {}
+        from claudia.session_reporter import generate_session_report
+        await cl.make_async(generate_session_report)(
+            session_id, store, connectivity, session_meta.get("doc_version")
+        )
+
     if _gdrive_sync is not None:
         await cl.make_async(_gdrive_sync.upload_db)(_DB_PATH)
 
