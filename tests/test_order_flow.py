@@ -122,7 +122,7 @@ async def _run(action, ibkr_mod, store=None, session_id="test-session"):
 
 @pytest.mark.asyncio
 async def test_execute_staged_order_invalid_payload_sends_error():
-    """Invalid JSON payload → sends error message and returns early (no remove)."""
+    """Invalid JSON payload → sends error message and removes the action button."""
     import claudia.order_flow as _of
     action = MagicMock()
     action.remove = AsyncMock()
@@ -139,12 +139,12 @@ async def test_execute_staged_order_invalid_payload_sends_error():
         _of.cl = original_cl
     sent_content = mock_cl.Message.call_args_list[0].kwargs["content"]
     assert "Invalid order proposal" in sent_content
-    action.remove.assert_not_called()
+    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_execute_staged_order_contract_not_found():
-    """search_contract returns [] → sends 'Could not find contract' message, no place_order call."""
+    """search_contract returns [] → sends 'Could not find contract' message, no place_order call, button removed."""
     ibkr_mod, client = _make_ibkr_mock()
     client.search_contract.return_value = []
     action = _make_action()
@@ -152,6 +152,7 @@ async def test_execute_staged_order_contract_not_found():
     contents = [c.kwargs["content"] for c in mock_cl.Message.call_args_list]
     assert any("Could not find contract" in c for c in contents)
     client.place_order.assert_not_called()
+    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
