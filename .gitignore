@@ -24,6 +24,7 @@ chainlit.db
 # ClaudIA data
 data/claudia.db
 data/*.db
+data/ibkr_flex_archive/
 
 # OS
 .DS_Store
