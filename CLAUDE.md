@@ -32,6 +32,42 @@ TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (cura
 
 ---
 
+## Market Calendar
+
+`SQLiteStore.get_market_calendar_context()` injects trading-day awareness into ClaudIA's system prompt at every session start. No API calls — pure pre-built library data.
+
+**8 exchanges covered (current year + next year, past and future holidays):**
+
+| Code | Exchange | Why it matters |
+|---|---|---|
+| `XNYS` | NYSE | US equities — primary staleness reference, order timing |
+| `CME` | CME Futures | Crude oil (CL), gold (GC), ES — different holiday set from NYSE |
+| `XLON` | LSE London | European open/close effects on US pre-market |
+| `XETR` | Xetra Frankfurt | EU macro events, German/EU equity flows |
+| `XTKS` | TSE Tokyo | Asian session open, Nikkei/yen effects on overnight futures |
+| `XHKG` | HKEX Hong Kong | China proxy, Hang Seng, dim sum flows |
+| `XASX` | ASX Sydney | Commodities (iron ore, copper), first market to open globally |
+| `XTSE` | TSX Toronto | Oil sands, gold miners — often moves with IBKR instruments |
+
+**What ClaudIA receives in the system prompt:**
+- Today's date and whether it is a trading day
+- Last and next trading day (NYSE reference)
+- Full holiday list for all 8 exchanges — so it can explain "why is volume low today?" proactively
+
+**Performance (designed for zero marginal cost):**
+
+| Call | Time |
+|---|---|
+| First call per process (cold) | ~875ms — exchange_calendars loads numpy arrays once |
+| Subsequent calls same day | 0.01ms — process-level date-keyed cache hit |
+| Next day / process restart | Recomputes fresh — cache key includes today's date |
+
+Cache lives in `_market_calendar_cache` (module-level dict in `ibkr_core_mcp/store.py`). Key: `(date_str, tuple(exchange_codes))` — auto-invalidates at midnight, no manual expiry needed.
+
+**Staleness check** also uses the NYSE calendar: `stale = newest < last_trading_day`. This correctly handles weekends and holidays — no false stale on Saturdays, no missed sync after a holiday Monday.
+
+---
+
 ## Trade Data Architecture
 
 Two complementary sources — each covers what the other cannot:
@@ -44,7 +80,7 @@ Two complementary sources — each covers what the other cannot:
 Flex never has today's trades. The live API fills that gap.
 
 **Startup sync decision** (in `app.py → _background_flex_sync`):
-1. `days_since_newest <= 1` → skip (Flex can't give anything newer than yesterday)
+1. `stale == False` → skip (newest == last NYSE trading day — calendar-aware, not a fixed day count)
 2. Last `flex_sync` log entry < 4h ago → skip (recent attempt, avoid API lockout)
 3. Otherwise → sync, log result, back up `store.db` to Drive `account_data/`
 
