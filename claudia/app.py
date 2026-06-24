@@ -358,7 +358,7 @@ async def on_chat_start():
     # contextvars. We must schedule the send onto the running event loop with
     # the captured context — asyncio.loop.create_task(context=) is the only
     # correct bridge from a sync thread to an already-running async loop.
-    _loop = asyncio.get_running_loop()
+    _loop = _asyncio.get_running_loop()
     _cl_ctx = contextvars.copy_context()
 
     def _on_doc_change(filename: str, new_prompt: str) -> None:
