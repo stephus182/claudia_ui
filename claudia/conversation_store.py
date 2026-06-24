@@ -39,6 +39,9 @@ class ConversationStore:
         try:
             yield conn
             conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            raise
         except Exception:
             conn.rollback()
             raise
@@ -245,8 +248,8 @@ class ConversationStore:
                     role,
                     content,
                     tool_name,
-                    json.dumps(tool_input) if tool_input is not None else None,
-                    json.dumps(tool_result) if tool_result is not None else None,
+                    json.dumps(tool_input, default=str) if tool_input is not None else None,
+                    json.dumps(tool_result, default=str) if tool_result is not None else None,
                     _utcnow(),
                     tokens_used,
                 ),
@@ -257,12 +260,14 @@ class ConversationStore:
         """Return recent conversation messages for context injection."""
         with self._conn() as conn:
             rows = conn.execute(
-                """SELECT * FROM messages
-                   WHERE session_id=?
-                   ORDER BY created_at DESC LIMIT ?""",
+                """SELECT * FROM (
+                       SELECT * FROM messages
+                       WHERE session_id=?
+                       ORDER BY created_at DESC LIMIT ?
+                   ) ORDER BY created_at ASC""",
                 (session_id, limit),
             ).fetchall()
-            return [dict(r) for r in reversed(rows)]
+            return [dict(r) for r in rows]
 
     def search_messages(self, query: str, max_results: int = 10, max_tokens: int = 2000) -> list[dict]:
         """FTS5 full-text search across all conversation history."""
@@ -311,7 +316,7 @@ class ConversationStore:
                     decision_type,
                     symbol,
                     summary_text,
-                    json.dumps(metadata or {}),
+                    json.dumps(metadata or {}, default=str),
                     _utcnow(),
                 ),
             )

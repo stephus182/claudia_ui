@@ -75,10 +75,7 @@ class ContextLoader:
 
     def load_system_prompt(self) -> str:
         """Return concatenated context + principles as a single system prompt string."""
-        context = self._get_text(self._context_override, self._context_path, "context.md")
-        principles = self._get_text(
-            self._principles_override, self._principles_path, "principles.md"
-        )
+        context, principles = self.get_effective_texts()
         return _CONTEXT_HEADER + context + _PRINCIPLES_HEADER + principles
 
     def compute_hash(self) -> str:
@@ -88,12 +85,8 @@ class ContextLoader:
         a hash with the old raw-bytes path will see a one-time hash mismatch on upgrade;
         subsequent sessions compare stripped-vs-stripped and are stable.
         """
-        context = self._get_text(self._context_override, self._context_path, "context.md")
-        principles = self._get_text(
-            self._principles_override, self._principles_path, "principles.md"
-        )
-        combined = context + principles
-        return hashlib.sha256(combined.encode()).hexdigest()
+        context, principles = self.get_effective_texts()
+        return hashlib.sha256((context + principles).encode()).hexdigest()
 
     def start_watching(self, on_reload: Callable[[str, str], None]) -> None:
         """
