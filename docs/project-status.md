@@ -40,18 +40,19 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-24 | — | Store audit — claudia.db (37 sessions, 218 msgs, integrity OK); store.db (1029 trades, 64 symbols, integrity OK) |
 | 2026-06-24 | `9780963` | Bug fix — `GDriveSync.upload_db` deadlock: `threading.Lock` → `RLock`; removed blocking `PRAGMA wal_checkpoint(TRUNCATE)` that hung while session DB was open |
 | 2026-06-24 | `3170595` | **GDrive status light now reflects real API connectivity** — `check_gdrive()` was a token-file existence check; replaced with `GDriveSync.ping()` (live `files().list` round-trip); wired through `ConnectivityChecker` at startup |
+| 2026-06-24 | `pending` | **IBKR status light now reflects auth state** — `check_ibkr()` was HTTP-200-only; now parses `iserver.authStatus.authenticated && connected` from `/tickle` JSON; green light requires real authenticated session |
 
 ---
 
 ## Test Coverage
 
-**Suite:** 135 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
+**Suite:** 136 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
 
 | Module | Tests | Notes |
 |---|---|---|
 | `conversation_store.py` | 25 | Schema, CRUD, FTS5 search, decisions, relationships, doc_versions |
 | `agent.py` | 22 | Strip proposal, system prompt, history mapping, version note, local tools, decisions, TV bridge |
-| `status.py` | 21 | IBKR/GDrive/TV connectivity checks, state transitions, /api/status; GDrive ping path |
+| `status.py` | 22 | IBKR/GDrive/TV connectivity checks, state transitions, /api/status; GDrive ping path; IBKR auth-state check |
 | `tradingview.py` | 17 | All 6 binary discovery candidates, CDP check, tool filtering, env allowlist |
 | `order_flow.py` | 14 | Format summary (4), execute_staged_order success/errors/gates/limit price (10) |
 | `context_loader.py` | 14 | Load, hash, watchdog hot-reload, Drive override, version registration |
