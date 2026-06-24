@@ -179,8 +179,10 @@ cannot place IBKR orders. Financial blast radius is limited to TradingView UI da
 - Google Drive credentials follow the same `0o600` permission pattern as `ibkr_core_mcp`.
   Token refresh explicitly calls `os.chmod(token_path, 0o600)` after every write because
   `os.open(O_CREAT, 0o600)` only sets the mode on newly created files.
-- `GDriveSync` is guarded by a `threading.Lock` — concurrent session stops cannot race on
-  the token refresh write or the Drive create/update check.
+- `GDriveSync` is guarded by a `threading.RLock` (reentrant) — concurrent session stops
+  cannot race on the token refresh write or the Drive create/update check. `RLock` is
+  required because `upload_db` holds the lock while calling `_find_file` → `_get_service()`,
+  which re-acquires the same lock. A plain `Lock` would deadlock.
 
 ---
 
@@ -208,7 +210,7 @@ The following HTTP endpoints are added by `claudia/app.py` on top of Chainlit's 
 
 | Endpoint | Purpose | Data exposed |
 |---|---|---|
-| `GET /api/status` | Connectivity lights (JS polling) | Service reachability only: `"ok"`, `"error"`, `"unknown"` for IBKR, GDrive, TradingView |
+| `GET /api/status` | Connectivity lights (JS polling) | Service status strings only — `"ok"`, `"error"`, `"unknown"` for IBKR (authenticated session), GDrive (API reachable), TradingView (CDP port open). No credentials, tokens, or account data. |
 | `GET /cl/custom.css` | Dark theme stylesheet | Static asset, no user data |
 | `GET /cl/custom.js` | Status bar DOM injector | Static asset, no user data |
 | `GET /cl/claudia-logo.png` | Logo image | Static asset, no user data |
@@ -225,8 +227,10 @@ file after any modification for XSS vectors.
 
 **IBKR gateway TLS:** `claudia/status.py → check_ibkr()` sets `verify=False` because
 the IBKR Client Portal Gateway uses a self-signed certificate on localhost. This is
-intentional and scoped to the single keepalive request (`/tickle`). No credentials are
-sent in this request.
+intentional and scoped to the single keepalive call (`GET /tickle`). No credentials are
+sent in this request. The JSON response body is parsed for `iserver.authStatus.authenticated`
+and `iserver.authStatus.connected`; neither field contains credentials. All JSON parsing
+is wrapped in `except Exception` so a malformed response returns `False` without raising.
 
 ---
 
@@ -274,22 +278,38 @@ causes an OOM kill by being downloaded into an unbounded in-memory buffer.
 and both call `files().create()`, producing duplicate Drive entries.
 
 **Mitigations:**
-- `GDriveSync` holds a `threading.Lock` that serialises the find-then-create/update block
+- `GDriveSync` holds a `threading.RLock` that serialises the find-then-create/update block
   in `upload_db()` and the token refresh in `_get_service()`.
 
 ---
 
-### 5. Drive OAuth token theft (LOW — scoped blast radius)
+### 5. Drive OAuth token theft (MEDIUM — full Drive scope)
 
-**Threat:** Stolen `GDRIVE_TOKEN_FILE` grants Drive access.
+**Threat:** Stolen `GDRIVE_TOKEN_FILE` grants access to the user's entire Google Drive.
+
+**Scope note:** ClaudIA uses the full `https://www.googleapis.com/auth/drive` scope
+(not the narrower `drive.file`). The broader scope was required because:
+- `drive.file` can only access files the app itself created — it cannot access
+  `context.md` or `principles.md` that the user uploads manually via the Drive web UI.
+- Creating and listing named subfolders (`db/`, `account_data/`, `market_data/`)
+  also requires folder-level access beyond `drive.file`.
+
+**Consequence:** A stolen `token.json` file grants full read/write access to the user's
+entire Google Drive — not just ClaudIA's folder.
 
 **Mitigations:**
-- The `drive.file` OAuth scope limits the token to files this app created — it cannot access
-  the rest of the user's Drive.
-- `GDRIVE_TOKEN_FILE` is `chmod 600`. Token refresh calls `os.chmod(token_path, 0o600)`
-  explicitly after every write, since `O_CREAT` mode only applies on file creation.
-- The token covers only `claudia.db`, `context.md`, `principles.md`, and market data
-  parquets — no IBKR credentials, no `ANTHROPIC_API_KEY`.
+- `GDRIVE_TOKEN_FILE` is `chmod 600` (owner read/write only). Token refresh calls
+  `os.chmod(token_path, 0o600)` explicitly after every write, since `O_CREAT` mode only
+  applies on file creation.
+- The token is stored locally at a path known only to this machine; it is never logged,
+  never passed to subprocesses, and never transmitted over the network.
+- No IBKR credentials or `ANTHROPIC_API_KEY` are stored in Drive or reachable via the token.
+- The `ping()` health check call (`files().list(pageSize=1)`) does not expose file contents.
+
+**Future mitigation (not yet implemented):** Restrict access using a Google service account
+with a dedicated shared Drive folder, or accept the `drive.file` limitation and require users
+to place `context.md` and `principles.md` inside the ClaudIA root folder rather than uploading
+them via the web UI.
 
 ### Hard guarantees unchanged
 
@@ -299,7 +319,39 @@ These two properties hold regardless of what is on Drive:
 
 ---
 
-## 11. Audit Checklist
+## 11. Connectivity Health Checks
+
+`ConnectivityChecker` polls three services every 60 seconds. Each light reflects a real
+runtime state, not a proxy indicator (file existence, process liveness).
+
+| Service | What the check verifies | What it does NOT reveal |
+|---|---|---|
+| IBKR | `GET /tickle` → parses `iserver.authStatus.authenticated && connected`; green = authenticated session | Account balance, positions, orders |
+| GDrive | `GDriveSync.ping()` → `files().list(pageSize=1)`; green = token valid + API reachable | File names, file contents, folder structure |
+| TradingView | TCP connect to `localhost:9222`; green = Desktop open with CDP port | Chart data, indicators, strategy state |
+
+**Security properties of the checks:**
+
+- None of the checks transmit credentials. `/tickle` and `files().list` use session
+  cookies / OAuth tokens that are managed by the HTTP client, not sent as visible parameters.
+- All three checks are wrapped in `except Exception: return False`. Exceptions never
+  propagate to `_run_checks()` as unhandled errors that could crash the poll loop or leak
+  stack traces to the chat UI.
+- The `/api/status` endpoint returns only the three status strings (`"ok"` / `"error"` /
+  `"unknown"`). The underlying session state, token contents, and auth details are
+  never serialised to this endpoint.
+- The keepalive side effect of `/tickle` (resetting the IBKR inactivity timer every 60s)
+  is intentional and prevents unintended session expiry during active trading sessions.
+
+**Accuracy guarantee (established 2026-06-24):**
+Before this date, the IBKR light showed green whenever the gateway process was reachable
+(HTTP 200), and the GDrive light showed green whenever the token file existed on disk.
+Both checks were meaningless indicators of real service state. Both were replaced with
+genuine round-trip verifications. See `docs/connectivity.md` for full test results.
+
+---
+
+## 12. Audit Checklist
 
 Run this checklist before any significant code change to ClaudIA:
 
@@ -314,4 +366,5 @@ Run this checklist before any significant code change to ClaudIA:
 - [ ] Any new custom JS reviewed for `eval`, `innerHTML`, and user-data injection (XSS)
 - [ ] Any new subprocess call uses an env allowlist — never `{**os.environ}` or `env=None`
 - [ ] Any new Drive download has a size guard before the download loop
-- [ ] Any new shared state accessed from `cl.make_async()` handlers is protected by a `threading.Lock`
+- [ ] Any new shared state accessed from `cl.make_async()` handlers is protected by a `threading.Lock` or `threading.RLock` (use `RLock` if any method holding the lock calls another method that also acquires it)
+- [ ] Any new connectivity check returns a plain bool, wraps all exceptions, and does not log or expose credentials on failure
