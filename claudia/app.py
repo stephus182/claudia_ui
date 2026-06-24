@@ -531,23 +531,38 @@ async def on_chat_start():
         author="ClaudIA",
     ).send()
 
-    # Kick off Flex sync in the background — only when IBKR connectivity is confirmed
-    # AND no successful sync has run in the last 4 hours (prevents lockout from restarts).
+    # Kick off Flex sync in the background — decision logic:
+    # 1. Data integrity check first (SQLite, no API): if data is current, skip entirely.
+    # 2. Only if stale: check logs for a recent attempt — avoid hammering API on restarts.
+    # 3. Only if stale AND no recent attempt: call Flex API.
     _should_sync = False
+    _skip_reason = ""
     if _flex_configured and not ibkr_offline:
         try:
-            last_syncs = await cl.make_async(toolkit._store.get_log)(n=1, event="flex_sync")
-            if last_syncs:
-                from datetime import datetime, timezone
-                last_ts = datetime.fromisoformat(last_syncs[0]["ts"]).replace(tzinfo=timezone.utc)
-                hours_since = (datetime.now(timezone.utc) - last_ts).total_seconds() / 3600
-                _should_sync = hours_since >= 4
-                if not _should_sync:
-                    log.info("Skipping startup Flex sync — last sync %.1fh ago", hours_since)
+            from datetime import datetime, timezone as _tz
+            _cov = await cl.make_async(toolkit._store.get_trade_date_coverage)()
+            if not _cov.get("stale") and _cov.get("newest"):
+                # Data is current — no API call needed
+                _skip_reason = f"data current (newest: {_cov['newest']}, {_cov['days_since_newest']}d ago)"
             else:
-                _should_sync = True  # never synced before
+                # Data is stale — check logs before hitting the API
+                last_attempts = await cl.make_async(toolkit._store.get_log)(
+                    n=1, event="flex_sync"
+                )
+                if last_attempts:
+                    last_ts = datetime.fromisoformat(last_attempts[0]["ts"]).replace(tzinfo=_tz.utc)
+                    hours_since = (datetime.now(_tz.utc) - last_ts).total_seconds() / 3600
+                    if hours_since < 4:
+                        _skip_reason = f"already attempted {hours_since:.1f}h ago"
+                    else:
+                        _should_sync = True
+                else:
+                    _should_sync = True  # never synced
         except Exception:
-            _should_sync = True  # if log check fails, attempt sync
+            _should_sync = True  # on any check failure, attempt sync
+
+    if _skip_reason:
+        log.info("Startup Flex sync skipped — %s", _skip_reason)
 
     if _should_sync:
         async def _background_flex_sync() -> None:
