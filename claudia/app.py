@@ -542,9 +542,9 @@ async def on_chat_start():
             from datetime import datetime, timezone as _tz
             _cov = await cl.make_async(toolkit._store.get_trade_date_coverage)()
             _days_old = _cov.get("days_since_newest", 999)
-            if _days_old == 0:
-                # Already have today's data — nothing to fetch
-                _skip_reason = f"data already current (newest: {_cov['newest']})"
+            if _days_old <= 1:
+                # Flex data lags 1 day — newest == yesterday is fully current
+                _skip_reason = f"data current (newest: {_cov['newest']}, Flex lag is 1 day)"
             else:
                 # Don't have today's data — check logs before hitting the API
                 last_attempts = await cl.make_async(toolkit._store.get_log)(
