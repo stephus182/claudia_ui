@@ -466,6 +466,22 @@ async def on_chat_start():
         status_block = "*IBKR gateway not connected — data will load when gateway is online.*"
         ibkr_offline = True
 
+    # Trade data status line for welcome message
+    _flex_configured = bool(
+        _config and _config.flex_token and _config.flex_query_id
+    )
+    if _flex_configured:
+        try:
+            cov = await cl.make_async(toolkit._store.get_trade_date_coverage)()
+            if cov["oldest"]:
+                trade_status = f"Trade history: {cov['oldest']} → {cov['newest']} ({cov['total_trades']} trades) — syncing…"
+            else:
+                trade_status = "Trade history: no data yet — syncing…"
+        except Exception:
+            trade_status = "Trade history: syncing…"
+    else:
+        trade_status = "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
+
     # Build action buttons for offline services
     actions = []
     if ibkr_offline:
@@ -487,11 +503,28 @@ async def on_chat_start():
         content=(
             f"**ClaudIA is ready.** {tv_status}\n\n"
             f"{status_block}\n\n"
+            f"_{trade_status}_\n\n"
             "_Ask me anything about your portfolio, markets, or strategy._"
         ),
         actions=actions or None,
         author="ClaudIA",
     ).send()
+
+    # Kick off Flex sync in the background — runs every session start so trade
+    # data is always current before the first question lands.
+    if _flex_configured:
+        async def _background_flex_sync() -> None:
+            try:
+                result, _ = await cl.make_async(toolkit.execute)("sync_flex_trades", {})
+                await cl.Message(content=f"✅ {result}", author="System").send()
+            except Exception as exc:
+                log.warning("Background Flex sync failed: %s", exc)
+                await cl.Message(
+                    content=f"⚠ Trade data sync failed: {exc}. Run `sync_flex_trades` manually.",
+                    author="System",
+                ).send()
+
+        _asyncio.create_task(_background_flex_sync())
 
 
 # ── Message handler ────────────────────────────────────────────────────────────
