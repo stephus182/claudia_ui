@@ -50,9 +50,24 @@ TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (cura
 | `XTSE` | TSX Toronto | Oil sands, gold miners — often moves with IBKR instruments |
 
 **What ClaudIA receives in the system prompt:**
-- Today's date and whether it is a trading day
-- Last and next trading day (NYSE reference)
-- Full holiday list for all 8 exchanges — so it can explain "why is volume low today?" proactively
+- Today's date and whether it is a trading day (NYSE reference)
+- Last and next trading day
+- Full holiday list for all 8 exchanges — proactive context for "why is volume low today?"
+- **Futures vs Securities distinction** — explicitly injected so ClaudIA never confuses CME and equity schedules:
+  - Most CME Globex products trade ~23h/day (Sun 5 PM CT → Fri 4 PM CT), daily 1h maintenance break 4–5 PM CT
+  - IBKR routes all CME products via Globex (electronic only — no pit sessions)
+  - **CME open when NYSE is closed**: MLK Day, Presidents Day, Memorial Day, Juneteenth, Labor Day, etc. — dynamically computed from exchange_calendars each session
+- **CME product group schedule** (`_FUTURES_SCHEDULE` in `store.py`):
+
+| Group | Exchange | Globex Hours (CT) | Key products |
+|---|---|---|---|
+| Equity Index | CME | Sun 5 PM – Fri 4 PM (~23h) | ES, NQ, RTY, YM |
+| Energy | NYMEX | Sun 5 PM – Fri 4 PM (~23h) | CL, NG, RB, HO |
+| Metals | COMEX | Sun 5 PM – Fri 4 PM (~23h) | GC, SI, HG |
+| Foreign Currency | CME | Sun 5 PM – Fri 4 PM (~23h) | 6E, 6J, 6B, 6A |
+| Interest Rates | CBOT | Sun 5 PM – Fri 4 PM (~23h) | ZN, ZB, ZF, ZT |
+| Agriculture/Grains | CBOT | Sun 7 PM – Fri 1:20 PM (~17h) | ZC, ZS, ZW — closes at 1:20 PM CT, **not 4 PM** |
+| Softs/Livestock | CME/CBOT | Varies — shorter than financials | LE, GF, HE, CC |
 
 **Performance (designed for zero marginal cost):**
 
