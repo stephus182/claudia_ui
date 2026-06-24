@@ -7,14 +7,17 @@ ClaudIA is a Chainlit-based trading assistant that gives you a persistent, princ
 ## Features
 
 - **Conversational IBKR access** — positions, P&L, live orders, account summary, market data, backtests, price alerts — all via natural language
+- **Full trade history** — 7-year backfill via IBKR Flex Queries; `sync_flex_trades` keeps it current; `get_trades source='store'` queries with no date limit
 - **Human-confirmed order staging** — ClaudIA proposes trades; you click a button → Touch ID → confirmation dialog. The LLM has no order-execution tools
 - **TradingView live integration** — reads your active chart, sets symbols/timeframes, compiles and injects PineScript directly into the Pine Editor
 - **Screenshot analysis** — paste any TradingView chart into chat for vision-based analysis (no Desktop required)
 - **Principle-guided responses** — your personal `docs/principles.md` is loaded as a system prompt; ClaudIA refuses proposals that violate your rules
 - **Persistent memory** — all sessions, decisions, and symbol observations stored in SQLite with FTS5 search ("what did I decide about NVDA last month?")
+- **GDrive sync** — `claudia.db` and context/principles docs auto-sync to Google Drive; pick up any session from any machine
 - **Hot-reload documents** — edit `context.md` or `principles.md` while a session is open; changes apply from the next message
 - **In-chat startup buttons** — "Start IBKR Gateway" and "Launch TradingView" action buttons appear when services are offline at session start
 - **Connectivity status bar** — live IBKR / GDrive / TradingView lights in the UI header, polled every 60s
+- **Session reports** — auto-generated Markdown report at session end: tools called, decisions, errors, connectivity state
 
 ---
 
@@ -95,6 +98,8 @@ claudia/order_flow.py       — cl.Action order staging → biometric gates
 claudia/alert_manager.py    — background price alert monitor
 claudia/status.py           — ConnectivityChecker: polls IBKR/GDrive/TV every 60s
 claudia/tradingview.py      — tradingview-mcp sidecar, CDP health, PineScript display
+claudia/gdrive_sync.py      — claudia.db + context/principles sync to Google Drive
+claudia/session_reporter.py — auto-generate session report at session end
     ↓                               ↓
 ibkr_core_mcp               tradingview-mcp (Node.js, localhost stdio)
 (local editable install)            ↓
@@ -111,13 +116,29 @@ IBKR Client Portal Gateway
 |---|---|
 | [`CLAUDE.md`](CLAUDE.md) | Developer guide: setup, env vars, architecture, hard rules |
 | [`SECURITY.md`](SECURITY.md) | Security model: order barriers, threat model, audit checklist |
+| [`docs/flex-query-setup.md`](docs/flex-query-setup.md) | IBKR Flex Query setup: token, query config, backfill, ongoing sync |
 | [`docs/tradingview-mcp-recovery.md`](docs/tradingview-mcp-recovery.md) | TradingView break patterns, recovery steps, CDP fallback |
+| [`docs/project-status.md`](docs/project-status.md) | Feature timeline, test coverage, live test plan and log |
+
+---
+
+## Data Stores
+
+| Store | Path | Contents |
+|---|---|---|
+| `claudia.db` | `data/claudia.db` | Sessions, messages, decisions, relationships, doc versions |
+| `store.db` | `~/.ibkr_core/store.db` | Trade history (Flex), position snapshots, backtests, alerts |
+
+`claudia.db` syncs to Google Drive at session end (when `GOOGLE_DRIVE_FOLDER_ID` is set).
+`store.db` is managed by `ibkr_core_mcp` and is never synced — it is rebuilt from Flex archives on any machine.
+
+Both databases are excluded from git. Run `PRAGMA integrity_check` to audit health.
 
 ---
 
 ## Testing
 
 ```bash
-pytest -m "not integration"   # unit tests (no IBKR gateway needed)
+pytest -m "not integration"   # 133 unit tests (no IBKR gateway needed)
 pytest                        # all tests (requires live IBKR gateway)
 ```
