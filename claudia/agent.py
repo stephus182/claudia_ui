@@ -133,8 +133,10 @@ def _build_system_prompt(
     context_prompt: str,
     doc_version: str | None = None,
     store: "ConversationStore | None" = None,
+    trade_context: str | None = None,
 ) -> str:
-    return _build_version_note(doc_version, store) + context_prompt + _SAFETY_BLOCK
+    trade_block = f"\n\n{trade_context}" if trade_context else ""
+    return _build_version_note(doc_version, store) + context_prompt + trade_block + _SAFETY_BLOCK
 
 
 def _history_to_messages(history: list[dict]) -> list[MessageParam]:
@@ -171,6 +173,7 @@ class ClaudIAAgent:
         extra_tools: list[dict] | None = None,
         tv_bridge: "TradingViewBridge | None" = None,
         doc_version: str | None = None,
+        trade_context: str | None = None,
     ) -> None:
         self._toolkit = toolkit
         self._store = store
@@ -180,6 +183,7 @@ class ClaudIAAgent:
         self._extra_tools = extra_tools or []
         self._tv_bridge = tv_bridge
         self._doc_version = doc_version
+        self._trade_context = trade_context
         self._tv_tool_names: set[str] = {t["name"] for t in self._extra_tools}
         self._client = AsyncAnthropic()
 
@@ -216,7 +220,8 @@ class ClaudIAAgent:
                 messages[-1] = {"role": "user", "content": content}
 
         system = _build_system_prompt(
-            self._loader.load_system_prompt(), self._doc_version, self._store
+            self._loader.load_system_prompt(), self._doc_version, self._store,
+            self._trade_context,
         )
 
         # Multi-turn tool loop
