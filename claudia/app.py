@@ -466,21 +466,37 @@ async def on_chat_start():
         status_block = "*IBKR gateway not connected — data will load when gateway is online.*"
         ibkr_offline = True
 
-    # Trade data status line for welcome message
+    # Trade data status line for welcome message + system prompt context
     _flex_configured = bool(
         _config and _config.flex_token and _config.flex_query_id
     )
+    trade_context: str | None = None
     if _flex_configured:
         try:
             cov = await cl.make_async(toolkit._store.get_trade_date_coverage)()
             if cov["oldest"]:
                 trade_status = f"Trade history: {cov['oldest']} → {cov['newest']} ({cov['total_trades']} trades) — syncing…"
+                stale_note = f" ⚠ Stale ({cov['days_since_newest']}d old)." if cov.get("stale") else ""
+                gap_note = f" {len(cov['gaps'])} gap(s) detected — run check_flex_coverage for details." if cov.get("gaps") else " Coverage verified — no gaps."
+                trade_context = (
+                    f"## Trade History (local store)\n"
+                    f"{cov['total_trades']} executions from {cov['oldest']} to {cov['newest']}.{stale_note}{gap_note}\n"
+                    f"Use `get_trades` (default: source='store') for any trade analysis beyond 6 days.\n"
+                    f"Use `check_flex_coverage` to inspect coverage gaps.\n"
+                    f"Use `sync_flex_trades` to pull the latest 30 days from IBKR."
+                )
             else:
                 trade_status = "Trade history: no data yet — syncing…"
+                trade_context = (
+                    "## Trade History (local store)\n"
+                    "No trade data yet in the local store. Run `sync_flex_trades` to import recent data, "
+                    "or `sync_flex_archive` to import historical XMLs from Drive."
+                )
         except Exception:
             trade_status = "Trade history: syncing…"
     else:
         trade_status = "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
+    agent._trade_context = trade_context
 
     # Build action buttons for offline services
     actions = []
