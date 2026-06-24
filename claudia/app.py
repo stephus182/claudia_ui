@@ -526,9 +526,9 @@ async def on_chat_start():
         author="ClaudIA",
     ).send()
 
-    # Kick off Flex sync in the background — runs every session start so trade
-    # data is always current before the first question lands.
-    if _flex_configured:
+    # Kick off Flex sync in the background — only when IBKR connectivity is confirmed,
+    # runs every session start so trade data is always current before the first question lands.
+    if _flex_configured and not ibkr_offline:
         async def _background_flex_sync() -> None:
             try:
                 result, _ = await cl.make_async(toolkit.execute)("sync_flex_trades", {})
