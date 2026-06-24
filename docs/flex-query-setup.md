@@ -5,6 +5,22 @@ access. One comprehensive Activity Statement query covers all current and planne
 
 ---
 
+## Trade Data Architecture
+
+ClaudIA uses two complementary data sources — each covers what the other cannot:
+
+| Source | Tool | Coverage | Latency |
+|---|---|---|---|
+| IBKR Flex Web Service | `sync_flex_trades`, `get_trades source='store'` | Full history (years) — settled trades only | T+1 lag — yesterday at best |
+| IBKR Client Portal REST API | `get_trades source='live'` | Last 6 days — includes today's intraday | Real-time |
+
+**Key rule:** Flex never has today's trades. The most current Flex data is always yesterday's settled activity. Today's intraday executions are only available via the live API.
+
+**Startup sync logic:**
+- Skip if `days_since_newest <= 1` — data is fully current (Flex can't give anything newer)
+- Skip if last sync attempt was < 4 hours ago — avoid API lockout from repeated restarts
+- Sync otherwise — pulls last 30 days, upserts idempotently, logs the event
+
 ## Why Flex Queries
 
 The IBKR Client Portal REST API returns at most **6 days** of trade history. Everything
