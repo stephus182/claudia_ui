@@ -32,6 +32,32 @@ TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (cura
 
 ---
 
+## Trade Data Architecture
+
+Two complementary sources — each covers what the other cannot:
+
+| Source | Tool | Coverage | Latency |
+|---|---|---|---|
+| IBKR Flex Web Service | `sync_flex_trades` / `get_trades source='store'` | Full history (years), settled trades | T+1 — yesterday at best |
+| IBKR Client Portal REST API | `get_trades source='live'` | Last 6 days, today's intraday | Real-time |
+
+Flex never has today's trades. The live API fills that gap.
+
+**Startup sync decision** (in `app.py → _background_flex_sync`):
+1. `days_since_newest <= 1` → skip (Flex can't give anything newer than yesterday)
+2. Last `flex_sync` log entry < 4h ago → skip (recent attempt, avoid API lockout)
+3. Otherwise → sync, log result, back up `store.db` to Drive `account_data/`
+
+**Data stores:**
+- `~/.ibkr_core/store.db` — SQLite, all Flex-synced trades (1029 rows, 2020-present)
+- `data/claudia.db` — SQLite, conversation history, sessions, decisions
+- Drive `market_data/` — Parquet OHLCV cache
+- Drive `account_data/` — Flex XML archives, `store.db` backup, `trade_coverage.json`
+
+See [`docs/flex-query-setup.md`](docs/flex-query-setup.md) for full setup and troubleshooting.
+
+---
+
 ## GDrive Sync
 
 `claudia/gdrive_sync.py` — `GDriveSync` class, auto-enabled when `GOOGLE_DRIVE_FOLDER_ID` is set. No new env vars required.
