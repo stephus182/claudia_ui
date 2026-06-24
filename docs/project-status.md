@@ -33,6 +33,11 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-23 | `f036b9b` | IBKR Flex pipeline — `sync_flex_trades`, `sync_flex_archive`, `import_flex_file`, `check_flex_coverage` tools; 7-year backfill imported (1029 trades, 2020-04-15 → 2026-06-22, integrity PASS) |
 | 2026-06-23 | `81075cf` | Flex startup sync — background task gated on IBKR connectivity; trade history injected into system prompt; integrity fallback on sync failure; last-sync date shown when offline |
 | 2026-06-23 | — | Drive scope upgraded to full `drive`; `account_data/` subfolder added; `trade_coverage.json` archived to Drive |
+| 2026-06-24 | `7293cb9` | store.db backed up to Drive `account_data/` after each successful Flex sync |
+| 2026-06-24 | `0e92450` | Code review cleanup — 10 items: 3 bugs (json.dumps crash, reversed() SQL, IntegrityError), 5 redundancies, 1 dead code, 1 robustness |
+| 2026-06-24 | `3c36ae4` | ibkr_core_mcp — extract `_get_accounts()` + `_resolve_conid()` helpers; remove 3 duplicate contract lookups |
+| 2026-06-24 | `2a8e5e9` | README updated — GDrive, Flex history, session reports, Data Stores section, flex-query-setup.md link |
+| 2026-06-24 | — | Store audit — claudia.db (37 sessions, 218 msgs, integrity OK); store.db (1029 trades, 64 symbols, integrity OK) |
 
 ---
 
