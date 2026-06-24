@@ -501,7 +501,7 @@ async def on_chat_start():
             trade_status = "Trade history: syncing…"
     else:
         trade_status = "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
-    # Append market calendar context (holidays, last/next trading day)
+    # Append market calendar context (holidays, last/next trading day, futures schedule)
     try:
         _mkt = await cl.make_async(toolkit._store.get_market_calendar_context)()
         if _mkt:
@@ -511,18 +511,35 @@ async def on_chat_start():
             _holiday_lines = []
             for xcode, holidays in _mkt.get("holidays_by_exchange", {}).items():
                 name = _exchange_labels.get(xcode, xcode)
-                if holidays:
-                    _holiday_lines.append(f"{name}: {', '.join(holidays)}")
-                else:
-                    _holiday_lines.append(f"{name}: no holidays this year/next")
+                _holiday_lines.append(
+                    f"{name}: {', '.join(holidays)}" if holidays else f"{name}: no holidays this year/next"
+                )
+
+            _fut = _mkt.get("futures", {})
+            _cme_extra = _fut.get("cme_open_nyse_closed", [])
+            _fut_groups = _fut.get("product_groups", {})
+            _group_lines = []
+            for _gname, _g in _fut_groups.items():
+                _syms = ", ".join(_g["products"][:4]) + ("…" if len(_g["products"]) > 4 else "")
+                _group_lines.append(
+                    f"  {_gname.replace('_', ' ').title()} ({_g['exchange']}): "
+                    f"{_g['globex_hours_ct']} [{_syms}]"
+                    + (f" — {_g['note']}" if "note" in _g else "")
+                )
+
             _cal_block = (
                 f"\n\n## Market Calendar\n"
-                f"Today: {_mkt['today']} ({'trading day' if _mkt['is_trading_day'] else 'non-trading day'} on {_mkt['primary_exchange']}).\n"
-                f"Last trading day: {_mkt['last_trading_day']}. "
-                f"Next trading day: {_mkt['next_trading_day']}.\n"
-                f"Full-year exchange holidays (current + next year):\n" +
-                "\n".join(f"  - {line}" for line in _holiday_lines) + "\n"
-                f"Always consider market holidays when discussing order timing, settlement, or data availability."
+                f"Today: {_mkt['today']} ({'trading day' if _mkt['is_trading_day'] else 'non-trading day'} on NYSE).\n"
+                f"Last trading day (NYSE): {_mkt['last_trading_day']}. "
+                f"Next trading day (NYSE): {_mkt['next_trading_day']}.\n\n"
+                f"### Exchange Holidays (current + next year)\n" +
+                "\n".join(f"  - {line}" for line in _holiday_lines) + "\n\n"
+                f"### Futures vs Securities — Key Distinction\n"
+                f"{_fut.get('note', '')}\n"
+                f"Maintenance break: {_fut.get('maintenance_break_ct', 'N/A')}\n"
+                f"CME open when NYSE is closed: {', '.join(_cme_extra) if _cme_extra else 'none this period'}\n\n"
+                f"### CME Globex Product Schedule (all times CT)\n" +
+                "\n".join(_group_lines) + "\n"
             )
             trade_context = (trade_context or "") + _cal_block
     except Exception:
