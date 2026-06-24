@@ -84,7 +84,7 @@ def _strip_order_proposal(text: str) -> tuple[str, dict | None]:
     return clean, proposal
 
 
-_LOCAL_TOOL_NAMES = {"get_doc_version", "list_doc_versions"}
+_LOCAL_TOOL_NAMES = {"get_doc_version", "list_doc_versions", "search_past_conversations"}
 
 _LOCAL_TOOLS: list[dict] = [
     {
