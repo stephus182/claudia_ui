@@ -278,7 +278,8 @@ class ClaudIAAgent:
             for tc in tool_calls:
                 try:
                     inp = json.loads(tc["input_json"]) if tc["input_json"] else {}
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as exc:
+                    log.warning("Tool %r: could not parse input JSON (%s) — sending empty input", tc["name"], exc)
                     inp = {}
                 tc["input"] = inp
                 assistant_content.append({

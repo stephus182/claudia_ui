@@ -103,6 +103,12 @@ class GDriveSync:
             log.info("Created 'db/' subfolder in Drive for claudia.db")
         return self._resolved_db_folder
 
+    @staticmethod
+    def _download_chunked(downloader: "MediaIoBaseDownload") -> None:
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
     def _find_file(self, name: str, folder_id: str | None = None) -> str | None:
         """Return Drive file ID for name in folder_id (default: root folder), or None."""
         svc = self._get_service()
@@ -142,9 +148,7 @@ class GDriveSync:
                 downloader = MediaIoBaseDownload(
                     tmp_fd, svc.files().get_media(fileId=file_id)
                 )
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
+                self._download_chunked(downloader)
                 tmp_fd.flush()
                 tmp_fd.close()
 
@@ -229,9 +233,7 @@ class GDriveSync:
                 return None
             buf = io.BytesIO()
             downloader = MediaIoBaseDownload(buf, svc.files().get_media(fileId=file_id))
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
+            self._download_chunked(downloader)
             return buf.getvalue().decode("utf-8", errors="replace")
         except Exception as exc:
             log.warning(
