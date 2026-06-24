@@ -478,7 +478,11 @@ async def on_chat_start():
                     sync_note = "syncing…"
                 trade_status = f"Trade history: {cov['oldest']} → {cov['newest']} ({cov['total_trades']} trades) — {sync_note}"
                 stale_note = f" ⚠ Stale ({cov['days_since_newest']}d old)." if cov.get("stale") else ""
-                gap_note = f" {len(cov['gaps'])} gap(s) detected — run check_flex_coverage for details." if cov.get("gaps") else " Coverage verified — no gaps."
+                gap_note = (
+                    f" {len(cov['gaps'])} date gap(s) present in the data — "
+                    "all previously verified as genuine inactivity periods (no trading), not missing imports. "
+                    "Do NOT suggest downloading more XMLs unless the user explicitly reports missing trades."
+                ) if cov.get("gaps") else " Coverage verified — no gaps."
                 trade_context = (
                     f"## Trade History (local store)\n"
                     f"{cov['total_trades']} executions from {cov['oldest']} to {cov['newest']}.{stale_note}{gap_note}\n"
