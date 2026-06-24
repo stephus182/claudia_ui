@@ -532,13 +532,24 @@ async def on_chat_start():
         async def _background_flex_sync() -> None:
             try:
                 result, _ = await cl.make_async(toolkit.execute)("sync_flex_trades", {})
+                # sync_flex_trades already includes coverage in its result
                 await cl.Message(content=f"✅ {result}", author="System").send()
             except Exception as exc:
                 log.warning("Background Flex sync failed: %s", exc)
-                await cl.Message(
-                    content=f"⚠ Trade data sync failed: {exc}. Run `sync_flex_trades` manually.",
-                    author="System",
-                ).send()
+                # Sync failed — still run integrity check so data status is known
+                try:
+                    cov_result, _ = await cl.make_async(toolkit.execute)(
+                        "check_flex_coverage", {}
+                    )
+                    await cl.Message(
+                        content=f"⚠ Sync failed: {exc}. Run `sync_flex_trades` manually.\n\n{cov_result}",
+                        author="System",
+                    ).send()
+                except Exception:
+                    await cl.Message(
+                        content=f"⚠ Trade data sync failed: {exc}. Run `sync_flex_trades` manually.",
+                        author="System",
+                    ).send()
 
         _asyncio.create_task(_background_flex_sync())
 
