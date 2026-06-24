@@ -84,8 +84,6 @@ def _strip_order_proposal(text: str) -> tuple[str, dict | None]:
     return clean, proposal
 
 
-_LOCAL_TOOL_NAMES = {"get_doc_version", "list_doc_versions", "search_past_conversations"}
-
 _LOCAL_TOOLS: list[dict] = [
     {
         "name": "list_doc_versions",
@@ -131,6 +129,8 @@ _LOCAL_TOOLS: list[dict] = [
         },
     },
 ]
+
+_LOCAL_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in _LOCAL_TOOLS)
 
 
 def _build_version_note(doc_version: str | None, store: "ConversationStore | None") -> str:
