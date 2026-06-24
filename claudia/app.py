@@ -501,6 +501,32 @@ async def on_chat_start():
             trade_status = "Trade history: syncing…"
     else:
         trade_status = "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
+    # Append market calendar context (holidays, last/next trading day)
+    try:
+        _mkt = await cl.make_async(toolkit._store.get_market_calendar_context)()
+        if _mkt:
+            _exchange_labels = {"XNYS": "NYSE", "CME": "CME Futures", "XLON": "LSE London",
+                                "XETR": "Xetra Frankfurt", "XTKS": "TSE Tokyo",
+                                "XHKG": "HKEX Hong Kong", "XASX": "ASX Sydney", "XTSE": "TSX Toronto"}
+            _holiday_lines = []
+            for xcode, holidays in _mkt.get("holidays_by_exchange", {}).items():
+                name = _exchange_labels.get(xcode, xcode)
+                if holidays:
+                    _holiday_lines.append(f"{name}: {', '.join(holidays)}")
+                else:
+                    _holiday_lines.append(f"{name}: no holidays this year/next")
+            _cal_block = (
+                f"\n\n## Market Calendar\n"
+                f"Today: {_mkt['today']} ({'trading day' if _mkt['is_trading_day'] else 'non-trading day'} on {_mkt['primary_exchange']}).\n"
+                f"Last trading day: {_mkt['last_trading_day']}. "
+                f"Next trading day: {_mkt['next_trading_day']}.\n"
+                f"Full-year exchange holidays (current + next year):\n" +
+                "\n".join(f"  - {line}" for line in _holiday_lines) + "\n"
+                f"Always consider market holidays when discussing order timing, settlement, or data availability."
+            )
+            trade_context = (trade_context or "") + _cal_block
+    except Exception:
+        pass
     agent._trade_context = trade_context
 
     # Build action buttons for offline services + always-present End Session
