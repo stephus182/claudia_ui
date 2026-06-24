@@ -29,7 +29,7 @@ from ibkr_core_mcp.config import Config
 
 log = logging.getLogger(__name__)
 
-_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+_SCOPES = ["https://www.googleapis.com/auth/drive"]
 _DB_FILENAME = "claudia.db"
 
 
