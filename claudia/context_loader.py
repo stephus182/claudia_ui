@@ -139,7 +139,7 @@ class _DocChangeHandler(FileSystemEventHandler):
 
     def __init__(self, watched: set[Path], on_change: Callable[[str], None]):
         super().__init__()
-        self._watched = {str(p) for p in watched}
+        self._watched = {str(p.resolve()) for p in watched}
         self._on_change = on_change
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
