@@ -413,6 +413,7 @@ async def on_chat_start():
             gateway_url=cfg.gateway_url,
             gdrive_token_file=cfg.gdrive_token_file,
             tv_bridge=_tv_bridge,
+            gdrive_sync=_gdrive_sync,
         )
     # Call unconditionally — start() is idempotent and restarts a cancelled task
     _connectivity_checker.start()
