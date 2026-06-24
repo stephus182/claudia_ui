@@ -56,9 +56,8 @@ chmod 600 docs/context.md docs/principles.md
 
 # 5. TradingView sidecar (optional — skip if using screenshot mode only)
 git clone https://github.com/tradesdontlie/tradingview-mcp ~/.tradingview-mcp
-cd ~/.tradingview-mcp && npm install && npm run build
-cd -
-./scripts/archive-tv-mcp.sh   # snapshot the working build
+cd ~/.tradingview-mcp && npm install && cd -   # pure JS — no build step
+./scripts/archive-tv-mcp.sh   # snapshot the working version
 
 # 6. Launch
 ./start-claudia.sh             # recommended: starts IBKR gateway + ClaudIA
@@ -140,6 +139,6 @@ Both databases are excluded from git. Run `PRAGMA integrity_check` to audit heal
 ## Testing
 
 ```bash
-pytest -m "not integration"   # 133 unit tests (no IBKR gateway needed)
+pytest -m "not integration"   # 136 unit tests (no IBKR gateway needed)
 pytest                        # all tests (requires live IBKR gateway)
 ```
