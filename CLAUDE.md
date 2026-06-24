@@ -331,14 +331,19 @@ archive if the live install at `~/.tradingview-mcp/` is missing or broken.
 
 | Service | Check method | Transitions |
 |---|---|---|
-| IBKR | HTTP GET `/tickle` | Sends "reconnected" / "disconnected" chat alert |
+| IBKR | `GET /tickle` → parse `iserver.authStatus.authenticated && connected` | Sends "reconnected" / "disconnected" chat alert |
 | GDrive | `GDriveSync.ping()` — live `files().list` round-trip | Sends alert on state change |
 | TradingView | TCP connect to port 9222 | Sends alert on state change |
 
-`GDriveSync.ping()` is called every poll cycle when Drive sync is enabled. Falls back to
-token-file existence check if `GDriveSync` was not wired (e.g., `GOOGLE_DRIVE_FOLDER_ID`
-not set). This means the green GDrive light reflects real API reachability, not just
-credential presence.
+**IBKR:** `/tickle` returns HTTP 200 even when the session is not authenticated (e.g. before
+login or after timeout). The check parses `iserver.authStatus` from the JSON body and
+requires both `authenticated: true` and `connected: true`. Side effect: the `/tickle` call
+also resets the IBKR session keepalive timer, so polling every 60s prevents auto-logout.
+
+**GDrive:** `GDriveSync.ping()` is called every poll cycle when Drive sync is enabled. Falls
+back to token-file existence check if `GDriveSync` was not wired (e.g.
+`GOOGLE_DRIVE_FOLDER_ID` not set). The green light reflects real API reachability, not
+just credential presence.
 
 The cached status is served by `GET /api/status` (used by the UI connectivity lights).
 TradingView status is `UNKNOWN` (gray) when no bridge is configured, `ERROR` (red) when

@@ -77,7 +77,10 @@ class ConnectivityChecker:
                 timeout=3,
                 verify=False,  # IBKR gateway uses a self-signed cert on localhost
             )
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                return False
+            auth = resp.json().get("iserver", {}).get("authStatus", {})
+            return bool(auth.get("authenticated") and auth.get("connected"))
         except Exception:
             return False
 

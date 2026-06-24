@@ -1,9 +1,29 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import requests as req
 
 from claudia.status import ConnectivityChecker, ServiceStatus
+
+
+def _ibkr_ok_response():
+    """Mock response: gateway up, session authenticated and connected."""
+    m = MagicMock()
+    m.status_code = 200
+    m.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": True, "connected": True}}
+    }
+    return m
+
+
+def _ibkr_unauthed_response():
+    """Mock response: gateway up but session not authenticated (e.g. before login)."""
+    m = MagicMock()
+    m.status_code = 200
+    m.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": False}}
+    }
+    return m
 
 
 @pytest.fixture
@@ -15,8 +35,7 @@ def checker(tmp_path):
 
 
 def test_check_ibkr_ok(checker):
-    with patch("claudia.status.requests.get") as mock_get:
-        mock_get.return_value.status_code = 200
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()) as mock_get:
         assert checker.check_ibkr() is True
         mock_get.assert_called_once_with(
             "https://localhost:5055/v1/api/tickle",
@@ -25,9 +44,16 @@ def test_check_ibkr_ok(checker):
         )
 
 
+def test_check_ibkr_unauthenticated(checker):
+    """Gateway up but session not logged in → False."""
+    with patch("claudia.status.requests.get", return_value=_ibkr_unauthed_response()):
+        assert checker.check_ibkr() is False
+
+
 def test_check_ibkr_non_200(checker):
-    with patch("claudia.status.requests.get") as mock_get:
-        mock_get.return_value.status_code = 401
+    m = MagicMock()
+    m.status_code = 401
+    with patch("claudia.status.requests.get", return_value=m):
         assert checker.check_ibkr() is False
 
 
@@ -126,10 +152,9 @@ def checker_with_token(tmp_path):
 @pytest.mark.asyncio
 async def test_run_checks_unknown_to_ok_no_alert(checker_with_token):
     """UNKNOWN → OK at startup: _send_alert is called but no Chainlit message sent."""
-    with patch("claudia.status.requests.get") as mock_get, \
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()), \
          patch("chainlit.Message") as mock_msg:
         mock_msg.return_value.send = AsyncMock()
-        mock_get.return_value.status_code = 200
         await checker_with_token._run_checks()
 
     assert checker_with_token.get_status()["ibkr"] == ServiceStatus.OK
@@ -175,9 +200,8 @@ async def test_run_checks_error_to_ok_emits_reconnect(checker):
     checker._status["ibkr"] = ServiceStatus.ERROR
     checker._status["gdrive"] = ServiceStatus.ERROR
 
-    with patch("claudia.status.requests.get") as mock_get, \
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()), \
          patch.object(checker, "_send_alert", new_callable=AsyncMock) as mock_alert:
-        mock_get.return_value.status_code = 200
         # gdrive token doesn't exist in base checker fixture → stays ERROR
         await checker._run_checks()
 
@@ -204,9 +228,8 @@ async def test_run_checks_repeated_error_no_extra_alert(checker_with_token):
 @pytest.mark.asyncio
 async def test_run_checks_tv_unknown_when_no_bridge(checker):
     """TV without a bridge stays UNKNOWN, not ERROR."""
-    with patch("claudia.status.requests.get") as mock_get, \
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()), \
          patch.object(checker, "_send_alert", new_callable=AsyncMock):
-        mock_get.return_value.status_code = 200
         await checker._run_checks()
 
     assert checker.get_status()["tv"] == ServiceStatus.UNKNOWN
@@ -215,9 +238,8 @@ async def test_run_checks_tv_unknown_when_no_bridge(checker):
 @pytest.mark.asyncio
 async def test_stop_cancels_task(checker):
     """stop() cancels the poll loop; start() can restart it."""
-    with patch("claudia.status.requests.get") as mock_get, \
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()), \
          patch("chainlit.Message.send", AsyncMock()):
-        mock_get.return_value.status_code = 200
         checker.start()
         assert checker._task is not None
         assert not checker._task.done()
