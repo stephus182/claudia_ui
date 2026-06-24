@@ -124,6 +124,15 @@ class GDriveSync:
         files = results.get("files", [])
         return files[0]["id"] if files else None
 
+    def ping(self) -> bool:
+        """Return True if Drive API is reachable and credentials are valid."""
+        try:
+            svc = self._get_service()
+            svc.files().list(pageSize=1, fields="files(id)").execute()
+            return True
+        except Exception:
+            return False
+
     def download_db(self, local_path: Path) -> bool:
         """
         Download claudia.db from Drive to local_path.

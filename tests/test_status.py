@@ -41,15 +41,32 @@ def test_check_ibkr_timeout(checker):
         assert checker.check_ibkr() is False
 
 
-def test_check_gdrive_file_exists(checker, tmp_path):
+def test_check_gdrive_falls_back_to_token_file_when_no_sync(checker, tmp_path):
     token = tmp_path / "token.json"
     token.write_text("{}")
     checker._gdrive_token_file = token
     assert checker.check_gdrive() is True
 
 
-def test_check_gdrive_file_missing(checker, tmp_path):
+def test_check_gdrive_token_file_missing_no_sync(checker, tmp_path):
     checker._gdrive_token_file = tmp_path / "missing.json"
+    assert checker.check_gdrive() is False
+
+
+def test_check_gdrive_uses_ping_when_sync_provided(checker):
+    from unittest.mock import MagicMock
+    sync = MagicMock()
+    sync.ping.return_value = True
+    checker._gdrive_sync = sync
+    assert checker.check_gdrive() is True
+    sync.ping.assert_called_once()
+
+
+def test_check_gdrive_ping_failure_returns_false(checker):
+    from unittest.mock import MagicMock
+    sync = MagicMock()
+    sync.ping.return_value = False
+    checker._gdrive_sync = sync
     assert checker.check_gdrive() is False
 
 

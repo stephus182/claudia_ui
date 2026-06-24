@@ -20,6 +20,7 @@ import requests
 from claudia.tradingview import _TV_DEBUG_PORT
 
 if TYPE_CHECKING:
+    from claudia.gdrive_sync import GDriveSync
     from claudia.tradingview import TradingViewBridge
 
 log = logging.getLogger(__name__)
@@ -51,10 +52,12 @@ class ConnectivityChecker:
         gateway_url: str,
         gdrive_token_file: Path,
         tv_bridge: Optional["TradingViewBridge"] = None,
+        gdrive_sync: Optional["GDriveSync"] = None,
     ) -> None:
         self._gateway_url = gateway_url.rstrip("/")
         self._gdrive_token_file = Path(gdrive_token_file)
         self._tv_bridge = tv_bridge
+        self._gdrive_sync = gdrive_sync
         self._status: dict[str, ServiceStatus] = {
             "ibkr":   ServiceStatus.UNKNOWN,
             "gdrive": ServiceStatus.UNKNOWN,
@@ -79,6 +82,8 @@ class ConnectivityChecker:
             return False
 
     def check_gdrive(self) -> bool:
+        if self._gdrive_sync is not None:
+            return self._gdrive_sync.ping()
         return self._gdrive_token_file.exists()
 
     def check_tradingview(self) -> bool:
