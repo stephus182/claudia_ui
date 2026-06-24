@@ -38,22 +38,24 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-24 | `3c36ae4` | ibkr_core_mcp — extract `_get_accounts()` + `_resolve_conid()` helpers; remove 3 duplicate contract lookups |
 | 2026-06-24 | `2a8e5e9` | README updated — GDrive, Flex history, session reports, Data Stores section, flex-query-setup.md link |
 | 2026-06-24 | — | Store audit — claudia.db (37 sessions, 218 msgs, integrity OK); store.db (1029 trades, 64 symbols, integrity OK) |
+| 2026-06-24 | `9780963` | Bug fix — `GDriveSync.upload_db` deadlock: `threading.Lock` → `RLock`; removed blocking `PRAGMA wal_checkpoint(TRUNCATE)` that hung while session DB was open |
+| 2026-06-24 | `3170595` | **GDrive status light now reflects real API connectivity** — `check_gdrive()` was a token-file existence check; replaced with `GDriveSync.ping()` (live `files().list` round-trip); wired through `ConnectivityChecker` at startup |
 
 ---
 
 ## Test Coverage
 
-**Suite:** 133 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
+**Suite:** 135 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
 
 | Module | Tests | Notes |
 |---|---|---|
 | `conversation_store.py` | 25 | Schema, CRUD, FTS5 search, decisions, relationships, doc_versions |
 | `agent.py` | 22 | Strip proposal, system prompt, history mapping, version note, local tools, decisions, TV bridge |
-| `status.py` | 19 | IBKR/GDrive/TV connectivity checks, state transitions, /api/status |
+| `status.py` | 21 | IBKR/GDrive/TV connectivity checks, state transitions, /api/status; GDrive ping path |
 | `tradingview.py` | 17 | All 6 binary discovery candidates, CDP check, tool filtering, env allowlist |
 | `order_flow.py` | 14 | Format summary (4), execute_staged_order success/errors/gates/limit price (10) |
 | `context_loader.py` | 14 | Load, hash, watchdog hot-reload, Drive override, version registration |
-| `gdrive_sync.py` | 13 | Download DB, upload DB (lock), read_text (size guard), chmod |
+| `gdrive_sync.py` | 14 | Download DB, upload DB (RLock, no WAL block), read_text (size guard), chmod, ping() |
 | Security regressions | 9 | One test per 2026-06-12 audit finding — these must stay green |
 | `app.py` | **0** | Chainlit session wiring — not unit-testable; covered by live tests below |
 
