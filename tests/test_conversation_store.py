@@ -108,14 +108,14 @@ def test_get_last_context_hash_no_sessions(tmp_path):
     assert store.get_last_context_hash() is None
 
 
-def test_get_last_context_hash_no_completed_sessions(tmp_path):
+def test_get_last_context_hash_open_session_returned(tmp_path):
     store = ConversationStore(tmp_path / "claudia.db")
     store.create_session("sess-open", context_hash="abc123")
-    # Session not closed — ended_at is NULL
-    assert store.get_last_context_hash() is None
+    # Open session is still returned — we track all sessions, not just closed ones
+    assert store.get_last_context_hash() == "abc123"
 
 
-def test_get_last_context_hash_returns_most_recent_completed(tmp_path):
+def test_get_last_context_hash_returns_most_recent_started(tmp_path):
     store = ConversationStore(tmp_path / "claudia.db")
     store.create_session("sess-1", context_hash="hash-old")
     store.close_session("sess-1")
@@ -124,13 +124,13 @@ def test_get_last_context_hash_returns_most_recent_completed(tmp_path):
     assert store.get_last_context_hash() == "hash-new"
 
 
-def test_get_last_context_hash_ignores_open_session(tmp_path):
+def test_get_last_context_hash_includes_open_session(tmp_path):
     store = ConversationStore(tmp_path / "claudia.db")
-    store.create_session("sess-closed", context_hash="hash-closed")
+    store.create_session("sess-closed", context_hash="hash-old")
     store.close_session("sess-closed")
-    store.create_session("sess-open", context_hash="hash-open")
-    # Open session has no ended_at — only closed session is returned
-    assert store.get_last_context_hash() == "hash-closed"
+    store.create_session("sess-open", context_hash="hash-new")
+    # Open session is most recently started — it should be returned
+    assert store.get_last_context_hash() == "hash-new"
 
 
 # ── Doc versions ──────────────────────────────────────────────────────────────
