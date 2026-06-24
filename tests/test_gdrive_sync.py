@@ -129,29 +129,18 @@ def test_upload_db_drive_error_does_not_raise(sync, tmp_path):
         sync.upload_db(db)  # must not raise
 
 
-def test_upload_db_runs_wal_checkpoint(sync, tmp_path):
+def test_upload_db_creates_file_when_not_on_drive(sync, tmp_path):
     db = tmp_path / "claudia.db"
-    real_conn = sqlite3.connect(str(db))
-    real_conn.commit()
-    real_conn.close()
-
-    executed_pragmas = []
-
-    class FakeConn:
-        def execute(self, sql):
-            executed_pragmas.append(sql)
-        def close(self):
-            pass
+    sqlite3.connect(str(db)).close()
 
     svc = MagicMock()
     with patch.object(sync, "_find_file", return_value=None), \
          patch.object(sync, "_get_service", return_value=svc), \
-         patch("claudia.gdrive_sync.sqlite3") as mock_sqlite3, \
+         patch.object(sync, "_resolve_db_folder", return_value="folder-id"), \
          patch("claudia.gdrive_sync.MediaFileUpload"):
-        mock_sqlite3.connect.return_value = FakeConn()
         sync.upload_db(db)
 
-    assert any("wal_checkpoint" in p.lower() for p in executed_pragmas)
+    svc.files().create.assert_called_once()
 
 
 # ── read_text ─────────────────────────────────────────────────────────────────
