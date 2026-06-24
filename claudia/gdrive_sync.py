@@ -40,7 +40,7 @@ class GDriveSync:
         self._config = config
         self._service: Any = None
         self._resolved_db_folder: str = ""
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def _get_service(self) -> Any:
         with self._lock:
@@ -188,13 +188,6 @@ class GDriveSync:
             log.warning("GDriveSync.upload_db: %s not found — nothing to upload", local_path)
             return
         try:
-            # Checkpoint WAL so the main DB file contains all committed data
-            conn = sqlite3.connect(str(local_path))
-            try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            finally:
-                conn.close()
-
             svc = self._get_service()
             db_folder = self._resolve_db_folder()
             media = MediaFileUpload(str(local_path), mimetype="application/x-sqlite3")
