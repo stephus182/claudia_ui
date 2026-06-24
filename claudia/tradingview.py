@@ -176,7 +176,6 @@ class TradingViewBridge:
         self._session: ClientSession | None = None
         self._tools: list[dict] = []
         self._curated_tools: list[dict] = []
-        self._process: subprocess.Popen | None = None
         self._cm = None  # async context manager for stdio_client
 
     async def start(self) -> None:

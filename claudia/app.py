@@ -229,19 +229,15 @@ async def api_status():
 _ASSETS = Path(__file__).parent / "assets"
 
 
-@_server_app.get("/cl/custom.css")
-async def serve_css():
-    return Response((_ASSETS / "custom.css").read_bytes(), media_type="text/css")
+def _static_route(filename: str, media_type: str):
+    async def _handler():
+        return Response((_ASSETS / filename).read_bytes(), media_type=media_type)
+    _handler.__name__ = f"serve_{filename.replace('.', '_').replace('-', '_')}"
+    return _handler
 
-
-@_server_app.get("/cl/custom.js")
-async def serve_js():
-    return Response((_ASSETS / "custom.js").read_bytes(), media_type="application/javascript")
-
-
-@_server_app.get("/cl/claudia-logo.png")
-async def serve_logo():
-    return Response((_ASSETS / "claudia-logo.png").read_bytes(), media_type="image/png")
+_server_app.get("/cl/custom.css")(_static_route("custom.css", "text/css"))
+_server_app.get("/cl/custom.js")(_static_route("custom.js", "application/javascript"))
+_server_app.get("/cl/claudia-logo.png")(_static_route("claudia-logo.png", "image/png"))
 
 
 # Chainlit registers /{full_path:path} (SPA catch-all) before our routes are
