@@ -111,6 +111,11 @@ All Drive operations are non-fatal. On any failure (no token, network error, tam
 | `download_db` at start | Log warning; use existing local `claudia.db` |
 | `upload_db` at stop | Log warning; local copy preserved; syncs next session |
 | `read_text` for context/principles | Log warning; fall back to local `docs/` files |
+| `ping()` (connectivity poll) | Returns `False`; status light turns red; no exception raised |
+
+**Threading note:** `upload_db` uses `threading.RLock` (reentrant) because `_find_file`
+calls `_get_service()`, which also acquires the same lock. A plain `Lock` would deadlock
+when `upload_db` is called while a session is active.
 
 ---
 
@@ -327,8 +332,13 @@ archive if the live install at `~/.tradingview-mcp/` is missing or broken.
 | Service | Check method | Transitions |
 |---|---|---|
 | IBKR | HTTP GET `/tickle` | Sends "reconnected" / "disconnected" chat alert |
-| GDrive | Token file exists | Sends alert on state change |
+| GDrive | `GDriveSync.ping()` — live `files().list` round-trip | Sends alert on state change |
 | TradingView | TCP connect to port 9222 | Sends alert on state change |
+
+`GDriveSync.ping()` is called every poll cycle when Drive sync is enabled. Falls back to
+token-file existence check if `GDriveSync` was not wired (e.g., `GOOGLE_DRIVE_FOLDER_ID`
+not set). This means the green GDrive light reflects real API reachability, not just
+credential presence.
 
 The cached status is served by `GET /api/status` (used by the UI connectivity lights).
 TradingView status is `UNKNOWN` (gray) when no bridge is configured, `ERROR` (red) when
