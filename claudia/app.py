@@ -541,11 +541,12 @@ async def on_chat_start():
         try:
             from datetime import datetime, timezone as _tz
             _cov = await cl.make_async(toolkit._store.get_trade_date_coverage)()
-            if not _cov.get("stale") and _cov.get("newest"):
-                # Data is current — no API call needed
-                _skip_reason = f"data current (newest: {_cov['newest']}, {_cov['days_since_newest']}d ago)"
+            _days_old = _cov.get("days_since_newest", 999)
+            if _days_old == 0:
+                # Already have today's data — nothing to fetch
+                _skip_reason = f"data already current (newest: {_cov['newest']})"
             else:
-                # Data is stale — check logs before hitting the API
+                # Don't have today's data — check logs before hitting the API
                 last_attempts = await cl.make_async(toolkit._store.get_log)(
                     n=1, event="flex_sync"
                 )
@@ -553,7 +554,7 @@ async def on_chat_start():
                     last_ts = datetime.fromisoformat(last_attempts[0]["ts"]).replace(tzinfo=_tz.utc)
                     hours_since = (datetime.now(_tz.utc) - last_ts).total_seconds() / 3600
                     if hours_since < 4:
-                        _skip_reason = f"already attempted {hours_since:.1f}h ago"
+                        _skip_reason = f"already attempted {hours_since:.1f}h ago (newest: {_cov['newest']})"
                     else:
                         _should_sync = True
                 else:
