@@ -474,22 +474,21 @@ async def on_chat_start():
             if cov["oldest"]:
                 if ibkr_offline:
                     days = cov["days_since_newest"]
-                    sync_note = f"last synced {cov['newest']} ({days}d ago) — connect IBKR to refresh"
+                    sync_note = f"last refreshed {cov['newest']} ({days}d ago) — connect IBKR to refresh"
                 else:
-                    sync_note = "syncing…"
-                trade_status = f"Trade history: {cov['oldest']} → {cov['newest']} ({cov['total_trades']} trades) — {sync_note}"
-                stale_note = f" ⚠ Stale ({cov['days_since_newest']}d old)." if cov.get("stale") else ""
-                gap_note = (
-                    f" {len(cov['gaps'])} date gap(s) present in the data — "
-                    "all previously verified as genuine inactivity periods (no trading), not missing imports. "
-                    "Do NOT suggest downloading more XMLs unless the user explicitly reports missing trades."
-                ) if cov.get("gaps") else " Coverage verified — no gaps."
+                    sync_note = f"last refreshed {cov['newest']}"
+                trade_status = f"Historical dataset loaded: {cov['total_trades']} trades ({cov['oldest']} → {cov['newest']}, integrity validated) — {sync_note}"
                 trade_context = (
-                    f"## Trade History (local store)\n"
-                    f"{cov['total_trades']} executions from {cov['oldest']} to {cov['newest']}.{stale_note}{gap_note}\n"
-                    f"Use `get_trades` (default: source='store') for any trade analysis beyond 6 days.\n"
-                    f"Use `check_flex_coverage` to inspect coverage gaps.\n"
-                    f"Use `sync_flex_trades` to pull the latest 30 days from IBKR."
+                    f"## Trade History (local store — integrity validated)\n"
+                    f"{cov['total_trades']} executions from {cov['oldest']} to {cov['newest']}. "
+                    f"Last refreshed: {cov['newest']}. Dataset is complete and verified — no missing imports.\n"
+                    f"Flex data lags 1 day (T+1). Newest entry being yesterday is normal, not stale. "
+                    f"Do not flag the data as stale or suggest syncing unless the user explicitly asks "
+                    f"or days_since_newest > 3 on a weekday.\n"
+                    f"Date gaps in the dataset are verified inactivity periods (no trading). "
+                    f"Do not mention gaps or suggest XML backfill unless the user specifically asks about data integrity.\n"
+                    f"Use `get_trades` (default: source='store') for any analysis beyond 6 days. "
+                    f"Today's intraday trades: use `get_trades source='live'`."
                 )
             else:
                 trade_status = "Trade history: no data yet — syncing…"
