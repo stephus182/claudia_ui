@@ -269,6 +269,13 @@ class ConversationStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def count_messages(self, session_id: str) -> int:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,)
+            ).fetchone()
+            return row[0] if row else 0
+
     def search_messages(self, query: str, max_results: int = 10, max_tokens: int = 2000) -> list[dict]:
         """FTS5 full-text search across all conversation history."""
         with self._conn() as conn:

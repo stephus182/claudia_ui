@@ -504,7 +504,7 @@ async def on_chat_start():
         trade_status = "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
     agent._trade_context = trade_context
 
-    # Build action buttons for offline services
+    # Build action buttons for offline services + always-present End Session
     actions = []
     if ibkr_offline:
         actions.append(cl.Action(
@@ -520,6 +520,12 @@ async def on_chat_start():
             label="Launch TradingView",
             tooltip="Launch TradingView Desktop with remote debugging enabled",
         ))
+    actions.append(cl.Action(
+        name="end_session",
+        payload={"value": "end"},
+        label="End Session",
+        tooltip="Save conversation and upload to Drive, then close safely",
+    ))
 
     await cl.Message(
         content=(
@@ -642,18 +648,14 @@ async def on_message(message: cl.Message):
 
 # ── Session end ────────────────────────────────────────────────────────────────
 
-@cl.on_stop
-async def on_stop():
-    session_id = cl.user_session.get("session_id")
-    store: ConversationStore = cl.user_session.get("store")
-    loader: ContextLoader = cl.user_session.get("loader")
-
+async def _run_session_cleanup(session_id: str | None, store: ConversationStore | None,
+                               loader: ContextLoader | None) -> str:
+    """Close session, generate report, upload DB. Returns a one-line status string."""
     if loader:
         loader.stop_watching()
 
     if store and session_id:
         store.close_session(session_id, metadata={"model": _MODEL})
-
         connectivity = (
             {k: v.value for k, v in _connectivity_checker.get_status().items()}
             if _connectivity_checker else {}
@@ -663,9 +665,30 @@ async def on_stop():
         await cl.make_async(generate_session_report)(
             session_id, store, connectivity, session_meta.get("doc_version")
         )
+        msg_count = store.count_messages(session_id)
+    else:
+        msg_count = 0
 
+    drive_note = ""
     if _gdrive_sync is not None:
-        await cl.make_async(_gdrive_sync.upload_db)(_DB_PATH)
+        try:
+            await cl.make_async(_gdrive_sync.upload_db)(_DB_PATH)
+            drive_note = " · claudia.db → Drive ✅"
+        except Exception as exc:
+            log.warning("End-session Drive upload failed: %s", exc)
+            drive_note = " · Drive upload failed ⚠️"
+
+    return f"{msg_count} messages saved{drive_note}"
+
+
+@cl.on_stop
+async def on_stop():
+    if cl.user_session.get("session_closed"):
+        return  # already handled by End Session button
+    session_id = cl.user_session.get("session_id")
+    store: ConversationStore = cl.user_session.get("store")
+    loader: ContextLoader = cl.user_session.get("loader")
+    await _run_session_cleanup(session_id, store, loader)
 
 
 # ── Order staging action callback ──────────────────────────────────────────────
@@ -683,6 +706,24 @@ async def on_stage_order(action: cl.Action):
 async def on_cancel_proposal(action: cl.Action):
     await cl.Message(content="Order proposal cancelled.", author="ClaudIA").send()
     await action.remove()
+
+
+@cl.action_callback("end_session")
+async def on_end_session(action: cl.Action):
+    """Save conversation, upload DB to Drive, confirm to the user."""
+    await action.remove()
+    cl.user_session.set("session_closed", True)
+
+    session_id = cl.user_session.get("session_id")
+    store: ConversationStore = cl.user_session.get("store")
+    loader: ContextLoader = cl.user_session.get("loader")
+
+    await cl.Message(content="Saving session…", author="System").send()
+    status = await _run_session_cleanup(session_id, store, loader)
+    await cl.Message(
+        content=f"**Session ended.** {status}\n\nSafe to close this tab.",
+        author="System",
+    ).send()
 
 
 # ── IBKR Gateway startup callback ─────────────────────────────────────────────
