@@ -40,7 +40,7 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-24 | — | Store audit — claudia.db (37 sessions, 218 msgs, integrity OK); store.db (1029 trades, 64 symbols, integrity OK) |
 | 2026-06-24 | `9780963` | Bug fix — `GDriveSync.upload_db` deadlock: `threading.Lock` → `RLock`; removed blocking `PRAGMA wal_checkpoint(TRUNCATE)` that hung while session DB was open |
 | 2026-06-24 | `3170595` | **GDrive status light now reflects real API connectivity** — `check_gdrive()` was a token-file existence check; replaced with `GDriveSync.ping()` (live `files().list` round-trip); wired through `ConnectivityChecker` at startup |
-| 2026-06-24 | `pending` | **IBKR status light now reflects auth state** — `check_ibkr()` was HTTP-200-only; now parses `iserver.authStatus.authenticated && connected` from `/tickle` JSON; green light requires real authenticated session |
+| 2026-06-24 | `ee49b9b` | **IBKR status light now reflects auth state** — `check_ibkr()` was HTTP-200-only; now parses `iserver.authStatus.authenticated && connected` from `/tickle` JSON; green light requires real authenticated session |
 
 ---
 
