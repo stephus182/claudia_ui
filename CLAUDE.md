@@ -269,8 +269,8 @@ ClaudIA has two tools to reason about version history:
 - `list_doc_versions` — enumerate registered versions with dates
 - `get_doc_version("v1")` — retrieve the full content of any past version to check for contradictions with current rules
 
-Past decisions retrieved from memory always include which version was active when they
-were made, so ClaudIA can flag if a prior decision conflicts with updated principles.
+Past conversation history retrieved from memory always includes which document version was active,
+so ClaudIA can flag if something discussed under old rules conflicts with the current principles.
 
 ---
 
@@ -281,12 +281,12 @@ All interactions are stored in `data/claudia.db` (separate from ibkr_core_mcp's 
 | Table | Contents |
 |---|---|
 | `sessions` | One row per Chainlit session, with start/end time, document hash, and `doc_version` |
-| `messages` | Full message history (user, assistant, tool calls and results) |
-| `decisions` | Extracted key moments: trade proposals, backtests run — each tagged with `doc_version` |
+| `messages` | Full message history (user, assistant, tool calls and results) — primary memory store |
+| `decisions` | User-directed trade proposals surfaced by ClaudIA — each tagged with `doc_version`. ClaudIA does not decide to trade; it surfaces a proposal when directed by the user. The user decides at the button → Touch ID → confirmation dialog. |
 | `relationships` | Accumulated symbol-level observations built over time |
 | `doc_versions` | Versioned snapshots of `context.md` + `principles.md` — full text, hash, date |
 
-**Search:** ClaudIA uses SQLite FTS5 to search past decisions. Ask: *"What did I decide about NVDA last month?"* Results include the doc version active at decision time.
+**Search:** ClaudIA uses SQLite FTS5 to search full conversation history. Ask: *"What did we discuss about NVDA last month?"* The `search_past_conversations` tool searches all messages across all sessions. Results include the doc version active at the time.
 
 **Version snapshots** are also written to `docs/versions/{label}/` as human-readable files for reference.
 
