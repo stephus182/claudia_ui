@@ -36,18 +36,32 @@ TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (cura
 
 `SQLiteStore.get_market_calendar_context()` injects trading-day awareness into ClaudIA's system prompt at every session start. No API calls — pure pre-built library data.
 
-**8 exchanges covered (current year + next year, past and future holidays):**
+**20 exchanges covered — full G20 + Eurex (current year + next year, past and future holidays):**
 
-| Code | Exchange | Why it matters |
-|---|---|---|
-| `XNYS` | NYSE | US equities — primary staleness reference, order timing |
-| `CME` | CME Futures | Crude oil (CL), gold (GC), ES — different holiday set from NYSE |
-| `XLON` | LSE London | European open/close effects on US pre-market |
-| `XETR` | Xetra Frankfurt | EU macro events, German/EU equity flows |
-| `XTKS` | TSE Tokyo | Asian session open, Nikkei/yen effects on overnight futures |
-| `XHKG` | HKEX Hong Kong | China proxy, Hang Seng, dim sum flows |
-| `XASX` | ASX Sydney | Commodities (iron ore, copper), first market to open globally |
-| `XTSE` | TSX Toronto | Oil sands, gold miners — often moves with IBKR instruments |
+Excludes Russia (XMOS — IBKR suspended most Russian securities since 2022 sanctions) and Argentina (XBUE — capital controls, very limited IBKR access). Saudi Arabia (XSAU) trades Sun–Thu; Fridays appear as "closed" from a Mon–Fri perspective — correct, not a data error.
+
+| Code | Exchange | Region | Why it matters |
+|---|---|---|---|
+| `XNYS` | NYSE | US | Primary staleness reference, equity order timing |
+| `CME` | CME Futures | US | ES, CL, GC — different hours and holiday set vs NYSE |
+| `XLON` | LSE London | Europe | European open/close effects on US pre-market |
+| `XETR` | Xetra Frankfurt | Europe | EU macro events, German/EU equity flows |
+| `XEUR` | Eurex | Europe | DAX futures, EURO STOXX 50 — EU derivatives benchmark |
+| `XPAR` | Euronext Paris | Europe | CAC 40, EU large-cap equities |
+| `XMIL` | Borsa Italiana | Europe | FTSE MIB, EU peripheral spreads |
+| `XTKS` | TSE Tokyo | Asia | Nikkei, yen carry — first major session after US close |
+| `XHKG` | HKEX Hong Kong | Asia | China proxy, Hang Seng, dim sum flows |
+| `XSHG` | SSE Shanghai | Asia | China A-shares, direct macro signal |
+| `XBOM` | BSE Mumbai | Asia | India — fastest-growing G20 equity market |
+| `XKRX` | KRX Seoul | Asia | Samsung, TSMC proxy, semiconductor bellwether |
+| `XASX` | ASX Sydney | Asia-Pacific | Iron ore, copper — first market to open globally |
+| `XTSE` | TSX Toronto | Americas | Oil sands, gold miners |
+| `BVMF` | B3 São Paulo | Americas | Brazilian commodities, EM sentiment |
+| `XMEX` | BMV Mexico City | Americas | Nearshoring flows, peso/USD dynamics |
+| `XJSE` | JSE Johannesburg | Africa | Mining, platinum group metals |
+| `XSAU` | Tadawul | Middle East | Oil policy signal, Aramco flows (Sun–Thu week) |
+| `XIDX` | IDX Jakarta | SE Asia | Commodities, EM Asia |
+| `XIST` | Borsa Istanbul | EMEA | Macro volatility signal, lira dynamics |
 
 **What ClaudIA receives in the system prompt:**
 - Today's date and whether it is a trading day (NYSE reference)
@@ -73,7 +87,7 @@ TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (cura
 
 | Call | Time |
 |---|---|
-| First call per process (cold) | ~875ms — exchange_calendars loads numpy arrays once |
+| First call per process (cold) | ~3.4s — exchange_calendars loads numpy arrays for 20 exchanges once |
 | Subsequent calls same day | 0.01ms — process-level date-keyed cache hit |
 | Next day / process restart | Recomputes fresh — cache key includes today's date |
 

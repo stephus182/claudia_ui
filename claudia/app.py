@@ -505,9 +505,16 @@ async def on_chat_start():
     try:
         _mkt = await cl.make_async(toolkit._store.get_market_calendar_context)()
         if _mkt:
-            _exchange_labels = {"XNYS": "NYSE", "CME": "CME Futures", "XLON": "LSE London",
-                                "XETR": "Xetra Frankfurt", "XTKS": "TSE Tokyo",
-                                "XHKG": "HKEX Hong Kong", "XASX": "ASX Sydney", "XTSE": "TSX Toronto"}
+            _exchange_labels = {
+                "XNYS": "NYSE", "CME": "CME Futures",
+                "XLON": "LSE London", "XETR": "Xetra Frankfurt", "XEUR": "Eurex",
+                "XPAR": "Euronext Paris", "XMIL": "Borsa Italiana",
+                "XTKS": "TSE Tokyo", "XHKG": "HKEX Hong Kong", "XSHG": "SSE Shanghai",
+                "XBOM": "BSE Mumbai", "XKRX": "KRX Seoul", "XASX": "ASX Sydney",
+                "XTSE": "TSX Toronto", "BVMF": "B3 São Paulo", "XMEX": "BMV Mexico City",
+                "XJSE": "JSE Johannesburg", "XSAU": "Tadawul (Sun–Thu week)",
+                "XIDX": "IDX Jakarta", "XIST": "Borsa Istanbul",
+            }
             _holiday_lines = []
             for xcode, holidays in _mkt.get("holidays_by_exchange", {}).items():
                 name = _exchange_labels.get(xcode, xcode)
