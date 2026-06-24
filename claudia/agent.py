@@ -99,8 +99,7 @@ _LOCAL_TOOLS: list[dict] = [
         "name": "get_doc_version",
         "description": (
             "Retrieve the full context.md and principles.md content for a specific document version. "
-            "Use when a past decision was made under a different version and you need to compare "
-            "rules to identify potential contradictions with the current version."
+            "Use to check whether a past discussion happened under different rules than today's."
         ),
         "input_schema": {
             "type": "object",
@@ -111,6 +110,24 @@ _LOCAL_TOOLS: list[dict] = [
                 }
             },
             "required": ["version"],
+        },
+    },
+    {
+        "name": "search_past_conversations",
+        "description": (
+            "Full-text search across all past conversation history (all sessions). "
+            "Use when the user asks what was discussed, analyzed, or considered in previous sessions. "
+            "Returns relevant message excerpts with session context."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keywords or phrase to search for, e.g. 'AAPL support level' or 'security controls'.",
+                }
+            },
+            "required": ["query"],
         },
     },
 ]
@@ -345,8 +362,8 @@ class ClaudIAAgent:
             from claudia.order_flow import render_order_proposal
             await render_order_proposal(order_proposal, session_id=self._session_id)
 
-        # Extract and log decisions from the response
-        self._extract_decisions(display_text, order_proposal, msg_id)
+        # Log any user-directed trade proposal for future recall
+        self._log_proposal(display_text, order_proposal, msg_id)
 
     def _handle_local_tool(self, name: str, inputs: dict) -> str:
         if name == "list_doc_versions":
@@ -370,12 +387,31 @@ class ClaudIAAgent:
                 f"## principles.md ({data['version']}, as of {data['created_at'][:10]})\n\n"
                 f"{data['principles_text']}"
             )
+        if name == "search_past_conversations":
+            query = inputs.get("query", "").strip()
+            if not query:
+                return "No query provided."
+            results = self._store.search_messages(query, max_results=5)
+            if not results:
+                return f"No past conversations found matching '{query}'."
+            parts = []
+            for r in results:
+                role = r.get("role", "")
+                snippet = r.get("snippet") or r.get("content") or ""
+                created = (r.get("created_at") or "")[:10]
+                parts.append(f"[{created}] {role}: {snippet[:300]}")
+            return "\n\n---\n\n".join(parts)
         return f"Unknown local tool: {name}"
 
-    def _extract_decisions(
+    def _log_proposal(
         self, text: str, order_proposal: dict | None, msg_id: int
     ) -> None:
-        """Lightweight heuristic extraction of key decision moments into the decisions table."""
+        """Log a user-directed trade proposal to the proposals table for future recall.
+
+        ClaudIA does not decide to trade — it surfaces a proposal when directed by the user.
+        The user decides at the 'Stage this order' button → Touch ID → confirmation dialog.
+        This records that a proposal was surfaced, not that a decision was made.
+        """
         if order_proposal:
             symbol = order_proposal.get("symbol", "")
             action = order_proposal.get("action", "")

@@ -224,7 +224,7 @@ def test_handle_local_tool_unknown_name():
 
 # ── ClaudIAAgent._extract_decisions ──────────────────────────────────────────
 
-def test_extract_decisions_with_order_proposal():
+def test_log_proposal_with_order_proposal():
     agent = _make_agent()
     proposal = {
         "symbol": "AAPL",
@@ -233,7 +233,7 @@ def test_extract_decisions_with_order_proposal():
         "order_type": "LMT",
         "reason": "Support bounce",
     }
-    agent._extract_decisions("Some text", proposal, msg_id=42)
+    agent._log_proposal("Some text", proposal, msg_id=42)
     agent._store.add_decision.assert_called_once()
     kwargs = agent._store.add_decision.call_args.kwargs
     assert kwargs["decision_type"] == "trade_proposed"
@@ -243,9 +243,9 @@ def test_extract_decisions_with_order_proposal():
     assert kwargs["session_id"] == "test-session"
 
 
-def test_extract_decisions_without_proposal():
+def test_log_proposal_without_proposal():
     agent = _make_agent()
-    agent._extract_decisions("Just analysis, no trade.", None, msg_id=1)
+    agent._log_proposal("Just analysis, no trade.", None, msg_id=1)
     agent._store.add_decision.assert_not_called()
 
 
