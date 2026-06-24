@@ -531,9 +531,25 @@ async def on_chat_start():
         author="ClaudIA",
     ).send()
 
-    # Kick off Flex sync in the background — only when IBKR connectivity is confirmed,
-    # runs every session start so trade data is always current before the first question lands.
+    # Kick off Flex sync in the background — only when IBKR connectivity is confirmed
+    # AND no successful sync has run in the last 4 hours (prevents lockout from restarts).
+    _should_sync = False
     if _flex_configured and not ibkr_offline:
+        try:
+            last_syncs = await cl.make_async(toolkit._store.get_log)(n=1, event="flex_sync")
+            if last_syncs:
+                from datetime import datetime, timezone
+                last_ts = datetime.fromisoformat(last_syncs[0]["ts"]).replace(tzinfo=timezone.utc)
+                hours_since = (datetime.now(timezone.utc) - last_ts).total_seconds() / 3600
+                _should_sync = hours_since >= 4
+                if not _should_sync:
+                    log.info("Skipping startup Flex sync — last sync %.1fh ago", hours_since)
+            else:
+                _should_sync = True  # never synced before
+        except Exception:
+            _should_sync = True  # if log check fails, attempt sync
+
+    if _should_sync:
         async def _background_flex_sync() -> None:
             try:
                 result, _ = await cl.make_async(toolkit.execute)("sync_flex_trades", {})
