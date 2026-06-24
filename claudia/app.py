@@ -172,6 +172,12 @@ def _cs_exit_compat(self, extype, value, tb):
 
 _anyio_be.CancelScope.__exit__ = _cs_exit_compat
 # ─────────────────────────────────────────────────────────────────────────────
+# Re-export asyncio under its standard name for use throughout the rest of the
+# file. The compat block above uses the _asyncio alias by convention (signals
+# "patching the module"), but application code should use the normal name.
+# Both names reference the same module object — patches applied via _asyncio
+# are visible through asyncio.
+import asyncio  # noqa: E402
 
 import chainlit as cl
 from chainlit.server import app as _server_app
@@ -358,7 +364,7 @@ async def on_chat_start():
     # contextvars. We must schedule the send onto the running event loop with
     # the captured context — asyncio.loop.create_task(context=) is the only
     # correct bridge from a sync thread to an already-running async loop.
-    _loop = _asyncio.get_running_loop()
+    _loop = asyncio.get_running_loop()
     _cl_ctx = contextvars.copy_context()
 
     def _on_doc_change(filename: str, new_prompt: str) -> None:
