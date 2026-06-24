@@ -535,6 +535,14 @@ async def on_chat_start():
                 result, _ = await cl.make_async(toolkit.execute)("sync_flex_trades", {})
                 # sync_flex_trades already includes coverage in its result
                 await cl.Message(content=f"✅ {result}", author="System").send()
+                # Back up the updated store.db to Drive account_data/
+                try:
+                    await cl.make_async(toolkit._cache.upload_account_file)(
+                        _config.sqlite_path, "store.db"
+                    )
+                    log.info("store.db backed up to Drive account_data/")
+                except Exception as backup_exc:
+                    log.warning("store.db Drive backup failed: %s", backup_exc)
             except Exception as exc:
                 log.warning("Background Flex sync failed: %s", exc)
                 # Sync failed — still run integrity check so data status is known
