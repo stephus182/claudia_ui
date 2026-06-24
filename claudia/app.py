@@ -354,18 +354,23 @@ async def on_chat_start():
         return
 
     # Start file watcher for hot-reload
+    # The watchdog fires in an OS thread. Chainlit session context lives in
+    # contextvars. We must schedule the send onto the running event loop with
+    # the captured context — asyncio.loop.create_task(context=) is the only
+    # correct bridge from a sync thread to an already-running async loop.
+    _loop = asyncio.get_running_loop()
     _cl_ctx = contextvars.copy_context()
 
     def _on_doc_change(filename: str, new_prompt: str) -> None:
-        def _inner():
-            cl.run_sync(
-                cl.Message(
-                    content=f"**Document updated:** `{filename}` reloaded. "
-                            f"Principles apply from your next message.",
-                    author="System",
-                ).send
-            )()
-        _cl_ctx.run(_inner)
+        async def _send():
+            await cl.Message(
+                content=f"**Document updated:** `{filename}` reloaded. "
+                        f"Principles apply from your next message.",
+                author="System",
+            ).send()
+        _loop.call_soon_threadsafe(
+            lambda: _loop.create_task(_send(), context=_cl_ctx)
+        )
 
     loader.start_watching(_on_doc_change)
 
