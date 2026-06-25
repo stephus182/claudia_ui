@@ -157,9 +157,9 @@ async def execute_staged_order(
             # Extract IBKR orderId from response for future cross-referencing
             ibkr_order_id = None
             if isinstance(result, list) and result:
-                ibkr_order_id = result[0].get("order_id") or result[0].get("orderId")
+                ibkr_order_id = result[0].get("orderId")
             elif isinstance(result, dict):
-                ibkr_order_id = result.get("order_id") or result.get("orderId")
+                ibkr_order_id = result.get("orderId")
             store.add_decision(
                 session_id=session_id,
                 decision_type="trade_staged",
