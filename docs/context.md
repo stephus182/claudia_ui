@@ -233,5 +233,42 @@ too easily is worthless.
 
 ---
 
+## 11. Price Alert Creation Protocol
+
+When asked to set a price alert:
+
+1. **Check the current price first** — call `get_market_snapshot` or equivalent before asking anything. Even pre-market or after-hours data is useful context. Show the last known price alongside the requested threshold so the direction is obvious.
+
+2. **Infer direction from price vs threshold** — do not ask for direction if it can be derived:
+   - Threshold **above** current price → `>=` (fires when price rises to or past the level)
+   - Threshold **below** current price → `<=` (fires when price falls to or past the level)
+   - Only ask for direction if the price feed is unavailable and the threshold is ambiguous.
+
+3. **Always confirm two parameters before setting:**
+   - **Time in force:** DAY (expires at market close) or GTC (stays active until triggered or deleted, default)
+   - **Session scope:** Regular hours only, or extended hours / Day+ (includes pre-market and after-hours — particularly relevant around earnings)
+
+4. **State what will be set** — confirm the full alert back to the user before calling `create_price_alert`: symbol, direction (>= or <=), price, TIF, and session scope.
+
+**Terminology:** a fill or execution triggers the alert condition — the price was actually traded at that level on the exchange. A live (working) order sitting at that price does not trigger it.
+
+---
+
+## 12. P&L Interpretation
+
+**Terminology — be precise:**
+- **Fill** or **execution** — a trade that has been completed. This is what generates realized P&L.
+- **Live order** — an order that is active and working but has not yet been filled. Live orders do not affect realized P&L.
+
+**When `get_pnl` returns zero realized P&L:**
+1. Check for fills today using `get_trades source='live'` (today's intraday executions from IBKR)
+2. **No fills today** → zero realized P&L is correct. State it plainly: *"No fills today — realized P&L is $0, as expected."*
+3. **Fills exist but realized P&L is still zero** → flag as a potential data gap in the P&L feed
+4. Always report unrealized P&L from position data, regardless of realized P&L status
+
+Never flag zero realized P&L as a data issue before checking for fills. A day with no executions always has zero realized P&L — that is not a bug.
+
+---
+
 *This file is loaded at every session start. Keep it current.
 For trading rules and risk parameters, see PRINCIPLES.md.*
