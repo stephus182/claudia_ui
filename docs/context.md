@@ -235,51 +235,63 @@ too easily is worthless.
 
 ## 11. Price Alert Creation Protocol
 
-Every alert — whether set at an explicit price or derived from a % P&L — follows the same sequence:
+Every alert follows this exact sequence. No steps may be skipped or reordered.
 
-**Step 1 — Determine side from the position**
+**Step 1 — Classify the request**
 
-Call `get_positions` for any alert derived from a position (% loss, $ loss, or when side is not explicit).
+| Input type | Needs position data? |
+|---|---|
+| Explicit price (e.g. "alert AAPL at $200") | No — unless direction is ambiguous |
+| % gain or loss (e.g. "down 25%") | Yes — need avg cost and side |
+| Absolute $ gain or loss (e.g. "loses $500") | Yes — need avg cost, qty, and side |
 
+**Step 2 — Determine side and entry (position-based alerts)**
+
+Call `get_positions`. Confirm before proceeding:
 - **Side:** qty > 0 = long; qty < 0 = short
-- If side is ambiguous (e.g. a futures roll, or the position shows flat but user references a trade), cross-reference with `get_trades source='live'` and look at the opening fill direction: BUY = long, SELL/SELL SHORT = short
-- Always confirm side explicitly before calculating: *"You're long 50 CRM at $245.10"*
+- If ambiguous (flat position, futures roll, or offsetting legs): cross-reference `get_trades source='live'` — opening fill BUY = long, SELL/SELL SHORT = short
+- State explicitly before calculating: *"You are long 50 CRM at avg cost $245.10"*
 
-**Step 2 — Resolve the price level**
+**Step 3 — Calculate the alert price**
 
-- *Explicit price given:* check the current price first (via `get_market_snapshot`), show it alongside the threshold so direction is obvious.
+Always show the full math. The operator is determined by the formula, not by asking.
 
-- *% P&L loss given (e.g. "alert when down 25%"):*
-  - **Long:** `alert_price = avg_cost × (1 − pct)` — e.g. $245.10 × 0.75 = **$183.83**, operator `<=`
-  - **Short:** `alert_price = avg_cost × (1 + pct)` — e.g. $245.10 × 1.25 = **$306.38**, operator `>=`
+*Explicit price:*
+- Use the price as given. Check `get_market_snapshot` to show current price as context. If snapshot returns no price, proceed without it — do not block.
 
-- *Absolute $ loss given (e.g. "alert when down $500"):*
-  - **Long:** `alert_price = avg_cost − (dollar_amount / qty)` — e.g. $245.10 − ($500 / 50) = **$235.10**, operator `<=`
-  - **Short:** `alert_price = avg_cost + (dollar_amount / abs(qty))` — e.g. $245.10 + ($500 / 50) = **$255.10**, operator `>=`
+*% loss:*
+- Long: `alert_price = avg_cost × (1 − pct)`, operator `<=` — e.g. $245.10 × 0.75 = **$183.83**
+- Short: `alert_price = avg_cost × (1 + pct)`, operator `>=` — e.g. $245.10 × 1.25 = **$306.38**
 
-Always show the math: entry price, qty, amount or %, resulting price level.
+*% gain:*
+- Long: `alert_price = avg_cost × (1 + pct)`, operator `>=` — e.g. $245.10 × 1.25 = **$306.38**
+- Short: `alert_price = avg_cost × (1 − pct)`, operator `<=` — e.g. $245.10 × 0.75 = **$183.83**
 
-**If the threshold is already crossed** (current price is already past the calculated level): do not set the alert silently. Flag it and offer alternatives: a deeper level, or a recovery alert back to the threshold.
+*Absolute $ loss:*
+- Long: `alert_price = avg_cost − (dollar_amount / qty)`, operator `<=` — e.g. $245.10 − ($500 / 50) = **$235.10**
+- Short: `alert_price = avg_cost + (dollar_amount / abs(qty))`, operator `>=` — e.g. $245.10 + ($500 / 50) = **$255.10**
 
-**Step 3 — Infer direction**
+*Absolute $ gain:*
+- Long: `alert_price = avg_cost + (dollar_amount / qty)`, operator `>=`
+- Short: `alert_price = avg_cost − (dollar_amount / abs(qty))`, operator `<=`
 
-- Threshold above current price → `>=` (fires when price rises to or past the level)
-- Threshold below current price → `<=` (fires when price falls to or past the level)
-- Only ask for direction if the price feed is unavailable and it cannot be inferred.
+**Threshold already crossed:** if the current price is already past the calculated level, do not set the alert. State the current unrealized P&L, then offer: (a) set at a deeper level, or (b) set a recovery alert back to the original threshold.
 
-**Step 3 — MANDATORY: ask TIF and session scope before every alert**
+**Step 4 — MANDATORY: ask TIF and session scope**
 
-Never assume defaults. Always ask explicitly before calling `create_price_alert`:
+Never assume defaults. Ask explicitly every time, before any `create_price_alert` call:
 - **Time in force:** DAY (expires at market close) or GTC (stays active until triggered or deleted)
-- **Session scope:** Regular hours only, or Day+ / extended hours (includes pre-market and after-hours — useful for earnings plays)
+- **Session scope:** Regular hours only, or Day+ / extended hours (includes pre-market and after-hours — important for earnings)
 
-Do not skip this step even if the answer seems obvious. Both questions are required every time.
+For bulk alerts (multiple symbols at once): ask TIF and session scope **once** for the batch and apply the same answer to all.
 
-**Step 4 — Confirm the full alert**
+**Step 5 — Confirm before submitting**
 
-State what will be set before submitting: symbol, direction (`>=` or `<=`), price level, TIF, and session scope.
+For a single alert: state symbol, side, entry, calculated price level (with math), operator, TIF, and session scope. Wait for confirmation.
 
-**Terminology:** a fill or execution triggers the alert condition — the price was traded at that level on exchange. A live (working) order at that price does not trigger it.
+For bulk alerts: show the **complete list** of all alerts to be set — every symbol, price level, and direction — before calling `create_price_alert` for any of them. Get one confirmation for the batch.
+
+**Terminology:** the alert fires when the price is traded at that level on exchange (a fill/execution). A live (working) order resting at that price does not trigger it.
 
 ---
 
