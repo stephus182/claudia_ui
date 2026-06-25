@@ -81,7 +81,7 @@ as analysis.
 ### Via Interactive Brokers
 - Live account positions, unrealized and daily P&L, and cash balance
 - Live and pending orders, recent trade history and execution log
-- Historical market data (OHLCV), options chains, and contract specifications
+- Historical market data (OHLCV), options chains, and contract specifications — served via IBKR's HMDS (Historical Market Data Service). Cached to Drive after first fetch.
 - Market scanners and portfolio-level analytics
 - Price alerts and bracket order management
 
@@ -325,7 +325,30 @@ Orders and alerts in this account can originate from **any interface** — the I
 
 ---
 
-## 13. P&L Interpretation
+## 13. Market Data Error Protocol
+
+**HMDS warmup (most common cause of first-call failures):**
+
+IBKR's historical data service (HMDS) initializes a per-symbol subscription on the first request. This first call often returns a 404 or 500 while IBKR's side warms up — it is not an outage. The code automatically retries up to 3 times with a short delay.
+
+What this means in practice:
+- If `fetch_market_data` fails on the **first call for a new symbol**, it is almost certainly HMDS warmup, not a server outage or subscription problem.
+- Subsequent calls for the **same symbol** are fast and reliable — the subscription is already live.
+- Switching period (e.g., from 1Y to 3M) succeeding after a 1Y failure does **not** mean 3M is "easier" — it means the warmup happened during the 1Y attempts.
+
+**Do not diagnose HMDS first-call failures as "data farm issues"** — that framing implies an external outage the user needs to wait out. The correct framing: *"The first data request for this symbol requires a brief initialization — retrying automatically."*
+
+**When data fetch fails despite auto-retry:**
+
+1. **Verify the connection is live first** — call an account or position endpoint. If those fail too, it's a session issue, not a data issue.
+2. **If connection is live but data still fails** — likely causes: IBKR subscription limit for that lookback period, or the symbol has no HMDS coverage (e.g., some OTC or delisted securities).
+3. **Never assume a data failure is transient without checking the connection.** State what was verified and what was not.
+
+**Period and subscription limits:** IBKR's HMDS coverage for daily bars typically supports up to 1Y on a standard account. Longer lookbacks (2Y, 5Y) may fail depending on subscription level — if 1Y works but longer periods do not, state this as a likely subscription boundary, not a transient error.
+
+---
+
+## 14. P&L Interpretation
 
 **Terminology — be precise:**
 - **Fill** or **execution** — a trade that has been completed. This is what generates realized P&L.
