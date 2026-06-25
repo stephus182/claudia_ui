@@ -121,6 +121,27 @@ Flex never has today's trades. The live API fills that gap.
 
 See [`docs/flex-query-setup.md`](docs/flex-query-setup.md) for full setup and troubleshooting.
 
+### Live Orders Two-Call Pattern
+
+`get_live_orders` (and `diagnose_orders`) use a documented IBKR two-call pattern. Per IBKR Campus documentation, `/iserver/account/orders` behaves like `/iserver/marketdata/snapshot`: the first call instantiates the subscription and returns empty/snapshot data; the second call returns the actual live order list.
+
+**Implementation in `client.py`:**
+```python
+self._get("/iserver/account/orders?force=true")  # instantiate subscription
+time.sleep(1)
+data = self._get("/iserver/account/orders")       # retrieve actual data
+```
+
+Symptoms and diagnosis:
+- `orders: [], snapshot: true` on only one call → missing second call, not a data issue
+- Still empty after two calls → possible IBKR session not fully initialized; check `ping()` first
+- Mobile/TWS-placed orders: expected to be visible after proper initialization (under test)
+- GTC orders from previous days: should appear in the live list regardless of when placed
+
+Source: [IBKR Campus — Request & Modify Orders](https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/)
+
+---
+
 ### HMDS Warmup Behavior
 
 `fetch_market_data` uses `/hmds/history` (IBKR's Historical Market Data Service). This endpoint has a documented first-call behavior: IBKR initializes a per-symbol data subscription on the first request, which typically returns 404 or 500 while warming up.
