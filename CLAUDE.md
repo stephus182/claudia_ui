@@ -461,20 +461,53 @@ pytest
 
 ---
 
-## IBKR API Reference
+## API Reference — Docs First
 
-Never assume IBKR endpoint behavior, error codes, or field names from memory. Always verify against official documentation first.
+**Never assume API behavior, error codes, endpoint paths, or field names from memory. Always verify against official documentation first. This applies to every external API claudia_ui touches.**
+
+**Protocol:** Use `WebFetch` to load the relevant doc page before writing any error message, fix, or diagnosis. Cite the source URL in the error string and in the commit message.
+
+This rule exists because two bugs in one session were caught instantly by checking the official docs — and had gone undetected for months because nobody checked:
+- Flex error 1001 mislabeled twice (rate limit → auth failure → actually transient generation failure)
+- Flex endpoint URL wrong from day one (`gdcdyn` vs `ndcdyn`) — Flex API never worked until the doc was read
+
+**IBKR Client Portal API** (`ibkr_core_mcp/client.py`, `claude_tools.py`)
 
 | Topic | Official source |
 |---|---|
-| Flex Web Service error codes | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm |
-| Flex Web Service setup | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3.htm |
 | Client Portal API reference | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/ |
 | Web API reference | https://www.interactivebrokers.com/campus/ibkr-api-page/webapi-ref/ |
-| Orders / modify | https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/ |
+| Orders / modify (two-call pattern) | https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/ |
 | IBKR Campus (general) | https://www.interactivebrokers.com/campus/ibkr-api-page/ |
 
-**Protocol for any API issue:** fetch the relevant doc page with `WebFetch` before writing an error message, fix, or diagnosis. Cite the source in the error string and in the commit message. This rule exists because error 1001 was incorrectly documented as "rate limit" then "auth failure" — both from assumption, both wrong.
+**IBKR Flex Web Service** (`ibkr_core_mcp/flex_query.py`)
+
+| Topic | Official source |
+|---|---|
+| Flex Web Service setup (endpoints, headers) | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3.htm |
+| Flex error codes (all 21 codes) | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm |
+
+**Anthropic API** (`claudia/agent.py`)
+
+| Topic | Official source |
+|---|---|
+| Messages API (streaming, tool use) | https://docs.anthropic.com/en/api/messages |
+| Tool use reference | https://docs.anthropic.com/en/docs/build-with-claude/tool-use |
+| Model names and capabilities | https://docs.anthropic.com/en/docs/about-claude/models |
+
+**Google Drive API v3** (`claudia/gdrive_sync.py`)
+
+| Topic | Official source |
+|---|---|
+| Drive API v3 reference | https://developers.google.com/drive/api/reference/rest/v3 |
+| Files: upload / download | https://developers.google.com/drive/api/guides/manage-uploads |
+
+**TradingView MCP** (`claudia/tradingview.py`)
+
+| Topic | Official source |
+|---|---|
+| tradingview-mcp tool list and usage | https://github.com/tradesdontlie/tradingview-mcp |
+| Chrome DevTools Protocol | https://chromedevtools.github.io/devtools-protocol/ |
 
 ---
 
