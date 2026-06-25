@@ -470,7 +470,7 @@ async def on_chat_start():
             cl.make_async(toolkit.execute)("get_positions", {}),
         )
         status_block = (
-            f"**Account Summary**\n```\n{opening_text}\n```\n\n"
+            f"**Account Summary**\n{opening_text}\n\n"
             f"**Open Positions**\n{positions_text}\n\n"
             f"**Live Orders**\n{orders_text}"
         )
