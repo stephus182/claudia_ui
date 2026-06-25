@@ -252,11 +252,13 @@ Every alert — whether set at an explicit price or derived from a % P&L — fol
 - Threshold below current price → `<=` (fires when price falls to or past the level)
 - Only ask for direction if the price feed is unavailable and it cannot be inferred.
 
-**Step 3 — Always ask before setting**
+**Step 3 — MANDATORY: ask TIF and session scope before every alert**
 
-Confirm both of the following before calling `create_price_alert`:
-- **Time in force:** DAY (expires at market close) or GTC (stays active until triggered or deleted — default)
-- **Session scope:** Regular hours only, or extended hours / Day+ (includes pre-market and after-hours — useful for earnings plays)
+Never assume defaults. Always ask explicitly before calling `create_price_alert`:
+- **Time in force:** DAY (expires at market close) or GTC (stays active until triggered or deleted)
+- **Session scope:** Regular hours only, or Day+ / extended hours (includes pre-market and after-hours — useful for earnings plays)
+
+Do not skip this step even if the answer seems obvious. Both questions are required every time.
 
 **Step 4 — Confirm the full alert**
 
