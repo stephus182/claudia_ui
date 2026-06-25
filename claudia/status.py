@@ -22,6 +22,7 @@ from claudia.tradingview import _TV_DEBUG_PORT
 if TYPE_CHECKING:
     from claudia.gdrive_sync import GDriveSync
     from claudia.tradingview import TradingViewBridge
+    from ibkr_core_mcp import IBKRClient
 
 log = logging.getLogger(__name__)
 
@@ -53,11 +54,13 @@ class ConnectivityChecker:
         gdrive_token_file: Path,
         tv_bridge: Optional["TradingViewBridge"] = None,
         gdrive_sync: Optional["GDriveSync"] = None,
+        ibkr_client: Optional["IBKRClient"] = None,
     ) -> None:
         self._gateway_url = gateway_url.rstrip("/")
         self._gdrive_token_file = Path(gdrive_token_file)
         self._tv_bridge = tv_bridge
         self._gdrive_sync = gdrive_sync
+        self._ibkr_client = ibkr_client
         self._status: dict[str, ServiceStatus] = {
             "ibkr":   ServiceStatus.UNKNOWN,
             "gdrive": ServiceStatus.UNKNOWN,
@@ -80,6 +83,8 @@ class ConnectivityChecker:
             if resp.status_code != 200:
                 return False
             auth = resp.json().get("iserver", {}).get("authStatus", {})
+            if auth.get("competing"):
+                log.warning("IBKR: competing session detected — another TWS/gateway session is active")
             return bool(auth.get("authenticated") and auth.get("connected"))
         except Exception:
             return False
@@ -154,6 +159,12 @@ class ConnectivityChecker:
         if new == ServiceStatus.ERROR:
             msg = _DISCONNECT_MESSAGES.get(service, f"⚠️ {service} disconnected.")
         elif new == ServiceStatus.OK and prev == ServiceStatus.ERROR:
+            if service == "ibkr" and self._ibkr_client is not None:
+                try:
+                    await asyncio.to_thread(self._ibkr_client.reauthenticate)
+                    log.info("IBKR reauthenticate called after reconnection")
+                except Exception as exc:
+                    log.warning("IBKR reauthenticate failed: %s", exc)
             msg = _RECONNECT_MESSAGES.get(service, f"✅ {service} reconnected.")
         else:
             return  # UNKNOWN → OK at startup: silent
