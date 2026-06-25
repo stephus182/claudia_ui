@@ -372,10 +372,16 @@ What this means in practice:
 → To force a fresh sync: `sync_flex_trades`
 
 **"Why is my realized P&L $0?"**
-1. Check for fills with `get_trades source='live'`
-2. **No fills visible** → either no trades occurred, or trades were placed via mobile/TWS and are not visible in the CP API session. Check `get_trades source='store'` for Flex data.
-3. **Flex also empty for the date** → Flex sync may not have run yet today. Call `sync_flex_trades` first.
-4. Never declare zero realized P&L as confirmed until both live and store sources are checked.
+1. Check `get_trades source='live'` first. If it returns "No trades visible in CP API session" — this is NOT confirmation of zero activity. Mobile/TWS-placed trades are invisible to the CP API session.
+2. Always follow up with `get_trades source='store'` (Flex). If that also returns nothing: run `sync_flex_trades` to pull the latest back-office data (T+1 — yesterday's trades are available today).
+3. Never declare zero realized P&L until Flex has been queried AND a sync has been run if needed.
+4. If the user confirms they traded: skip step 1, go straight to `sync_flex_trades` → `get_trades source='store'`.
+
+**P&L calculation from trades (when needed):**
+Realized P&L per round-trip = (close_price − open_price) × quantity × multiplier − total_commission
+- For equities: multiplier = 1
+- For futures: multiplier is embedded in the Flex `tradePnl` field — use it directly rather than computing manually
+- The Flex store now records `realized_pnl` per execution from IBKR's own calculation. Sum these for total daily P&L.
 
 ---
 
