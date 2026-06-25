@@ -509,6 +509,14 @@ This rule exists because two bugs in one session were caught instantly by checki
 | tradingview-mcp tool list and usage | https://github.com/tradesdontlie/tradingview-mcp |
 | Chrome DevTools Protocol | https://chromedevtools.github.io/devtools-protocol/ |
 
+**Chainlit** (`claudia/app.py`)
+
+| Topic | Official source |
+|---|---|
+| Chainlit API reference (Message, Action, Step, Audio) | https://docs.chainlit.io/api-reference/message |
+| Chainlit configuration (chainlit.yaml) | https://docs.chainlit.io/backend/config |
+| Chainlit custom CSS / JS | https://docs.chainlit.io/customisation/custom-js |
+
 ---
 
 ## Hard Rules for Developers

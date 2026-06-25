@@ -122,6 +122,26 @@ IBKR Client Portal Gateway
 
 ---
 
+## External API Reference
+
+Any contribution touching API behavior, error codes, endpoint paths, or field names **must reference the official documentation first** — never assume from memory.
+
+| API | Used in | Official reference |
+|---|---|---|
+| IBKR Client Portal API | `ibkr_core_mcp` | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/ |
+| IBKR Flex Web Service | `ibkr_core_mcp/flex_query.py` | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3.htm |
+| IBKR Flex error codes | `ibkr_core_mcp/flex_query.py` | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm |
+| Anthropic Messages API | `claudia/agent.py` | https://docs.anthropic.com/en/api/messages |
+| Anthropic tool use | `claudia/agent.py` | https://docs.anthropic.com/en/docs/build-with-claude/tool-use |
+| Google Drive API v3 | `claudia/gdrive_sync.py` | https://developers.google.com/drive/api/reference/rest/v3 |
+| TradingView MCP | `claudia/tradingview.py` | https://github.com/tradesdontlie/tradingview-mcp |
+| Chrome DevTools Protocol | `claudia/tradingview.py` | https://chromedevtools.github.io/devtools-protocol/ |
+| Chainlit | `claudia/app.py` | https://docs.chainlit.io |
+
+Full protocol and per-file ownership: [`CLAUDE.md → API Reference`](CLAUDE.md#api-reference--docs-first).
+
+---
+
 ## Data Stores
 
 | Store | Path | Contents |
