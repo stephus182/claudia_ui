@@ -114,29 +114,36 @@ Everything below is unit-tested but has not been verified with a real running se
 
 ### 4b. Price Alerts (dedicated test batch — requires ClaudIA restart)
 
-**Single alert — explicit price:**
-- [ ] "Alert me when AAPL hits $200" → ClaudIA checks current price, infers direction, asks TIF + Day/Day+, confirms before setting
+**Single — explicit price:**
+- [ ] "Alert AAPL at $200" → current price shown, direction inferred, asks TIF + Day/Day+, confirms summary before setting
 - [ ] Alert appears in IBKR mobile app
+- [ ] Snapshot failure path: if `get_market_snapshot` returns no price, ClaudIA proceeds without blocking
 
-**Single alert — % P&L:**
-- [ ] "Alert when CRM is down 25% unrealized" → ClaudIA confirms side from position (long/short), shows math (e.g. $245.10 × 0.75 = $183.83), flags if already past threshold, asks TIF + Day/Day+
-- [ ] Threshold not yet crossed: alert set correctly at calculated price
-- [ ] Threshold already crossed: ClaudIA flags it and offers alternatives (deeper level or recovery alert)
+**Single — % loss:**
+- [ ] "Alert when CRM is down 25%" → side confirmed (long/short), math shown ($245.10 × 0.75 = $183.83), asks TIF + Day/Day+, set at calculated price
+- [ ] Already-crossed path: ClaudIA flags current P&L, offers deeper level or recovery alert — does not set silently
 
-**Single alert — absolute $ loss:**
-- [ ] "Alert when CRM loses $500" → ClaudIA confirms side + qty, shows math (e.g. $245.10 − $500/50 = $235.10), asks TIF + Day/Day+, sets alert
-- [ ] Short position: verify operator flips to `>=` and price adds instead of subtracts
+**Single — % gain:**
+- [ ] "Alert when CRM is up 10%" → operator flips to `>=`, math shown, TIF + Day/Day+ asked
+
+**Single — absolute $ loss:**
+- [ ] "Alert when CRM loses $500" → side + qty confirmed, math shown ($245.10 − $500/50 = $235.10), asks TIF + Day/Day+
+- [ ] Short position: operator `>=`, price adds (avg_cost + dollar/qty)
+
+**Single — absolute $ gain:**
+- [ ] "Alert when CRM gains $300" → operator `>=` for long, math shown, TIF + Day/Day+ asked
 
 **Bulk alerts:**
-- [ ] "Set a -10% alert on all my positions" → ClaudIA calls `get_positions`, loops through each symbol, calculates price level per position, asks TIF + Day/Day+ once for all, sets each alert
+- [ ] "Set a -10% alert on all my positions" → `get_positions` called once, full list of all symbol/price/direction shown before any alert is set, TIF + Day/Day+ asked once for batch, all alerts set on confirmation
 
 **Modify:**
-- [ ] "Change my AAPL alert to $210" → `get_alerts` → `modify_price_alert` with new price → confirmed
-- [ ] "Change that alert to GTC" → TIF-only modification, price unchanged
+- [ ] "Change my AAPL alert to $210" → `get_alerts` → `modify_price_alert` with new price, everything else unchanged
+- [ ] "Change that alert to GTC" → TIF-only change, price and scope unchanged
+- [ ] "Make it extended hours" → outside_rth only change
 
 **Cancel / deactivate:**
-- [ ] "Delete my AAPL alert" → `get_alerts` to find ID → `delete_alert` → removed from IBKR mobile
-- [ ] "Pause my CRM alert without deleting it" → `activate_alert` with activate=false → alert deactivated
+- [ ] "Delete my AAPL alert" → `get_alerts` to find ID → `delete_alert` → gone from IBKR mobile
+- [ ] "Pause my CRM alert without deleting it" → `activate_alert` activate=false → deactivated, not deleted
 
 ### 5. Order Staging
 
