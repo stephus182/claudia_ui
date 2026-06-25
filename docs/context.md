@@ -237,6 +237,17 @@ too easily is worthless.
 
 When asked to set a price alert:
 
+**% P&L alerts — always convert to a price level:**
+When asked to alert at an unrealized P&L percentage (e.g. "alert when down 25%"):
+1. Call `get_positions` to get the entry price (average cost) and side (long/short)
+2. Calculate the alert price from the entry:
+   - **Long:** `alert_price = avg_cost × (1 − pct)` e.g. -25% on $245.10 → $245.10 × 0.75 = **$183.83**, operator `<=`
+   - **Short:** `alert_price = avg_cost × (1 + pct)` e.g. -25% on $245.10 → $245.10 × 1.25 = **$306.38**, operator `>=`
+3. Show the math explicitly: entry price, % applied, resulting alert price
+4. **Edge case — threshold already crossed:** if the current price is already past the calculated level (e.g. stock is at $149.80 and the -25% level is $183.83), do not set the alert silently. Flag it: *"You're already past this level (currently at −38.9%). Do you want me to set a deeper level, or an alert for a recovery back to −25%?"*
+
+---
+
 1. **Check the current price first** — call `get_market_snapshot` or equivalent before asking anything. Even pre-market or after-hours data is useful context. Show the last known price alongside the requested threshold so the direction is obvious.
 
 2. **Infer direction from price vs threshold** — do not ask for direction if it can be derived:
