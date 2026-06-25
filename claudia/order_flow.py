@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import chainlit as cl
@@ -127,12 +128,14 @@ async def execute_staged_order(
         conid = contracts[0].get("conid")
 
         # Build order dict
+        claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"
         order_body: dict = {
             "conid": conid,
             "orderType": otype,
             "side": action_str,
             "quantity": qty,
             "tif": "DAY",
+            "cOID": claudia_ref,  # customer order ID — survives round-trip, identifies ClaudIA orders
         }
         if otype == "LMT" and limit_price is not None:
             order_body["price"] = limit_price
@@ -151,12 +154,23 @@ async def execute_staged_order(
         await cl.Message(content=success_text, author="ClaudIA").send()
 
         if store and session_id:
+            # Extract IBKR orderId from response for future cross-referencing
+            ibkr_order_id = None
+            if isinstance(result, list) and result:
+                ibkr_order_id = result[0].get("order_id") or result[0].get("orderId")
+            elif isinstance(result, dict):
+                ibkr_order_id = result.get("order_id") or result.get("orderId")
             store.add_decision(
                 session_id=session_id,
                 decision_type="trade_staged",
                 summary_text=f"STAGED: {action_str} {qty} {symbol} ({otype})",
                 symbol=symbol,
-                metadata={"proposal": proposal, "ibkr_response": result},
+                metadata={
+                    "proposal": proposal,
+                    "ibkr_response": result,
+                    "ibkr_order_id": ibkr_order_id,
+                    "claudia_ref": claudia_ref,
+                },
             )
 
     except Exception as exc:
