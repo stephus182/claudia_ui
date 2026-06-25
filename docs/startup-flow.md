@@ -1,7 +1,46 @@
 # ClaudIA Startup Flow
 
-Documents every phase of `on_chat_start` (in `claudia/app.py`) in order.
+Documents every phase of startup in order: `start-claudia.sh` (pre-Chainlit) then
+`on_chat_start` (in `claudia/app.py`).
 Use this to diagnose startup failures: each phase is labeled with where to look.
+
+---
+
+## Phase -1 — IBKR gateway pre-flight (`start-claudia.sh`)
+
+**File:** `start-claudia.sh` → `ibkr_core_mcp/gateway/manager.py` → `GatewayManager.startup()`
+
+Runs before Chainlit starts. Two paths:
+
+**Fast path — container already running and authenticated:**
+```
+▶ Ensuring Docker is running...
+  ✔ IBKR gateway already running and authenticated — skipping startup.
+```
+The existing IBKR session is preserved. This is the normal path when restarting
+ClaudIA without touching IB. No container restart, no login prompt.
+
+**Full path — first start or session lost:**
+```
+▶ Ensuring Docker is running...
+▶ Starting IBKR gateway container...
+▶ Waiting for gateway to be reachable...
+▶ Opening IBKR login page in browser...
+  [user completes login + 2FA]
+▶ Verifying IBKR session...
+  ✔ IBKR session active and ready.
+```
+The existing container (if any) is removed and a fresh one is started.
+Login is required.
+
+**Decision logic** (`GatewayManager.startup()`):
+1. Ensure Docker Desktop is running
+2. Check `is_running() AND is_authenticated()` — if both true → fast path, return
+3. Otherwise → full path: remove container, start fresh, prompt for login
+
+**Why remove-and-recreate on the full path:** the IBKR gateway container holds session state. Reusing a stale container after a timeout produces unpredictable auth errors. A fresh container always starts clean.
+
+**caffeinate:** macOS sleep prevention is started before the gateway check. `caffeinate -i -w $$` runs for the lifetime of the script, preventing idle sleep from disconnecting IBKR mid-session.
 
 ---
 
@@ -171,6 +210,8 @@ The welcome message includes:
 
 | Symptom | Where to look |
 |---|---|
+| Login prompt appears on every ClaudIA restart | Phase -1: gateway pre-flight not running (`is_running()` or `is_authenticated()` returns false) — check container with `docker ps` |
+| Container restarted unexpectedly, session lost | Phase -1: only happens on full path (session was gone). If it was authenticated, check for competing sessions |
 | DB not found / empty history | Phase 0: GDrive download failed; check `GOOGLE_DRIVE_FOLDER_ID` and token file |
 | `context.md` not loading | Phase 1: file path, permissions (`chmod 600`), or Drive not configured |
 | Version warning at startup | Phase 2: file changed since last session — intentional, verify content |
@@ -183,22 +224,40 @@ The welcome message includes:
 
 ---
 
-## IBKR reconnection sequence (after reboot or session timeout)
+## IBKR reconnection flows
 
-1. ClaudIA starts → `ping()` returns False → "Start IBKR Gateway" button shown
-2. User clicks button → Docker Desktop launched (if not running)
-3. Gateway container started (existing container removed first for clean state)
-4. Wait up to 120s for Java process to be reachable
-5. `https://localhost:5055` opened in browser
-6. User completes IBKR login + mobile 2FA
-7. ConnectivityChecker polls within 15s → detects `authenticated=true, connected=true`
-8. "IBKR Gateway reconnected" alert sent in chat
+### Restarting ClaudIA (IB stays connected)
+
+```
+./start-claudia.sh
+  → Phase -1: is_running=true, is_authenticated=true → fast path
+  → Chainlit starts
+  → Phase 5: ping() returns True → account summary fetched, no button shown
+```
+
+No container restart. No login. Session uninterrupted.
+
+### First start or session lost
+
+```
+./start-claudia.sh
+  → Phase -1: container missing or not authenticated → full path
+  → Docker launched, fresh container started
+  → Login page opened
+  → User completes IBKR login + mobile 2FA
+  → Phase 5 in Chainlit: ping() returns True
+  → ConnectivityChecker: "IBKR Gateway reconnected" alert
+```
+
+### Session lost while ClaudIA is running (in-chat recovery)
+
+1. ConnectivityChecker detects `authenticated=false` → "IBKR Gateway disconnected" alert in chat
+2. "Start IBKR Gateway" button appears (or was already in the welcome message)
+3. User clicks → `GatewayManager.startup()` runs (same logic: skip if already connected, full path otherwise)
+4. ConnectivityChecker detects recovery → "IBKR Gateway reconnected" alert
 
 **Common issues:**
-- **"competing" session**: Another TWS/mobile session is holding the token. Log out
-  from all other IBKR sessions, then re-authenticate via the gateway URL.
-- **Gateway starts but session drops immediately**: The gateway may have been
-  restarted mid-session by another process. Click "Start IBKR Gateway" again to
-  get a clean container.
-- **Login page shows "connected / close this window" but session drops**: IBKR mobile
-  2FA bug — restart the gateway container via the button to get a fresh auth state.
+- **Login prompt on every restart**: Check `docker ps` — if the container is not running between restarts, the session is being lost before ClaudIA starts. Likely cause: Mac sleep (caffeinate should prevent this) or Docker Desktop stopping.
+- **Competing session**: Another TWS/mobile session holds the token. Log out from all other IBKR sessions, then re-authenticate via the gateway URL.
+- **Gateway starts but session drops immediately**: Competing session or IBKR 2FA timing issue. Click "Start IBKR Gateway" again for a clean state.
+- **Container present but not authenticated**: Session timed out. Full path runs — remove/recreate/login.
