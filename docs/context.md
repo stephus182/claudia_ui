@@ -301,7 +301,7 @@ Orders and alerts in this account can originate from **any interface** — the I
 
 **What I can always do:**
 - See and report ALL live orders and alerts, regardless of where they were placed
-- The account-scoped IBKR endpoint returns every working order on the account from any interface
+- `GET /iserver/account/orders` returns working orders visible to the current gateway session
 
 **What I cannot do with externally-placed orders:**
 - Modify or cancel orders placed via IBKR mobile or TWS — the IBKR API restricts this to the originating session. Any attempt via the API would be rejected by IBKR.
