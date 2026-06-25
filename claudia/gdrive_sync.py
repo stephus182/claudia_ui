@@ -43,6 +43,20 @@ class GDriveSync:
         self._lock = threading.RLock()
 
     def _get_service(self) -> Any:
+        """Return an authenticated Drive API v3 service object (cached per instance).
+
+        Token refresh: if the access token is expired but a refresh_token is present,
+        google-auth calls the OAuth2 token endpoint automatically via creds.refresh(Request()).
+        The refreshed token is written back to the token file with strict permissions (0o600)
+        so subsequent processes reuse it without re-prompting.
+
+        Two-step chmod: os.open with O_CREAT mode 0o600 only applies the permission on
+        file creation, not on an existing file. os.chmod is called unconditionally after
+        the write to enforce 0o600 regardless of whether the file was created or truncated.
+
+        Source (google-auth credentials): https://google-auth.readthedocs.io/en/stable/reference/google.oauth2.credentials.html
+        Source (Drive API v3 service): https://developers.google.com/drive/api/reference/rest/v3
+        """
         with self._lock:
             if self._service:
                 return self._service
@@ -71,7 +85,16 @@ class GDriveSync:
             return self._service
 
     def _resolve_db_folder(self) -> str:
-        """Return the Drive folder ID for claudia.db, auto-creating 'db/' if needed."""
+        """Return the Drive folder ID for claudia.db, auto-creating 'db/' if needed.
+
+        Uses files().list() to search by name within the root folder (not a recursive
+        search — parent constraint scopes it). On first run the 'db/' subfolder does not
+        exist, so files().create() with mimeType=application/vnd.google-apps.folder creates
+        it. Result is cached in _resolved_db_folder for the process lifetime.
+
+        Source: https://developers.google.com/drive/api/reference/rest/v3/files/list
+        Source: https://developers.google.com/drive/api/reference/rest/v3/files/create
+        """
         if self._config.gdrive_db_folder_id:
             return self._config.gdrive_db_folder_id
         if self._resolved_db_folder:
@@ -110,7 +133,13 @@ class GDriveSync:
             _, done = downloader.next_chunk()
 
     def _find_file(self, name: str, folder_id: str | None = None) -> str | None:
-        """Return Drive file ID for name in folder_id (default: root folder), or None."""
+        """Return Drive file ID for name in folder_id (default: root folder), or None.
+
+        The `trashed=false` clause is required — Drive search includes trashed files by
+        default, and a recently-deleted claudia.db would be returned without it.
+
+        Source: https://developers.google.com/drive/api/reference/rest/v3/files/list
+        """
         svc = self._get_service()
         fid = folder_id if folder_id is not None else self._config.gdrive_folder_id
         results = (
@@ -125,7 +154,10 @@ class GDriveSync:
         return files[0]["id"] if files else None
 
     def ping(self) -> bool:
-        """Return True if Drive API is reachable and credentials are valid."""
+        """Return True if Drive API is reachable and credentials are valid.
+
+        Source: https://developers.google.com/drive/api/reference/rest/v3/files/list
+        """
         try:
             svc = self._get_service()
             svc.files().list(pageSize=1, fields="files(id)").execute()
@@ -134,11 +166,18 @@ class GDriveSync:
             return False
 
     def download_db(self, local_path: Path) -> bool:
-        """
-        Download claudia.db from Drive to local_path.
+        """Download claudia.db from Drive to local_path.
 
         Returns True if found and downloaded; False if not on Drive (first run).
         On error: logs warning, returns False — caller continues with local/empty DB.
+
+        Download uses MediaIoBaseDownload with next_chunk() for streaming — same chunked
+        approach as the Google Drive Python client docs recommend for binary files.
+        A temp file is used so a failed download never overwrites a good local copy.
+        PRAGMA integrity_check validates the downloaded file before it replaces local.
+
+        Source (files.get_media): https://developers.google.com/drive/api/reference/rest/v3/files/get
+        Source (MediaIoBaseDownload): https://developers.google.com/drive/api/guides/manage-downloads
         """
         try:
             svc = self._get_service()
@@ -189,9 +228,17 @@ class GDriveSync:
             return False
 
     def upload_db(self, local_path: Path) -> None:
-        """
-        Upload local_path as claudia.db to Drive (create or update in-place).
+        """Upload local_path as claudia.db to Drive (create or update in-place).
+
         On error: logs warning — local copy is preserved, data not lost.
+
+        files().update() patches an existing file's content without changing metadata or
+        sharing settings. files().create() is only called when no file exists yet (first
+        upload). The lock prevents a duplicate-file race when two sessions close concurrently.
+
+        Source (files.update): https://developers.google.com/drive/api/reference/rest/v3/files/update
+        Source (files.create): https://developers.google.com/drive/api/reference/rest/v3/files/create
+        Source (MediaFileUpload): https://developers.google.com/drive/api/guides/manage-uploads
         """
         if not local_path.exists():
             log.warning("GDriveSync.upload_db: %s not found — nothing to upload", local_path)
@@ -216,9 +263,16 @@ class GDriveSync:
     _MAX_TEXT_BYTES = 1 * 1024 * 1024  # 1 MB — generous for context/principles docs
 
     def read_text(self, filename: str) -> str | None:
-        """
-        Download a text file (e.g. "context.md") from Drive.
+        """Download a text file (e.g. "context.md") from Drive.
+
         Returns content string, or None if not found or on any error.
+
+        files().get(fields="size") fetches only the file's metadata size field — avoids
+        downloading the content twice. The 1 MB guard prevents a runaway context.md from
+        bloating the system prompt.
+
+        Source (files.get): https://developers.google.com/drive/api/reference/rest/v3/files/get
+        Source (files.get_media): https://developers.google.com/drive/api/reference/rest/v3/files/get
         """
         try:
             svc = self._get_service()

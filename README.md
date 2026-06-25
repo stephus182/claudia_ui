@@ -137,6 +137,10 @@ Any contribution touching API behavior, error codes, endpoint paths, or field na
 | TradingView MCP | `claudia/tradingview.py` | https://github.com/tradesdontlie/tradingview-mcp |
 | Chrome DevTools Protocol | `claudia/tradingview.py` | https://chromedevtools.github.io/devtools-protocol/ |
 | Chainlit | `claudia/app.py` | https://docs.chainlit.io |
+| `requests` (web fetch) | `claudia/agent.py` | https://docs.python-requests.org/ |
+| `html2text` (HTML → Markdown) | `claudia/agent.py` | https://github.com/Alir3z4/html2text |
+| `watchdog` (file monitoring) | `claudia/context_loader.py` | https://watchdog.readthedocs.io/ |
+| `mcp` Python client (stdio) | `claudia/tradingview.py` | https://github.com/modelcontextprotocol/python-sdk |
 
 Full protocol and per-file ownership: [`CLAUDE.md → API Reference`](CLAUDE.md#api-reference--docs-first).
 

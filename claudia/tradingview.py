@@ -308,6 +308,13 @@ async def render_pinescript(code: str, title: str = "PineScript Strategy") -> No
 
 @cl.action_callback("copy_pinescript")
 async def on_copy_pinescript(action: cl.Action):
+    """Display PineScript code for manual copy.
+
+    Chainlit runs server-side — there is no clipboard API available. The code block
+    is re-sent as a message so the user can select and copy it in the browser.
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
     # Chainlit doesn't have clipboard access server-side; display for manual copy.
     code = action.payload["code"]
     await cl.Message(
