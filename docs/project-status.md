@@ -142,8 +142,8 @@ Everything below is unit-tested but has not been verified with a real running se
 
 ### 8. Conversation Memory
 
-- [ ] Ask ClaudIA "What did we discuss about X in previous sessions?" → `search_past_conversations` tool fires → FTS5 results returned — tool built 2026-06-24, pending live verification
-- [ ] Ask ClaudIA to recall a past backtest result → retrieved from message history
+- [x] Ask ClaudIA "What did we discuss about X in previous sessions?" → `search_past_conversations` tool fires (multiple queries), FTS5 results returned with dated snippets — 2026-06-24
+- [x] Ask ClaudIA to recall past trade discussion → retrieved from message history with date context (CL JUL2026 discussion from 2026-06-11 retrieved correctly) — 2026-06-24
 
 ### 9. Security Controls (sanity checks)
 
@@ -163,7 +163,7 @@ Everything below is unit-tested but has not been verified with a real running se
 | Date | Session report | Items tested | Issues found | Outcome |
 |---|---|---|---|---|
 | 2026-06-23 | `2026-06-23-2208.md` | Session startup, IBKR tools (positions, account summary, market data, cache, flex sync), conversation logging | Stopped container bug in `GatewayManager.start()` (fixed); messages not logged for reconnected sessions after restart (expected) | PASS |
-| 2026-06-24 | inline | GDrive DB download (§2.1), hot-reload (§2.3), End Session + Drive upload (§2.4), doc versioning list+get (§3), security refusals (§9.1, §9.2) | 6 bugs found and fixed: GDrive deadlock, IBKR auth check, hot-reload async bridge (3 separate bugs), `_LOCAL_TOOL_NAMES` dispatch gap, `get_last_context_hash` open-session filter, watchdog path comparison | PASS (IBKR/TV skipped — offline) |
+| 2026-06-24 | inline | GDrive DB download (§2.1), hot-reload (§2.3), End Session + Drive upload (§2.4), doc versioning list+get (§3), conversation memory FTS5 recall (§8), security refusals (§9.1, §9.2) | 6 bugs found and fixed: GDrive deadlock, IBKR auth check, hot-reload async bridge (3 separate bugs), `_LOCAL_TOOL_NAMES` dispatch gap, `get_last_context_hash` open-session filter, watchdog path comparison | PASS (IBKR/TV skipped — offline) |
 
 ---
 
