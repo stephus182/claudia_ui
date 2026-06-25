@@ -15,6 +15,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "mcp>=1.0",
     "requests>=2.31",
+    "html2text>=2024.2",
 ]
 
 [project.optional-dependencies]
