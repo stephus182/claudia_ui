@@ -34,6 +34,9 @@ class ConversationStore:
     def _conn(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        # WAL mode allows concurrent readers during a write — required because
+        # GDriveSync.upload_db() opens the DB in a separate thread (at session stop)
+        # while the main loop may still be reading history for a pending response.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         try:

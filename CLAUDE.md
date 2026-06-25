@@ -517,6 +517,15 @@ This rule exists because two bugs in one session were caught instantly by checki
 | Chainlit configuration (chainlit.yaml) | https://docs.chainlit.io/backend/config |
 | Chainlit custom CSS / JS | https://docs.chainlit.io/customisation/custom-js |
 
+**Standard libraries used in claudia_ui**
+
+| Library | Used in | Official reference |
+|---|---|---|
+| `requests` | `claudia/agent.py` (`fetch_web_page` tool) | https://docs.python-requests.org/ |
+| `html2text` | `claudia/agent.py` (HTML → Markdown for web fetch) | https://github.com/Alir3z4/html2text |
+| `watchdog` | `claudia/context_loader.py` (file system event monitoring) | https://watchdog.readthedocs.io/ |
+| `mcp` | `claudia/tradingview.py` (MCP stdio client for tradingview-mcp sidecar) | https://github.com/modelcontextprotocol/python-sdk |
+
 ---
 
 ## Hard Rules for Developers

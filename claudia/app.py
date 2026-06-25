@@ -326,6 +326,21 @@ def _write_version_snapshot(version: str, context_text: str, principles_text: st
 
 @cl.on_chat_start
 async def on_chat_start():
+    """Initialize a ClaudIA session.
+
+    Runs once per browser tab open. Sequence:
+    1. GDrive DB download (first session per process only)
+    2. Drive context/principles fetch (every session — picks up latest version)
+    3. ContextLoader + watchdog hot-reload wiring
+    4. Document version registration + hash-change security alert
+    5. Chainlit session state: toolkit, store, agent, loader
+    6. tradingview-mcp sidecar connect (non-fatal if offline)
+    7. ConnectivityChecker start (singleton — survives across sessions)
+    8. Welcome message with status summary + optional startup buttons
+    9. Background Flex sync (deferred, non-blocking)
+
+    Source: https://docs.chainlit.io/api-reference/on-chat-start
+    """
     session_id = cl.context.session.id
 
     # GDrive sync — download DB on first session start (before store is opened)
@@ -674,6 +689,14 @@ async def on_chat_start():
 
 @cl.on_message
 async def on_message(message: cl.Message):
+    """Route an incoming user message to the ClaudIA agent.
+
+    Handles image attachments (TradingView screenshots) by encoding them as base64
+    vision content blocks for the Anthropic SDK. Delegates all text + tool loop
+    work to ClaudIAAgent.handle_message().
+
+    Source: https://docs.chainlit.io/api-reference/on-message
+    """
     agent: ClaudIAAgent = cl.user_session.get("agent")
     if not agent:
         await cl.Message(content="Session not initialized. Please refresh.", author="System").send()
@@ -747,6 +770,14 @@ async def _run_session_cleanup(session_id: str | None, store: ConversationStore 
 
 @cl.on_stop
 async def on_stop():
+    """Clean up when the user closes the browser tab or the server stops.
+
+    Delegates to _run_session_cleanup(): closes the session record, generates the
+    session report, and uploads claudia.db to Drive. Skips if the 'End Session'
+    button already handled cleanup to avoid a double upload.
+
+    Source: https://docs.chainlit.io/api-reference/on-chat-end
+    """
     if cl.user_session.get("session_closed"):
         return  # already handled by End Session button
     session_id = cl.user_session.get("session_id")
