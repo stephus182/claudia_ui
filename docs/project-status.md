@@ -119,9 +119,13 @@ Everything below is unit-tested but has not been verified with a real running se
 - [ ] Alert appears in IBKR mobile app
 
 **Single alert — % P&L:**
-- [ ] "Alert when CRM is down 25% unrealized" → ClaudIA fetches entry price, shows math (e.g. $245.10 × 0.75 = $183.83), flags if already past threshold, asks TIF + Day/Day+
+- [ ] "Alert when CRM is down 25% unrealized" → ClaudIA confirms side from position (long/short), shows math (e.g. $245.10 × 0.75 = $183.83), flags if already past threshold, asks TIF + Day/Day+
 - [ ] Threshold not yet crossed: alert set correctly at calculated price
 - [ ] Threshold already crossed: ClaudIA flags it and offers alternatives (deeper level or recovery alert)
+
+**Single alert — absolute $ loss:**
+- [ ] "Alert when CRM loses $500" → ClaudIA confirms side + qty, shows math (e.g. $245.10 − $500/50 = $235.10), asks TIF + Day/Day+, sets alert
+- [ ] Short position: verify operator flips to `>=` and price adds instead of subtracts
 
 **Bulk alerts:**
 - [ ] "Set a -10% alert on all my positions" → ClaudIA calls `get_positions`, loops through each symbol, calculates price level per position, asks TIF + Day/Day+ once for all, sets each alert
