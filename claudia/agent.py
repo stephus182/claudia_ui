@@ -128,6 +128,29 @@ _LOCAL_TOOLS: list[dict] = [
             "required": ["query"],
         },
     },
+    {
+        "name": "fetch_web_page",
+        "description": (
+            "Fetch and read any public web page — documentation, financial news, research, broker pages. "
+            "Returns the page content as readable text. Use when the user asks you to look at a URL, "
+            "read documentation, or research something online. "
+            "Does not work on pages that require JavaScript rendering or login."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The full URL to fetch, e.g. 'https://example.com/page'.",
+                },
+                "extract": {
+                    "type": "string",
+                    "description": "Optional: specific section or information to focus on.",
+                },
+            },
+            "required": ["url"],
+        },
+    },
 ]
 
 _LOCAL_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in _LOCAL_TOOLS)
@@ -401,7 +424,38 @@ class ClaudIAAgent:
                 created = (r.get("created_at") or "")[:10]
                 parts.append(f"[{created}] {role}: {snippet[:300]}")
             return "\n\n---\n\n".join(parts)
+        if name == "fetch_web_page":
+            return self._fetch_web_page(inputs)
         return f"Unknown local tool: {name}"
+
+    def _fetch_web_page(self, inputs: dict) -> str:
+        import html2text
+        import requests as _req
+        url = inputs.get("url", "").strip()
+        if not url:
+            return "No URL provided."
+        try:
+            resp = _req.get(
+                url,
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ClaudIA/1.0)"},
+                allow_redirects=True,
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            return f"Could not fetch {url}: {exc}"
+        h = html2text.HTML2Text()
+        h.ignore_links = False
+        h.ignore_images = True
+        h.body_width = 0
+        text = h.handle(resp.text)
+        # Trim to a reasonable size to avoid flooding context
+        if len(text) > 12000:
+            text = text[:12000] + "\n\n[… content truncated at 12,000 chars]"
+        extract = inputs.get("extract", "").strip()
+        if extract:
+            return f"[Fetched: {url}]\nFocus: {extract}\n\n{text}"
+        return f"[Fetched: {url}]\n\n{text}"
 
     def _log_proposal(
         self, text: str, order_proposal: dict | None, msg_id: int
