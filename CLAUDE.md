@@ -558,6 +558,6 @@ When updating ibkr_core_mcp (e.g. after adding new tools), re-run `pip install -
 No restart of the Chainlit app is needed for tool definition changes; restart required for
 Python module changes.
 
-Tools planned for ibkr_core_mcp:
-- `preview_order` — read-only whatif order preview (in `ibkr_core_mcp/claude_tools.py`)
-- `get_pnl` — real-time partitioned P&L (in `ibkr_core_mcp/claude_tools.py`)
+Tools in ibkr_core_mcp (shipped):
+- `preview_order` — read-only whatif order preview (`ibkr_core_mcp/claude_tools.py`)
+- `get_pnl` — real-time partitioned P&L (`ibkr_core_mcp/claude_tools.py`)

@@ -204,10 +204,12 @@ Everything below is unit-tested but has not been verified with a real running se
 
 | Feature | Location | Notes |
 |---|---|---|
-| `preview_order` tool | `ibkr_core_mcp/claude_tools.py` | Read-only whatif order preview before staging |
-| `get_pnl` tool | `ibkr_core_mcp/claude_tools.py` | Real-time partitioned P&L |
 | Voice output (TTS) | Phase 2 | `edge-tts` + `cl.Audio`; `CLAUDIA_VOICE_ENABLED` env var |
 | ML signals | Phase 3 | `ibkr_ml_client` sibling repo; pattern detection, regime signals |
+
+**Shipped (previously listed as planned):**
+- `preview_order` — read-only whatif order preview — in `ibkr_core_mcp/claude_tools.py`
+- `get_pnl` — real-time partitioned P&L — in `ibkr_core_mcp/claude_tools.py`; live-tested 2026-06-25
 
 ---
 

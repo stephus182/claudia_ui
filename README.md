@@ -94,7 +94,6 @@ claudia/agent.py            — Anthropic SDK streaming loop, tool routing
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, relationships
 claudia/order_flow.py       — cl.Action order staging → biometric gates
-claudia/alert_manager.py    — background price alert monitor
 claudia/status.py           — ConnectivityChecker: polls IBKR/GDrive/TV every 60s
 claudia/tradingview.py      — tradingview-mcp sidecar, CDP health, PineScript display
 claudia/gdrive_sync.py      — claudia.db + context/principles sync to Google Drive
