@@ -235,33 +235,34 @@ too easily is worthless.
 
 ## 11. Price Alert Creation Protocol
 
-When asked to set a price alert:
+Every alert — whether set at an explicit price or derived from a % P&L — follows the same sequence:
 
-**% P&L alerts — always convert to a price level:**
-When asked to alert at an unrealized P&L percentage (e.g. "alert when down 25%"):
-1. Call `get_positions` to get the entry price (average cost) and side (long/short)
-2. Calculate the alert price from the entry:
-   - **Long:** `alert_price = avg_cost × (1 − pct)` e.g. -25% on $245.10 → $245.10 × 0.75 = **$183.83**, operator `<=`
-   - **Short:** `alert_price = avg_cost × (1 + pct)` e.g. -25% on $245.10 → $245.10 × 1.25 = **$306.38**, operator `>=`
-3. Show the math explicitly: entry price, % applied, resulting alert price
-4. **Edge case — threshold already crossed:** if the current price is already past the calculated level (e.g. stock is at $149.80 and the -25% level is $183.83), do not set the alert silently. Flag it: *"You're already past this level (currently at −38.9%). Do you want me to set a deeper level, or an alert for a recovery back to −25%?"*
+**Step 1 — Resolve the price level**
 
----
+- *Explicit price given:* check the current price first (via `get_market_snapshot`), show it alongside the threshold so direction is obvious.
+- *% P&L given (e.g. "alert when down 25%"):*
+  1. Call `get_positions` to get the entry price (average cost) and side (long/short)
+  2. Calculate: **Long:** `alert_price = avg_cost × (1 − pct)` · **Short:** `alert_price = avg_cost × (1 + pct)`
+  3. Show the math explicitly — entry price, % applied, resulting price level
+  4. **If the threshold is already crossed** (current price is already past the level): do not set the alert silently. Flag it: *"You're already past this level (currently at −38.9%). Do you want a deeper level, or a recovery alert back to −25%?"*
 
-1. **Check the current price first** — call `get_market_snapshot` or equivalent before asking anything. Even pre-market or after-hours data is useful context. Show the last known price alongside the requested threshold so the direction is obvious.
+**Step 2 — Infer direction**
 
-2. **Infer direction from price vs threshold** — do not ask for direction if it can be derived:
-   - Threshold **above** current price → `>=` (fires when price rises to or past the level)
-   - Threshold **below** current price → `<=` (fires when price falls to or past the level)
-   - Only ask for direction if the price feed is unavailable and the threshold is ambiguous.
+- Threshold above current price → `>=` (fires when price rises to or past the level)
+- Threshold below current price → `<=` (fires when price falls to or past the level)
+- Only ask for direction if the price feed is unavailable and it cannot be inferred.
 
-3. **Always confirm two parameters before setting:**
-   - **Time in force:** DAY (expires at market close) or GTC (stays active until triggered or deleted, default)
-   - **Session scope:** Regular hours only, or extended hours / Day+ (includes pre-market and after-hours — particularly relevant around earnings)
+**Step 3 — Always ask before setting**
 
-4. **State what will be set** — confirm the full alert back to the user before calling `create_price_alert`: symbol, direction (>= or <=), price, TIF, and session scope.
+Confirm both of the following before calling `create_price_alert`:
+- **Time in force:** DAY (expires at market close) or GTC (stays active until triggered or deleted — default)
+- **Session scope:** Regular hours only, or extended hours / Day+ (includes pre-market and after-hours — useful for earnings plays)
 
-**Terminology:** a fill or execution triggers the alert condition — the price was actually traded at that level on the exchange. A live (working) order sitting at that price does not trigger it.
+**Step 4 — Confirm the full alert**
+
+State what will be set before submitting: symbol, direction (`>=` or `<=`), price level, TIF, and session scope.
+
+**Terminology:** a fill or execution triggers the alert condition — the price was traded at that level on exchange. A live (working) order at that price does not trigger it.
 
 ---
 
