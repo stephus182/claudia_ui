@@ -121,6 +121,18 @@ Flex never has today's trades. The live API fills that gap.
 
 See [`docs/flex-query-setup.md`](docs/flex-query-setup.md) for full setup and troubleshooting.
 
+### HMDS Warmup Behavior
+
+`fetch_market_data` uses `/hmds/history` (IBKR's Historical Market Data Service). This endpoint has a documented first-call behavior: IBKR initializes a per-symbol data subscription on the first request, which typically returns 404 or 500 while warming up.
+
+**`_fetch_market_data` in `claude_tools.py` handles this with a 3-attempt retry loop (2s delay) on `IBKRAPIError`.** The `with_retry` wrapper in `rate_limiter.py` only covers 429/503 — HMDS warmup errors (404/500) are handled separately at the tool level.
+
+Symptoms and diagnosis:
+- First call for a new symbol fails → warmup, auto-retried, transparent
+- Subsequent calls for the same symbol → fast (subscription already live)
+- Period A fails, shorter Period B succeeds → Period A likely hit the warmup window; Period B ran after it cleared. Not a period-length limit.
+- All retries fail → check account/positions endpoints; if those work, it may be an IBKR subscription limit for that lookback or symbol
+
 ---
 
 ## GDrive Sync
