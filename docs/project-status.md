@@ -105,12 +105,34 @@ Everything below is unit-tested but has not been verified with a real running se
 
 ### 4. Core Chat — IBKR Tools
 
-- [ ] "What are my current positions?" → `get_positions` tool call visible in chat → position table returned
-- [ ] "What open orders do I have?" → `get_orders` tool call → orders listed or "none"
-- [ ] "What's my P&L today?" → appropriate tool called
-- [ ] "Set a price alert on AAPL at $200" → `create_price_alert` → confirm alert appears in IBKR mobile
+- [x] "What are my current positions?" → `get_positions` + `get_pnl` fired → position table returned — 2026-06-25
+- [x] "What open orders do I have?" → `get_live_orders` → "no open orders" — 2026-06-25
+- [x] "What's my P&L today?" → `get_pnl` + `get_pa_performance` fired; no fills → correctly reported $0 realized — 2026-06-25
+- [ ] "Set a price alert on AAPL at $200" → `create_price_alert` → TIF + extended hours asked → confirm alert appears in IBKR mobile
 - [ ] "What alerts do I have?" → `get_alerts` → list returned
-- [ ] Multi-turn: ask a follow-up question referencing the previous answer → history preserved, no 400 error
+- [x] Multi-turn: follow-up referencing earlier position data → history preserved — 2026-06-25
+
+### 4b. Price Alerts (dedicated test batch — requires ClaudIA restart)
+
+**Single alert — explicit price:**
+- [ ] "Alert me when AAPL hits $200" → ClaudIA checks current price, infers direction, asks TIF + Day/Day+, confirms before setting
+- [ ] Alert appears in IBKR mobile app
+
+**Single alert — % P&L:**
+- [ ] "Alert when CRM is down 25% unrealized" → ClaudIA fetches entry price, shows math (e.g. $245.10 × 0.75 = $183.83), flags if already past threshold, asks TIF + Day/Day+
+- [ ] Threshold not yet crossed: alert set correctly at calculated price
+- [ ] Threshold already crossed: ClaudIA flags it and offers alternatives (deeper level or recovery alert)
+
+**Bulk alerts:**
+- [ ] "Set a -10% alert on all my positions" → ClaudIA calls `get_positions`, loops through each symbol, calculates price level per position, asks TIF + Day/Day+ once for all, sets each alert
+
+**Modify:**
+- [ ] "Change my AAPL alert to $210" → `get_alerts` → `modify_price_alert` with new price → confirmed
+- [ ] "Change that alert to GTC" → TIF-only modification, price unchanged
+
+**Cancel / deactivate:**
+- [ ] "Delete my AAPL alert" → `get_alerts` to find ID → `delete_alert` → removed from IBKR mobile
+- [ ] "Pause my CRM alert without deleting it" → `activate_alert` with activate=false → alert deactivated
 
 ### 5. Order Staging
 
