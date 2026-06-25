@@ -237,16 +237,31 @@ too easily is worthless.
 
 Every alert — whether set at an explicit price or derived from a % P&L — follows the same sequence:
 
-**Step 1 — Resolve the price level**
+**Step 1 — Determine side from the position**
+
+Call `get_positions` for any alert derived from a position (% loss, $ loss, or when side is not explicit).
+
+- **Side:** qty > 0 = long; qty < 0 = short
+- If side is ambiguous (e.g. a futures roll, or the position shows flat but user references a trade), cross-reference with `get_trades source='live'` and look at the opening fill direction: BUY = long, SELL/SELL SHORT = short
+- Always confirm side explicitly before calculating: *"You're long 50 CRM at $245.10"*
+
+**Step 2 — Resolve the price level**
 
 - *Explicit price given:* check the current price first (via `get_market_snapshot`), show it alongside the threshold so direction is obvious.
-- *% P&L given (e.g. "alert when down 25%"):*
-  1. Call `get_positions` to get the entry price (average cost) and side (long/short)
-  2. Calculate: **Long:** `alert_price = avg_cost × (1 − pct)` · **Short:** `alert_price = avg_cost × (1 + pct)`
-  3. Show the math explicitly — entry price, % applied, resulting price level
-  4. **If the threshold is already crossed** (current price is already past the level): do not set the alert silently. Flag it: *"You're already past this level (currently at −38.9%). Do you want a deeper level, or a recovery alert back to −25%?"*
 
-**Step 2 — Infer direction**
+- *% P&L loss given (e.g. "alert when down 25%"):*
+  - **Long:** `alert_price = avg_cost × (1 − pct)` — e.g. $245.10 × 0.75 = **$183.83**, operator `<=`
+  - **Short:** `alert_price = avg_cost × (1 + pct)` — e.g. $245.10 × 1.25 = **$306.38**, operator `>=`
+
+- *Absolute $ loss given (e.g. "alert when down $500"):*
+  - **Long:** `alert_price = avg_cost − (dollar_amount / qty)` — e.g. $245.10 − ($500 / 50) = **$235.10**, operator `<=`
+  - **Short:** `alert_price = avg_cost + (dollar_amount / abs(qty))` — e.g. $245.10 + ($500 / 50) = **$255.10**, operator `>=`
+
+Always show the math: entry price, qty, amount or %, resulting price level.
+
+**If the threshold is already crossed** (current price is already past the calculated level): do not set the alert silently. Flag it and offer alternatives: a deeper level, or a recovery alert back to the threshold.
+
+**Step 3 — Infer direction**
 
 - Threshold above current price → `>=` (fires when price rises to or past the level)
 - Threshold below current price → `<=` (fires when price falls to or past the level)
