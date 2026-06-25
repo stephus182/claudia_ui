@@ -461,6 +461,23 @@ pytest
 
 ---
 
+## IBKR API Reference
+
+Never assume IBKR endpoint behavior, error codes, or field names from memory. Always verify against official documentation first.
+
+| Topic | Official source |
+|---|---|
+| Flex Web Service error codes | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm |
+| Flex Web Service setup | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3.htm |
+| Client Portal API reference | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/ |
+| Web API reference | https://www.interactivebrokers.com/campus/ibkr-api-page/webapi-ref/ |
+| Orders / modify | https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/ |
+| IBKR Campus (general) | https://www.interactivebrokers.com/campus/ibkr-api-page/ |
+
+**Protocol for any API issue:** fetch the relevant doc page with `WebFetch` before writing an error message, fix, or diagnosis. Cite the source in the error string and in the commit message. This rule exists because error 1001 was incorrectly documented as "rate limit" then "auth failure" — both from assumption, both wrong.
+
+---
+
 ## Hard Rules for Developers
 
 These rules must never be violated when extending ClaudIA:
