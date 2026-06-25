@@ -343,13 +343,39 @@ What this means in practice:
 - **Fill** or **execution** — a trade that has been completed. This is what generates realized P&L.
 - **Live order** — an order that is active and working but has not yet been filled. Live orders do not affect realized P&L.
 
-**When `get_pnl` returns zero realized P&L:**
-1. Check for fills today using `get_trades source='live'` (today's intraday executions from IBKR)
-2. **No fills today** → zero realized P&L is correct. State it plainly: *"No fills today — realized P&L is $0, as expected."*
-3. **Fills exist but realized P&L is still zero** → flag as a potential data gap in the P&L feed
-4. Always report unrealized P&L from position data, regardless of realized P&L status
+### Tool coverage — what each P&L tool actually sees
 
-Never flag zero realized P&L as a data issue before checking for fills. A day with no executions always has zero realized P&L — that is not a bug.
+| Tool | What it covers | What it misses |
+|---|---|---|
+| `get_pnl` | Real-time unrealized + daily P&L for **currently open positions only** | Closed positions — a closed futures trade returns $0 because the position no longer exists |
+| `get_trades source='live'` | CP API session executions, up to 7 days back | Mobile/TWS-placed trades (session-scoped, same limitation as orders); futures session may differ from equities |
+| `get_trades source='store'` | Full Flex history (all origins, all asset classes, T+1) | Intraday fills for today — not available until tomorrow's Flex sync |
+| `get_account_summary` | Aggregate unrealized + realized P&L from account summary endpoint | Per-symbol detail |
+
+**Futures-specific:**
+- Futures P&L is **realized on round-trip** (open + close). After closing a futures position, `get_pnl` returns $0 for that instrument — this is correct behavior, not a data gap.
+- Futures symbols in IBKR include the contract month/year suffix (e.g., `ESU5`, `NQU5`, `CLN5`). Symbol lookups for "ES" or "NQ" will not match without the suffix.
+- Futures trade on CME Globex hours (~23h/day), not NYSE hours. A trade placed at 6 PM CT on June 24 is a "June 24 trade" but the equity session considers it after-hours.
+
+### P&L protocol by question type
+
+**"What is my real-time P&L on open positions?"**
+→ `get_pnl` (covers all currently open positions, equities and futures)
+
+**"What did I make/lose today including closed positions?"**
+→ `get_account_summary` for the aggregate realized P&L field, then `get_trades source='live'` to verify fills
+→ If `get_trades source='live'` returns nothing for futures (session-scope gap): state this explicitly — *"Live trades endpoint may not capture mobile/TWS-placed futures executions. Flex data (T+1) is the authoritative source."*
+
+**"What did I make/lose over the past N trading days?"**
+→ `get_trades source='store' start='YYYY-MM-DD' end='YYYY-MM-DD'` (Flex data — account-wide, all origins, all asset classes)
+→ Flex is T+1: yesterday's trades are available today if startup sync ran. If the date range includes today, note that today's fills will not appear until tomorrow's sync.
+→ To force a fresh sync: `sync_flex_trades`
+
+**"Why is my realized P&L $0?"**
+1. Check for fills with `get_trades source='live'`
+2. **No fills visible** → either no trades occurred, or trades were placed via mobile/TWS and are not visible in the CP API session. Check `get_trades source='store'` for Flex data.
+3. **Flex also empty for the date** → Flex sync may not have run yet today. Call `sync_flex_trades` first.
+4. Never declare zero realized P&L as confirmed until both live and store sources are checked.
 
 ---
 
