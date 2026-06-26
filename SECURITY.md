@@ -18,7 +18,6 @@ conversation memory. The new principals and threats are:
 | `docs/principles.md` | Prompt injection: attacker weakens risk rules | Same mitigations as context.md; ClaudIA cannot modify this file |
 | Conversation history | Re-injection: past messages contained adversarial content that gets fed back | History loaded as structured `role:user/assistant` blocks, not raw system prompt injection |
 | TradingView sidecar | Supply chain: `tradingview-mcp` npm package has full CDP access to TradingView Desktop | Accepted risk (personal local tool); subprocess env is a strict allowlist (`PATH`, `HOME`, `USER`, `TMPDIR`, `NODE_*`) — `ANTHROPIC_API_KEY`, GDrive tokens, and IBKR credentials are never passed; vendor archive provides known-good fallback; `docs/tradingview-mcp-recovery.md` covers incident response |
-| Voice output (Phase 2) | Voice commands: TTS output is purely advisory | No voice-to-action path exists; voice only speaks finalized assistant text |
 
 ---
 
@@ -27,7 +26,7 @@ conversation memory. The new principals and threats are:
 ClaudIA has **zero** tools for order execution. This is the most critical security property.
 
 ### What the LLM can do
-- Call any of the 22 read-only `ClaudeToolkit` tools (positions, PnL, market data, backtests, etc.)
+- Call any of the 38 read-only `ClaudeToolkit` tools (positions, PnL, market data, backtests, etc.)
 - Output an `order-proposal` JSON block as text in its response
 - Call `preview_order` (whatif — read-only, no execution)
 
@@ -161,9 +160,11 @@ Risk acceptance: this is a personal local tool with no remote access, and Tradin
 cannot place IBKR orders. Financial blast radius is limited to TradingView UI data exposure.
 
 **Controls in place:**
-- `vendor/tradingview-mcp/index.js` — archived known-good build, gitignored binary, created
-  by `scripts/archive-tv-mcp.sh` after each verified upgrade. `_find_tv_mcp_bin()` falls back
-  to this automatically if `~/.tradingview-mcp/build/index.js` is missing.
+- Vendor archive — `scripts/archive-tv-mcp.sh` snapshots the working install after each
+  verified upgrade to `vendor/tradingview-mcp/`. `_find_tv_mcp_bin()` tries
+  `vendor/tradingview-mcp/src/server.js` (JS layout, requires `node_modules/`) then
+  `vendor/tradingview-mcp/index.js` (legacy single-bundle) as steps 5 and 6 of a
+  6-step discovery chain, after the live install paths are exhausted.
 - `docs/tradingview-mcp-recovery.md` — incident response guide: 5 break patterns with exact
   log signatures, per-pattern fixes, and a direct CDP from Python fallback for the
   "sidecar permanently unavailable" scenario.
@@ -201,6 +202,18 @@ use a VPN or Tailscale tunnel — never a public-facing reverse proxy without au
 
 **CORS:** `.chainlit/config.toml` restricts `allow_origins` to `["http://localhost:8000"]`.
 Do not widen this to `"*"` — the app connects to a live brokerage account.
+
+**`fetch_web_page` SSRF guard:** The `fetch_web_page` local tool in `agent.py` makes outbound
+HTTP requests driven by LLM input. Without a guard, a prompt-injection attack could cause ClaudIA
+to fetch `https://localhost:5055/v1/api/portfolio/accounts`, receive IBKR account data as HTML,
+and return it to the model context. The implementation blocks:
+- Any scheme other than `http`/`https`
+- `localhost`, `0.0.0.0`, and `127.*` / `169.254.*` literal hosts
+- Any literal IP address in a private, loopback, link-local, or reserved range (`ipaddress.ip_address`)
+
+DNS rebinding (hostname that resolves to a private IP) is a residual risk — not mitigated without
+a two-phase resolve-then-check approach. Accepted for the personal local deployment; the IBKR
+gateway is reachable only at `localhost:5055` with a session cookie, not via external DNS.
 
 ---
 
@@ -368,3 +381,4 @@ Run this checklist before any significant code change to ClaudIA:
 - [ ] Any new Drive download has a size guard before the download loop
 - [ ] Any new shared state accessed from `cl.make_async()` handlers is protected by a `threading.Lock` or `threading.RLock` (use `RLock` if any method holding the lock calls another method that also acquires it)
 - [ ] Any new connectivity check returns a plain bool, wraps all exceptions, and does not log or expose credentials on failure
+- [ ] Any new tool that makes outbound HTTP requests blocks localhost / private IP ranges (SSRF guard — see §8 `fetch_web_page` pattern)
