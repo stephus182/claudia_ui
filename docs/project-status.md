@@ -134,9 +134,10 @@ Everything below is unit-tested but has not been verified with a real running se
 - [ ] "Show me my PA transactions" → `get_pa_transactions` → BLOCKED — period format unknown; `get_pa_periods` returned empty (item 3-5 in pending doc verification)
 
 **Market data — historical bars (HMDS):**
-- [ ] "Get me 1 year of daily bars for AAPL" → `fetch_market_data` → BLOCKED — HMDS returns null body; iserver fallback available for shorter windows (pending doc verification items 9-10)
-- [ ] "Get me 3 months of hourly bars for SPY" → shorter period, sub-daily bar → returned correctly
-- [ ] "Get me 5 years of weekly bars for NVDA" → longer lookback via HMDS → returned (tests 7Y HMDS vs 4-month regular history endpoint routing)
+- [ ] "Get me 1 year of daily bars for AAPL" → `fetch_market_data` → BLOCKED — HMDS returns null body all session; iserver fallback available (pending doc verification items 9-10)
+- [x] "Get me 3 months of daily bars for QQQ" → PASS 2026-06-26 via iserver fallback — 84 bars (2026-02-26→2026-06-26); note: 84 bars ≈ 4 calendar months, not 3 — suggests IBKR "3M" period may mean ~84 trading days; supports item 9 (bar count semantics need doc verification)
+- [x] "Get me 6 months of daily bars for QQQ" → PASS 2026-06-26 via iserver fallback — 126 bars (2025-12-26→2026-06-26); 126 ≈ 6 calendar months × 21 trading days — correct; data saved to Drive cache
+- [ ] "Get me 5 years of weekly bars for NVDA" → longer lookback via HMDS → BLOCKED on HMDS
 - [ ] Second call for same symbol → fast (subscription already live, no warmup delay)
 
 **Market data — snapshots and schedules:**
