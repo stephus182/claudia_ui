@@ -149,7 +149,13 @@ import_flex_file path=~/.ibkr_core/flex_archive/flex_2020.xml
 check_flex_coverage
 ```
 
-No gaps > 5 calendar days = complete. Any gap reported = missing import for that period.
+Reports periods of 45+ calendar days with no recorded trade executions. These may be
+genuine inactivity (holding a position with no new trades) or missing XML imports —
+only you can tell by recalling your trading activity during that period.
+
+A clean import of all year XMLs does not guarantee zero gaps: if you held a position
+for 2+ months without executing, that will appear as a gap in the trade history.
+That is correct data, not a coverage hole.
 
 ## Step 7 — Ongoing Sync
 
