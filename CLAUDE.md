@@ -114,10 +114,12 @@ Flex never has today's trades. The live API fills that gap.
 3. Otherwise → sync, log result, back up `store.db` to Drive `account_data/`
 
 **Data stores:**
-- `~/.ibkr_core/store.db` — SQLite, all Flex-synced trades (full history from account open)
+- `~/.ibkr_core/store.db` — SQLite, all Flex-synced trades (full history from account open); includes `flex_import_log` manifest
 - `data/claudia.db` — SQLite, conversation history, sessions, decisions
 - Drive `market_data/` — Parquet OHLCV cache
-- Drive `account_data/` — Flex XML archives, `store.db` backup, `trade_coverage.json`
+- Drive `account_data/` — Flex XML archives (`ClaudIA_Full_Activity_*.xml` manual, `flex_U*.xml` auto-synced), `store.db` backup
+
+**Flex import integrity** — `verify_flex_import` cross-checks every tradeID in the Drive XML archives against `store.db`. The `flex_import_log` manifest tracks SHA-256, trade count, and `verified_at` per file. Manual archives are pre-validated and never re-verified; auto-synced files are verified by hash on re-check (full tradeID scan only if hash changed). `check_flex_coverage` is an activity distribution report only — gaps reflect genuine inactivity (30-day min hold periods produce 50–68 day gaps), not missing imports.
 
 See [`docs/flex-query-setup.md`](docs/flex-query-setup.md) for full setup and troubleshooting.
 
