@@ -1,6 +1,6 @@
 """
-Security regression tests for the 2026-06-12 audit (commit 3927dcd).
-Each test corresponds to one of the 8 resolved findings.
+Security regression tests — 2026-06-12 (commit 3927dcd) and 2026-06-25 (commit 7a3ed0a).
+Each test corresponds to one resolved finding from either audit.
 These tests MUST stay green — a failure here means a security control was regressed.
 """
 
@@ -266,3 +266,57 @@ async def test_start_logs_selected_binary_path(tmp_path, monkeypatch, caplog):
 
     logged_messages = " ".join(r.message for r in caplog.records)
     assert str(fake_bin) in logged_messages, "Binary path not logged at INFO level (Fix #8)"
+
+
+# ── 2026-06-25 audit — Fix H-1: SSRF guard in fetch_web_page ─────────────────
+
+def _make_agent():
+    """Build a minimal ClaudIAAgent for testing _fetch_web_page."""
+    from unittest.mock import MagicMock
+    from claudia.agent import ClaudIAAgent
+    toolkit = MagicMock()
+    toolkit.tools = []
+    store = MagicMock()
+    store.list_doc_versions.return_value = []
+    loader = MagicMock()
+    loader.load_system_prompt.return_value = ""
+    return ClaudIAAgent(toolkit=toolkit, store=store, context_loader=loader, session_id="test")
+
+
+@pytest.mark.parametrize("url,expected_fragment", [
+    ("file:///etc/passwd",         "only http/https"),
+    ("ftp://example.com/file",     "only http/https"),
+    ("http://localhost/path",      "cannot fetch from localhost"),
+    ("http://localhost:5055/tickle","cannot fetch from localhost"),
+    ("http://127.0.0.1/anything",  "cannot fetch from localhost"),
+    ("http://0.0.0.0/anything",    "cannot fetch from localhost"),
+    ("http://169.254.0.1/meta",    "cannot fetch from localhost"),
+    ("http://10.0.0.1/internal",   "cannot fetch from private"),
+    ("http://192.168.1.1/router",  "cannot fetch from private"),
+    ("http://172.16.0.1/service",  "cannot fetch from private"),
+])
+def test_fetch_web_page_ssrf_guard_blocks_internal(url, expected_fragment):
+    """SSRF guard (Fix H-1 / 2026-06-25) must block localhost and private IP ranges."""
+    agent = _make_agent()
+    result = agent._fetch_web_page({"url": url})
+    assert expected_fragment in result, (
+        f"SSRF guard did not block {url!r}: got {result!r}"
+    )
+
+
+def test_fetch_web_page_ssrf_guard_allows_public(monkeypatch):
+    """SSRF guard must pass through public https:// URLs to the actual fetch."""
+    import requests
+    from unittest.mock import MagicMock, patch
+    agent = _make_agent()
+
+    fake_resp = MagicMock()
+    fake_resp.text = "<html><body>Hello world</body></html>"
+    fake_resp.raise_for_status = MagicMock()
+
+    with patch("requests.get", return_value=fake_resp) as mock_get:
+        result = agent._fetch_web_page({"url": "https://example.com/"})
+
+    mock_get.assert_called_once()
+    assert "Blocked" not in result
+    assert "Hello world" in result or "[Fetched" in result
