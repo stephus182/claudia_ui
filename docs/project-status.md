@@ -79,6 +79,8 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 
 Everything below is unit-tested but has not been verified with a real running session. These are the live test checklist items to work through.
 
+**Priority order:** §4c Market & Account Data → §6 TradingView Live → §5 Order Staging → §7 Flex History → §9.3 Security → §4b Price Alerts (deferred)
+
 ---
 
 ## Live Test Plan
@@ -115,6 +117,45 @@ Everything below is unit-tested but has not been verified with a real running se
 - [ ] "Set a price alert on AAPL at $200" → `create_price_alert` → TIF + extended hours asked → confirm alert appears in IBKR mobile
 - [ ] "What alerts do I have?" → `get_alerts` → list returned
 - [x] Multi-turn: follow-up referencing earlier position data → history preserved — 2026-06-25
+
+### 4b. Price Alerts (low priority — defer until market/account data complete)
+
+> Skip for now. Alert tools exist and are unit-tested; live verification deferred.
+
+### 4c. Market & Account Data (priority batch — 2026-06-26)
+
+**Account data:**
+- [ ] "Show me my account summary" → `get_account_summary` → net liq, cash, margin utilization returned
+- [ ] "Show me my ledger" → `get_ledger` → cash balances by currency returned
+- [ ] "How is my portfolio allocated?" → `get_allocation` → asset class / sector breakdown returned
+- [ ] "Show me today's trades" → `get_trades source='live'` → intraday fills returned (or "no fills today")
+- [ ] "Show me my trades last week" → `get_trades source='store'` → results from SQLite, not limited to 6-day API window
+- [ ] "Check my trade data coverage" → `check_flex_coverage` → oldest/newest/gap report returned
+- [ ] "Show me my P&A transactions" → `get_pa_transactions` → transaction list returned
+
+**Market data — historical bars (HMDS):**
+- [ ] "Get me 1 year of daily bars for AAPL" → `fetch_market_data` → OHLCV returned; verify HMDS warmup retry handled transparently on first symbol
+- [ ] "Get me 3 months of hourly bars for SPY" → shorter period, sub-daily bar → returned correctly
+- [ ] "Get me 5 years of weekly bars for NVDA" → longer lookback via HMDS → returned (tests 7Y HMDS vs 4-month regular history endpoint routing)
+- [ ] Second call for same symbol → fast (subscription already live, no warmup delay)
+
+**Market data — snapshots and schedules:**
+- [ ] "What's the current price of TSLA, MSFT, and AAPL?" → `get_market_snapshot` for multiple symbols → all prices returned; verify first-call warmup handled
+- [ ] "What's the trading schedule for NYSE this week?" → `get_trading_schedule` → open/close times and holidays returned
+- [ ] "Show me my watchlists" → `get_watchlists` → list returned
+
+**Market data — derivatives:**
+- [ ] "Show me the AAPL option chain for next expiry" → `get_option_chain` → calls and puts with strikes returned
+- [ ] "Show me ES futures contracts" → `get_futures` → front month + next expiry returned
+
+**Analytics (depends on market data above):**
+- [ ] "Get AAPL daily bars and add RSI, MACD, and Bollinger Bands" → `fetch_market_data` + `add_indicators` → DataFrame with all indicators returned
+- [ ] "Run a backtest: buy AAPL when RSI < 30, sell when RSI > 70, $10k starting capital" → `run_backtest` → BacktestResult with Sharpe, drawdown, trade list returned
+- [ ] "What are the analytics for that backtest?" → `get_analytics` → Sharpe, Sortino, CAGR, max drawdown returned
+
+**Contract resolution:**
+- [ ] "What's the conid for NVDA?" → `search_contract` + `get_contract_info` → conid, exchange, currency returned
+- [ ] "Show me ES futures contract details" → CME futures resolved correctly (not confused with equities)
 
 ### 4b. Price Alerts (dedicated test batch — requires ClaudIA restart)
 
