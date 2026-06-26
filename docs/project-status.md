@@ -125,16 +125,16 @@ Everything below is unit-tested but has not been verified with a real running se
 ### 4c. Market & Account Data (priority batch — 2026-06-26)
 
 **Account data:**
-- [ ] "Show me my account summary" → `get_account_summary` → net liq, cash, margin utilization returned
-- [ ] "Show me my ledger" → `get_ledger` → cash balances by currency returned
-- [ ] "How is my portfolio allocated?" → `get_allocation` → asset class / sector breakdown returned
-- [ ] "Show me today's trades" → `get_trades source='live'` → intraday fills returned (or "no fills today")
+- [x] "Show me my account summary" → `get_account_summary` → PASS 2026-06-26 (net liq $67,501, cash $22,637, 4 positions)
+- [x] "Show me my ledger" → `get_ledger` → PASS 2026-06-26 (structured cash balance output)
+- [x] "How is my portfolio allocated?" → `get_allocation` → PASS 2026-06-26 (STK long/short/net + cash breakdown)
+- [x] "Show me today's trades" → `get_trades source='live'` → PASS 2026-06-26 (empty — session-scoped, mobile fill not visible; correct behavior)
 - [ ] "Show me my trades last week" → `get_trades source='store'` → results from SQLite, not limited to 6-day API window
 - [ ] "Check my trade data coverage" → `check_flex_coverage` → oldest/newest/gap report returned
-- [ ] "Show me my P&A transactions" → `get_pa_transactions` → transaction list returned
+- [ ] "Show me my PA transactions" → `get_pa_transactions` → BLOCKED — period format unknown; `get_pa_periods` returned empty (item 3-5 in pending doc verification)
 
 **Market data — historical bars (HMDS):**
-- [ ] "Get me 1 year of daily bars for AAPL" → `fetch_market_data` → OHLCV returned; verify HMDS warmup retry handled transparently on first symbol
+- [ ] "Get me 1 year of daily bars for AAPL" → `fetch_market_data` → BLOCKED — HMDS returns null body; iserver fallback available for shorter windows (pending doc verification items 9-10)
 - [ ] "Get me 3 months of hourly bars for SPY" → shorter period, sub-daily bar → returned correctly
 - [ ] "Get me 5 years of weekly bars for NVDA" → longer lookback via HMDS → returned (tests 7Y HMDS vs 4-month regular history endpoint routing)
 - [ ] Second call for same symbol → fast (subscription already live, no warmup delay)
@@ -149,9 +149,9 @@ Everything below is unit-tested but has not been verified with a real running se
 - [ ] "Show me ES futures contracts" → `get_futures` → front month + next expiry returned
 
 **Analytics (depends on market data above):**
-- [ ] "Get AAPL daily bars and add RSI, MACD, and Bollinger Bands" → `fetch_market_data` + `add_indicators` → DataFrame with all indicators returned
-- [ ] "Run a backtest: buy AAPL when RSI < 30, sell when RSI > 70, $10k starting capital" → `run_backtest` → BacktestResult with Sharpe, drawdown, trade list returned
-- [ ] "What are the analytics for that backtest?" → `get_analytics` → Sharpe, Sortino, CAGR, max drawdown returned
+- [ ] "Get AAPL daily bars and add RSI, MACD, and Bollinger Bands" → BLOCKED on HMDS
+- [ ] "Run a backtest: buy AAPL when RSI < 30, sell when RSI > 70, $10k starting capital" → BLOCKED on HMDS
+- [ ] "What are the analytics for that backtest?" → BLOCKED on HMDS
 
 **Contract resolution:**
 - [ ] "What's the conid for NVDA?" → `search_contract` + `get_contract_info` → conid, exchange, currency returned
