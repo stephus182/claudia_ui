@@ -436,10 +436,32 @@ class ClaudIAAgent:
 
     def _fetch_web_page(self, inputs: dict) -> str:
         import html2text
+        import ipaddress
+        import urllib.parse
         import requests as _req
         url = inputs.get("url", "").strip()
         if not url:
             return "No URL provided."
+        # SSRF guard: only allow public http/https URLs.
+        # Prevents prompt-injection attacks from fetching localhost:5055 (IBKR gateway)
+        # or other internal services and leaking their responses to the LLM.
+        try:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return f"Blocked: only http/https URLs are supported (got {parsed.scheme!r})."
+            host = (parsed.hostname or "").lower()
+            if not host:
+                return "Blocked: URL has no hostname."
+            if host in ("localhost", "0.0.0.0") or host.startswith("127.") or host.startswith("169.254."):
+                return "Blocked: cannot fetch from localhost or link-local addresses."
+            try:
+                addr = ipaddress.ip_address(host)
+                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                    return "Blocked: cannot fetch from private or reserved IP addresses."
+            except ValueError:
+                pass  # hostname — allow DNS resolution; literal private IPs are caught above
+        except Exception as exc:
+            return f"Invalid URL: {exc}"
         try:
             resp = _req.get(
                 url,
