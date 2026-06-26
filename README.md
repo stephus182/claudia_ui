@@ -152,10 +152,45 @@ Full protocol and per-file ownership: [`CLAUDE.md → API Reference`](CLAUDE.md#
 | `claudia.db` | `data/claudia.db` | Sessions, messages, decisions, relationships, doc versions |
 | `store.db` | `~/.ibkr_core/store.db` | Trade history (Flex), position snapshots, backtests, alerts |
 
-`claudia.db` syncs to Google Drive at session end (when `GOOGLE_DRIVE_FOLDER_ID` is set).
-`store.db` is managed by `ibkr_core_mcp` and is never synced — it is rebuilt from Flex archives on any machine.
-
 Both databases are excluded from git. Run `PRAGMA integrity_check` to audit health.
+
+---
+
+## Google Drive Architecture (multi-machine portability)
+
+ClaudIA is designed to run on any machine — all persistent state lives in a single Google Drive root folder. Set `GOOGLE_DRIVE_FOLDER_ID` and ClaudIA restores itself automatically.
+
+```
+<GOOGLE_DRIVE_FOLDER_ID>/          ← one root folder, one env var
+  context.md                       ← ClaudIA persona (cloud-authoritative)
+  principles.md                    ← trading rules (cloud-authoritative)
+  db/
+    claudia.db                     ← conversation history (download at start, upload at end)
+  market_data/
+    manifest.json
+    QQQ_1D_6M_2026-06-26.parquet   ← OHLCV cache (shared across machines)
+  account_data/
+    flex_U123_2026-06-26_REF.xml   ← Flex XML archives (re-importable to SQLite)
+    store.db                       ← ibkr_core_mcp trade store backup
+```
+
+**What syncs automatically:**
+
+| Data | Direction | When |
+|---|---|---|
+| `claudia.db` | Drive → local | Session start (first session per process, before DB opens) |
+| `claudia.db` | local → Drive | Session end (after WAL checkpoint) |
+| `context.md` + `principles.md` | Drive → memory | Every session start |
+| Flex XML | local → `account_data/` | After every successful Flex sync |
+| OHLCV parquet | local → `market_data/` | After every `fetch_market_data` call |
+
+**What a new machine needs** (nothing else):
+- `GOOGLE_DRIVE_FOLDER_ID` — root folder ID
+- `GDRIVE_TOKEN_FILE` + `GDRIVE_CREDENTIALS_FILE` — OAuth2 credentials
+- `ANTHROPIC_API_KEY` — Claude API key
+- `IBKR_FLEX_TOKEN` + `IBKR_FLEX_QUERY_ID` — to re-sync trade history from IBKR
+
+`store.db` is rebuilt from Flex XML archives in `account_data/` via `sync_flex_archive` — no manual export needed.
 
 ---
 
