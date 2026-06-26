@@ -221,6 +221,7 @@ class ConversationStore:
             return dict(row) if row else None
 
     def list_sessions(self, limit: int = 20) -> list[dict]:
+        """Return the most recent sessions, newest first."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?", (limit,)
@@ -239,6 +240,11 @@ class ConversationStore:
         tool_result: Any = None,
         tokens_used: int = 0,
     ) -> int:
+        """Insert a message row and return its primary key.
+
+        The returned id is used as the message_id foreign key in decisions —
+        callers that surface a trade proposal must pass it to add_decision().
+        """
         with self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO messages
@@ -272,6 +278,7 @@ class ConversationStore:
             return [dict(r) for r in rows]
 
     def count_messages(self, session_id: str) -> int:
+        """Return the total number of messages stored for a session."""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,)
@@ -279,7 +286,12 @@ class ConversationStore:
             return row[0] if row else 0
 
     def search_messages(self, query: str, max_results: int = 10, max_tokens: int = 2000) -> list[dict]:
-        """FTS5 full-text search across all conversation history."""
+        """FTS5 full-text search across all conversation history.
+
+        max_tokens is a rough budget: results are trimmed when the cumulative
+        character count exceeds max_tokens * 4 (i.e. ~4 chars per token, not
+        exact token counting).
+        """
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT m.*, highlight(messages_fts, 0, '[', ']') AS snippet
@@ -313,6 +325,13 @@ class ConversationStore:
         message_id: int | None = None,
         metadata: dict | None = None,
     ) -> int:
+        """Record a trade proposal and return its primary key.
+
+        decision_type is a free-form label (e.g. "order_proposal", "alert"); it
+        is not validated by a CHECK constraint so callers must use consistent
+        values. message_id should be the id returned by add_message() for the
+        assistant turn that surfaced the proposal.
+        """
         with self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO decisions

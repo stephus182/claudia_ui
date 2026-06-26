@@ -28,7 +28,6 @@ _TOOL_LABELS: dict[str, str] = {
     # IBKR — account & portfolio
     "get_positions": "IBKR: positions",
     "get_live_orders": "IBKR: live orders",
-    "get_portfolio": "IBKR: portfolio",
     "get_account_summary": "IBKR: account summary",
     "get_allocation": "IBKR: allocation",
     "get_ledger": "IBKR: ledger",
@@ -100,6 +99,7 @@ _ERROR_KEYWORDS = ("error", "failed", "exception", "timeout", "unauthorized", "t
 
 
 def _tool_counts(messages: list[dict]) -> Counter:
+    """Return a Counter of tool_name → call count for all tool rows in messages."""
     return Counter(
         m["tool_name"] for m in messages
         if m.get("role") == "tool" and m.get("tool_name")

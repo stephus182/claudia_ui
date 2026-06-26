@@ -66,7 +66,7 @@ Excludes Russia (XMOS — IBKR suspended most Russian securities since 2022 sanc
 **What ClaudIA receives in the system prompt:**
 - Today's date and whether it is a trading day (NYSE reference)
 - Last and next trading day
-- Full holiday list for all 8 exchanges — proactive context for "why is volume low today?"
+- Full holiday list for all 20 exchanges — proactive context for "why is volume low today?"
 - **Futures vs Securities distinction** — explicitly injected so ClaudIA never confuses CME and equity schedules:
   - Most CME Globex products trade ~23h/day (Sun 5 PM CT → Fri 4 PM CT), daily 1h maintenance break 4–5 PM CT
   - IBKR routes all CME products via Globex (electronic only — no pit sessions)
@@ -114,7 +114,7 @@ Flex never has today's trades. The live API fills that gap.
 3. Otherwise → sync, log result, back up `store.db` to Drive `account_data/`
 
 **Data stores:**
-- `~/.ibkr_core/store.db` — SQLite, all Flex-synced trades (1029 rows, 2020-present)
+- `~/.ibkr_core/store.db` — SQLite, all Flex-synced trades (full history from account open)
 - `data/claudia.db` — SQLite, conversation history, sessions, decisions
 - Drive `market_data/` — Parquet OHLCV cache
 - Drive `account_data/` — Flex XML archives, `store.db` backup, `trade_coverage.json`
@@ -273,7 +273,7 @@ chainlit run claudia/app.py   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 | `CLAUDIA_MODEL` | optional | Claude model (default: `claude-opus-4-8`) |
 | `CLAUDIA_DOCS_PATH` | optional | Path to context.md / principles.md (default: `docs/`) |
 | `CLAUDIA_DB_PATH` | optional | ClaudIA SQLite DB path (default: `data/claudia.db`) |
-| `CLAUDIA_VOICE_ENABLED` | optional | Enable TTS output (Phase 2) |
+| `CLAUDIA_VOICE_ENABLED` | optional | Reserved — TTS output not yet implemented |
 | `TRADINGVIEW_MCP_PATH` | optional | Path to `tradingview-mcp` entry point (`src/server.js`); auto-discovered if unset |
 | `TRADINGVIEW_DEBUG_PORT` | optional | Chrome debugging port (default: `9222`) |
 
@@ -343,12 +343,13 @@ ClaudIA **cannot** place orders autonomously. When ClaudIA suggests a trade:
 
 Alerts are managed exclusively through IBKR's native server-side alert system — they fire even when ClaudIA is not running, and appear on the IBKR mobile app.
 
-ClaudIA has four alert tools (via `ibkr_core_mcp.ClaudeToolkit`):
+ClaudIA has five alert tools (via `ibkr_core_mcp.ClaudeToolkit`):
 
 | Tool | What it does |
 |---|---|
 | `create_price_alert` | Resolves symbol → conid, posts alert to IBKR server |
 | `get_alerts` | List all configured alerts with status |
+| `modify_price_alert` | Update threshold or direction on an existing alert |
 | `delete_alert` | Remove an alert by ID |
 | `activate_alert` | Toggle an alert on/off without deleting it |
 

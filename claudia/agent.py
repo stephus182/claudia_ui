@@ -157,6 +157,7 @@ _LOCAL_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in _LOCAL_TOOLS)
 
 
 def _build_version_note(doc_version: str | None, store: "ConversationStore | None") -> str:
+    """Return the active-version header line for the system prompt, or "" if no version."""
     if not doc_version:
         return ""
     versions = store.list_doc_versions() if store else []
@@ -175,6 +176,11 @@ def _build_system_prompt(
     store: "ConversationStore | None" = None,
     trade_context: str | None = None,
 ) -> str:
+    """Assemble the full system prompt: version note + context + trade context + safety block.
+
+    _SAFETY_BLOCK is always appended last and unconditionally — it cannot be
+    suppressed or overridden by content in the earlier sections.
+    """
     trade_block = f"\n\n{trade_context}" if trade_context else ""
     return _build_version_note(doc_version, store) + context_prompt + trade_block + _SAFETY_BLOCK
 
