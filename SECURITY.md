@@ -382,3 +382,14 @@ Run this checklist before any significant code change to ClaudIA:
 - [ ] Any new shared state accessed from `cl.make_async()` handlers is protected by a `threading.Lock` or `threading.RLock` (use `RLock` if any method holding the lock calls another method that also acquires it)
 - [ ] Any new connectivity check returns a plain bool, wraps all exceptions, and does not log or expose credentials on failure
 - [ ] Any new tool that makes outbound HTTP requests blocks localhost / private IP ranges (SSRF guard — see §8 `fetch_web_page` pattern)
+
+---
+
+## 13. Audit History
+
+| Date | Scope | Findings | Status | Doc |
+|---|---|---|---|---|
+| 2026-06-12 | `gdrive_sync.py`, `tradingview.py`, `app.py`, `ibkr_core_mcp/client.py` | 2 High, 4 Medium, 2 Low | All 8 resolved | [`docs/security-audit-2026-06-12.md`](docs/security-audit-2026-06-12.md) |
+| 2026-06-25 | All 8 claudia_ui modules (full re-audit) | 1 High, 0 Medium, 3 Low | H-1 fixed; 3 Low accepted | [`docs/security-audit-2026-06-25.md`](docs/security-audit-2026-06-25.md) |
+
+**Regression tests:** `tests/test_security_regressions.py` — 20 tests covering both audits. These must stay green.
