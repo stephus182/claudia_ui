@@ -162,6 +162,6 @@ Both databases are excluded from git. Run `PRAGMA integrity_check` to audit heal
 ## Testing
 
 ```bash
-pytest -m "not integration"   # 151 unit tests (no IBKR gateway needed)
+pytest -m "not integration"   # 162 unit tests (no IBKR gateway needed)
 pytest                        # all tests (requires live IBKR gateway)
 ```

@@ -47,12 +47,16 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-24 | `b5198e3` | Fix — `asyncio` re-exported under standard name after compat patch block; prevents `NameError` if used outside the `_asyncio`-aliased patch section |
 | 2026-06-24 | `ed5fc1a` | feat — `search_past_conversations` tool (FTS5 over full message history); renamed `_extract_decisions` → `_log_proposal` to reflect correct design: ClaudIA surfaces user-directed proposals, never makes trade decisions |
 | 2026-06-24 | `0e9862c` | Bug fix — `_LOCAL_TOOL_NAMES` derived from `_LOCAL_TOOLS` at module load; was hardcoded set that silently excluded newly added tools from dispatch |
+| 2026-06-25 | `72425d9` | Docstring audit — all 8 modules; CLAUDE.md corrections (tool count, stale data, voice env var, alert tool count); README unit test count |
+| 2026-06-25 | `7a3ed0a` | Security — fix SSRF in `fetch_web_page` (H-1); SECURITY.md corrections (38 tools, remove unimplemented voice threat row, fix vendor fallback description, document SSRF guard + residual DNS rebinding risk, add SSRF to audit checklist) |
+| 2026-06-25 | `92a77e3` | Security audit — full re-audit of all 8 modules (`docs/security-audit-2026-06-25.md`); `_find_file` safety comment (L-3) |
+| 2026-06-25 | this commit | 11 SSRF regression tests (H-1 guard); security_regressions updated to cover both audits; test count 136 → 162 |
 
 ---
 
 ## Test Coverage
 
-**Suite:** 136 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
+**Suite:** 162 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
 
 | Module | Tests | Notes |
 |---|---|---|
@@ -63,7 +67,7 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | `order_flow.py` | 14 | Format summary (4), execute_staged_order success/errors/gates/limit price (10) |
 | `context_loader.py` | 14 | Load, hash, watchdog hot-reload, Drive override, version registration |
 | `gdrive_sync.py` | 14 | Download DB, upload DB (RLock, no WAL block), read_text (size guard), chmod, ping() |
-| Security regressions | 9 | One test per 2026-06-12 audit finding — these must stay green |
+| Security regressions | 20 | 9 from 2026-06-12 audit + 11 SSRF guard tests from 2026-06-25 audit — must stay green |
 | `app.py` | **0** | Chainlit session wiring — not unit-testable; covered by live tests below |
 
 **ibkr_core_mcp** (separate repo, own venv):  
