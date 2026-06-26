@@ -265,3 +265,44 @@ Everything below is unit-tested but has not been verified with a real running se
 | `app.py` has zero unit tests | `claudia/app.py` | Chainlit session wiring makes unit testing hard; live tests are the coverage |
 | `test_strip_order_proposal_malformed_json` doesn't assert `clean` is unchanged | `tests/test_agent.py` | Low priority |
 | Env allowlist tested twice (tradingview + security_regressions) | both test files | Low maintenance risk |
+
+---
+
+## Pending Doc Verification — "Observed, Not Documented"
+
+These behaviors are marked in the code as observed but not confirmed against official IBKR docs.
+Owner: fetch the relevant authenticated IBKR Campus page and paste the content so docstrings
+can be upgraded from "observed" to "documented + cited."
+Reference: `docs/memory/reference-ibkr-auth-docs.md` — known 403 URLs and how to request them.
+
+All items below need content from: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/
+
+| # | Claim (observed) | File : line | What to verify | Doc section needed |
+|---|---|---|---|---|
+| 1 | `/iserver/account/trades` is session-scoped — mobile/TWS fills may not appear | `client.py:558` | Is session scope documented? Any way to include all origins? | `GET /iserver/account/trades` endpoint reference |
+| 2 | `?days=7` extends lookback to ~6 days; without it only today's session is returned | `client.py:571` | Is `days` a documented param? What's the official max? | `GET /iserver/account/trades` parameters |
+| 3 | `/pa/allperiods` response shape — list or dict with unknown key | `client.py:588` | What does the response actually look like? Keys? | `POST /pa/allperiods` response schema |
+| 4 | PA transactions (`/pa/transactions`) availability — same-day fills accessible | `client.py:627` | How soon after execution does PA reflect a fill? | `POST /pa/transactions` endpoint + latency notes |
+| 5 | PA period strings are account-specific and undocumented | `claude_tools.py:1241` | Are valid period values documented? Fixed set or dynamic? | `POST /pa/allperiods` + `POST /pa/transactions` period param |
+| 6 | Flex T+1 cutoff time — overnight batch, no specific time published | `flex_query.py:125` | Does IBKR document when the daily Flex file is generated? | IBKR Flex Web Service / Activity Statement generation schedule |
+| 7 | Flex error 1025 — observed in practice, not in official 21-code table | `flex_query.py:103` | Is 1025 documented anywhere? What does it mean? | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm (public) |
+| 8 | Rate limit policy — 429/503 retry strategy uses fixed backoff with no `Retry-After` parsing | `rate_limiter.py:26` | Does IBKR document rate limits per endpoint? Send `Retry-After`? | CP API rate limit policy section |
+
+### How to work through this list
+
+1. Log in to IBKR Campus
+2. Navigate to the URL in the "Doc section needed" column
+3. Paste the relevant section into chat
+4. Update the docstring to replace "Observed" with the confirmed fact + citation URL
+5. Strike through the row and add date verified
+
+### Progress
+
+- [ ] Item 1 — session scope on `/iserver/account/trades`
+- [ ] Item 2 — `?days=7` parameter
+- [ ] Item 3 — `/pa/allperiods` response shape
+- [ ] Item 4 — PA transactions availability timing
+- [ ] Item 5 — PA period string format
+- [ ] Item 6 — Flex T+1 cutoff time
+- [ ] Item 7 — Flex error 1025 *(public page — can verify without login)*
+- [ ] Item 8 — Rate limit policy + `Retry-After`
