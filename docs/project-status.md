@@ -271,16 +271,12 @@ Everything below is unit-tested but has not been verified with a real running se
 ## Pending Doc Verification — "Observed, Not Documented"
 
 These behaviors are marked in the code as observed but not confirmed against official IBKR docs.
-**Deferred:** complete live testing (§4c onward) first — IBKR session must stay active.
-Do this pass when logged into IBKR Web with no active trading session open.
+**Blocked on:** `ibkr_core_mcp` documentation scraper service (see `ibkr_core_mcp/docs/future-doc-scraper.md`).
+Once built, it will fetch both references below automatically and keep them current across releases.
 
-Workflow: log into https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/,
-paste the relevant section into chat, docstrings get upgraded from "observed" to "documented + cited."
-Reference: `memory/reference-ibkr-auth-docs.md` — known 403 URLs and how to request them.
-
-All items below need content from one or both:
+Target sources:
 - https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/ (CP API reference)
-- https://www.interactivebrokers.com/campus/ibkr-api-page/webapi-ref/ (Web API reference — newer, may have better coverage for watchlists, PA, HMDS)
+- https://www.interactivebrokers.com/campus/ibkr-api-page/webapi-ref/ (Web API reference — newer; better coverage for watchlists, PA, HMDS)
 
 | # | Claim (observed) | File : line | What to verify | Doc section needed |
 |---|---|---|---|---|
