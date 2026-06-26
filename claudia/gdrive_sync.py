@@ -142,6 +142,10 @@ class GDriveSync:
         """
         svc = self._get_service()
         fid = folder_id if folder_id is not None else self._config.gdrive_folder_id
+        # name is always a hardcoded constant ("claudia.db", "context.md", "principles.md")
+        # fid is a Drive folder ID from config or a previous files().create() response.
+        # Neither is user-controlled — do not add a parameter that accepts external input here
+        # without sanitizing the value first (single quote in name breaks the query).
         results = (
             svc.files()
             .list(
