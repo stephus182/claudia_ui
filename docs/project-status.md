@@ -145,7 +145,7 @@ Everything below is unit-tested but has not been verified with a real running se
 - [x] "Show me my watchlists" → `get_watchlists` → FAIL 2026-06-26 — endpoint returns HTTP 404; old handler silently returned [] and ClaudIA fabricated 3 plausible-sounding watchlists (proved by DATA INTEGRITY constraint catching it after restart); pending doc verification: correct IBKR CP API watchlist endpoint path (item 11)
 
 **Market data — derivatives:**
-- [ ] "Show me the AAPL option chain for next expiry" → `get_option_chain` → calls and puts with strikes returned
+- [x] "Show me the AAPL option chain for next expiry" → `get_option_chain` → FAIL 2026-06-26 — `/trsrv/secdef/chains` HTTP 404; `search_contract(sec_type=OPT)` also empty; DATA INTEGRITY worked (no fabricated strikes); alternate route `get_secdef_strikes` (`/iserver/secdef/strikes`) untested — requires conid + month params; pending doc verification item 12: correct endpoint path(s) for option chain lookup
 - [ ] "Show me ES futures contracts" → `get_futures` → front month + next expiry returned
 
 **Analytics (depends on market data above):**
@@ -291,6 +291,7 @@ Target sources:
 | 9 | `/iserver/marketdata/history` bar count limit — observed ~84 daily bars regardless of period | `client.py` `get_market_history` docstring | What is the actual documented bar/period limit? Is there one? | `GET /iserver/marketdata/history` endpoint reference |
 | 10 | `/hmds/history` warmup — documented as 404/500 on first call, but live testing shows 200 with null body | `claude_tools.py` `_fetch_market_data` | Is null body a documented warmup variant? Does HMDS require iserver priming first? | `GET /hmds/history` endpoint reference + warmup behavior |
 | 11 | `GET /iserver/account/watchlists` returns HTTP 404 in live testing — endpoint path may be wrong or feature requires different access | `client.py:739` | Is this the correct CP API path for watchlists? Is there a different endpoint? | `GET /iserver/account/watchlists` or watchlists section of CP API reference |
+| 12 | `GET /trsrv/secdef/chains` returns HTTP 404 — option chain endpoint path may be wrong or `trsrv` service unavailable; `GET /iserver/secdef/strikes` (conid+month) untested | `client.py:327` | Correct endpoint for full option chain? Is `trsrv/secdef/chains` documented? Is the two-step approach (strikes per month) the right path? | Option chain / secdef section of CP API or webapi-ref |
 
 ### How to work through this list
 
