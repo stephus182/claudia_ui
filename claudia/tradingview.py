@@ -13,9 +13,11 @@ Phase 1 fallback (always available):
   - Handled in app.py / agent.py; no code in this module required.
 
 Prerequisites (user must install once):
-  git clone https://github.com/tradesdontlie/tradingview-mcp
-  cd tradingview-mcp && npm install && npm run build
-  # Add to .env:  TRADINGVIEW_MCP_PATH=/path/to/tradingview-mcp/build/index.js
+  git clone https://github.com/tradesdontlie/tradingview-mcp ~/.tradingview-mcp
+  cd ~/.tradingview-mcp && npm install   # pure JS — no build step needed
+
+  ~/.tradingview-mcp/src/server.js is auto-discovered; TRADINGVIEW_MCP_PATH
+  in .env is only needed to override the default path.
 
   Open TradingView Desktop with remote debugging enabled:
   open -a "Trading View" --args --remote-debugging-port=9222
@@ -179,13 +181,21 @@ class TradingViewBridge:
         self._cm = None  # async context manager for stdio_client
 
     async def start(self) -> None:
+        """Spawn the tradingview-mcp sidecar and connect via MCP stdio.
+
+        Only selected env vars are forwarded to the Node subprocess — never the
+        full process env — to prevent ANTHROPIC_API_KEY and other secrets from
+        leaking to an external process.
+
+        Raises RuntimeError if the binary cannot be found.
+        """
         bin_path = _TV_MCP_BIN or _find_tv_mcp_bin()
         if not bin_path:
             raise RuntimeError(
                 "tradingview-mcp binary not found. "
-                "Clone and build: git clone https://github.com/tradesdontlie/tradingview-mcp "
-                "&& cd tradingview-mcp && npm install && npm run build; "
-                "then set TRADINGVIEW_MCP_PATH in .env"
+                "Clone with: git clone https://github.com/tradesdontlie/tradingview-mcp ~/.tradingview-mcp "
+                "&& cd ~/.tradingview-mcp && npm install  (no build step needed — pure JS). "
+                "Or set TRADINGVIEW_MCP_PATH in .env to override the discovery path."
             )
         log.info("tradingview-mcp binary: %s", bin_path)
 

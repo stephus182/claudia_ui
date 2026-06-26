@@ -106,6 +106,7 @@ class ContextLoader:
         log.info("Watching %s for document changes", self.docs_path)
 
     def stop_watching(self) -> None:
+        """Unschedule the watchdog handler and clear the reload callback."""
         if self._watch is not None:
             with suppress(Exception):
                 _get_shared_observer().unschedule(self._watch)
