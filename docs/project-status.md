@@ -278,7 +278,9 @@ Workflow: log into https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi
 paste the relevant section into chat, docstrings get upgraded from "observed" to "documented + cited."
 Reference: `memory/reference-ibkr-auth-docs.md` — known 403 URLs and how to request them.
 
-All items below need content from: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/
+All items below need content from one or both:
+- https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/ (CP API reference)
+- https://www.interactivebrokers.com/campus/ibkr-api-page/webapi-ref/ (Web API reference — newer, may have better coverage for watchlists, PA, HMDS)
 
 | # | Claim (observed) | File : line | What to verify | Doc section needed |
 |---|---|---|---|---|
