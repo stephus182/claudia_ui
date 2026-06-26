@@ -140,9 +140,9 @@ Everything below is unit-tested but has not been verified with a real running se
 - [ ] Second call for same symbol → fast (subscription already live, no warmup delay)
 
 **Market data — snapshots and schedules:**
-- [ ] "What's the current price of TSLA, MSFT, and AAPL?" → `get_market_snapshot` for multiple symbols → all prices returned; verify first-call warmup handled
-- [ ] "What's the trading schedule for NYSE this week?" → `get_trading_schedule` → open/close times and holidays returned
-- [ ] "Show me my watchlists" → `get_watchlists` → list returned
+- [x] "What's the current price of TSLA, MSFT, and AAPL?" → `get_market_snapshot` → PASS 2026-06-26 (all prices returned; AAPL warm from prior call, TSLA/MSFT needed second call — correct per-symbol subscription init behavior)
+- [x] "What's the trading schedule for NYSE / AAPL on its exchange?" → PASS 2026-06-26 (answered from system prompt market calendar both times — correct data, but `get_trading_schedule` IBKR tool never called; Claude uses context over API for US equities; ⚠ ClaudIA falsely claimed "pulling directly from exchange" without a tool call — context so comprehensive it suppresses the tool; test with an exchange outside the 20-calendar set to exercise the endpoint)
+- [x] "Show me my watchlists" → `get_watchlists` → FAIL 2026-06-26 — endpoint returns HTTP 404; old handler silently returned [] and ClaudIA fabricated 3 plausible-sounding watchlists (proved by DATA INTEGRITY constraint catching it after restart); pending doc verification: correct IBKR CP API watchlist endpoint path (item 11)
 
 **Market data — derivatives:**
 - [ ] "Show me the AAPL option chain for next expiry" → `get_option_chain` → calls and puts with strikes returned
@@ -292,6 +292,7 @@ All items below need content from: https://www.interactivebrokers.com/campus/ibk
 | 8 | Rate limit policy — 429/503 retry strategy uses fixed backoff with no `Retry-After` parsing | `rate_limiter.py:26` | Does IBKR document rate limits per endpoint? Send `Retry-After`? | CP API rate limit policy section |
 | 9 | `/iserver/marketdata/history` bar count limit — observed ~84 daily bars regardless of period | `client.py` `get_market_history` docstring | What is the actual documented bar/period limit? Is there one? | `GET /iserver/marketdata/history` endpoint reference |
 | 10 | `/hmds/history` warmup — documented as 404/500 on first call, but live testing shows 200 with null body | `claude_tools.py` `_fetch_market_data` | Is null body a documented warmup variant? Does HMDS require iserver priming first? | `GET /hmds/history` endpoint reference + warmup behavior |
+| 11 | `GET /iserver/account/watchlists` returns HTTP 404 in live testing — endpoint path may be wrong or feature requires different access | `client.py:739` | Is this the correct CP API path for watchlists? Is there a different endpoint? | `GET /iserver/account/watchlists` or watchlists section of CP API reference |
 
 ### How to work through this list
 
