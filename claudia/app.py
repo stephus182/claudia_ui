@@ -276,6 +276,12 @@ _fix_route_priority()
 
 
 def _get_toolkit() -> ClaudeToolkit:
+    """Return the process-level ClaudeToolkit singleton, creating it on first call.
+
+    IBKRClient reads the browser session cookie fresh on each API call — it
+    does not cache auth state — so a single shared instance is safe across
+    concurrent Chainlit sessions.
+    """
     global _config, _toolkit
     if _toolkit is None:
         _config = Config.from_env()
@@ -297,6 +303,12 @@ def _get_store() -> ConversationStore:
 
 
 async def _get_tv_bridge() -> TradingViewBridge:
+    """Return the process-level TradingViewBridge singleton, starting it on first call.
+
+    _tv_bridge_lock prevents a double-start race when two sessions initialise
+    concurrently. _tv_bridge is only assigned after start() succeeds, so a
+    failed start leaves it None and the next caller will retry.
+    """
     global _tv_bridge
     async with _tv_bridge_lock:
         if _tv_bridge is None:

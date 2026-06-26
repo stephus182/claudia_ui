@@ -36,7 +36,7 @@ class ServiceStatus(str, Enum):
 
 _DISCONNECT_MESSAGES = {
     "ibkr":   "⚠️ **IBKR Gateway disconnected** — check the Client Portal and log in.",
-    "gdrive": "⚠️ **Google Drive disconnected** — credentials file not found.",
+    "gdrive": "⚠️ **Google Drive disconnected** — check credentials or network.",
     "tv":     "⚠️ **TradingView sidecar stopped** — TradingView tools unavailable.",
 }
 _RECONNECT_MESSAGES = {
@@ -71,6 +71,11 @@ class ConnectivityChecker:
     # ── Individual checks (synchronous, cheap) ──────────────────────────────
 
     def check_ibkr(self) -> bool:
+        """Return True if the IBKR gateway is reachable and the session is authenticated.
+
+        Side effect: calling /tickle resets the IBKR session keepalive timer, so
+        the 60-second poll interval also prevents auto-logout during idle sessions.
+        """
         try:
             resp = requests.get(
                 f"{self._gateway_url}/tickle",
@@ -106,6 +111,12 @@ class ConnectivityChecker:
         self._tv_bridge = bridge
 
     def start(self) -> None:
+        """Start the background polling loop as an asyncio Task.
+
+        Idempotent in the sense that it does nothing if a task is already running.
+        If the previous task finished or was cancelled it creates a new one — it
+        does not silently no-op like a lock guard would.
+        """
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._poll_loop())
             log.info("ConnectivityChecker started (interval=%ds)", POLL_INTERVAL)

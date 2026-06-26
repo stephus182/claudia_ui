@@ -25,6 +25,15 @@ chainlit.db
 data/claudia.db
 data/*.db
 data/ibkr_flex_archive/
+data/test-sessions/
+
+# Private documents — never commit
+docs/context.md
+docs/principles.md
+docs/versions/
+
+# Coverage
+.coverage
 
 # OS
 .DS_Store
