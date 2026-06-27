@@ -489,7 +489,17 @@ class ClaudIAAgent:
                 if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
                     return "Blocked: cannot fetch from private or reserved IP addresses."
             except ValueError:
-                pass  # hostname — allow DNS resolution; literal private IPs are caught above
+                # Not a literal IP — resolve via DNS and re-check.
+                # Catches decimal (2130706433) and hex (0x7f000001) encoded IPs that
+                # bypass string-prefix checks but resolve to private addresses on Linux.
+                import socket as _socket
+                try:
+                    resolved_ip = _socket.gethostbyname(host)
+                    addr = ipaddress.ip_address(resolved_ip)
+                    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                        return "Blocked: URL resolves to a private or reserved IP address."
+                except _socket.gaierror:
+                    pass  # unresolvable hostname — let requests handle the error
         except Exception as exc:
             return f"Invalid URL: {exc}"
         try:

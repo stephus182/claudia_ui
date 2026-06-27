@@ -376,7 +376,7 @@ async def on_chat_start():
     8. Welcome message with status summary + optional startup buttons
     9. Background Flex sync (deferred, non-blocking)
 
-    Source: https://docs.chainlit.io/api-reference/on-chat-start
+    Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-start
     """
     session_id = cl.context.session.id
 
@@ -732,7 +732,7 @@ async def on_message(message: cl.Message):
     vision content blocks for the Anthropic SDK. Delegates all text + tool loop
     work to ClaudIAAgent.handle_message().
 
-    Source: https://docs.chainlit.io/api-reference/on-message
+    Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-message
     """
     agent: ClaudIAAgent = cl.user_session.get("agent")
     if not agent:
@@ -813,7 +813,7 @@ async def on_stop():
     session report, and uploads claudia.db to Drive. Skips if the 'End Session'
     button already handled cleanup to avoid a double upload.
 
-    Source: https://docs.chainlit.io/api-reference/on-chat-end
+    Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-end
     """
     if cl.user_session.get("session_closed"):
         return  # already handled by End Session button
