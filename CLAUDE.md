@@ -144,17 +144,19 @@ Source: [IBKR Campus — Request & Modify Orders](https://www.interactivebrokers
 
 ---
 
-### HMDS Warmup Behavior
+### Market Data Fetch Behavior
 
-`fetch_market_data` uses `/hmds/history` (IBKR's Historical Market Data Service). This endpoint has a documented first-call behavior: IBKR initializes a per-symbol data subscription on the first request, which typically returns 404 or 500 while warming up.
+`fetch_market_data` uses `get_market_history_paginated()` in `ibkr_core_mcp/client.py`, which calls `GET /iserver/marketdata/history` with automatic pagination for requests exceeding the **1000 data point limit** (verified from official docs). Pagination uses the `startTime` parameter to walk backwards in 1000-calendar-day chunks.
 
-**`_fetch_market_data` in `claude_tools.py` handles this with a 3-attempt retry loop (2s delay) on `IBKRAPIError`.** The `with_retry` wrapper in `rate_limiter.py` only covers 429/503 — HMDS warmup errors (404/500) are handled separately at the tool level.
+**`_fetch_market_data` in `claude_tools.py` retries up to 3 times (2s delay) on `IBKRAPIError` or empty response** — handles first-call warmup where IBKR returns 404/500 while initializing the subscription for a new symbol. The `with_retry` wrapper in `rate_limiter.py` covers 429/503; warmup errors (404/500) are handled separately at the tool level.
+
+**Note:** `/hmds/history` was the previous primary endpoint. IBKR deprecated it November 18, 2025.
+Source: https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
 
 Symptoms and diagnosis:
 - First call for a new symbol fails → warmup, auto-retried, transparent
-- Subsequent calls for the same symbol → fast (subscription already live)
-- Period A fails, shorter Period B succeeds → Period A likely hit the warmup window; Period B ran after it cleared. Not a period-length limit.
-- All retries fail → check account/positions endpoints; if those work, it may be an IBKR subscription limit for that lookback or symbol
+- All retries fail → check account/positions endpoints; if those work, may be a subscription or period/bar validity issue
+- Period too long → paginator splits into chunks automatically; if one chunk fails, the merged result will be incomplete
 
 ---
 

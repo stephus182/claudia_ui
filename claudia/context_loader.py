@@ -2,6 +2,15 @@
 Loads context.md and principles.md, computes a SHA-256 hash for integrity
 tracking, and watches for file changes via watchdog so a running session
 can hot-reload without restart.
+
+File watching uses the watchdog library with a module-level shared Observer.
+On macOS, watchdog uses FSEventsObserver (kernel-level kqueue/FSEvents);
+on Linux, InotifyObserver; on Windows, ReadDirectoryChangesW.
+A shared Observer is required because macOS FSEvents raises RuntimeError
+"already scheduled" if the same path is added to multiple Observer instances.
+
+Source (watchdog): https://watchdog.readthedocs.io/en/stable/
+Source (watchdog Observer): https://watchdog.readthedocs.io/en/stable/api.html
 """
 
 import hashlib

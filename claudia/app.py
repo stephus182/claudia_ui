@@ -5,6 +5,19 @@ Wires together: ibkr_core_mcp toolkit, conversation store, context loader,
 tradingview-mcp sidecar, and the core agent loop.
 
 Run with:  chainlit run claudia/app.py
+
+Chainlit API references used in this file:
+  Overview          https://docs.chainlit.io/get-started/overview
+  cl.Message        https://docs.chainlit.io/api-reference/message
+  cl.Action         https://docs.chainlit.io/api-reference/action
+  cl.action_callback https://docs.chainlit.io/api-reference/action
+  cl.user_session   https://docs.chainlit.io/concepts/user-session
+  cl.make_async     https://docs.chainlit.io/api-reference/make-async
+  on_chat_start     https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-start
+  on_message        https://docs.chainlit.io/api-reference/lifecycle-hooks/on-message
+  on_chat_end/stop  https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-end
+  Configuration     https://docs.chainlit.io/backend/config
+  Custom CSS/JS     https://docs.chainlit.io/customisation/custom-js
 """
 
 import base64
@@ -281,6 +294,10 @@ def _get_toolkit() -> ClaudeToolkit:
     IBKRClient reads the browser session cookie fresh on each API call — it
     does not cache auth state — so a single shared instance is safe across
     concurrent Chainlit sessions.
+
+    All blocking toolkit calls are dispatched via cl.make_async() in handlers
+    to avoid blocking the event loop.
+    Source: https://docs.chainlit.io/api-reference/make-async
     """
     global _config, _toolkit
     if _toolkit is None:
@@ -296,6 +313,14 @@ def _get_toolkit() -> ClaudeToolkit:
 
 
 def _get_store() -> ConversationStore:
+    """Return the process-level ConversationStore singleton, creating it on first call.
+
+    Stores all session/message/decision data in claudia.db (SQLite).
+    Safe to share across Chainlit sessions — all writes are serialised through SQLite.
+    cl.user_session holds a reference per session for scoped access.
+
+    Source: https://docs.chainlit.io/concepts/user-session
+    """
     global _conv_store
     if _conv_store is None:
         _conv_store = ConversationStore(_DB_PATH)
@@ -802,7 +827,13 @@ async def on_stop():
 
 @cl.action_callback("stage_order")
 async def on_stage_order(action: cl.Action):
-    """Called when the user clicks 'Stage this order' on an order proposal."""
+    """Called when the user clicks 'Stage this order' on an order proposal.
+
+    action.payload contains the serialised OrderProposal dict. Biometric (Touch ID)
+    and tkinter modal confirmation gates are enforced inside execute_staged_order().
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
     from claudia.order_flow import execute_staged_order
     session_id = cl.user_session.get("session_id")
     store: ConversationStore = cl.user_session.get("store")
@@ -811,13 +842,23 @@ async def on_stage_order(action: cl.Action):
 
 @cl.action_callback("cancel_proposal")
 async def on_cancel_proposal(action: cl.Action):
+    """Called when the user clicks 'Cancel' on an order proposal. Removes the action button.
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
     await cl.Message(content="Order proposal cancelled.", author="ClaudIA").send()
     await action.remove()
 
 
 @cl.action_callback("end_session")
 async def on_end_session(action: cl.Action):
-    """Save conversation, upload DB to Drive, confirm to the user."""
+    """Save conversation, upload claudia.db to Drive, and confirm to the user.
+
+    Sets 'session_closed' in cl.user_session so that on_stop() skips the
+    duplicate cleanup when the tab is closed after the button was clicked.
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
     await action.remove()
     cl.user_session.set("session_closed", True)
 
@@ -837,7 +878,14 @@ async def on_end_session(action: cl.Action):
 
 @cl.action_callback("start_gateway")
 async def on_start_gateway(action: cl.Action):
-    """Non-interactively launch the IBKR Client Portal Gateway container."""
+    """Non-interactively launch the IBKR Client Portal Gateway container.
+
+    Runs GatewayManager.startup() in a background task so the UI stays
+    responsive during the 120s wait. Progress messages are streamed via
+    cl.Message. The action button is removed immediately on click.
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
     await action.remove()
 
     async def _run() -> None:
@@ -890,7 +938,14 @@ async def on_start_gateway(action: cl.Action):
 
 @cl.action_callback("launch_tradingview")
 async def on_launch_tradingview(action: cl.Action):
-    """Launch TradingView Desktop and connect the MCP sidecar."""
+    """Launch TradingView Desktop with CDP debugging and reconnect the MCP sidecar.
+
+    Runs in a background task. Polls for port 9222 (up to 30s), then restarts
+    the TradingViewBridge so the active session gains live chart tools without
+    a page reload.
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
     await action.remove()
 
     async def _run() -> None:
