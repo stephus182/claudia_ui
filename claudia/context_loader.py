@@ -145,9 +145,15 @@ class ContextLoader:
 
 
 class _DocChangeHandler(FileSystemEventHandler):
+    """Watchdog handler that debounces filesystem events for the two watched docs.
+
+    Source: https://watchdog.readthedocs.io/en/stable/api.html#watchdog.events.FileSystemEventHandler
+    """
+
     _DEBOUNCE_SECS = 0.3
 
     def __init__(self, watched: set[Path], on_change: Callable[[str], None]):
+        """Track watched paths (resolved absolute) and a callback for change events."""
         super().__init__()
         self._watched = {str(p.resolve()) for p in watched}
         self._on_change = on_change
@@ -155,14 +161,19 @@ class _DocChangeHandler(FileSystemEventHandler):
         self._lock = threading.Lock()
 
     def on_modified(self, event: FileSystemEvent) -> None:
+        """Trigger debounced callback when one of the watched files is saved."""
         if not event.is_directory and event.src_path in self._watched:
             log.info("Document changed: %s", event.src_path)
             self._schedule(Path(event.src_path).name)
 
     def on_created(self, event: FileSystemEvent) -> None:
+        """Treat file creation as a modification (covers atomic save patterns like vim/nano)."""
         self.on_modified(event)
 
     def _schedule(self, filename: str) -> None:
+        # Rapid saves (e.g. editor writing a temp file then renaming) fire multiple events.
+        # Cancel any pending timer before starting a new one so the callback fires once,
+        # 300ms after the last event.
         with self._lock:
             if self._timer is not None:
                 self._timer.cancel()

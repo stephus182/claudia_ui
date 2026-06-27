@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -X POST https://api.firecrawl.dev/v2/scrape -H 'Content-Type: application/json' -d '{\"url\":\"https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-end\",\"formats\":[\"markdown\"]}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('data',{}\\).get\\('markdown','ERROR'\\)[:2000]\\)\")",
+      "Bash(curl -s -X POST https://api.firecrawl.dev/v2/scrape -H 'Content-Type: application/json' -d '{\"url\":\"https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-start\",\"formats\":[\"markdown\"]}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('data',{}\\).get\\('markdown','ERROR'\\)[:1500]\\)\")",
+      "Bash(python3 -c \"from ibkr_core_mcp.claude_tools import TOOL_DEFINITIONS; print\\(len\\(TOOL_DEFINITIONS\\)\\); print\\([t['name'] for t in TOOL_DEFINITIONS]\\)\")",
+      "Bash(curl -s -X POST https://api.firecrawl.dev/v2/scrape -H 'Content-Type: application/json' -d '{\"url\":\"https://docs.chainlit.io/api-reference/lifecycle-hooks/on-message\",\"formats\":[\"markdown\"]}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('data',{}\\).get\\('markdown','ERROR'\\)[:800]\\)\")",
+      "Bash(curl -s -X POST https://api.firecrawl.dev/v2/scrape -H 'Content-Type: application/json' -d '{\"url\":\"https://docs.chainlit.io/api-reference/make-async\",\"formats\":[\"markdown\"]}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('MAKE-ASYNC:', d.get\\('data',{}\\).get\\('markdown','ERROR'\\)[:400]\\)\")",
+      "Bash(curl -s -X POST https://api.firecrawl.dev/v2/scrape -H 'Content-Type: application/json' -d '{\"url\":\"https://docs.chainlit.io/concepts/user-session\",\"formats\":[\"markdown\"]}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('USER-SESSION:', d.get\\('data',{}\\).get\\('markdown','ERROR'\\)[:400]\\)\")",
+      "Bash(curl -s -X POST https://api.firecrawl.dev/v2/scrape -H 'Content-Type: application/json' -d '{\"url\":\"https://docs.anthropic.com/en/api/messages-streaming\",\"formats\":[\"markdown\"]}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('ANTHROPIC-STREAM:', d.get\\('data',{}\\).get\\('markdown','ERROR'\\)[:400]\\)\")",
+      "Bash(wait)",
+      "Bash(curl -s -X POST https://api.firecrawl.dev/v2/scrape -H 'Content-Type: application/json' -d '{\"url\":\"https://docs.chainlit.io/api-reference/action\",\"formats\":[\"markdown\"]}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('data',{}\\).get\\('markdown','ERROR'\\)[:600]\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(sed -i '' 's|Source: https://docs.chainlit.io/api-reference/on-chat-start|Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-start|g' /Users/steph/Claude_Projects/claudia_ui/claudia/app.py)",
+      "Bash(sed -i '' 's|Source: https://docs.chainlit.io/api-reference/on-message|Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-message|g' /Users/steph/Claude_Projects/claudia_ui/claudia/app.py)",
+      "Bash(sed -i '' 's|Source: https://docs.chainlit.io/api-reference/on-chat-end|Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-end|g' /Users/steph/Claude_Projects/claudia_ui/claudia/app.py)",
+      "Bash(sed -i '' 's/    \"get_pa_transactions\": \"IBKR: P\\\\&A transactions\",/    \"get_pa_transactions\": \"IBKR: P\\\\&A transactions\",\\\\n    \"get_pa_periods\": \"IBKR: P\\\\&A periods\",/' /Users/steph/Claude_Projects/claudia_ui/claudia/session_reporter.py)",
+      "Bash(sed -i '' 's/    \"check_flex_coverage\": \"Trades: coverage check\",/    \"check_flex_coverage\": \"Trades: coverage check\",\\\\n    \"verify_flex_import\": \"Trades: verify import integrity\",/' /Users/steph/Claude_Projects/claudia_ui/claudia/session_reporter.py)",
+      "Bash(sed -i '' 's/    \"delete_cache\": \"Cache: delete\",/    \"delete_cache\": \"Cache: delete\",\\\\n    # Firecrawl web search\\\\n    \"firecrawl_search\": \"Web: Firecrawl search\",\\\\n    \"firecrawl_crawl\": \"Web: Firecrawl crawl\",/' /Users/steph/Claude_Projects/claudia_ui/claudia/session_reporter.py)",
+      "Bash(python -m pytest tests/ --tb=short -q)",
+      "Bash(python -m pytest tests/ --co -q)",
+      "Bash(python -m pytest tests/test_security_regressions.py::test_fetch_web_page_ssrf_guard_blocks_decimal_ip -v)",
+      "Bash(python -m pytest tests/test_conversation_store.py --co -q)",
+      "Bash(sed -i '' 's/163 unit tests/164 unit tests/' /Users/steph/Claude_Projects/claudia_ui/README.md)",
+      "Bash(sed -i '' 's/163 tests, 0 failures/164 tests, 0 failures/' /Users/steph/Claude_Projects/claudia_ui/docs/project-status.md)",
+      "Bash(sed -i '' 's/test count 162 → 163/test count 162 → 164/' /Users/steph/Claude_Projects/claudia_ui/docs/project-status.md)",
+      "Bash(grep -n \"| Security regressions\\\\|| \\\\`session_reporter\" /Users/steph/Claude_Projects/claudia_ui/docs/project-status.md)"
+    ]
+  }
+}

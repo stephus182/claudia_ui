@@ -52,18 +52,19 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-25 | `92a77e3` | Security audit — full re-audit of all 8 modules (`docs/security-audit-2026-06-25.md`); `_find_file` safety comment (L-3) |
 | 2026-06-25 | `d84c...` | 11 SSRF regression tests (H-1 guard); security_regressions updated to cover both audits; test count 136 → 162 |
 | 2026-06-27 | — | **ibkr_core_mcp v1.0 — 4 new tools** (`get_pa_periods`, `verify_flex_import`, `firecrawl_search`, `firecrawl_crawl`); total tool count 38 → 42; auto-routed via `toolkit.execute()` — no `agent.py` changes needed |
-| 2026-06-27 | — | SSRF decimal/hex IP bypass ported from ibkr_core_mcp v1.0 audit (Finding 1, Medium): `socket.gethostbyname()` resolve-then-check in `_fetch_web_page`; 1 new regression test (21 total); test count 162 → 163 |
+| 2026-06-27 | — | SSRF decimal/hex IP bypass ported from ibkr_core_mcp v1.0 audit (Finding 1, Medium): `socket.gethostbyname()` resolve-then-check in `_fetch_web_page`; 1 new regression test (21 total); test count 162 → 164 |
 | 2026-06-27 | — | Chainlit docstring URL fix — 3 lifecycle-hooks URLs missing path segment in `app.py`; 4 new tool labels in `session_reporter.py`; `CLAUDE.md` env table adds `FIRECRAWL_API_KEY` + `GDRIVE_WEB_DOCS_FOLDER_ID`; `SECURITY.md` — tool count 38→42, SSRF guard doc updated, v1.0 audit row |
+| 2026-06-27 | — | **Full docstring audit (superpowers:code-reviewer)** — `status.py`, `conversation_store.py`, `agent.py`, `tradingview.py`, `context_loader.py`, `session_reporter.py`, `gdrive_sync.py`; `BrowserCookieAuth(config.gateway_url)` bug fixed in `order_flow.py`; `test_count_messages` added; test count 163 → 164 |
 
 ---
 
 ## Test Coverage
 
-**Suite:** 163 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
+**Suite:** 164 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
 
 | Module | Tests | Notes |
 |---|---|---|
-| `conversation_store.py` | 25 | Schema, CRUD, FTS5 search, decisions, relationships, doc_versions |
+| `conversation_store.py` | 26 | Schema, CRUD, FTS5 search, decisions, relationships, doc_versions, count_messages |
 | `agent.py` | 22 | Strip proposal, system prompt, history mapping, version note, local tools, decisions, TV bridge |
 | `status.py` | 22 | IBKR/GDrive/TV connectivity checks, state transitions, /api/status; GDrive ping path; IBKR auth-state check |
 | `tradingview.py` | 17 | All 6 binary discovery candidates, CDP check, tool filtering, env allowlist |
