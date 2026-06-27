@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -115,7 +116,7 @@ async def execute_staged_order(
         from dotenv import load_dotenv
         load_dotenv(override=False)
         config = Config.from_env()
-        ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(config.gateway_url))
+        ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))
 
         # Resolve conid
         contracts = ibkr.search_contract(symbol)

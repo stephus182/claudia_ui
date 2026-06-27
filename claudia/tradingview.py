@@ -261,6 +261,13 @@ class TradingViewBridge:
         return list(self._tools)
 
     async def execute(self, name: str, inputs: dict) -> str:
+        """Call a tradingview-mcp tool via the MCP stdio session. Returns a string result.
+
+        Never raises — on any error returns a user-facing error string so the agent
+        loop can include it in the next assistant message without crashing.
+
+        Source: https://github.com/tradesdontlie/tradingview-mcp
+        """
         if not self._session:
             return "TradingView is not connected."
         try:
@@ -278,6 +285,7 @@ class TradingViewBridge:
             return f"TradingView tool '{name}' failed."
 
     async def stop(self) -> None:
+        """Tear down the MCP stdio session. Errors are silently discarded — stop must not raise."""
         try:
             if self._session:
                 await self._session.__aexit__(None, None, None)

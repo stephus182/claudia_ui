@@ -197,6 +197,6 @@ ClaudIA is designed to run on any machine — all persistent state lives in a si
 ## Testing
 
 ```bash
-pytest -m "not integration"   # 163 unit tests (no IBKR gateway needed)
+pytest -m "not integration"   # 164 unit tests (no IBKR gateway needed)
 pytest                        # all tests (requires live IBKR gateway)
 ```

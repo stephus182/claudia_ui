@@ -37,6 +37,12 @@ class GDriveSync:
     """Sync claudia.db (and optionally context/principles) to Google Drive."""
 
     def __init__(self, config: Config) -> None:
+        """Initialise sync state. Call download_db() / upload_db() to trigger actual I/O.
+
+        _resolved_db_folder is an empty string until the first call that needs the folder
+        (lazy resolution via _resolve_db_folder). RLock is reentrant because upload_db()
+        calls _find_file() which calls _get_service() — all three acquire the same lock.
+        """
         self._config = config
         self._service: Any = None
         self._resolved_db_folder: str = ""

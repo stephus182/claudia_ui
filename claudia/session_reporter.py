@@ -128,6 +128,7 @@ def _error_lines(messages: list[dict]) -> list[str]:
 
 
 def _tool_section(counts: Counter) -> list[str]:
+    """Format tool call counts as a sorted Markdown list for the session report."""
     if not counts:
         return ["- (no tool calls this session)"]
     return [
@@ -137,6 +138,7 @@ def _tool_section(counts: Counter) -> list[str]:
 
 
 def _decisions_section(decisions: list[dict]) -> list[str]:
+    """Format trade decisions as a Markdown list; falls back to '(none)' if empty."""
     if not decisions:
         return ["- (none)"]
     return [

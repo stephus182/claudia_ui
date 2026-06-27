@@ -251,6 +251,13 @@ class ClaudIAAgent:
         doc_version: str | None = None,
         trade_context: str | None = None,
     ) -> None:
+        """Initialise the agent for one Chainlit session.
+
+        extra_tools: TradingView tool definitions from TradingViewBridge.get_tools();
+            merged into the Anthropic tools= list alongside toolkit's 42 IBKR tools.
+        trade_context: optional market-calendar string injected into the system prompt
+            at session start (built by ibkr_core_mcp.SQLiteStore.get_market_calendar_context).
+        """
         self._toolkit = toolkit
         self._store = store
         self._loader = context_loader
@@ -425,6 +432,12 @@ class ClaudIAAgent:
         self._log_proposal(display_text, order_proposal, msg_id)
 
     def _handle_local_tool(self, name: str, inputs: dict) -> str:
+        """Dispatch the three locally-implemented tools and return a string result.
+
+        Local tools (list_doc_versions, get_doc_version, search_past_conversations,
+        fetch_web_page) are defined in TOOL_DEFINITIONS but executed here rather than
+        via toolkit.execute(). They always return a string — never raise.
+        """
         if name == "list_doc_versions":
             versions = self._store.list_doc_versions()
             if not versions:
