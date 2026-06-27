@@ -320,3 +320,26 @@ def test_fetch_web_page_ssrf_guard_allows_public(monkeypatch):
     mock_get.assert_called_once()
     assert "Blocked" not in result
     assert "Hello world" in result or "[Fetched" in result
+
+
+# ── SSRF decimal/hex IP bypass (v1.0 audit port, 2026-06-27) ─────────────────────────────────
+
+def test_fetch_web_page_ssrf_guard_blocks_decimal_ip(monkeypatch):
+    """Decimal-encoded IP (2130706433 = 127.0.0.1) must be blocked via DNS resolve-then-check.
+
+    On Linux, socket.gethostbyname("2130706433") resolves to "127.0.0.1" because glibc
+    accepts integer IP representations. The string-prefix guard (127.*) doesn't catch this
+    because the host is "2130706433", not "127.0.0.1". The resolve-then-check step does.
+    Fix ported from ibkr_core_mcp v1.0 pre-release security audit (finding 1, Medium).
+    """
+    import socket
+    from unittest.mock import patch
+
+    agent = _make_agent()
+
+    with patch("socket.gethostbyname", return_value="127.0.0.1"):
+        result = agent._fetch_web_page({"url": "http://2130706433/path"})
+
+    assert "Blocked" in result, (
+        f"Decimal IP 2130706433 (=127.0.0.1) was not blocked; got: {result!r}"
+    )

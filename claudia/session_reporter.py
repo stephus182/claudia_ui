@@ -34,6 +34,7 @@ _TOOL_LABELS: dict[str, str] = {
     "get_pnl": "IBKR: P&L",
     "get_pa_performance": "IBKR: P&A performance",
     "get_pa_transactions": "IBKR: P&A transactions",
+    "get_pa_periods": "IBKR: P&A periods",
     # IBKR — market data
     "get_market_snapshot": "IBKR: market snapshot",
     "fetch_market_data": "IBKR: historical bars",
@@ -67,10 +68,14 @@ _TOOL_LABELS: dict[str, str] = {
     "sync_flex_archive": "Trades: Flex archive sync",
     "import_flex_file": "Trades: import Flex file",
     "check_flex_coverage": "Trades: coverage check",
+    "verify_flex_import": "Trades: verify import integrity",
     # IBKR — market data cache
     "check_cache": "Cache: check",
     "list_cache": "Cache: list",
     "delete_cache": "Cache: delete",
+    # Firecrawl web search
+    "firecrawl_search": "Web: Firecrawl search",
+    "firecrawl_crawl": "Web: Firecrawl crawl",
     # TradingView
     "chart_get_state": "TV: chart state",
     "quote_get": "TV: live quote",

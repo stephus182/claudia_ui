@@ -50,13 +50,16 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-25 | `72425d9` | Docstring audit — all 8 modules; CLAUDE.md corrections (tool count, stale data, voice env var, alert tool count); README unit test count |
 | 2026-06-25 | `7a3ed0a` | Security — fix SSRF in `fetch_web_page` (H-1); SECURITY.md corrections (38 tools, remove unimplemented voice threat row, fix vendor fallback description, document SSRF guard + residual DNS rebinding risk, add SSRF to audit checklist) |
 | 2026-06-25 | `92a77e3` | Security audit — full re-audit of all 8 modules (`docs/security-audit-2026-06-25.md`); `_find_file` safety comment (L-3) |
-| 2026-06-25 | this commit | 11 SSRF regression tests (H-1 guard); security_regressions updated to cover both audits; test count 136 → 162 |
+| 2026-06-25 | `d84c...` | 11 SSRF regression tests (H-1 guard); security_regressions updated to cover both audits; test count 136 → 162 |
+| 2026-06-27 | — | **ibkr_core_mcp v1.0 — 4 new tools** (`get_pa_periods`, `verify_flex_import`, `firecrawl_search`, `firecrawl_crawl`); total tool count 38 → 42; auto-routed via `toolkit.execute()` — no `agent.py` changes needed |
+| 2026-06-27 | — | SSRF decimal/hex IP bypass ported from ibkr_core_mcp v1.0 audit (Finding 1, Medium): `socket.gethostbyname()` resolve-then-check in `_fetch_web_page`; 1 new regression test (21 total); test count 162 → 163 |
+| 2026-06-27 | — | Chainlit docstring URL fix — 3 lifecycle-hooks URLs missing path segment in `app.py`; 4 new tool labels in `session_reporter.py`; `CLAUDE.md` env table adds `FIRECRAWL_API_KEY` + `GDRIVE_WEB_DOCS_FOLDER_ID`; `SECURITY.md` — tool count 38→42, SSRF guard doc updated, v1.0 audit row |
 
 ---
 
 ## Test Coverage
 
-**Suite:** 162 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
+**Suite:** 163 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
 
 | Module | Tests | Notes |
 |---|---|---|
@@ -67,7 +70,7 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | `order_flow.py` | 14 | Format summary (4), execute_staged_order success/errors/gates/limit price (10) |
 | `context_loader.py` | 14 | Load, hash, watchdog hot-reload, Drive override, version registration |
 | `gdrive_sync.py` | 14 | Download DB, upload DB (RLock, no WAL block), read_text (size guard), chmod, ping() |
-| Security regressions | 20 | 9 from 2026-06-12 audit + 11 SSRF guard tests from 2026-06-25 audit — must stay green |
+| Security regressions | 21 | 9 (2026-06-12) + 11 SSRF (2026-06-25) + 1 decimal/hex IP bypass (2026-06-27) — must stay green |
 | `app.py` | **0** | Chainlit session wiring — not unit-testable; covered by live tests below |
 
 **ibkr_core_mcp** (separate repo, own venv):  
