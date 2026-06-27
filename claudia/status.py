@@ -47,6 +47,14 @@ _RECONNECT_MESSAGES = {
 
 
 class ConnectivityChecker:
+    """Background poller that monitors IBKR gateway, GDrive, and TradingView every 60s.
+
+    Emits Chainlit chat alerts on state transitions (UNKNOWN/OK → ERROR, ERROR → OK).
+    The cached status dict is served synchronously by GET /api/status for the UI lights.
+
+    Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-start
+    """
+
     def __init__(
         self,
         gateway_url: str,
@@ -54,6 +62,11 @@ class ConnectivityChecker:
         tv_bridge: Optional["TradingViewBridge"] = None,
         gdrive_sync: Optional["GDriveSync"] = None,
     ) -> None:
+        """Initialise the checker. Call start() to begin polling.
+
+        gdrive_sync is optional — if None, check_gdrive() falls back to a token-file
+        existence check (no live API round-trip).
+        """
         self._gateway_url = gateway_url.rstrip("/")
         self._gdrive_token_file = Path(gdrive_token_file)
         self._tv_bridge = tv_bridge
@@ -66,6 +79,7 @@ class ConnectivityChecker:
         self._task: asyncio.Task | None = None
 
     def get_status(self) -> dict[str, ServiceStatus]:
+        """Return a shallow copy of the current status dict (thread-safe for callers)."""
         return dict(self._status)
 
     # ── Individual checks (synchronous, cheap) ──────────────────────────────
@@ -92,6 +106,13 @@ class ConnectivityChecker:
             return False
 
     def check_gdrive(self) -> bool:
+        """Return True if GDrive is reachable.
+
+        When _gdrive_sync is wired, calls GDriveSync.ping() which does a live
+        files().list round-trip — reflects real API reachability, not just token presence.
+        When _gdrive_sync is None (GOOGLE_DRIVE_FOLDER_ID unset), falls back to token-file
+        existence; the green light then means "credentials present" not "API reachable".
+        """
         if self._gdrive_sync is not None:
             return self._gdrive_sync.ping()
         return self._gdrive_token_file.exists()
@@ -122,6 +143,7 @@ class ConnectivityChecker:
             log.info("ConnectivityChecker started (interval=%ds)", POLL_INTERVAL)
 
     def stop(self) -> None:
+        """Cancel the background polling task. Safe to call if polling was never started."""
         if self._task and not self._task.done():
             self._task.cancel()
             log.info("ConnectivityChecker stopped")

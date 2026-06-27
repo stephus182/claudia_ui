@@ -26,6 +26,12 @@ def _utcnow() -> str:
 
 class ConversationStore:
     def __init__(self, db_path: str | Path = "data/claudia.db"):
+        """Open (or create) the SQLite DB and apply schema migrations.
+
+        WAL mode and foreign-key enforcement are set per connection in _conn().
+        The doc_version column migration runs at init time with suppress so it is
+        a no-op on DBs that already have the column.
+        """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
@@ -142,6 +148,7 @@ class ConversationStore:
     def create_session(
         self, session_id: str, context_hash: str = "", doc_version: str | None = None
     ) -> None:
+        """Insert a new session row. INSERT OR IGNORE is a no-op if called twice for the same id."""
         with self._conn() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO sessions(id, started_at, context_hash, doc_version) "
@@ -150,6 +157,7 @@ class ConversationStore:
             )
 
     def close_session(self, session_id: str, metadata: dict | None = None) -> None:
+        """Stamp ended_at and write session metadata (tool counts, connectivity) to the row."""
         with self._conn() as conn:
             conn.execute(
                 "UPDATE sessions SET ended_at=?, metadata=? WHERE id=?",
@@ -214,6 +222,7 @@ class ConversationStore:
             return [dict(r) for r in rows]
 
     def get_session(self, session_id: str) -> dict | None:
+        """Return a single session row as a dict, or None if the id is unknown."""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM sessions WHERE id=?", (session_id,)
@@ -375,6 +384,7 @@ class ConversationStore:
             return [dict(r) for r in rows]
 
     def get_decisions_for_symbol(self, symbol: str, limit: int = 10) -> list[dict]:
+        """Return decisions for a symbol ordered newest first, joined with the doc_version active at the time."""
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT d.*, s.doc_version FROM decisions d
@@ -395,6 +405,7 @@ class ConversationStore:
         session_id: str | None = None,
         relevance_score: float = 1.0,
     ) -> int:
+        """Store a symbol-level observation and return its row id."""
         with self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO relationships
@@ -405,6 +416,7 @@ class ConversationStore:
             return cur.lastrowid  # type: ignore[return-value]
 
     def get_relationships(self, symbol: str, limit: int = 10) -> list[dict]:
+        """Return symbol observations ordered by relevance_score then recency."""
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT * FROM relationships WHERE symbol=?

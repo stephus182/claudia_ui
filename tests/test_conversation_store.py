@@ -103,6 +103,15 @@ def test_history_limit(store):
     assert len(history) == 10
 
 
+def test_count_messages(store):
+    store.create_session("sess-count")
+    assert store.count_messages("sess-count") == 0
+    store.add_message("sess-count", "user", "hello")
+    store.add_message("sess-count", "assistant", "hi there")
+    assert store.count_messages("sess-count") == 2
+    assert store.count_messages("nonexistent-session") == 0
+
+
 def test_get_last_context_hash_no_sessions(tmp_path):
     store = ConversationStore(tmp_path / "claudia.db")
     assert store.get_last_context_hash() is None
