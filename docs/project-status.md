@@ -289,8 +289,7 @@ Target sources:
 | 6 | Flex T+1 cutoff time — overnight batch, no specific time published | `flex_query.py:125` | Does IBKR document when the daily Flex file is generated? | IBKR Flex Web Service / Activity Statement generation schedule |
 | 7 | Flex error 1025 — observed in practice, not in official 21-code table | `flex_query.py:103` | Is 1025 documented anywhere? What does it mean? | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm (public) |
 | 8 | Rate limit policy — 429/503 retry strategy uses fixed backoff with no `Retry-After` parsing | `rate_limiter.py:26` | Does IBKR document rate limits per endpoint? Send `Retry-After`? | CP API rate limit policy section |
-| 9 | `/iserver/marketdata/history` bar count limit — observed ~84 daily bars regardless of period | `client.py` `get_market_history` docstring | What is the actual documented bar/period limit? Is there one? | `GET /iserver/marketdata/history` endpoint reference |
-| 10 | `/hmds/history` warmup — documented as 404/500 on first call, but live testing shows 200 with null body | `claude_tools.py` `_fetch_market_data` | Is null body a documented warmup variant? Does HMDS require iserver priming first? | `GET /hmds/history` endpoint reference + warmup behavior |
+| 9 | ~~`/iserver/marketdata/history` bar count limit~~ | ~~`client.py`~~ | **Resolved 2026-06-27** — official limit is 1000 data points per request (scraped from CP API reference). Pagination implemented in `get_market_history_paginated()`. | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/ |
 | 11 | `GET /iserver/account/watchlists` returns HTTP 404 in live testing — endpoint path may be wrong or feature requires different access | `client.py:739` | Is this the correct CP API path for watchlists? Is there a different endpoint? | `GET /iserver/account/watchlists` or watchlists section of CP API reference |
 | 12 | `GET /trsrv/secdef/chains` returns HTTP 404 — option chain endpoint path may be wrong or `trsrv` service unavailable; `GET /iserver/secdef/strikes` (conid+month) untested | `client.py:327` | Correct endpoint for full option chain? Is `trsrv/secdef/chains` documented? Is the two-step approach (strikes per month) the right path? | Option chain / secdef section of CP API or webapi-ref |
 
@@ -312,5 +311,4 @@ Target sources:
 - [ ] Item 6 — Flex T+1 cutoff time
 - [ ] Item 7 — Flex error 1025 *(public page — can verify without login)*
 - [ ] Item 8 — Rate limit policy + `Retry-After`
-- [ ] Item 9 — `/iserver/marketdata/history` bar count limit (was "~84 bars" — unverified)
-- [ ] Item 10 — `/hmds/history` null body warmup variant + whether iserver priming is required
+- [x] Item 9 — `/iserver/marketdata/history` bar count limit — resolved: 1000 data points (official), pagination implemented

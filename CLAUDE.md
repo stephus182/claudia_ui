@@ -150,9 +150,6 @@ Source: [IBKR Campus — Request & Modify Orders](https://www.interactivebrokers
 
 **`_fetch_market_data` in `claude_tools.py` retries up to 3 times (2s delay) on `IBKRAPIError` or empty response** — handles first-call warmup where IBKR returns 404/500 while initializing the subscription for a new symbol. The `with_retry` wrapper in `rate_limiter.py` covers 429/503; warmup errors (404/500) are handled separately at the tool level.
 
-**Note:** `/hmds/history` was the previous primary endpoint. IBKR deprecated it November 18, 2025.
-Source: https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
-
 Symptoms and diagnosis:
 - First call for a new symbol fails → warmup, auto-retried, transparent
 - All retries fail → check account/positions endpoints; if those work, may be a subscription or period/bar validity issue
