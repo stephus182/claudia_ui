@@ -7,6 +7,17 @@ with multi-turn tool use, and persists every interaction to ConversationStore.
 Order proposals: ClaudIA embeds a fenced ```order-proposal block in its response
 when it wants to suggest a staged trade. agent.py strips the block from the
 displayed text and passes the parsed JSON to order_flow for button rendering.
+
+Anthropic SDK: anthropic.AsyncAnthropic with client.messages.stream() for
+server-sent event streaming. Tool use follows the multi-turn loop pattern:
+stream → collect tool_use blocks → execute tools → append tool_result → stream again.
+
+Source (Messages API streaming): https://docs.anthropic.com/en/api/messages-streaming
+Source (Tool use): https://docs.anthropic.com/en/docs/build-with-claude/tool-use
+Source (Models): https://docs.anthropic.com/en/docs/about-claude/models
+  Current default: claude-opus-4-8 (1M token context, $5/$25 per MTok input/output)
+  Latest most-capable: claude-fable-5 ($10/$50 per MTok)
+  Balance of speed/intelligence: claude-sonnet-4-6 ($3/$15 per MTok)
 """
 
 from __future__ import annotations
