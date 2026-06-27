@@ -26,7 +26,7 @@ conversation memory. The new principals and threats are:
 ClaudIA has **zero** tools for order execution. This is the most critical security property.
 
 ### What the LLM can do
-- Call any of the 38 read-only `ClaudeToolkit` tools (positions, PnL, market data, backtests, etc.)
+- Call any of the 42 read-only `ClaudeToolkit` tools (positions, PnL, market data, backtests, etc.)
 - Output an `order-proposal` JSON block as text in its response
 - Call `preview_order` (whatif — read-only, no execution)
 
@@ -210,10 +210,12 @@ and return it to the model context. The implementation blocks:
 - Any scheme other than `http`/`https`
 - `localhost`, `0.0.0.0`, and `127.*` / `169.254.*` literal hosts
 - Any literal IP address in a private, loopback, link-local, or reserved range (`ipaddress.ip_address`)
+- Decimal/hex-encoded IP bypasses (e.g. `http://2130706433/` = 127.0.0.1): hostname is resolved via
+  `socket.gethostbyname()` and the resolved IP is re-checked against the same private/loopback/link-local guard
 
-DNS rebinding (hostname that resolves to a private IP) is a residual risk — not mitigated without
-a two-phase resolve-then-check approach. Accepted for the personal local deployment; the IBKR
-gateway is reachable only at `localhost:5055` with a session cookie, not via external DNS.
+Residual TOCTOU DNS rebinding risk: guard resolves at request-dispatch time; a malicious DNS entry that
+flips from a public IP to a private one after the guard check is not blocked. Accepted for the personal
+local deployment — the IBKR gateway requires a session cookie that is never present in cross-origin fetches.
 
 ---
 
@@ -391,5 +393,6 @@ Run this checklist before any significant code change to ClaudIA:
 |---|---|---|---|---|
 | 2026-06-12 | `gdrive_sync.py`, `tradingview.py`, `app.py`, `ibkr_core_mcp/client.py` | 2 High, 4 Medium, 2 Low | All 8 resolved | [`docs/security-audit-2026-06-12.md`](docs/security-audit-2026-06-12.md) |
 | 2026-06-25 | All 8 claudia_ui modules (full re-audit) | 1 High, 0 Medium, 3 Low | H-1 fixed; 3 Low accepted | [`docs/security-audit-2026-06-25.md`](docs/security-audit-2026-06-25.md) |
+| 2026-06-27 | ibkr_core_mcp v1.0 pre-release audit (ported back to `agent.py`) | 1 Medium ported | Decimal/hex IP bypass (`http://2130706433/`) fixed via `socket.gethostbyname()` resolve-then-check | see commit |
 
-**Regression tests:** `tests/test_security_regressions.py` — 20 tests covering both audits. These must stay green.
+**Regression tests:** `tests/test_security_regressions.py` — 21 tests covering all three audits. These must stay green.
