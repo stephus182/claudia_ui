@@ -223,12 +223,13 @@ Everything below is unit-tested but has not been verified with a real running se
 
 ### 7. Flex Trade History
 
-- [ ] Session start with IBKR online: background sync fires, System message shows sync result + coverage
+- [x] Session start with IBKR online: background sync fires, System message shows sync result + coverage — 2026-06-30 (0 trades fetched = correct; no new settlements since 2026-06-25; DATA STALE flag shown is correct — newest trade predates last trading day)
 - [ ] Session start with IBKR offline: no sync launched; welcome shows "last synced YYYY-MM-DD (Nd ago)"
 - [ ] "What trades did I make in 2024?" → `get_trades source='store'` → results from SQLite, not limited to 6 days
 - [ ] "Check my trade data coverage" → `check_flex_coverage` → reports oldest/newest/gaps
 - [ ] Rate limit hit (error 1001): System message shows clear "wait ~5 minutes" message + integrity report
 - [ ] `sync_flex_archive` → picks up all XMLs from Drive `account_data/` → imports without duplicates
+- [x] `verify_flex_import` → 11 files checked, 984 unique tradeIDs, 983/984 in SQLite — 2026-06-30 PASS; 1 miss is test artifact `flex_U1675699_2026-06-26_TESTREF.xml` (tradeID=TEST001 from prior test session); all 1,041 real executions verified intact; ⚠️ delete test file from Drive `account_data/` to clear false alarm on future runs
 
 ### 8. Conversation Memory
 
