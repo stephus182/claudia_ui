@@ -19,19 +19,33 @@ Prerequisites (user must install once):
   ~/.tradingview-mcp/src/server.js is auto-discovered; TRADINGVIEW_MCP_PATH
   in .env is only needed to override the default path.
 
-  Open TradingView Desktop with remote debugging enabled:
-  open -a "TradingView" --args --remote-debugging-port=9222
+  TradingView Desktop launch (no manual command needed):
+    - Start ClaudIA normally. If TV Desktop is not running, the welcome message
+      shows a "Launch TradingView" button — click it.
+    - ClaudIA calls launch_tradingview() which runs:
+        open -a "TradingView" --args --remote-debugging-port=9222
+      then polls for CDP port 9222 up to 30s and reconnects the sidecar.
+    - If TV is already running WITHOUT the debug port, the button shows an error.
+    - Manual fallback (if needed):
+        /Applications/TradingView.app/Contents/MacOS/TradingView --remote-debugging-port=9222
 
 tradingview-mcp repo: https://github.com/tradesdontlie/tradingview-mcp
   78 MCP tools + tv CLI, 4.1k stars, last updated April 2026.
   CDP injection sanitization added April 3, 2026 (safeString + requireFinite guards).
   Source: https://github.com/tradesdontlie/tradingview-mcp/blob/main/README.md
+  Setup guide: https://github.com/tradesdontlie/tradingview-mcp/blob/main/SETUP_GUIDE.md
 
-Python 3.14 / anyio known issue: when TradingView Desktop is not running, sidecar
-startup fails with AttributeError in anyio._backends._asyncio.AsyncIOTaskInfo.__init__
-because asyncio.current_task() returns None during async generator cleanup. Unfixed in
-anyio 4.14.1 and MCP 1.28.1 as of 2026-06-30. App falls back to screenshot mode.
-See claudia/app.py compat block for full diagnosis.
+Python 3.14 / anyio compatibility (fixed 2026-06-30):
+  The sidecar now starts successfully regardless of whether TradingView Desktop is
+  running. Previously, sidecar startup failed when CDP port 9222 was unreachable:
+  anyio._MemoryObjectItemReceiver instantiation calls AsyncIOTaskInfo(current_task())
+  but Python 3.14 returns None from current_task() during async generator cleanup,
+  causing AttributeError: 'NoneType' object has no attribute 'get_coro'.
+  Fix: AsyncIOTaskInfo.__init__ is patched in claudia/app.py to stub a TaskInfo when
+  task=None (task_info is only used in __repr__ — stub is safe). anyio 4.14.1 and
+  MCP 1.28.1 do not fix this upstream as of 2026-06-30.
+  Residual: when TV Desktop is not running, sidecar starts and lists its 78 tools but
+  tool calls fail at the CDP layer — ClaudIA falls back to screenshot mode.
 """
 
 from __future__ import annotations
@@ -166,6 +180,10 @@ async def launch_tradingview() -> bool:
 
     Returns True if the CDP port becomes available within 30s.
 
+    The official SETUP_GUIDE.md recommends the `tv_launch` MCP tool or the direct
+    binary path. ClaudIA uses `open -a "TradingView"` which is equivalent on macOS
+    and handles app relocation automatically (no hardcoded binary path).
+
     Source: https://github.com/tradesdontlie/tradingview-mcp/blob/main/SETUP_GUIDE.md
     """
     if check_cdp_running():
@@ -238,6 +256,8 @@ class TradingViewBridge:
 
         # Pass only the vars the sidecar actually needs — never the full process env,
         # which would leak ANTHROPIC_API_KEY and all other secrets to the Node subprocess.
+        # CHROME_REMOTE_DEBUG_PORT tells the sidecar which CDP port to connect to
+        # (default 9222, overridable via TRADINGVIEW_DEBUG_PORT env var).
         env = {
             k: os.environ[k]
             for k in ("PATH", "HOME", "USER", "TMPDIR", "TEMP", "TMP",
