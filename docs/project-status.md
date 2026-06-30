@@ -247,6 +247,7 @@ Everything below is unit-tested but has not been verified with a real running se
 |---|---|---|---|---|
 | 2026-06-23 | `2026-06-23-2208.md` | Session startup, IBKR tools (positions, account summary, market data, cache, flex sync), conversation logging | Stopped container bug in `GatewayManager.start()` (fixed); messages not logged for reconnected sessions after restart (expected) | PASS |
 | 2026-06-24 | inline | GDrive DB download (§2.1), hot-reload (§2.3), End Session + Drive upload (§2.4), doc versioning list+get (§3), conversation memory FTS5 recall (§8), security refusals (§9.1, §9.2) | 6 bugs found and fixed: GDrive deadlock, IBKR auth check, hot-reload async bridge (3 separate bugs), `_LOCAL_TOOL_NAMES` dispatch gap, `get_last_context_hash` open-session filter, watchdog path comparison | PASS (IBKR/TV skipped — offline) |
+| 2026-06-30 | pending | First live test with ibkr_core_mcp v1.0 — §4b price alerts, §5 order staging, §6 TradingView, §9.3 API key check | Pre-session review complete; baselines: ibkr_core_mcp 485 tests ✓, claudia_ui 164 tests ✓; v1.0 changes reviewed (4 new tools, SSRF decimal bypass, path traversal guard, preview_order validation, BrowserCookieAuth fix) | IN PROGRESS |
 
 ---
 
