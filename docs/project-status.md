@@ -279,6 +279,8 @@ Everything below is unit-tested but has not been verified with a real running se
 | `app.py` has zero unit tests | `claudia/app.py` | Chainlit session wiring makes unit testing hard; live tests are the coverage |
 | `test_strip_order_proposal_malformed_json` doesn't assert `clean` is unchanged | `tests/test_agent.py` | Low priority |
 | Env allowlist tested twice (tradingview + security_regressions) | both test files | Low maintenance risk |
+| Drive archive creates duplicate files on double `on_chat_start` | `ibkr_core_mcp/cache.py` `upload_account_file_bytes` | 2026-06-30: page refresh fires `on_chat_start` twice → two uploads of same XML; `_find_file` pattern already used for `claudia.db` should be applied here — check for existing filename before uploading, update in place |
+| TradingView sidecar crashes on Python 3.14 / anyio 4.13.0 | `claudia/tradingview.py` | 2026-06-30: `AsyncIOTaskInfo.__init__` calls `task.get_coro()` where `current_task()` returns None; anyio 4.14.1 installed — retest after ClaudIA restart |
 
 ---
 
