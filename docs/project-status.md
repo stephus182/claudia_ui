@@ -94,10 +94,17 @@ Everything below is unit-tested but has not been verified with a real running se
 
 ### 1. Session Startup
 
-- [ ] `./start-claudia.sh` — gateway launches, ClaudIA starts, browser opens `localhost:8000`
+- [x] `./start-claudia.sh` — gateway launches, ClaudIA starts, browser opens `localhost:8000` — 2026-06-30
 - [ ] Welcome message shows correct status lights (IBKR ✓, GDrive ✓, TV ?)
 - [ ] If gateway offline: welcome shows "Start IBKR Gateway" button → click → Docker starts → login page opens → 2FA completes → "reconnected" alert fires
-- [ ] If TradingView Desktop not running: "Launch TradingView" button → click → TV opens with `--remote-debugging-port=9222` → sidecar starts → TV light turns green
+- [x] If TradingView Desktop not running: "Launch TradingView" button visible — sidecar startup FAIL 2026-06-30: anyio 4.13.0 bug on Python 3.14 — `AsyncIOTaskInfo.__init__` calls `task.get_coro()` where `current_task()` returned None; app falls back to screenshot mode gracefully; anyio 4.14.1 available (untested)
+
+**Startup findings — 2026-06-30:**
+- ✅ IBKR gateway: authenticated and ready
+- ✅ GDrive: `claudia.db` downloaded from Drive; `store.db` backed up to Drive `account_data/`
+- ✅ Context loader: v1 active, watchdog started
+- ❌ TradingView MCP sidecar: crash on Python 3.14 / anyio 4.13.0 — `'NoneType' object has no attribute 'get_coro'` in `anyio._backends._asyncio.AsyncIOTaskInfo.__init__:2147`; screenshot mode activated (graceful fallback)
+- ⚠️ WebSocket handshake error: `RuntimeError: Timeout should be used inside a task` in `websockets.legacy.server` — Python 3.14 compat, non-fatal (Chainlit started successfully)
 
 ### 2. GDrive Sync
 
@@ -247,7 +254,7 @@ Everything below is unit-tested but has not been verified with a real running se
 |---|---|---|---|---|
 | 2026-06-23 | `2026-06-23-2208.md` | Session startup, IBKR tools (positions, account summary, market data, cache, flex sync), conversation logging | Stopped container bug in `GatewayManager.start()` (fixed); messages not logged for reconnected sessions after restart (expected) | PASS |
 | 2026-06-24 | inline | GDrive DB download (§2.1), hot-reload (§2.3), End Session + Drive upload (§2.4), doc versioning list+get (§3), conversation memory FTS5 recall (§8), security refusals (§9.1, §9.2) | 6 bugs found and fixed: GDrive deadlock, IBKR auth check, hot-reload async bridge (3 separate bugs), `_LOCAL_TOOL_NAMES` dispatch gap, `get_last_context_hash` open-session filter, watchdog path comparison | PASS (IBKR/TV skipped — offline) |
-| 2026-06-30 | pending | First live test with ibkr_core_mcp v1.0 — §4b price alerts, §5 order staging, §6 TradingView, §9.3 API key check | Pre-session review complete; baselines: ibkr_core_mcp 485 tests ✓, claudia_ui 164 tests ✓; v1.0 changes reviewed (4 new tools, SSRF decimal bypass, path traversal guard, preview_order validation, BrowserCookieAuth fix) | IN PROGRESS |
+| 2026-06-30 | inline | First live test with ibkr_core_mcp v1.0 — §4b price alerts, §5 order staging, §9.3 API key check (§6 TradingView: screenshot mode only — anyio 4.13.0 / Python 3.14 sidecar crash) | Startup: IBKR ✓, GDrive ✓, store.db backup ✓; TradingView sidecar crash (anyio bug, graceful fallback); WebSocket handshake warn (non-fatal); anyio 4.14.1 available as fix candidate | IN PROGRESS |
 
 ---
 
