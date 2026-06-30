@@ -246,7 +246,7 @@ git clone https://github.com/tradesdontlie/tradingview-mcp ~/.tradingview-mcp
 cd ~/.tradingview-mcp && npm install && cd -   # pure JS — no build step
 ./scripts/archive-tv-mcp.sh   # snapshot the working version to vendor/
 # Launch TradingView Desktop with CDP debug port:
-# open -a "Trading View" --args --remote-debugging-port=9222
+# open -a "TradingView" --args --remote-debugging-port=9222
 
 # 7. Run ClaudIA
 ./start-claudia.sh            # recommended: IBKR gateway + ClaudIA
@@ -408,7 +408,7 @@ Binary discovery order (`_find_tv_mcp_bin()`):
 
 If TradingView Desktop is not running at session start, the welcome message shows a
 **"Launch TradingView"** action button. Clicking it runs `launch_tradingview()` (macOS
-`open -a "Trading View" --args --remote-debugging-port=9222`), polls for CDP port 9222
+`open -a "TradingView" --args --remote-debugging-port=9222`), polls for CDP port 9222
 for up to 30s, then reconnects the MCP sidecar.
 
 **PineScript:** ClaudIA generates PineScript v5 directly. Use the **"Inject into TradingView"**
