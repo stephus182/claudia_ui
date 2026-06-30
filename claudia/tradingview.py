@@ -20,7 +20,7 @@ Prerequisites (user must install once):
   in .env is only needed to override the default path.
 
   Open TradingView Desktop with remote debugging enabled:
-  open -a "Trading View" --args --remote-debugging-port=9222
+  open -a "TradingView" --args --remote-debugging-port=9222
 
 tradingview-mcp repo: https://github.com/tradesdontlie/tradingview-mcp
   78 MCP tools + tv CLI, 4.1k stars, last updated April 2026.
@@ -141,21 +141,49 @@ def check_cdp_running() -> bool:
         return False
 
 
+_TV_APP_NAME = "TradingView"
+
+
+def _tv_already_running_without_debug() -> bool:
+    """True if TradingView process is running but CDP port is not open."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", _TV_APP_NAME],
+            capture_output=True, text=True
+        )
+        return result.returncode == 0 and not check_cdp_running()
+    except OSError:
+        return False
+
+
 async def launch_tradingview() -> bool:
     """
     Launch TradingView Desktop with --remote-debugging-port on macOS.
+
+    If TradingView is already running without the debug port, raises RuntimeError
+    with instructions to quit and relaunch — the process cannot be relaunched while
+    running without restarting it from scratch.
+
     Returns True if the CDP port becomes available within 30s.
+
+    Source: https://github.com/tradesdontlie/tradingview-mcp/blob/main/SETUP_GUIDE.md
     """
     if check_cdp_running():
         return True
     if platform.system() != "Darwin":
         raise RuntimeError(
             "Automatic TradingView launch is only supported on macOS. "
-            f"Start it manually: open -a 'Trading View' --args --remote-debugging-port={_TV_DEBUG_PORT}"
+            f"Start it manually: open -a '{_TV_APP_NAME}' --args --remote-debugging-port={_TV_DEBUG_PORT}"
+        )
+    if _tv_already_running_without_debug():
+        raise RuntimeError(
+            f"TradingView is already running without the remote debug port. "
+            f"Quit TradingView, then relaunch it:\n"
+            f"  open -a '{_TV_APP_NAME}' --args --remote-debugging-port={_TV_DEBUG_PORT}"
         )
     log.info("Launching TradingView Desktop with --remote-debugging-port=%d", _TV_DEBUG_PORT)
     subprocess.Popen(
-        ["open", "-a", "Trading View", "--args", f"--remote-debugging-port={_TV_DEBUG_PORT}"],
+        ["open", "-a", _TV_APP_NAME, "--args", f"--remote-debugging-port={_TV_DEBUG_PORT}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
