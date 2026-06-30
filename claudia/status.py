@@ -118,7 +118,13 @@ class ConnectivityChecker:
         return self._gdrive_token_file.exists()
 
     def check_tradingview(self) -> bool:
-        """TCP connect to TradingView Desktop's CDP port — more reliable than proc.poll()."""
+        """TCP connect to TradingView Desktop's CDP port — more reliable than proc.poll().
+
+        Returns False immediately when no bridge is configured: the sidecar is not available
+        regardless of whether TradingView Desktop is running on port 9222.
+        """
+        if self._tv_bridge is None:
+            return False
         try:
             with socket.create_connection(("localhost", _TV_DEBUG_PORT), timeout=1.0):
                 return True
