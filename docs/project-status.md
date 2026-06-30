@@ -229,7 +229,8 @@ Everything below is unit-tested but has not been verified with a real running se
 - [ ] "Check my trade data coverage" → `check_flex_coverage` → reports oldest/newest/gaps
 - [ ] Rate limit hit (error 1001): System message shows clear "wait ~5 minutes" message + integrity report
 - [ ] `sync_flex_archive` → picks up all XMLs from Drive `account_data/` → imports without duplicates
-- [x] `verify_flex_import` → 11 files checked, 984 unique tradeIDs, 983/984 in SQLite — 2026-06-30 PASS; 1 miss is test artifact `flex_U1675699_2026-06-26_TESTREF.xml` (tradeID=TEST001 from prior test session); all 1,041 real executions verified intact; ⚠️ delete test file from Drive `account_data/` to clear false alarm on future runs
+- [x] `verify_flex_import` run 1 → 11 files, 984 tradeIDs, 983/984 in SQLite — 2026-06-30; 1 miss = test artifact `flex_U1675699_2026-06-26_TESTREF.xml` (TEST001); secondary: 1 duplicate `flex_U1675699_2026-06-26_4997140278.xml` from double `on_chat_start`; both deleted via Drive API
+- [x] `verify_flex_import` run 2 (post-cleanup) → 9 files, 983 unique tradeIDs, 983/983 in SQLite — 2026-06-30 **CLEAN PASS** ✓; 7 pre-validated archives + 2 hash-verified Flex exports; 1,041 executions fully reconciled; no action needed
 
 ### 8. Conversation Memory
 
