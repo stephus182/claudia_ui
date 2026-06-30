@@ -425,14 +425,18 @@ Binary discovery order (`_find_tv_mcp_bin()`):
 **PineScript:** ClaudIA generates PineScript v5 directly. Use the **"Inject into TradingView"**
 button to paste it into the Pine Editor via the `pine_set_source` MCP tool.
 
-**Curated 15-tool subset** (`_CURATED_TOOLS` in `claudia/tradingview.py`):
+**Curated 16-tool subset** (`_CURATED_TOOLS` in `claudia/tradingview.py`):
+
+Verified against live sidecar 2026-06-30. Tool descriptions are provided by the sidecar
+at runtime via MCP `list_tools()` — they appear in the Anthropic `tools=` parameter and
+are the only documentation ClaudIA receives about what each tool does.
 
 | Category | Tools |
 |---|---|
 | Chart reading | `chart_get_state`, `quote_get`, `data_get_ohlcv`, `data_get_study_values` |
 | Chart control | `chart_set_symbol`, `chart_set_timeframe`, `indicator_set_inputs` |
 | Pine Script IDE | `pine_set_source`, `pine_smart_compile`, `pine_get_errors`, `pine_get_source` |
-| Strategy results | `data_get_strategy_results`, `data_get_equity_curve` |
+| Strategy results | `data_get_strategy_results`, `data_get_equity` (equity curve), `data_get_trades` |
 | Utility | `tv_health_check`, `capture_screenshot` |
 
 **Break recovery:** If the sidecar breaks after a TradingView or npm update, see

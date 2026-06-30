@@ -200,8 +200,10 @@ def test_get_all_tools_returns_everything():
     assert len(bridge.get_all_tools()) == 2
 
 
-def test_curated_tools_set_has_15_entries():
-    assert len(tv_module._CURATED_TOOLS) == 15
+def test_curated_tools_set_has_16_entries():
+    # 16 tools verified against live sidecar 2026-06-30:
+    # data_get_equity_curve renamed to data_get_equity; data_get_trades added.
+    assert len(tv_module._CURATED_TOOLS) == 16
 
 
 # ── TradingViewBridge — subprocess env allowlist ─────────────────────────────
