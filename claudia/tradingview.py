@@ -23,6 +23,15 @@ Prerequisites (user must install once):
   open -a "Trading View" --args --remote-debugging-port=9222
 
 tradingview-mcp repo: https://github.com/tradesdontlie/tradingview-mcp
+  78 MCP tools + tv CLI, 4.1k stars, last updated April 2026.
+  CDP injection sanitization added April 3, 2026 (safeString + requireFinite guards).
+  Source: https://github.com/tradesdontlie/tradingview-mcp/blob/main/README.md
+
+Python 3.14 / anyio known issue: when TradingView Desktop is not running, sidecar
+startup fails with AttributeError in anyio._backends._asyncio.AsyncIOTaskInfo.__init__
+because asyncio.current_task() returns None during async generator cleanup. Unfixed in
+anyio 4.14.1 and MCP 1.28.1 as of 2026-06-30. App falls back to screenshot mode.
+See claudia/app.py compat block for full diagnosis.
 """
 
 from __future__ import annotations

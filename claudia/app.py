@@ -184,6 +184,21 @@ def _cs_exit_compat(self, extype, value, tb):
     return _orig_cs_exit(self, extype, value, tb)
 
 _anyio_be.CancelScope.__exit__ = _cs_exit_compat
+
+# ── Known unfixed Python 3.14 + anyio issue (no patch applied here) ──────────
+# anyio.streams.memory._MemoryObjectItemReceiver is a dataclass with:
+#     task_info: TaskInfo = field(init=False, default_factory=get_current_task)
+# Instantiating it calls get_current_task() → AsyncIOTaskInfo(current_task()).
+# Python 3.14 returns None from current_task() during async generator cleanup
+# (e.g. when MCP stdio_client exits because CDP port 9222 is unreachable).
+# Result: AttributeError: 'NoneType' has no attribute 'get_coro'
+# Status: unfixed in anyio 4.14.1 and MCP 1.28.1 as of 2026-06-30.
+# Impact: TradingView MCP sidecar fails to start when TV Desktop is not running.
+#         ClaudIA falls back to screenshot mode gracefully.
+#         Not triggered when TradingView Desktop IS running (normal use case).
+# No patch here because a dummy TaskInfo would need a live coroutine and is
+# fragile — the right fix belongs in anyio (guard None before AsyncIOTaskInfo).
+# Source: https://anyio.readthedocs.io/en/stable/versionhistory.html
 # ─────────────────────────────────────────────────────────────────────────────
 # Re-export asyncio under its standard name for use throughout the rest of the
 # file. The compat block above uses the _asyncio alias by convention (signals
