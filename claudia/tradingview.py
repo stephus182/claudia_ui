@@ -301,6 +301,12 @@ class TradingViewBridge:
                 for t in response.tools
             ]
             self._curated_tools = [t for t in self._tools if t["name"] in _CURATED_TOOLS]
+            sidecar_names = {t["name"] for t in self._tools}
+            if missing_curated := _CURATED_TOOLS - sidecar_names:
+                log.warning(
+                    "tradingview-mcp: curated tools not found in sidecar (sidecar may have renamed them) — %s",
+                    ", ".join(sorted(missing_curated)),
+                )
             log.info(
                 "tradingview-mcp connected: %d total tools, %d curated",
                 len(self._tools),
