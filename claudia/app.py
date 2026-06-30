@@ -246,7 +246,7 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.gdrive_sync import GDriveSync
 from claudia.status import ConnectivityChecker
-from claudia.tradingview import TradingViewBridge, launch_tradingview
+from claudia.tradingview import TradingViewBridge, launch_tradingview, check_cdp_running
 
 log = logging.getLogger(__name__)
 
@@ -498,7 +498,19 @@ async def on_chat_start():
     try:
         tv = await _get_tv_bridge()
         tv_tools = tv.get_tools()
-        tv_status = f"TradingView: connected ({len(tv_tools)} tools)" if tv_tools else "TradingView: unavailable"
+        # Sidecar connected and provided its tool list — but TradingView Desktop must also be
+        # running with CDP (port 9222) for live tools to work. Check separately: the sidecar
+        # can start without TV Desktop since our Python 3.14 anyio patch (2026-06-30).
+        cdp_up = check_cdp_running()
+        if tv_tools and cdp_up:
+            tv_status = f"TradingView: connected ({len(tv_tools)} tools)"
+        elif tv_tools and not cdp_up:
+            tv_status = f"TradingView: sidecar ready ({len(tv_tools)} tools) — launch Desktop for live tools"
+            tv_offline = True  # show "Launch TradingView" button
+            log.warning("tradingview-mcp sidecar up but TradingView Desktop not running (CDP port 9222 closed)")
+        else:
+            tv_status = "TradingView: unavailable"
+            tv_offline = True
     except Exception as exc:
         log.warning("tradingview-mcp sidecar not available: %s", exc)
         tv_tools = []
