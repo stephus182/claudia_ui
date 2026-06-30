@@ -283,6 +283,18 @@ class TradingViewBridge:
             env=env,
         )
 
+        # Log sidecar git commit for version diagnostics (best-effort — vendor/ has no .git)
+        sidecar_dir = str(Path(bin_path).parent.parent)
+        try:
+            result = subprocess.run(
+                ["git", "-C", sidecar_dir, "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=3,
+            )
+            sidecar_commit = result.stdout.strip() if result.returncode == 0 else "unknown"
+        except Exception:
+            sidecar_commit = "unknown"
+        log.info("tradingview-mcp sidecar: %s (commit %s)", bin_path, sidecar_commit)
+
         try:
             self._cm = stdio_client(server_params)
             read, write = await self._cm.__aenter__()
@@ -290,7 +302,9 @@ class TradingViewBridge:
             await self._session.__aenter__()
             await self._session.initialize()
 
-            # Discover available tools
+            # Discover available tools from sidecar — descriptions and schemas come from here,
+            # not from the ClaudIA codebase. This is the only documentation ClaudIA receives
+            # about what each tool does.
             response = await self._session.list_tools()
             self._tools = [
                 {

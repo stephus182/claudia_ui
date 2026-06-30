@@ -395,7 +395,7 @@ Claude vision content block and analyzes indicators, patterns, and price action.
 
 The sidecar is [`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontlie/tradingview-mcp)
 (78 MCP tools + `tv` CLI, 4.1k stars, last updated April 2026). ClaudIA exposes a curated
-15-tool subset by default to control token cost; the full set is available via `bridge.get_all_tools()`.
+16-tool subset by default to control token cost; the full set is available via `bridge.get_all_tools()`.
 
 **Normal startup — no manual terminal commands needed:**
 1. Run `./start-claudia.sh` (or `chainlit run claudia/app.py`).
@@ -438,6 +438,28 @@ are the only documentation ClaudIA receives about what each tool does.
 | Pine Script IDE | `pine_set_source`, `pine_smart_compile`, `pine_get_errors`, `pine_get_source` |
 | Strategy results | `data_get_strategy_results`, `data_get_equity` (equity curve), `data_get_trades` |
 | Utility | `tv_health_check`, `capture_screenshot` |
+
+**Upgrading the sidecar:**
+```bash
+git -C ~/.tradingview-mcp pull
+npm -C ~/.tradingview-mcp install
+# Restart ClaudIA — startup log will show commit and warn of any renamed tools:
+#   INFO  tradingview-mcp sidecar: .../server.js (commit abc1234)
+#   INFO  tradingview-mcp connected: 78 total tools, 16 curated
+#   WARNING  curated tools not found in sidecar: {data_get_equity_curve}  ← rename detected
+# If a WARNING appears, update _CURATED_TOOLS in claudia/tradingview.py, then:
+./scripts/archive-tv-mcp.sh    # snapshot the new working version to vendor/
+```
+
+**Version detection at startup (`claudia/tradingview.py → TradingViewBridge.start()`):**
+- Logs sidecar binary path + git commit (best-effort; `unknown` if running from vendor/)
+- Logs total tool count and curated count
+- Emits a `WARNING` if any name in `_CURATED_TOOLS` is absent from the sidecar — detects
+  silent tool renames between sidecar versions (e.g. `data_get_equity_curve` → `data_get_equity`)
+- Tool descriptions and input schemas come from the sidecar's `list_tools()` — ClaudIA has
+  no hardcoded schema; what the sidecar reports is what Claude receives in `tools=`
+- Schema drift (a tool exists but its parameters changed) is not auto-detected — check the
+  [sidecar changelog](https://github.com/tradesdontlie/tradingview-mcp) after any `git pull`
 
 **Break recovery:** If the sidecar breaks after a TradingView or npm update, see
 [`docs/tradingview-mcp-recovery.md`](docs/tradingview-mcp-recovery.md) for the error
