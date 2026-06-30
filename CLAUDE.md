@@ -387,8 +387,16 @@ Claude vision content block and analyzes indicators, patterns, and price action.
 **Live integration (requires TradingView Desktop):**
 
 The sidecar is [`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontlie/tradingview-mcp)
-(78 tools, actively maintained). ClaudIA exposes a curated 15-tool subset by default
-to control token cost; the full set is available via `bridge.get_all_tools()`.
+(78 MCP tools + `tv` CLI, 4.1k stars, last updated April 2026). ClaudIA exposes a curated
+15-tool subset by default to control token cost; the full set is available via `bridge.get_all_tools()`.
+
+**Python 3.14 compatibility note:** When TradingView Desktop is not running, the sidecar
+exits immediately (CDP port 9222 unreachable) and MCP session cleanup triggers an anyio bug:
+`_MemoryObjectItemReceiver` uses `default_factory=get_current_task`, which calls
+`AsyncIOTaskInfo(current_task())` — but Python 3.14 returns `None` from `current_task()`
+during async generator cleanup. Result: `AttributeError: 'NoneType' has no attribute 'get_coro'`.
+anyio 4.14.1 and MCP 1.28.1 do not fix this (unfixed upstream as of 2026-06-30).
+ClaudIA falls back to screenshot mode gracefully. **Not triggered when TV Desktop is running.**
 
 Binary discovery order (`_find_tv_mcp_bin()`):
 1. `TRADINGVIEW_MCP_PATH` env var (validated: file must exist and end in `.js`)
