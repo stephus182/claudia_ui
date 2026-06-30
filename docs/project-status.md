@@ -230,7 +230,7 @@ Everything below is unit-tested but has not been verified with a real running se
 - [ ] Rate limit hit (error 1001): System message shows clear "wait ~5 minutes" message + integrity report
 - [ ] `sync_flex_archive` → picks up all XMLs from Drive `account_data/` → imports without duplicates
 - [x] `verify_flex_import` run 1 → 11 files, 984 tradeIDs, 983/984 in SQLite — 2026-06-30; 1 miss = test artifact `flex_U1675699_2026-06-26_TESTREF.xml` (TEST001); secondary: 1 duplicate `flex_U1675699_2026-06-26_4997140278.xml` from double `on_chat_start`; both deleted via Drive API
-- [x] `verify_flex_import` run 2 (post-cleanup) → 9 files, 983 unique tradeIDs, 983/983 in SQLite — 2026-06-30 **CLEAN PASS** ✓; 7 pre-validated archives + 2 hash-verified Flex exports; 1,041 executions fully reconciled; no action needed
+- [x] `verify_flex_import` run 2 (post-cleanup) → 9 files, 983 unique tradeIDs, 983/983 in SQLite — 2026-06-30 **CLEAN PASS** ✓; 7 pre-validated archives + 2 hash-verified Flex exports; 1,041 executions fully reconciled; no action needed. Expected 9/983 (not 10/984 — TESTREF removal took 1 file and its 1 tradeID TEST001 with it)
 
 ### 8. Conversation Memory
 
