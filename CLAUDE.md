@@ -241,18 +241,25 @@ cp docs/principles.example.md docs/principles.md
 # Edit both files to configure ClaudIA's persona and your trading rules
 chmod 600 docs/context.md docs/principles.md
 
-# 6. TradingView sidecar (optional)
+# 6. TradingView sidecar (optional — one-time install)
 git clone https://github.com/tradesdontlie/tradingview-mcp ~/.tradingview-mcp
 cd ~/.tradingview-mcp && npm install && cd -   # pure JS — no build step
 ./scripts/archive-tv-mcp.sh   # snapshot the working version to vendor/
-# Launch TradingView Desktop with CDP debug port:
-# open -a "TradingView" --args --remote-debugging-port=9222
 
 # 7. Run ClaudIA
 ./start-claudia.sh            # recommended: IBKR gateway + ClaudIA
 # or:
 chainlit run claudia/app.py   # ClaudIA only (in-chat "Start IBKR Gateway" button available)
 # → Open http://localhost:8000
+#
+# TradingView startup (no manual terminal commands needed):
+#   - If TradingView Desktop is not running, the welcome message shows
+#     a "Launch TradingView" button.
+#   - Click it — ClaudIA launches TradingView with --remote-debugging-port=9222,
+#     waits up to 30s for CDP port 9222, then reconnects the MCP sidecar.
+#   - TV tools become available in the active session without a page reload.
+#   - If TV is already running WITHOUT the debug port, the button shows an
+#     error with instructions to quit and relaunch.
 ```
 
 ---
@@ -390,13 +397,22 @@ The sidecar is [`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontli
 (78 MCP tools + `tv` CLI, 4.1k stars, last updated April 2026). ClaudIA exposes a curated
 15-tool subset by default to control token cost; the full set is available via `bridge.get_all_tools()`.
 
-**Python 3.14 compatibility note:** When TradingView Desktop is not running, the sidecar
-exits immediately (CDP port 9222 unreachable) and MCP session cleanup triggers an anyio bug:
-`_MemoryObjectItemReceiver` uses `default_factory=get_current_task`, which calls
-`AsyncIOTaskInfo(current_task())` — but Python 3.14 returns `None` from `current_task()`
-during async generator cleanup. Result: `AttributeError: 'NoneType' has no attribute 'get_coro'`.
-anyio 4.14.1 and MCP 1.28.1 do not fix this (unfixed upstream as of 2026-06-30).
-ClaudIA falls back to screenshot mode gracefully. **Not triggered when TV Desktop is running.**
+**Normal startup — no manual terminal commands needed:**
+1. Run `./start-claudia.sh` (or `chainlit run claudia/app.py`).
+2. If TradingView Desktop is not running, the welcome message shows a **"Launch TradingView"** button.
+3. Click it — ClaudIA calls `launch_tradingview()` which runs
+   `open -a "TradingView" --args --remote-debugging-port=9222`, polls for CDP port 9222
+   up to 30s, then reconnects the MCP sidecar. TV tools become available without a page reload.
+4. If TV is already running **without** the debug port, the button shows an error with
+   instructions to quit TV and relaunch — ClaudIA cannot inject the debug flag into a running process.
+
+**Python 3.14 compatibility note:** The sidecar now starts successfully even when TV Desktop
+is not running (fixed 2026-06-30: `AsyncIOTaskInfo.__init__` patched in `app.py` to handle
+`current_task()` returning `None` — the 5th Python 3.14/anyio compat patch). When TV Desktop
+is not running: sidecar starts, tools are listed, but tool calls fail at the CDP layer.
+ClaudIA falls back to screenshot mode (drag/paste a chart screenshot into chat).
+The anyio upstream bug (`_MemoryObjectItemReceiver` + `get_current_task`) is unfixed in
+anyio 4.14.1 and MCP 1.28.1 as of 2026-06-30.
 
 Binary discovery order (`_find_tv_mcp_bin()`):
 1. `TRADINGVIEW_MCP_PATH` env var (validated: file must exist and end in `.js`)
@@ -405,11 +421,6 @@ Binary discovery order (`_find_tv_mcp_bin()`):
 4. `~/.tradingview-mcp/build/index.js` (TypeScript build output — legacy)
 5. `vendor/tradingview-mcp/src/server.js` (archived fallback, needs `node_modules/`)
 6. `vendor/tradingview-mcp/index.js` (legacy single-bundle archive)
-
-If TradingView Desktop is not running at session start, the welcome message shows a
-**"Launch TradingView"** action button. Clicking it runs `launch_tradingview()` (macOS
-`open -a "TradingView" --args --remote-debugging-port=9222`), polls for CDP port 9222
-for up to 30s, then reconnects the MCP sidecar.
 
 **PineScript:** ClaudIA generates PineScript v5 directly. Use the **"Inject into TradingView"**
 button to paste it into the Pine Editor via the `pine_set_source` MCP tool.

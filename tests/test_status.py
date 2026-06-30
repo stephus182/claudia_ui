@@ -97,19 +97,22 @@ def test_check_gdrive_ping_failure_returns_false(checker):
 
 
 def test_check_tradingview_cdp_port_open(checker):
-    """CDP port accepting connections → True."""
+    """CDP port accepting connections → True (requires a bridge to be configured)."""
+    checker.set_tv_bridge(MagicMock())
     with patch("claudia.status.socket.create_connection"):
         assert checker.check_tradingview() is True
 
 
 def test_check_tradingview_cdp_port_closed(checker):
     """CDP port refused → False."""
+    checker.set_tv_bridge(MagicMock())
     with patch("claudia.status.socket.create_connection", side_effect=OSError("refused")):
         assert checker.check_tradingview() is False
 
 
 def test_check_tradingview_cdp_timeout(checker):
     """CDP port timeout → False."""
+    checker.set_tv_bridge(MagicMock())
     with patch("claudia.status.socket.create_connection", side_effect=OSError("timed out")):
         assert checker.check_tradingview() is False
 

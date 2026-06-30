@@ -985,9 +985,18 @@ async def on_start_gateway(action: cl.Action):
 async def on_launch_tradingview(action: cl.Action):
     """Launch TradingView Desktop with CDP debugging and reconnect the MCP sidecar.
 
-    Runs in a background task. Polls for port 9222 (up to 30s), then restarts
-    the TradingViewBridge so the active session gains live chart tools without
-    a page reload.
+    Normal startup procedure (no manual terminal commands needed):
+      1. Run ./start-claudia.sh — ClaudIA starts, sidecar connects.
+      2. If TradingView Desktop is not running: welcome message shows
+         "Launch TradingView" button.
+      3. Click the button — this callback runs open -a "TradingView" with
+         --remote-debugging-port=9222, polls for CDP port 9222 up to 30s,
+         then reconnects the MCP sidecar for the active session.
+      4. TV tools become available without a page reload.
+
+    If TradingView is already running without the debug port, launch_tradingview()
+    raises RuntimeError with instructions to quit and relaunch. The error is shown
+    in chat.
 
     Source: https://docs.chainlit.io/api-reference/action
     """
@@ -1006,7 +1015,7 @@ async def on_launch_tradingview(action: cl.Action):
                     content=(
                         "✕ TradingView Desktop did not open its debug port within 30s.\n\n"
                         "Try launching it manually:\n"
-                        "```\nopen -a 'Trading View' --args --remote-debugging-port=9222\n```"
+                        "```\nopen -a 'TradingView' --args --remote-debugging-port=9222\n```"
                     ),
                     author="System",
                 ).send()
