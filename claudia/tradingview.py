@@ -116,10 +116,12 @@ def _find_tv_mcp_bin() -> str | None:
 
 _TV_MCP_BIN = _find_tv_mcp_bin()
 
-# 15-tool curated subset exposed to Claude by default.
+# 16-tool curated subset exposed to Claude by default.
 # Covers chart reading, control, Pine Script IDE, strategy results, and utility.
 # Full 78-tool set is available but kept out of the Anthropic context window to
 # reduce token cost and avoid tool-choice noise.
+# Verified against live sidecar 2026-06-30 — data_get_equity_curve renamed to
+# data_get_equity; data_get_trades added (Strategy Tester trade list).
 _CURATED_TOOLS = {
     # Chart reading
     "chart_get_state",
@@ -137,7 +139,8 @@ _CURATED_TOOLS = {
     "pine_get_source",
     # Strategy results
     "data_get_strategy_results",
-    "data_get_equity_curve",
+    "data_get_equity",       # renamed from data_get_equity_curve in current sidecar
+    "data_get_trades",       # trade list from Strategy Tester
     # Utility
     "tv_health_check",
     "capture_screenshot",
