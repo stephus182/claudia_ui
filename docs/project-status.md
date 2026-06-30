@@ -94,10 +94,10 @@ Everything below is unit-tested but has not been verified with a real running se
 
 ### 1. Session Startup
 
-- [x] `./start-claudia.sh` — gateway launches, ClaudIA starts, browser opens `localhost:8000` — 2026-06-30
+- [x] `./start-claudia.sh` — gateway launches, ClaudIA starts, browser opens `localhost:8000` — 2026-06-30 (run 1); run 2: gateway already authenticated, correctly skipped Docker startup
 - [ ] Welcome message shows correct status lights (IBKR ✓, GDrive ✓, TV ?)
 - [ ] If gateway offline: welcome shows "Start IBKR Gateway" button → click → Docker starts → login page opens → 2FA completes → "reconnected" alert fires
-- [x] If TradingView Desktop not running: "Launch TradingView" button visible — sidecar startup FAIL 2026-06-30: anyio 4.13.0 bug on Python 3.14 — `AsyncIOTaskInfo.__init__` calls `task.get_coro()` where `current_task()` returned None; app falls back to screenshot mode gracefully; anyio 4.14.1 available (untested)
+- [x] If TradingView Desktop not running: "Launch TradingView" button visible — sidecar startup fails 2026-06-30 (anyio upstream bug, Python 3.14 only, not triggered when TV Desktop is running); app falls back to screenshot mode gracefully ✓; anyio 4.14.1 + MCP 1.28.1 installed, bug unchanged (upstream fix needed)
 
 **Startup findings — 2026-06-30:**
 - ✅ IBKR gateway: authenticated and ready
@@ -224,6 +224,7 @@ Everything below is unit-tested but has not been verified with a real running se
 ### 7. Flex Trade History
 
 - [x] Session start with IBKR online: background sync fires, System message shows sync result + coverage — 2026-06-30 (0 trades fetched = correct; no new settlements since 2026-06-25; DATA STALE flag shown is correct — newest trade predates last trading day)
+- [x] Startup Flex sync skip logic: correctly skipped on restart 0.4h after prior sync (< 4h threshold) — 2026-06-30 ✓
 - [ ] Session start with IBKR offline: no sync launched; welcome shows "last synced YYYY-MM-DD (Nd ago)"
 - [ ] "What trades did I make in 2024?" → `get_trades source='store'` → results from SQLite, not limited to 6 days
 - [ ] "Check my trade data coverage" → `check_flex_coverage` → reports oldest/newest/gaps
@@ -281,7 +282,7 @@ Everything below is unit-tested but has not been verified with a real running se
 | `test_strip_order_proposal_malformed_json` doesn't assert `clean` is unchanged | `tests/test_agent.py` | Low priority |
 | Env allowlist tested twice (tradingview + security_regressions) | both test files | Low maintenance risk |
 | Drive archive creates duplicate files on double `on_chat_start` | `ibkr_core_mcp/cache.py` `upload_account_file_bytes` | 2026-06-30: page refresh fires `on_chat_start` twice → two uploads of same XML; `_find_file` pattern already used for `claudia.db` should be applied here — check for existing filename before uploading, update in place |
-| TradingView sidecar crashes on Python 3.14 / anyio 4.13.0 | `claudia/tradingview.py` | 2026-06-30: `AsyncIOTaskInfo.__init__` calls `task.get_coro()` where `current_task()` returns None; anyio 4.14.1 installed — retest after ClaudIA restart |
+| TradingView sidecar crashes on Python 3.14 when TV Desktop not running | `claudia/tradingview.py` | 2026-06-30: anyio `_MemoryObjectItemReceiver` dataclass uses `default_factory=get_current_task`; Python 3.14 returns None from `current_task()` during async generator cleanup (when sidecar exits because CDP port 9222 is unreachable) → `AsyncIOTaskInfo(None).get_coro()` → AttributeError. anyio 4.13.0→4.14.1 and MCP 1.27.2→1.28.1 both unchanged. Bug is in anyio upstream. **Only triggers when TV Desktop is not running** — when CDP port 9222 is up, sidecar connects and cleanup path never fires. Screenshot mode is correct fallback. |
 
 ---
 
