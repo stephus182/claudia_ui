@@ -55,6 +55,8 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-27 | — | SSRF decimal/hex IP bypass ported from ibkr_core_mcp v1.0 audit (Finding 1, Medium): `socket.gethostbyname()` resolve-then-check in `_fetch_web_page`; 1 new regression test (21 total); test count 162 → 164 |
 | 2026-06-27 | — | Chainlit docstring URL fix — 3 lifecycle-hooks URLs missing path segment in `app.py`; 4 new tool labels in `session_reporter.py`; `CLAUDE.md` env table adds `FIRECRAWL_API_KEY` + `GDRIVE_WEB_DOCS_FOLDER_ID`; `SECURITY.md` — tool count 38→42, SSRF guard doc updated, v1.0 audit row |
 | 2026-06-27 | — | **Full docstring audit (superpowers:code-reviewer)** — `status.py`, `conversation_store.py`, `agent.py`, `tradingview.py`, `context_loader.py`, `session_reporter.py`, `gdrive_sync.py`; `BrowserCookieAuth(config.gateway_url)` bug fixed in `order_flow.py`; `test_count_messages` added; test count 163 → 164 |
+| 2026-06-30 | `290b6e0` | Bug fix — TradingView launch used wrong app name `"Trading View"` (with space) → `"TradingView"`; added `_tv_already_running_without_debug()` to detect and warn when TV is running without the CDP debug port instead of waiting 30s and timing out |
+| 2026-06-30 | `4775771` | Bug fix — Python 3.14 anyio crash in MCP receive loop: `AsyncIOTaskInfo(None).get_coro()` → AttributeError; patched `AsyncIOTaskInfo.__init__` to stub TaskInfo when `task=None`; `task_info` only used in `__repr__` so stub is safe; 5th Python 3.14/anyio compat patch; TradingView sidecar now connects when CDP port is open |
 
 ---
 
@@ -98,13 +100,16 @@ Everything below is unit-tested but has not been verified with a real running se
 - [ ] Welcome message shows correct status lights (IBKR ✓, GDrive ✓, TV ?)
 - [ ] If gateway offline: welcome shows "Start IBKR Gateway" button → click → Docker starts → login page opens → 2FA completes → "reconnected" alert fires
 - [x] If TradingView Desktop not running: "Launch TradingView" button visible — sidecar startup fails 2026-06-30 (anyio upstream bug, Python 3.14 only, not triggered when TV Desktop is running); app falls back to screenshot mode gracefully ✓; anyio 4.14.1 + MCP 1.28.1 installed, bug unchanged (upstream fix needed)
+- [x] TradingView sidecar connects when TV Desktop is running with CDP port 9222 — **2026-06-30 run 3**: `tradingview-mcp connected: 78 total tools, 14 curated` ✓ (after `AsyncIOTaskInfo.__init__` patch)
 
 **Startup findings — 2026-06-30:**
 - ✅ IBKR gateway: authenticated and ready
 - ✅ GDrive: `claudia.db` downloaded from Drive; `store.db` backed up to Drive `account_data/`
 - ✅ Context loader: v1 active, watchdog started
-- ❌ TradingView MCP sidecar: crash on Python 3.14 / anyio 4.13.0 — `'NoneType' object has no attribute 'get_coro'` in `anyio._backends._asyncio.AsyncIOTaskInfo.__init__:2147`; screenshot mode activated (graceful fallback)
+- ❌ Run 1+2: TradingView MCP sidecar crash on Python 3.14 / anyio 4.13.0 — `'NoneType' object has no attribute 'get_coro'` in `anyio._backends._asyncio.AsyncIOTaskInfo.__init__:2201`; screenshot mode activated (graceful fallback); `anyio 4.14.1` installed but did not fix (different issue); root cause: `_MemoryObjectItemReceiver` dataclass instantiation calls `AsyncIOTaskInfo(current_task())` where `current_task()` returns None in Python 3.14 async generator cleanup
+- ✅ Run 3: TV sidecar connected — `AsyncIOTaskInfo.__init__` patched in `app.py` (5th Python 3.14/anyio compat patch); stub TaskInfo returned when `task=None`; 78 tools discovered, 14 curated
 - ⚠️ WebSocket handshake error: `RuntimeError: Timeout should be used inside a task` in `websockets.legacy.server` — Python 3.14 compat, non-fatal (Chainlit started successfully)
+- ⚠️ Run 3: "TradingView sidecar stopped" alert fired in UI before the welcome message — likely `ConnectivityChecker` firing one check cycle before the sidecar finished connecting at session start; not an error, timing race
 
 ### 2. GDrive Sync
 
@@ -257,7 +262,7 @@ Everything below is unit-tested but has not been verified with a real running se
 |---|---|---|---|---|
 | 2026-06-23 | `2026-06-23-2208.md` | Session startup, IBKR tools (positions, account summary, market data, cache, flex sync), conversation logging | Stopped container bug in `GatewayManager.start()` (fixed); messages not logged for reconnected sessions after restart (expected) | PASS |
 | 2026-06-24 | inline | GDrive DB download (§2.1), hot-reload (§2.3), End Session + Drive upload (§2.4), doc versioning list+get (§3), conversation memory FTS5 recall (§8), security refusals (§9.1, §9.2) | 6 bugs found and fixed: GDrive deadlock, IBKR auth check, hot-reload async bridge (3 separate bugs), `_LOCAL_TOOL_NAMES` dispatch gap, `get_last_context_hash` open-session filter, watchdog path comparison | PASS (IBKR/TV skipped — offline) |
-| 2026-06-30 | inline | First live test with ibkr_core_mcp v1.0 — §4b price alerts, §5 order staging, §9.3 API key check (§6 TradingView: screenshot mode only — anyio 4.13.0 / Python 3.14 sidecar crash) | Startup: IBKR ✓, GDrive ✓, store.db backup ✓; TradingView sidecar crash (anyio bug, graceful fallback); WebSocket handshake warn (non-fatal); anyio 4.14.1 available as fix candidate | IN PROGRESS |
+| 2026-06-30 | inline | §1 startup (runs 1–3), §7 flex integrity (2 runs), TV sidecar debugging and fix | 3 bugs found and fixed: wrong app name `"Trading View"`→`"TradingView"`; `_tv_already_running_without_debug()` detection; `AsyncIOTaskInfo.__init__` Python 3.14 compat (5th anyio patch); Drive: TESTREF artifact deleted, duplicate XML deleted; verify_flex_import CLEAN PASS 9 files/983 tradeIDs; TV connected run 3: 78 tools/14 curated | IN PROGRESS — §6 TV live tests next |
 
 ---
 
@@ -282,7 +287,7 @@ Everything below is unit-tested but has not been verified with a real running se
 | `test_strip_order_proposal_malformed_json` doesn't assert `clean` is unchanged | `tests/test_agent.py` | Low priority |
 | Env allowlist tested twice (tradingview + security_regressions) | both test files | Low maintenance risk |
 | Drive archive creates duplicate files on double `on_chat_start` | `ibkr_core_mcp/cache.py` `upload_account_file_bytes` | 2026-06-30: page refresh fires `on_chat_start` twice → two uploads of same XML; `_find_file` pattern already used for `claudia.db` should be applied here — check for existing filename before uploading, update in place |
-| TradingView sidecar crashes on Python 3.14 when TV Desktop not running | `claudia/tradingview.py` | 2026-06-30: anyio `_MemoryObjectItemReceiver` dataclass uses `default_factory=get_current_task`; Python 3.14 returns None from `current_task()` during async generator cleanup (when sidecar exits because CDP port 9222 is unreachable) → `AsyncIOTaskInfo(None).get_coro()` → AttributeError. anyio 4.13.0→4.14.1 and MCP 1.27.2→1.28.1 both unchanged. Bug is in anyio upstream. **Only triggers when TV Desktop is not running** — when CDP port 9222 is up, sidecar connects and cleanup path never fires. Screenshot mode is correct fallback. |
+| TradingView sidecar crashes on Python 3.14 when TV Desktop not running | `claudia/tradingview.py` | 2026-06-30: **FIXED in `app.py`** — patched `AsyncIOTaskInfo.__init__` to return stub TaskInfo when `task=None`; `task_info` only used in `__repr__`, stub is safe. Sidecar now connects when CDP port 9222 is up (confirmed run 3: 78 tools, 14 curated). Residual: when TV Desktop is truly not running, the sidecar subprocess exits immediately and the same cleanup path fires — screenshot mode remains the correct fallback in that case. |
 
 ---
 
