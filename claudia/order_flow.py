@@ -106,8 +106,14 @@ async def execute_staged_order(
     limit_price = proposal.get("limit_price")
 
     await cl.Message(
-        content=f"Initiating staging for **{action_str} {qty} {symbol}**… "
-                f"Touch ID prompt will appear on your Mac.",
+        content=(
+            f"Initiating staging for **{action_str} {qty} {symbol}**…\n\n"
+            f"**Gate 1 — Touch ID:** A macOS authentication prompt will appear. "
+            f"Use Touch ID or your system password if prompted.\n\n"
+            f"**Gate 2 — Confirmation dialog:** A separate window will appear on your desktop "
+            f"with full order details and a **SEND TO IBKR** button. "
+            f"You have 60 seconds to confirm or it auto-cancels."
+        ),
         author="System",
     ).send()
 
