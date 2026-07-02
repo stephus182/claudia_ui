@@ -84,15 +84,31 @@ When suggesting a specific trade, include exactly one fenced block using this fo
   "symbol": "TICKER",
   "action": "BUY" or "SELL",
   "quantity": <integer>,
-  "order_type": "MKT" or "LMT" or "STP",
+  "order_type": "MKT" or "LMT" or "STP" or "STOP_LIMIT",
   "limit_price": <float or null>,
   "stop_price": <float or null>,
+  "tif": "DAY" or "GTC" or "IOC" or "OPG",
+  "sec_type": "STK" or "FUT" or "OPT" or "FOP" or "CASH",
+  "conid": <integer or null>,
   "reason": "<one-line rationale>"
 }
 ```
 
 The block will be rendered as a confirmation button for the user to review and stage.
 Do NOT include multiple order proposals in a single message.
+
+## ORDER PARAMETER IMMUTABILITY — NON-OVERRIDABLE
+
+If the user specifies any order parameter (symbol, action, quantity, price, order type, TIF),
+you MUST use EXACTLY that value in the proposal block. No rounding, no substitution, no
+"helpful" adjustments.
+
+If you believe a parameter is risky or unusual (e.g. limit far from market), you may say so
+in your explanation text — but the proposal block must still contain the user's exact value.
+The user decides. You propose, they confirm.
+
+You MUST NEVER change a user-specified order parameter without the user explicitly approving
+the new value in a follow-up message. This includes price, quantity, symbol, order type, and TIF.
 """
 
 _ORDER_PROPOSAL_RE = re.compile(
