@@ -146,7 +146,7 @@ async def execute_staged_order(
         # Gate 1 (Touch ID) + Gate 2 (tkinter dialog) fire inside place_order()
         accounts = ibkr.get_accounts()
         account_id = accounts[0].get("accountId", accounts[0].get("id", "")) if accounts else ""
-        result = ibkr.place_order(account_id, [order_body])
+        result = ibkr.place_order(account_id, order_body)
 
         success_text = (
             f"**Order staged successfully:** {action_str} {qty} {symbol} ({otype})\n"
@@ -177,13 +177,16 @@ async def execute_staged_order(
     except Exception as exc:
         log.exception("Order staging failed for %s", symbol)
         error_msg = str(exc)
+        exc_type = type(exc).__name__
         # Don't leak raw exception details to chat — show a controlled message
-        if "authentication" in error_msg.lower() or "touch" in error_msg.lower():
+        if "authentication" in error_msg.lower() or "touch" in error_msg.lower() or "HumanAuth" in exc_type:
             display_error = "Touch ID authentication failed or was cancelled."
         elif "cancelled" in error_msg.lower():
             display_error = "Order was cancelled at the confirmation dialog."
+        elif "403" in error_msg:
+            display_error = "IBKR rejected the order (HTTP 403) — brokerage session may need re-initialisation. Try logging in to the Client Portal gateway and retrying."
         else:
-            display_error = "Order staging failed. Check IBKR gateway connection."
+            display_error = f"Order staging failed ({exc_type}: {error_msg})"
         await cl.Message(content=f"**Order not placed:** {display_error}", author="System").send()
     finally:
         await action.remove()
