@@ -8,7 +8,7 @@ ClaudIA is a Chainlit-based trading assistant that gives you a persistent, princ
 
 - **Conversational IBKR access** — positions, P&L, live orders, account summary, market data, backtests, price alerts — all via natural language
 - **Full trade history** — 7-year backfill via IBKR Flex Queries; `sync_flex_trades` keeps it current; `get_trades source='store'` queries with no date limit
-- **Human-confirmed order staging** — ClaudIA proposes trades; you click a button → Touch ID → confirmation dialog. The LLM has no order-execution tools
+- **Human-confirmed order staging** — ClaudIA proposes trades (equities and futures); you click a button → Touch ID → AppKit colored dialog (green/BUY, red/SELL). The LLM has no order-execution tools. CME Rule 536-B fields auto-added for futures
 - **TradingView live integration** — reads your active chart, sets symbols/timeframes, compiles and injects PineScript directly into the Pine Editor
 - **Screenshot analysis** — paste any TradingView chart into chat for vision-based analysis (no Desktop required)
 - **Principle-guided responses** — your personal `docs/principles.md` is loaded as a system prompt; ClaudIA refuses proposals that violate your rules
@@ -105,6 +105,33 @@ ibkr_core_mcp               tradingview-mcp (Node.js, localhost stdio)
 IBKR Client Portal Gateway
 (Docker, localhost:5055)
 ```
+
+---
+
+## Order Staging
+
+ClaudIA proposes trades; you approve them through two physical gates. The LLM has **no** order-execution tools.
+
+```
+ClaudIA response → order-proposal block
+    ↓ agent.py strips block → render_order_proposal()
+    ↓ Chainlit button: "Stage this order"
+    ↓ User clicks
+    ↓ Gate 1 — Touch ID (macOS LocalAuthentication)
+    ↓ Gate 2 — AppKit dialog: green=BUY / red=SELL, 60s auto-cancel, Enter disabled
+    ↓ IBKRClient.place_order() → IBKR gateway
+```
+
+**Supported instruments:**
+
+| `sec_type` | Conid resolution | Extra fields |
+|---|---|---|
+| `STK` (default) | `/iserver/secdef/search` | — |
+| `FUT` | `/trsrv/futures` → front month | `manualIndicator: True`, `extOperator: "ClaudIA"` (CME Rule 536-B, required since May 1 2025) |
+
+The Gate 2 dialog shows correct futures notional: `price × qty × multiplier` (multiplier fetched from `/trsrv/futures`).
+
+Full field spec and immutability rule: [`CLAUDE.md → Order Staging Flow`](CLAUDE.md#order-staging-flow).
 
 ---
 
