@@ -284,6 +284,7 @@ chainlit run claudia/app.py   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 | `CLAUDIA_VOICE_ENABLED` | optional | Reserved — TTS output not yet implemented |
 | `FIRECRAWL_API_KEY` | optional | Firecrawl API key — enables `firecrawl_search` and `firecrawl_crawl` tools; keyless free tier works without it (rate-limited) |
 | `GDRIVE_WEB_DOCS_FOLDER_ID` | optional | Drive folder for `firecrawl_crawl` saved web docs (`web_docs/` subfolder of root if unset) |
+| `CRAWL4AI_PROFILES_DIR` | optional | Directory for Crawl4AI browser login profiles (default: `~/.ibkr_core/crawl4ai_profiles`); used by the Playwright-based fallback scraper in `ibkr_core_mcp/scrape_fallback.py` when Firecrawl returns low-quality content |
 | `TRADINGVIEW_MCP_PATH` | optional | Path to `tradingview-mcp` entry point (`src/server.js`); auto-discovered if unset |
 | `TRADINGVIEW_DEBUG_PORT` | optional | Chrome debugging port (default: `9222`) |
 

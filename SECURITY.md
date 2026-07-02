@@ -203,19 +203,44 @@ use a VPN or Tailscale tunnel — never a public-facing reverse proxy without au
 **CORS:** `.chainlit/config.toml` restricts `allow_origins` to `["http://localhost:8000"]`.
 Do not widen this to `"*"` — the app connects to a live brokerage account.
 
-**`fetch_web_page` SSRF guard:** The `fetch_web_page` local tool in `agent.py` makes outbound
-HTTP requests driven by LLM input. Without a guard, a prompt-injection attack could cause ClaudIA
-to fetch `https://localhost:5055/v1/api/portfolio/accounts`, receive IBKR account data as HTML,
-and return it to the model context. The implementation blocks:
+**SSRF guard — two-layer architecture:**
+
+ClaudIA makes outbound HTTP requests from two paths, each with its own guard layer.
+
+**Layer 1 — Python pre-check (`agent.py` + `ibkr_core_mcp/scrape_fallback.py → is_private_host()`):**
+
+The `fetch_web_page` local tool in `agent.py` guards every LLM-driven outbound request.
+`firecrawl_crawl` and `firecrawl_search` go through `ClaudeToolkit._validate_public_url()`
+in `ibkr_core_mcp/claude_tools.py`, which calls `is_private_host()` from `scrape_fallback.py`.
+Both use the same resolve-then-check pattern. Blocked:
 - Any scheme other than `http`/`https`
 - `localhost`, `0.0.0.0`, and `127.*` / `169.254.*` literal hosts
 - Any literal IP address in a private, loopback, link-local, or reserved range (`ipaddress.ip_address`)
 - Decimal/hex-encoded IP bypasses (e.g. `http://2130706433/` = 127.0.0.1): hostname is resolved via
-  `socket.gethostbyname()` and the resolved IP is re-checked against the same private/loopback/link-local guard
+  `socket.gethostbyname()` and the resolved IP is re-checked against the same guard
 
-Residual TOCTOU DNS rebinding risk: guard resolves at request-dispatch time; a malicious DNS entry that
-flips from a public IP to a private one after the guard check is not blocked. Accepted for the personal
-local deployment — the IBKR gateway requires a session cookie that is never present in cross-origin fetches.
+**Layer 2 — Playwright route handler (`ibkr_core_mcp/scrape_fallback.py → _reject_private_requests()`):**
+
+When Firecrawl quality is low, `_scrape_with_fallback()` in `claude_tools.py` activates the
+Crawl4AI scraper (`Crawl4AIScraper` in `scrape_fallback.py`), which drives a Playwright browser.
+A route handler registered on the browser page intercepts every browser-level request (including
+redirects and subrequests) and re-runs `is_private_host()` before allowing it. This closes the
+DNS rebinding + redirect gap that Layer 1 alone cannot catch:
+
+```python
+async def _reject_private_requests(route, request):
+    # re-check at browser request time — catches post-check DNS flip and redirects
+    host = urlparse(request.url).hostname or ""
+    if is_private_host(host):
+        await route.abort()
+        return
+    await route.continue_()
+```
+
+Residual risk: Layer 1 TOCTOU gap (DNS flip between pre-check and `requests.get()`) remains
+for the `fetch_web_page` path. Layer 2 eliminates this gap for the Crawl4AI path. Accepted for
+the personal local deployment — the IBKR gateway requires a session cookie that is never present
+in cross-origin fetches.
 
 ---
 
