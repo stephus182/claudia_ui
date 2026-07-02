@@ -1,13 +1,13 @@
 # ClaudIA — Project Status
 
 > Living document. Update after each sprint, live test session, or notable fix.  
-> Last updated: 2026-06-24
+> Last updated: 2026-07-02
 
 ---
 
 ## Architecture in One Paragraph
 
-ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an Anthropic SDK streaming loop that routes tool calls to three sources: `ibkr_core_mcp` (IBKR positions, orders, alerts, history — direct Python import), `tradingview-mcp` (Node.js sidecar, curated 15-tool subset via stdio MCP), and local tools (`list_doc_versions`, `get_doc_version`, `search_past_conversations`). Session state lives in `data/claudia.db` (SQLite). `context.md` and `principles.md` define the persona and trading rules. GDrive syncs the DB and docs across machines. Orders require two physical gates (Touch ID + tkinter dialog); the LLM has no order-execution tools. ClaudIA surfaces user-directed trade proposals — it never makes trade decisions autonomously.
+ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an Anthropic SDK streaming loop that routes tool calls to three sources: `ibkr_core_mcp` (IBKR positions, orders, alerts, history — direct Python import), `tradingview-mcp` (Node.js sidecar, curated 16-tool subset via stdio MCP), and local tools (`list_doc_versions`, `get_doc_version`, `search_past_conversations`). Session state lives in `data/claudia.db` (SQLite). `context.md` and `principles.md` define the persona and trading rules. GDrive syncs the DB and docs across machines. Orders require two physical gates (Touch ID + AppKit NSAlert colored dialog: green=BUY, red=SELL); the LLM has no order-execution tools. Order staging supports equities (STK via `/iserver/secdef/search`) and futures (FUT via `/trsrv/futures` front-month, CME Rule 536-B fields auto-added). ClaudIA surfaces user-directed trade proposals — it never makes trade decisions autonomously.
 
 ---
 
@@ -57,12 +57,18 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-27 | — | **Full docstring audit (superpowers:code-reviewer)** — `status.py`, `conversation_store.py`, `agent.py`, `tradingview.py`, `context_loader.py`, `session_reporter.py`, `gdrive_sync.py`; `BrowserCookieAuth(config.gateway_url)` bug fixed in `order_flow.py`; `test_count_messages` added; test count 163 → 164 |
 | 2026-06-30 | `290b6e0` | Bug fix — TradingView launch used wrong app name `"Trading View"` (with space) → `"TradingView"`; added `_tv_already_running_without_debug()` to detect and warn when TV is running without the CDP debug port instead of waiting 30s and timing out |
 | 2026-06-30 | `4775771` | Bug fix — Python 3.14 anyio crash in MCP receive loop: `AsyncIOTaskInfo(None).get_coro()` → AttributeError; patched `AsyncIOTaskInfo.__init__` to stub TaskInfo when `task=None`; `task_info` only used in `__repr__` so stub is safe; 5th Python 3.14/anyio compat patch; TradingView sidecar now connects when CDP port is open |
+| 2026-07-02 | uncommitted | **Order staging live test — 8 bugs fixed** (see Live Test Log); Gate 2 dialog replaced tkinter with AppKit NSAlert subprocess (`_order_dialog.py`): green banner=BUY, red=SELL, Enter disabled, 60s auto-cancel |
+| 2026-07-02 | uncommitted | ORDER PARAMETER IMMUTABILITY rule added to `agent.py` system prompt — ClaudIA must never change user-specified order parameter (symbol, price, qty, type, TIF) without explicit user approval; saved to memory |
+| 2026-07-02 | uncommitted | **Futures order staging** — `sec_type` added to proposal schema; conid resolution dispatches to `/trsrv/futures` (front month) for FUT; `manualIndicator: True` + `extOperator: "ClaudIA"` auto-added for FUT/FOP (CME Rule 536-B, required May 1 2025); Gate 2 total uses `price × qty × multiplier` |
+| 2026-07-02 | uncommitted | Bug fix — `_resolve_conid` in `claude_tools.py` used `/iserver/secdef/search` for FUT (undocumented for that type); now dispatches to `/trsrv/futures` same as `_resolve_snapshot_conid`; `_preview_order` now also adds 536-B fields for FUT/FOP |
+| 2026-07-02 | uncommitted | Bug fix — `_preview_order` order type `"STP LMT"` not a valid IBKR name (IBKR uses `"STOP_LIMIT"`); aligned `_VALID_ORDER_TYPES` with place-order field spec; `quantity` changed from `float` to `int` to match `place_order` convention |
+| 2026-07-02 | uncommitted | IBKR CP API place-order field spec scraped and documented inline in `order_flow.py` (2026-07-02); CLAUDE.md Order Staging Flow section fully rewritten; README.md new Order Staging section |
 
 ---
 
 ## Test Coverage
 
-**Suite:** 164 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
+**Suite:** 180 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
 
 | Module | Tests | Notes |
 |---|---|---|
@@ -70,7 +76,7 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | `agent.py` | 22 | Strip proposal, system prompt, history mapping, version note, local tools, decisions, TV bridge |
 | `status.py` | 22 | IBKR/GDrive/TV connectivity checks, state transitions, /api/status; GDrive ping path; IBKR auth-state check |
 | `tradingview.py` | 17 | All 6 binary discovery candidates, CDP check, tool filtering, env allowlist |
-| `order_flow.py` | 14 | Format summary (4), execute_staged_order success/errors/gates/limit price (10) |
+| `order_flow.py` | 30 | Format summary (8: STK/FUT labels, TIF, price formats), execute_staged_order (22: STK/FUT/FOP/conid-override paths, 536-B fields, multiplier, front-month selection, all error paths) |
 | `context_loader.py` | 14 | Load, hash, watchdog hot-reload, Drive override, version registration |
 | `gdrive_sync.py` | 14 | Download DB, upload DB (RLock, no WAL block), read_text (size guard), chmod, ping() |
 | Security regressions | 21 | 9 (2026-06-12) + 11 SSRF (2026-06-25) + 1 decimal/hex IP bypass (2026-06-27) — must stay green |
@@ -209,13 +215,31 @@ Everything below is unit-tested but has not been verified with a real running se
 
 ### 5. Order Staging
 
-- [ ] "Buy 10 AAPL at market" → ClaudIA outputs analysis + order-proposal block → "Stage this order" button appears
-- [ ] Click "Stage this order" → Touch ID prompt fires on Mac
-- [ ] Approve Touch ID → tkinter dialog appears with order details + 60s countdown → Enter key disabled
-- [ ] Approve dialog → order submitted to IBKR → success message in chat with IBKR response
-- [ ] Cancel at Touch ID → "Touch ID authentication failed" error message in chat → button removed
-- [ ] Cancel at dialog → "cancelled at the confirmation dialog" message → button removed
-- [ ] Verify "Cancel" proposal button dismisses without any order action
+**Live test run — 2026-07-01/02:**
+
+- [x] ClaudIA outputs order-proposal block → "Stage this order" button appears — 2026-07-01 ✓
+- [x] Click "Stage this order" → Touch ID prompt fires — 2026-07-01 ✓
+- [x] AppKit NSAlert dialog appears (green banner for BUY) with symbol, company name, qty, price, TIF, total — 2026-07-01 ✓ (after 3 bug fixes: ticker field, _companyName key, tif in proposal schema)
+- [x] Cancel at dialog → "Order was cancelled at the confirmation dialog" in chat → button removed — 2026-07-01 ✓ (after error routing fix: dialog-cancel was misrouted to "Touch ID failed")
+- [x] Cancel proposal button → dismisses without order action — 2026-07-01 ✓
+- [ ] Approve dialog → order submitted to IBKR → success + IBKR response in chat — **BLOCKED 2026-07-01**: HTTP 400 "orders request includes parameter with incorrect type"; fixed in 2026-07-02 session (int(qty), removed manualIndicator/extOperator for STK); **not yet re-tested**
+- [ ] Verify order in `get_live_orders` — pending (depends on submit success above)
+- [ ] Cancel live order via ClaudIA — pending
+- [ ] Cancel at Touch ID → "Touch ID authentication failed" message → button removed — not yet tested
+
+**Bugs found and fixed during §5 live test (2026-07-01/02):**
+
+| Bug | Fix | File |
+|---|---|---|
+| Symbol showed "UNKNOWN" in Gate 2 dialog | Added `ticker: symbol` to order body | `order_flow.py` |
+| TIF always "DAY" even when user said GTC | Added `tif` field to `agent.py` proposal schema | `agent.py` |
+| Company name missing in Gate 2 dialog | `order_confirm.py` read `"companyName"` key after rename to `"_companyName"` | `order_confirm.py` |
+| "Cancelled at dialog" shown as "Touch ID failed" | Fixed error routing: `"cancelled by user"` check before `HumanAuthError` class check | `order_flow.py` |
+| HTTP 400 error body invisible | Added `resp.text[:400]` to `IBKRAPIError` message | `rate_limiter.py` |
+| HTTP 400 "incorrect type" | `quantity` was `float(qty)` → `int(qty)`; `manualIndicator`/`extOperator` removed for STK orders (FUT/FOP only per docs) | `order_flow.py`, `client.py` |
+| ClaudIA changed $100 limit to $250 | ORDER PARAMETER IMMUTABILITY rule added to system prompt | `agent.py` |
+| `manualIndicator`/`extOperator` in `get_order_preview` | Removed; stripped using `_`-prefix convention same as `place_order` | `client.py` |
+| Dead code `_DISPLAY_ONLY` frozenset | Removed from `place_order` after switching to `_`-prefix convention | `client.py` |
 
 ### 6. TradingView Live Tools
 
@@ -263,6 +287,7 @@ Everything below is unit-tested but has not been verified with a real running se
 | 2026-06-23 | `2026-06-23-2208.md` | Session startup, IBKR tools (positions, account summary, market data, cache, flex sync), conversation logging | Stopped container bug in `GatewayManager.start()` (fixed); messages not logged for reconnected sessions after restart (expected) | PASS |
 | 2026-06-24 | inline | GDrive DB download (§2.1), hot-reload (§2.3), End Session + Drive upload (§2.4), doc versioning list+get (§3), conversation memory FTS5 recall (§8), security refusals (§9.1, §9.2) | 6 bugs found and fixed: GDrive deadlock, IBKR auth check, hot-reload async bridge (3 separate bugs), `_LOCAL_TOOL_NAMES` dispatch gap, `get_last_context_hash` open-session filter, watchdog path comparison | PASS (IBKR/TV skipped — offline) |
 | 2026-06-30 | inline | §1 startup (runs 1–3), §7 flex integrity (2 runs), TV sidecar debugging and fix | 3 bugs found and fixed: wrong app name `"Trading View"`→`"TradingView"`; `_tv_already_running_without_debug()` detection; `AsyncIOTaskInfo.__init__` Python 3.14 compat (5th anyio patch); Drive: TESTREF artifact deleted, duplicate XML deleted; verify_flex_import CLEAN PASS 9 files/983 tradeIDs; TV connected run 3: 78 tools/14 curated | IN PROGRESS — §6 TV live tests next |
+| 2026-07-01/02 | inline | §5 Order Staging live test — full flow from proposal to dialog | 9 bugs found and fixed (see §5 checklist); ORDER PARAMETER IMMUTABILITY violation caught; AppKit NSAlert built to replace tkinter; full futures order support added (CME 536-B, conid dispatch, multiplier-aware notional); IBKR field spec scraped + documented; HTTP 400 "incorrect type" diagnosed + fixed; CLAUDE.md + README.md fully rewritten for order staging | IN PROGRESS — §5 submit success + §6 TV live next |
 
 ---
 
@@ -288,6 +313,8 @@ Everything below is unit-tested but has not been verified with a real running se
 | Env allowlist tested twice (tradingview + security_regressions) | both test files | Low maintenance risk |
 | Drive archive creates duplicate files on double `on_chat_start` | `ibkr_core_mcp/cache.py` `upload_account_file_bytes` | 2026-06-30: page refresh fires `on_chat_start` twice → two uploads of same XML; `_find_file` pattern already used for `claudia.db` should be applied here — check for existing filename before uploading, update in place |
 | TradingView sidecar crashes on Python 3.14 when TV Desktop not running | `claudia/tradingview.py` | 2026-06-30: **FIXED in `app.py`** — patched `AsyncIOTaskInfo.__init__` to return stub TaskInfo when `task=None`; `task_info` only used in `__repr__`, stub is safe. Sidecar now connects when CDP port 9222 is up (confirmed run 3: 78 tools, 14 curated). Residual: when TV Desktop is truly not running, the sidecar subprocess exits immediately and the same cleanup path fires — screenshot mode remains the correct fallback in that case. |
+| §5 order submit not yet confirmed end-to-end | `claudia/order_flow.py` | 2026-07-02: HTTP 400 "incorrect type" diagnosed and fixed (`int(qty)`, no 536-B fields for STK) but not re-tested in live session. Next session: re-run `BUY 1 AAPL LMT @ $100 GTC` and verify success + `get_live_orders` + cancel. |
+| FOP conid resolution requires pre-resolved conid | `claudia/order_flow.py` | 2026-07-02: FOP without `conid` in proposal → clear error message directing user to call `get_option_strikes` first. FOP with `conid` set → proceeds normally with 536-B fields. Full chain resolution (expiry+strike+right) requires OPT/FOP conid lookup flow — same gap as item 12 in pending doc verification. |
 
 ---
 

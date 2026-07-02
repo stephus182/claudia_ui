@@ -340,13 +340,81 @@ All interactions are stored in `data/claudia.db` (separate from ibkr_core_mcp's 
 
 ClaudIA **cannot** place orders autonomously. When ClaudIA suggests a trade:
 
-1. ClaudIA outputs an `order-proposal` JSON block in its response.
+1. ClaudIA embeds an `order-proposal` JSON block in its response.
 2. `agent.py` strips the block and calls `order_flow.render_order_proposal()`.
 3. A Chainlit message appears with full order details + **"Stage this order"** button.
-4. You click the button — `IBKRClient.place_order()` is called directly.
-5. **Gate 1:** Apple Touch ID / biometric authentication (macOS LocalAuthentication).
-6. **Gate 2:** tkinter modal dialog with order details + 60-second countdown. Enter key disabled.
-7. Order is submitted to IBKR only after both gates pass.
+4. User clicks — `execute_staged_order()` fires in `order_flow.py`.
+5. **Gate 1:** Apple Touch ID / biometric authentication (`ibkr_core_mcp.human_auth`).
+6. **Gate 2:** AppKit NSAlert dialog (green banner for BUY, red for SELL) with full order details, **SEND TO IBKR** button, and 60-second auto-cancel. Return key is disabled to prevent accidental confirm.
+7. `IBKRClient.place_order()` sends the order to IBKR only after both gates pass.
+
+### Order proposal format
+
+```json
+{
+  "symbol": "AAPL",
+  "action": "BUY",
+  "quantity": 1,
+  "order_type": "LMT",
+  "limit_price": 100.00,
+  "stop_price": null,
+  "tif": "GTC",
+  "sec_type": "STK",
+  "reason": "one-line rationale"
+}
+```
+
+`sec_type` values: `STK` (default), `FUT`, `OPT`, `CASH`.  
+`order_type` values: `MKT`, `LMT`, `STP`, `STOP_LIMIT`, `MIDPRICE`, `TRAIL`, `TRAILLMT`.  
+`tif` values: `DAY`, `GTC`, `OPG`, `IOC`.
+
+### ORDER PARAMETER IMMUTABILITY (non-overridable)
+
+ClaudIA must use the **exact values** provided by the user for every order parameter (symbol, action, quantity, price, order type, TIF). No rounding, substitution, or "helpful" adjustments. If a parameter seems risky, ClaudIA explains in text — the proposal block still uses the user's value. A parameter change requires explicit user approval in a follow-up message.
+
+Enforced in `claudia/agent.py` system prompt and in memory (`feedback-order-parameter-immutability.md`).
+
+### Order body field spec (from IBKR CP API docs, verified 2026-07-02)
+
+Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#place-order
+
+| Field | Type | Required? | Notes |
+|---|---|---|---|
+| `conid` | int | yes* | *or `conidex`; SMART-routes when set |
+| `orderType` | str | yes | `LMT` \| `MKT` \| `STP` \| `STOP_LIMIT` \| `MIDPRICE` \| `TRAIL` \| `TRAILLMT` |
+| `side` | str | yes | `"BUY"` \| `"SELL"` |
+| `tif` | str | yes | `DAY` \| `GTC` \| `OPG` \| `IOC` \| `PAX` (crypto) |
+| `quantity` | int | yes | whole shares/contracts only |
+| `price` | float | LMT / STOP_LIMIT | limit price |
+| `auxPrice` | float | STOP_LIMIT / TRAILLMT | stop price |
+| `acctId` | str | no | defaults to first account |
+| `ticker` | str | no | underlying symbol — valid IBKR field, not stripped |
+| `cOID` | str | no | customer order ID; max 64 chars; unique per 24h |
+| `listingExchange` | str | no | default: SMART routing |
+| `outsideRTH` | bool | no | allow execution outside regular trading hours |
+| `manualIndicator` | bool | **FUT/FOP** | CME Rule 536-B — required since May 1, 2025 |
+| `extOperator` | str | **FUT/FOP** | CME Rule 536-B — identifies submitting system |
+
+Display-only fields use `_` prefix (`_companyName`, `_multiplier`) — stripped by `client.py` before the API call. `ticker` is **not** stripped (valid IBKR field).
+
+### Instrument-specific paths
+
+**Equities (STK):**
+- Conid resolved via `IBKRClient.search_contract()` → `/iserver/secdef/search`
+- `manualIndicator` / `extOperator` omitted (equity orders; would cause 400 if included)
+
+**Futures (FUT):**
+- Conid resolved via `IBKRClient.get_futures()` → `/trsrv/futures`, front month picked by lowest `expirationDate`
+- `/iserver/secdef/search` does **not** support FUT — do not use it for futures conid resolution
+- `manualIndicator: True` and `extOperator: "ClaudIA"` added automatically (CME Rule 536-B, mandatory since May 1, 2025)
+- Contract multiplier fetched from `/trsrv/futures` response and passed as `_multiplier` display field
+- Gate 2 dialog shows correct notional: `price × qty × multiplier`
+
+**Futures Options (FOP):**
+- Same `manualIndicator` + `extOperator` requirement as FUT
+- Conid resolution via options chain flow (not yet implemented in `order_flow.py`)
+
+Source (536-B requirement): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
 
 ---
 
