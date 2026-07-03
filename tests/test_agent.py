@@ -433,3 +433,48 @@ def test_log_cache_usage_handles_missing_fields(caplog):
     with caplog.at_level(logging.INFO, logger="claudia.agent"):
         _log_cache_usage(usage)
     assert "created=0" in caplog.text
+
+
+# ── Prompt caching: _with_history_cache_marker (messages breakpoint) ─────────
+
+from claudia.agent import _with_history_cache_marker
+
+
+def test_history_marker_string_content_becomes_marked_block():
+    messages = [{"role": "user", "content": "hello"}]
+    marked = _with_history_cache_marker(messages)
+    assert marked[-1]["content"] == [
+        {"type": "text", "text": "hello", "cache_control": {"type": "ephemeral"}}
+    ]
+    # Source untouched — markers must not accumulate across tool-loop iterations
+    assert messages[-1]["content"] == "hello"
+
+
+def test_history_marker_block_content_marks_last_block_only():
+    tool_results = [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "r1"},
+        {"type": "tool_result", "tool_use_id": "t2", "content": "r2"},
+    ]
+    messages = [
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": [{"type": "text", "text": "calling tools"}]},
+        {"role": "user", "content": tool_results},
+    ]
+    marked = _with_history_cache_marker(messages)
+    blocks = marked[-1]["content"]
+    assert "cache_control" not in blocks[0]
+    assert blocks[-1]["cache_control"] == {"type": "ephemeral"}
+    # Earlier messages and the source blocks are untouched
+    assert "cache_control" not in messages[-1]["content"][-1]
+    assert marked[0]["content"] == "question"
+
+
+def test_history_marker_empty_messages():
+    assert _with_history_cache_marker([]) == []
+
+
+def test_history_marker_empty_string_content_left_alone():
+    # An empty text block cannot be cached (official docs) — skip marking instead
+    messages = [{"role": "user", "content": ""}]
+    marked = _with_history_cache_marker(messages)
+    assert marked[-1]["content"] == ""
