@@ -5,19 +5,25 @@ Tables:
   sessions     — one row per chat session
   messages     — full conversation history (user / assistant / tool)
   decisions    — extracted trade decisions and key moments
-  relationships — accumulated symbol-level insights over time
-  doc_versions  — versioned snapshots of context.md + principles.md
+  doc_versions — versioned snapshots of context.md + principles.md
 
-FTS5 virtual tables on messages.content and decisions.summary_text
-enable "what did I decide about NVDA last month?" without a vector DB.
+An FTS5 virtual table on messages.content enables "what did we discuss about
+NVDA last month?" without a vector DB. (A relationships table and a decisions
+FTS index existed until 2026-07-03 but never had a caller — removed per the
+info-architecture review, finding M2; symbol-level knowledge belongs to the
+planned knowledge layer.)
 """
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+log = logging.getLogger(__name__)
 
 
 def _utcnow() -> str:
@@ -91,22 +97,10 @@ class ConversationStore:
                     created_at    TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS relationships (
-                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol           TEXT NOT NULL,
-                    observation_type TEXT NOT NULL,
-                    content          TEXT NOT NULL,
-                    session_id       TEXT REFERENCES sessions(id),
-                    created_at       TEXT NOT NULL,
-                    relevance_score  REAL DEFAULT 1.0
-                );
-
                 CREATE INDEX IF NOT EXISTS idx_messages_session
                     ON messages(session_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_decisions_symbol
                     ON decisions(symbol, created_at);
-                CREATE INDEX IF NOT EXISTS idx_relationships_symbol
-                    ON relationships(symbol, created_at);
 
                 CREATE TABLE IF NOT EXISTS doc_versions (
                     version         TEXT PRIMARY KEY,
@@ -118,10 +112,8 @@ class ConversationStore:
 
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
                     USING fts5(content, content=messages, content_rowid=id);
-                CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts
-                    USING fts5(summary_text, content=decisions, content_rowid=id);
 
-                -- Keep FTS indexes in sync
+                -- Keep FTS index in sync
                 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
                     INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
                 END;
@@ -129,19 +121,38 @@ class ConversationStore:
                     INSERT INTO messages_fts(messages_fts, rowid, content)
                         VALUES ('delete', old.id, old.content);
                 END;
-                CREATE TRIGGER IF NOT EXISTS decisions_ai AFTER INSERT ON decisions BEGIN
-                    INSERT INTO decisions_fts(rowid, summary_text)
-                        VALUES (new.id, new.summary_text);
-                END;
-                CREATE TRIGGER IF NOT EXISTS decisions_ad AFTER DELETE ON decisions BEGIN
-                    INSERT INTO decisions_fts(decisions_fts, rowid, summary_text)
-                        VALUES ('delete', old.id, old.summary_text);
-                END;
             """)
         # Migration for existing DBs that predate the doc_version column
         with self._conn() as conn:
             with suppress(sqlite3.OperationalError):
                 conn.execute("ALTER TABLE sessions ADD COLUMN doc_version TEXT")
+        # Migration: drop dead schema (2026-07-03 review finding M2 — no caller
+        # ever existed for relationships or decisions FTS search).
+        # Triggers first, or decisions writes would reference a dropped table.
+        # decisions_fts is a derived index (content=decisions) — rebuildable, safe.
+        # relationships is dropped only if provably empty; data is never destroyed.
+        with self._conn() as conn:
+            conn.executescript("""
+                DROP TRIGGER IF EXISTS decisions_ai;
+                DROP TRIGGER IF EXISTS decisions_ad;
+                DROP TABLE IF EXISTS decisions_fts;
+            """)
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='relationships'"
+            ).fetchone()
+            if exists:
+                count = conn.execute("SELECT COUNT(*) FROM relationships").fetchone()[0]
+                if count == 0:
+                    conn.executescript(
+                        "DROP INDEX IF EXISTS idx_relationships_symbol;"
+                        "DROP TABLE relationships;"
+                    )
+                else:
+                    log.warning(
+                        "relationships table contains %d rows — kept (schema is "
+                        "otherwise retired; expected empty since no writer ever existed)",
+                        count,
+                    )
 
     # ── Sessions ──────────────────────────────────────────────────────────────
 
@@ -368,21 +379,6 @@ class ConversationStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def search_decisions(self, query: str, max_results: int = 5) -> list[dict]:
-        """FTS5 search across trade decisions. Results include doc_version from the session."""
-        with self._conn() as conn:
-            rows = conn.execute(
-                """SELECT d.*, s.doc_version, highlight(decisions_fts, 0, '[', ']') AS snippet
-                   FROM decisions_fts
-                   JOIN decisions d ON d.id = decisions_fts.rowid
-                   JOIN sessions s ON s.id = d.session_id
-                   WHERE decisions_fts MATCH ?
-                   ORDER BY rank
-                   LIMIT ?""",
-                (query, max_results),
-            ).fetchall()
-            return [dict(r) for r in rows]
-
     def get_decisions_for_symbol(self, symbol: str, limit: int = 10) -> list[dict]:
         """Return decisions for a symbol ordered newest first, joined with the doc_version active at the time."""
         with self._conn() as conn:
@@ -395,32 +391,3 @@ class ConversationStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    # ── Relationships ─────────────────────────────────────────────────────────
-
-    def add_relationship(
-        self,
-        symbol: str,
-        observation_type: str,
-        content: str,
-        session_id: str | None = None,
-        relevance_score: float = 1.0,
-    ) -> int:
-        """Store a symbol-level observation and return its row id."""
-        with self._conn() as conn:
-            cur = conn.execute(
-                """INSERT INTO relationships
-                   (symbol, observation_type, content, session_id, created_at, relevance_score)
-                   VALUES (?,?,?,?,?,?)""",
-                (symbol, observation_type, content, session_id, _utcnow(), relevance_score),
-            )
-            return cur.lastrowid  # type: ignore[return-value]
-
-    def get_relationships(self, symbol: str, limit: int = 10) -> list[dict]:
-        """Return symbol observations ordered by relevance_score then recency."""
-        with self._conn() as conn:
-            rows = conn.execute(
-                """SELECT * FROM relationships WHERE symbol=?
-                   ORDER BY relevance_score DESC, created_at DESC LIMIT ?""",
-                (symbol, limit),
-            ).fetchall()
-            return [dict(r) for r in rows]
