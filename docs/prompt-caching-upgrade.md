@@ -1,7 +1,12 @@
 # Prompt Caching Upgrade — Implementation Note
 
-**Status:** To do. Decided 2026-07-02; deliberately excluded from the claude_tools.py audit
-(`ibkr_core_mcp/docs/2026-07-02-claude-tools-audit-design.md`) so it can be implemented
+**Status:** Implemented 2026-07-03 (plan: `docs/superpowers/plans/2026-07-03-prompt-caching-upgrade.md`).
+Verified live against the Anthropic API: cold write 22,047 tokens → warm read 22,047 at 0.1× →
+appended turn wrote only its 17-token delta. Full numbers: `docs/live-test-log.md`
+([2026-07-03 run 1](live-test-log.md#run-2026-07-03-1)). In-app observation of the
+`prompt cache:` log lines pending the next interactive session.
+Originally decided 2026-07-02; deliberately excluded from the claude_tools.py audit
+(`ibkr_core_mcp/docs/2026-07-02-claude-tools-audit-design.md`) so it could be implemented
 independently from this note.
 
 ## Problem (confirmed 2026-07-02)
@@ -71,3 +76,30 @@ caching stays healthy as tools evolve.
 - Input-token cost for the static prefix drops ~90% on every cached call (all tool-loop turns
   and every message within the 5-minute window).
 - Time-to-first-token improves on cached calls (prompt processing skips the cached prefix).
+
+## Implementation findings (2026-07-03)
+
+Full evidence trail: `docs/2026-07-03-llm-best-practices-sources.md` (claim→source table C1–C13,
+three consistency rounds). Findings beyond this note's original scope:
+
+1. **Last-tool marker must copy, not mutate.** `_all_tools` concatenates shared dicts
+   (`_LOCAL_TOOLS`, ibkr_core_mcp `TOOL_DEFINITIONS`); in-place `cache_control` would
+   permanently alter the module constants. `_with_cache_marker` copies the last dict;
+   regression tests assert the constants stay clean.
+2. **Context/principles hot-reload invalidates the system+messages cache** — expected,
+   same category as the TV-bridge tool swap. Tools cache survives both (invalidation
+   hierarchy). Both show up as a one-time `created>0` bump in the `prompt cache:` log line.
+3. **Third breakpoint on the final message content block** (beyond this note's
+   "no other architecture change") — without it, the growing conversation was re-processed
+   at full price on every tool-loop turn. Rebuilt per call on a copy; 3 of 4 breakpoints
+   used. Caveats: (a) a single turn adding >20 content blocks (10+ parallel tool calls)
+   exceeds the 20-block lookback window and re-writes instead of reading — visible in the
+   log line; (b) once history exceeds `_HISTORY_LIMIT=40` rows the sliding window shifts
+   the messages prefix and the messages cache misses once per user turn (tools+system
+   unaffected; hysteresis eviction is an optional follow-up if logs show it matters);
+   (c) a new user turn resumes from the cache entry at the end of the *reconstructed*
+   history, not from mid-tool-loop entries (tool rows are skipped on rebuild).
+4. **System prompt is now built once per session** (user decision 2026-07-03: doc-version
+   and document checks happen at load, never per prompt). `ContextLoader.reload_count` is
+   bumped by the watchdog; `ClaudIAAgent._get_system_blocks` rebuilds only when it changes.
+   Per-prompt cost dropped from 2 file reads + 1 `doc_versions` query to one int comparison.
