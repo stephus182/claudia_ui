@@ -90,9 +90,9 @@ and recovery steps, including a direct CDP from Python fallback.
 Chainlit UI (localhost:8000)
     ↓
 claudia/app.py              — session lifecycle, action callbacks, startup buttons
-claudia/agent.py            — Anthropic SDK streaming loop, tool routing
+claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
-claudia/conversation_store.py — SQLite: sessions, messages, decisions, relationships
+claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
 claudia/order_flow.py       — cl.Action order staging → biometric gates
 claudia/status.py           — ConnectivityChecker: polls IBKR/GDrive/TV every 60s
 claudia/tradingview.py      — tradingview-mcp sidecar, CDP health, PineScript display
@@ -132,6 +132,44 @@ ClaudIA response → order-proposal block
 The Gate 2 dialog shows correct futures notional: `price × qty × multiplier` (multiplier fetched from `/trsrv/futures`).
 
 Full field spec and immutability rule: [`CLAUDE.md → Order Staging Flow`](CLAUDE.md#order-staging-flow).
+
+---
+
+## Agent — Prompt & Context Handling
+
+`claudia/agent.py` assembles four kinds of information into every API call: the
+system prompt (context.md + principles.md + market calendar + hardcoded safety
+block), tool schemas (`ClaudeToolkit` + TradingView + local tools), conversation
+history (`ConversationStore`), and tool results returned mid-loop.
+
+**System prompt — built once per session, not per message.** Doc-version and
+document checks run when ClaudIA loads; a watchdog-driven reload counter
+(`ContextLoader.reload_count`) triggers a rebuild only when `context.md` or
+`principles.md` actually changes. Steady-state per-message cost is one integer
+comparison — no file reads, no DB query.
+
+**Prompt caching — 3 breakpoints** (`cache_control: ephemeral`, prefix hierarchy
+`tools → system → messages`):
+
+| Breakpoint | Caches |
+|---|---|
+| Last tool definition | All tool schemas (42+ IBKR/TV/local tools) |
+| System prompt (block form) | Context, principles, calendar, safety block |
+| Last message content block | Conversation history, refreshed per API call |
+
+Live-verified: a ~22K-token static prefix drops to 0.1× cost on every warm call
+(vs. full price uncached) — ~90% input-token cost reduction on cached calls.
+Cache health is logged on every call (`prompt cache: created=… read=… uncached=…`).
+
+**No dead memory tables.** `sessions`, `messages`, `decisions`, `doc_versions` are
+the only tables — a `relationships` table and a `decisions` FTS index were
+removed 2026-07-03 (never wired to any tool or caller).
+
+Full information-flow map (prompts, session archive, scrape access, and the
+design constraints a future RAG layer must respect) —
+[`docs/2026-07-03-agent-info-architecture-review.md`](docs/2026-07-03-agent-info-architecture-review.md).
+Implementation plan and live-verified numbers —
+[`docs/superpowers/plans/2026-07-03-prompt-caching-upgrade.md`](docs/superpowers/plans/2026-07-03-prompt-caching-upgrade.md).
 
 ---
 
@@ -176,7 +214,7 @@ Full protocol and per-file ownership: [`CLAUDE.md → API Reference`](CLAUDE.md#
 
 | Store | Path | Contents |
 |---|---|---|
-| `claudia.db` | `data/claudia.db` | Sessions, messages, decisions, relationships, doc versions |
+| `claudia.db` | `data/claudia.db` | Sessions, messages, decisions, doc versions |
 | `store.db` | `~/.ibkr_core/store.db` | Trade history (Flex), position snapshots, backtests, alerts |
 
 Both databases are excluded from git. Run `PRAGMA integrity_check` to audit health.
@@ -206,7 +244,7 @@ ClaudIA is designed to run on any machine — all persistent state lives in a si
 | Data | Direction | When |
 |---|---|---|
 | `claudia.db` | Drive → local | Session start (first session per process, before DB opens) |
-| `claudia.db` | local → Drive | Session end (after WAL checkpoint) |
+| `claudia.db` | local → Drive | Session end (WAL-consistent backup snapshot — never the live file) |
 | `context.md` + `principles.md` | Drive → memory | Every session start |
 | Flex XML | local → `account_data/` | After every successful Flex sync |
 | OHLCV parquet | local → `market_data/` | After every `fetch_market_data` call |
