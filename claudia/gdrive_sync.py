@@ -253,10 +253,31 @@ class GDriveSync:
         if not local_path.exists():
             log.warning("GDriveSync.upload_db: %s not found — nothing to upload", local_path)
             return
+        snapshot: Path | None = None
         try:
             svc = self._get_service()
             db_folder = self._resolve_db_folder()
-            media = MediaFileUpload(str(local_path), mimetype="application/x-sqlite3")
+            # The DB runs in WAL mode: recent commits live in claudia.db-wal, not the
+            # main file, and uploading the raw file while another connection checkpoints
+            # risks a torn read. sqlite3's online backup API copies a consistent
+            # snapshot (main file + committed WAL pages) even while other connections
+            # are active — upload that snapshot, never the live file.
+            # Source: https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup
+            tmp_fd = tempfile.NamedTemporaryFile(
+                dir=local_path.parent, suffix=".upload.tmp", delete=False
+            )
+            tmp_fd.close()
+            snapshot = Path(tmp_fd.name)
+            src = sqlite3.connect(str(local_path))
+            try:
+                dst = sqlite3.connect(str(snapshot))
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            media = MediaFileUpload(str(snapshot), mimetype="application/x-sqlite3")
             # Lock around find+create/update to prevent duplicate-file race when two
             # sessions close concurrently and both observe file_id=None simultaneously.
             with self._lock:
@@ -269,6 +290,9 @@ class GDriveSync:
             log.info("Uploaded claudia.db to Drive")
         except Exception as exc:
             log.warning("GDriveSync.upload_db failed: %s — local copy preserved", exc)
+        finally:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
 
     _MAX_TEXT_BYTES = 1 * 1024 * 1024  # 1 MB — generous for context/principles docs
 

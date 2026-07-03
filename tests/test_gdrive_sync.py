@@ -194,3 +194,43 @@ def test_get_service_writes_back_refreshed_token(sync, tmp_path):
         sync._get_service()
 
     assert token_file.read_text() == '{"refreshed": true}'
+
+
+# ── G1: upload_db must upload a WAL-consistent snapshot ──────────────────────
+
+def test_upload_db_uploads_wal_consistent_snapshot(sync, tmp_path):
+    """A row committed to the WAL (not yet checkpointed into the main file)
+    must be present in the uploaded bytes — review finding G1."""
+    db = tmp_path / "claudia.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t (v TEXT)")
+    conn.execute("INSERT INTO t VALUES ('wal-resident-row')")
+    conn.commit()
+    # Keep conn open: prevents the close-time auto-checkpoint, so the row
+    # lives only in claudia.db-wal — exactly the state at session stop when
+    # another connection is still active.
+    assert (tmp_path / "claudia.db-wal").exists()
+
+    uploaded = {}
+
+    class FakeUpload:
+        def __init__(self, filename, mimetype=None):
+            uploaded["bytes"] = Path(filename).read_bytes()
+
+    svc = MagicMock()
+    try:
+        with patch.object(sync, "_find_file", return_value="existing-id"), \
+             patch.object(sync, "_get_service", return_value=svc), \
+             patch.object(sync, "_resolve_db_folder", return_value="folder-id"), \
+             patch("claudia.gdrive_sync.MediaFileUpload", FakeUpload):
+            sync.upload_db(db)
+    finally:
+        conn.close()
+
+    snap = tmp_path / "uploaded_snapshot.db"
+    snap.write_bytes(uploaded["bytes"])
+    rows = sqlite3.connect(str(snap)).execute("SELECT v FROM t").fetchall()
+    assert rows == [("wal-resident-row",)]
+    # No leftover snapshot temp files next to the DB
+    assert not list(tmp_path.glob("*.upload.tmp"))
