@@ -28,7 +28,7 @@ IBKR Client Portal Gateway
 **ibkr_core_mcp** is a direct Python import — not an MCP server. The `ClaudeToolkit`
 exposes IBKR tools that drop straight into the Anthropic SDK `tools=` parameter.
 TradingView tools are merged in from the `tradingview-mcp` Node.js sidecar (curated
-15-tool subset by default — see `_CURATED_TOOLS` in `claudia/tradingview.py`).
+16-tool subset by default — see `_CURATED_TOOLS` in `claudia/tradingview.py`).
 
 ---
 
@@ -182,10 +182,16 @@ Symptoms and diagnosis:
     manifest.json                      ← market data index
     AAPL_1D_1Y_2026-01-01.parquet      ← OHLCV cache
     ...
+  account_data/                        ← GDRIVE_ACCOUNT_FOLDER_ID (auto-created; ibkr_core_mcp Flex sync)
+    ClaudIA_Full_Activity_*.xml        ← manual Flex archive
+    flex_U*.xml                        ← auto-synced Flex archive
+    store.db                           ← ibkr_core_mcp trade store backup
+  web_docs/                            ← GDRIVE_WEB_DOCS_FOLDER_ID (auto-created; firecrawl_crawl/search)
+    ...
 ```
 
-Both subfolders are auto-created on first use. Set `GDRIVE_DB_FOLDER_ID` or
-`GDRIVE_CACHE_FOLDER_ID` explicitly to point to pre-existing folders instead.
+All four subfolders are auto-created on first use. Set `GDRIVE_DB_FOLDER_ID`, `GDRIVE_CACHE_FOLDER_ID`,
+`GDRIVE_ACCOUNT_FOLDER_ID`, or `GDRIVE_WEB_DOCS_FOLDER_ID` explicitly to point to pre-existing folders instead.
 
 ### First-time setup on a new machine
 
@@ -271,9 +277,11 @@ chainlit run claudia/app.py   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 |---|---|---|
 | `ANTHROPIC_API_KEY` | ✅ | Claude API key |
 | `IBKR_GATEWAY_URL` | ✅ | IBKR Client Portal Gateway URL |
-| `GOOGLE_DRIVE_FOLDER_ID` | ✅ | Root Drive folder — parent of `db/` and `market_data/` subfolders |
+| `IBKR_AUTH_BROWSER` | optional | Browser whose localhost cookies `BrowserCookieAuth` reads for IBKR session auth: `chrome`, `safari`, `firefox`, `edge` (default: `chrome`) |
+| `GOOGLE_DRIVE_FOLDER_ID` | ✅ | Root Drive folder — parent of `db/`, `market_data/`, and `account_data/` subfolders |
 | `GDRIVE_DB_FOLDER_ID` | optional | Drive folder for claudia.db (auto-created as `db/` inside root if unset) |
 | `GDRIVE_CACHE_FOLDER_ID` | optional | Drive folder for Parquet cache (auto-created as `market_data/` inside root if unset) |
+| `GDRIVE_ACCOUNT_FOLDER_ID` | optional | Drive folder for Flex XML archives + `store.db` backup (auto-created as `account_data/` inside root if unset) |
 | `GDRIVE_TOKEN_FILE` | ✅ | OAuth2 token file path |
 | `GDRIVE_CREDENTIALS_FILE` | ✅ | OAuth2 credentials file path |
 | `IBKR_SQLITE_PATH` | ✅ | ibkr_core_mcp SQLite store path |
@@ -414,13 +422,17 @@ ClaudIA **cannot** place orders autonomously. When ClaudIA suggests a trade:
   "stop_price": null,
   "tif": "GTC",
   "sec_type": "STK",
+  "conid": null,
   "reason": "one-line rationale"
 }
 ```
 
-`sec_type` values: `STK` (default), `FUT`, `OPT`, `CASH`.  
+`sec_type` values: `STK` (default), `FUT`, `OPT`, `FOP`, `CASH`.  
 `order_type` values: `MKT`, `LMT`, `STP`, `STOP_LIMIT`, `MIDPRICE`, `TRAIL`, `TRAILLMT`.  
-`tif` values: `DAY`, `GTC`, `OPG`, `IOC`.
+`tif` values: `DAY`, `GTC`, `OPG`, `IOC`.  
+`conid` (optional): a pre-resolved IBKR contract ID. **Required** for `FOP` (options-chain
+conid resolution isn't inferable from symbol alone); accepted as an override for any
+`sec_type` — when set, it skips `search_contract()`/`get_futures()` resolution entirely.
 
 ### ORDER PARAMETER IMMUTABILITY (non-overridable)
 
@@ -434,7 +446,7 @@ Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#place-
 
 | Field | Type | Required? | Notes |
 |---|---|---|---|
-| `conid` | int | yes* | *or `conidex`; SMART-routes when set |
+| `conid` | int | yes* | *or `conidex`; SMART-routes when set. `order_flow.py` resolves it from `symbol` per instrument (below) unless the proposal's own `conid` field overrides resolution |
 | `orderType` | str | yes | `LMT` \| `MKT` \| `STP` \| `STOP_LIMIT` \| `MIDPRICE` \| `TRAIL` \| `TRAILLMT` |
 | `side` | str | yes | `"BUY"` \| `"SELL"` |
 | `tif` | str | yes | `DAY` \| `GTC` \| `OPG` \| `IOC` \| `PAX` (crypto) |
@@ -453,6 +465,10 @@ Display-only fields use `_` prefix (`_companyName`, `_multiplier`) — stripped 
 
 ### Instrument-specific paths
 
+`execute_staged_order()` in `order_flow.py` resolves `conid` in this order: **(1)** the
+proposal's own `conid` field, if set, always wins — no further lookup; **(2)** otherwise,
+routing depends on `sec_type`:
+
 **Equities (STK):**
 - Conid resolved via `IBKRClient.search_contract()` → `/iserver/secdef/search`
 - `manualIndicator` / `extOperator` omitted (equity orders; would cause 400 if included)
@@ -465,8 +481,12 @@ Display-only fields use `_` prefix (`_companyName`, `_multiplier`) — stripped 
 - Gate 2 dialog shows correct notional: `price × qty × multiplier`
 
 **Futures Options (FOP):**
-- Same `manualIndicator` + `extOperator` requirement as FUT
-- Conid resolution via options chain flow (not yet implemented in `order_flow.py`)
+- `/iserver/secdef/search` does not document FOP either, and FOP conid can't be derived from
+  symbol alone (needs expiry + strike + put/call) — a proposal without `conid` set is
+  **rejected with a chat message** directing the user to have ClaudIA call
+  `get_option_strikes` first and re-issue the proposal with `conid` filled in
+- Once `conid` is set, resolution is a pass-through (no `search_contract`/`get_futures` call)
+- Same `manualIndicator: True` + `extOperator: "ClaudIA"` requirement as FUT (CME Rule 536-B applies to FOP too)
 
 Source (536-B requirement): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
 
