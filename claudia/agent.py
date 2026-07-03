@@ -596,17 +596,18 @@ class ClaudIAAgent:
             return self._fetch_web_page(inputs)
         return f"Unknown local tool: {name}"
 
-    def _fetch_web_page(self, inputs: dict) -> str:
-        import html2text
+    @staticmethod
+    def _validate_public_url(url: str) -> str | None:
+        """SSRF guard: return an error string unless url is a public http/https URL.
+
+        Prevents prompt-injection attacks from fetching localhost:5055 (IBKR gateway)
+        or other internal services and leaking their responses to the LLM.
+        Called on the initial URL AND on every redirect hop (finding S1, audit
+        2026-06-25 H-1: a public URL that 302s to a private address is the same
+        attack one hop removed).
+        """
         import ipaddress
         import urllib.parse
-        import requests as _req
-        url = inputs.get("url", "").strip()
-        if not url:
-            return "No URL provided."
-        # SSRF guard: only allow public http/https URLs.
-        # Prevents prompt-injection attacks from fetching localhost:5055 (IBKR gateway)
-        # or other internal services and leaking their responses to the LLM.
         try:
             parsed = urllib.parse.urlparse(url)
             if parsed.scheme not in ("http", "https"):
@@ -634,13 +635,44 @@ class ClaudIAAgent:
                     pass  # unresolvable hostname — let requests handle the error
         except Exception as exc:
             return f"Invalid URL: {exc}"
+        return None
+
+    _MAX_REDIRECTS = 5
+
+    def _fetch_web_page(self, inputs: dict) -> str:
+        import html2text
+        import urllib.parse
+        import requests as _req
+        url = inputs.get("url", "").strip()
+        if not url:
+            return "No URL provided."
+        # Follow redirects manually so every hop passes the SSRF guard —
+        # allow_redirects=True would let a public URL 302 to a private address
+        # without re-validation (finding S1).
+        resp = None
+        for hop in range(self._MAX_REDIRECTS + 1):
+            err = self._validate_public_url(url)
+            if err:
+                return err if hop == 0 else f"{err} (via redirect)"
+            try:
+                resp = _req.get(
+                    url,
+                    timeout=15,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; ClaudIA/1.0)"},
+                    allow_redirects=False,
+                )
+            except Exception as exc:
+                return f"Could not fetch {url}: {exc}"
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location")
+                if not location:
+                    break  # malformed redirect — treat as final response
+                url = urllib.parse.urljoin(url, location)
+                continue
+            break
+        else:
+            return f"Blocked: too many redirects (>{self._MAX_REDIRECTS})."
         try:
-            resp = _req.get(
-                url,
-                timeout=15,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; ClaudIA/1.0)"},
-                allow_redirects=True,
-            )
             resp.raise_for_status()
         except Exception as exc:
             return f"Could not fetch {url}: {exc}"

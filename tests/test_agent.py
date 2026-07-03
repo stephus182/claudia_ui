@@ -478,3 +478,48 @@ def test_history_marker_empty_string_content_left_alone():
     messages = [{"role": "user", "content": ""}]
     marked = _with_history_cache_marker(messages)
     assert marked[-1]["content"] == ""
+
+
+# ── SSRF: fetch_web_page redirect handling (finding S1) ──────────────────────
+
+class _FakeResp:
+    def __init__(self, status_code, headers=None, text="", url=""):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.text = text
+        self.url = url
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def test_fetch_web_page_blocks_redirect_to_private_address():
+    """A public URL that 302s to localhost must be blocked — the H-1 SSRF
+    attack one hop removed (review finding S1)."""
+    agent = _make_agent()
+    redirect = _FakeResp(302, headers={"location": "http://localhost:5055/v1/api/portfolio/accounts"})
+    secret = _FakeResp(200, text="ACCOUNT DATA")
+    with patch("requests.get", side_effect=[redirect, secret]) as mock_get:
+        result = agent._fetch_web_page({"url": "https://example.com/page"})
+    assert "Blocked" in result
+    assert "ACCOUNT DATA" not in result
+    # The private target must never have been fetched
+    assert mock_get.call_count == 1
+
+
+def test_fetch_web_page_follows_public_redirect():
+    agent = _make_agent()
+    redirect = _FakeResp(301, headers={"location": "https://example.com/moved"})
+    final = _FakeResp(200, text="<html><body>final public content</body></html>")
+    with patch("requests.get", side_effect=[redirect, final]):
+        result = agent._fetch_web_page({"url": "https://example.com/old"})
+    assert "final public content" in result
+
+
+def test_fetch_web_page_blocks_redirect_loop():
+    agent = _make_agent()
+    hop = _FakeResp(302, headers={"location": "https://example.com/again"})
+    with patch("requests.get", side_effect=[hop] * 10):
+        result = agent._fetch_web_page({"url": "https://example.com/loop"})
+    assert "Blocked" in result and "redirect" in result.lower()
