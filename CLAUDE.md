@@ -165,8 +165,8 @@ Symptoms and diagnosis:
 
 | File | Direction | When |
 |---|---|---|
-| `claudia.db` | Drive → local | Session start (first session per process, before DB opens) |
-| `claudia.db` | local → Drive | Session stop (after `close_session`, with WAL checkpoint) |
+| `claudia.db` | Drive → local | Session start (first session per process, before DB opens). **Freshness guard:** skipped when the local DB (incl. `-wal` mtime) is newer than the Drive copy's `modifiedTime` — an older Drive copy never overwrites a newer local DB. Stale `-wal`/`-shm` sidecars are removed before the downloaded file lands. |
+| `claudia.db` | local → Drive | Session stop (after `close_session`). Uploads a **WAL-consistent snapshot** made with `sqlite3.Connection.backup()` — never the live file, so commits still in `claudia.db-wal` are included and concurrent checkpoints can't tear the upload. |
 | `context.md` | Drive → memory | Every session start (overrides local file if present on Drive) |
 | `principles.md` | Drive → memory | Every session start (overrides local file if present on Drive) |
 
@@ -208,7 +208,8 @@ All Drive operations are non-fatal. On any failure (no token, network error, tam
 | Operation | On failure |
 |---|---|
 | `download_db` at start | Log warning; use existing local `claudia.db` |
-| `upload_db` at stop | Log warning; local copy preserved; syncs next session |
+| `download_db` sees older Drive copy | Log warning; keep newer local DB (freshness guard); it syncs to Drive at session end |
+| `upload_db` at stop | Log warning; local copy preserved; syncs next session (freshness guard protects it across a process restart) |
 | `read_text` for context/principles | Log warning; fall back to local `docs/` files |
 | `ping()` (connectivity poll) | Returns `False`; status light turns red; no exception raised |
 
