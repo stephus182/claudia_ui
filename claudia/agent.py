@@ -202,6 +202,22 @@ _LOCAL_TOOLS: list[dict] = [
 _LOCAL_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in _LOCAL_TOOLS)
 
 
+def _with_cache_marker(tools: list[dict]) -> list[dict]:
+    """Return tools with a prompt-cache breakpoint on the last entry.
+
+    The last dict is copied, never mutated — the inputs are shared module-level
+    constants (_LOCAL_TOOLS, ibkr_core_mcp TOOL_DEFINITIONS).
+    Marking the last tool caches the entire tools array (prefix hierarchy:
+    tools -> system -> messages).
+    Source: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    """
+    if not tools:
+        return tools
+    marked = list(tools)
+    marked[-1] = {**marked[-1], "cache_control": {"type": "ephemeral"}}
+    return marked
+
+
 def _build_version_note(doc_version: str | None, store: "ConversationStore | None") -> str:
     """Return the active-version header line for the system prompt, or "" if no version."""
     if not doc_version:
@@ -294,7 +310,7 @@ class ClaudIAAgent:
 
     @property
     def _all_tools(self) -> list[dict]:
-        return self._toolkit.tools + self._extra_tools + _LOCAL_TOOLS
+        return _with_cache_marker(self._toolkit.tools + self._extra_tools + _LOCAL_TOOLS)
 
     async def handle_message(self, user_text: str, images: list[dict] | None = None) -> None:
         """

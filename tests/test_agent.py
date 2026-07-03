@@ -280,3 +280,47 @@ def test_all_tools_includes_toolkit_extra_and_local():
     assert "chart_get_state" in names     # from extra_tools (TV)
     assert "list_doc_versions" in names   # local
     assert "get_doc_version" in names     # local
+
+
+# ── Prompt caching: _with_cache_marker (tools breakpoint) ────────────────────
+
+from claudia.agent import _with_cache_marker, _LOCAL_TOOLS
+
+
+def test_with_cache_marker_marks_only_last_tool():
+    tools = [
+        {"name": "a", "input_schema": {"type": "object"}},
+        {"name": "b", "input_schema": {"type": "object"}},
+    ]
+    marked = _with_cache_marker(tools)
+    assert marked[-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in marked[0]
+    assert marked[-1]["name"] == "b"
+
+
+def test_with_cache_marker_does_not_mutate_input():
+    original_last = {"name": "b", "input_schema": {"type": "object"}}
+    tools = [{"name": "a", "input_schema": {"type": "object"}}, original_last]
+    _with_cache_marker(tools)
+    # The shared dict must be untouched — _LOCAL_TOOLS / toolkit constants are module-level
+    assert "cache_control" not in original_last
+    assert "cache_control" not in tools[-1]
+
+
+def test_with_cache_marker_empty_list():
+    assert _with_cache_marker([]) == []
+
+
+def test_local_tools_constant_never_carries_cache_control():
+    # Regression guard: repeated calls must not leak the marker into the module constant
+    _with_cache_marker(list(_LOCAL_TOOLS))
+    _with_cache_marker(list(_LOCAL_TOOLS))
+    assert all("cache_control" not in t for t in _LOCAL_TOOLS)
+
+
+def test_all_tools_last_entry_carries_cache_marker():
+    agent = _make_agent()
+    agent._toolkit.tools = [{"name": "get_positions", "description": "", "input_schema": {}}]
+    tools = agent._all_tools
+    assert tools[-1]["cache_control"] == {"type": "ephemeral"}
+    assert all("cache_control" not in t for t in tools[:-1])
