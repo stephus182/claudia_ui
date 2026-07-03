@@ -234,3 +234,70 @@ def test_upload_db_uploads_wal_consistent_snapshot(sync, tmp_path):
     assert rows == [("wal-resident-row",)]
     # No leftover snapshot temp files next to the DB
     assert not list(tmp_path.glob("*.upload.tmp"))
+
+
+# ── G2: download_db freshness guard ──────────────────────────────────────────
+
+def _valid_db_bytes(tmp_path, marker):
+    src = tmp_path / f"_src_{marker}.db"
+    conn = sqlite3.connect(str(src))
+    conn.execute("CREATE TABLE m (v TEXT)")
+    conn.execute("INSERT INTO m VALUES (?)", (marker,))
+    conn.commit()
+    conn.close()
+    return src.read_bytes()
+
+
+def test_download_db_skips_when_local_newer_than_drive(sync, tmp_path):
+    """A failed end-session upload followed by a process restart must not let an
+    older Drive copy overwrite the newer local DB — review finding G2."""
+    target = tmp_path / "claudia.db"
+    local_bytes = _valid_db_bytes(tmp_path, "newer-local")
+    target.write_bytes(local_bytes)  # mtime = now; Drive copy is from 2020
+
+    drive_bytes = _valid_db_bytes(tmp_path, "older-drive")
+
+    class FakeDownloader:
+        def __init__(self, buf, _req):
+            buf.write(drive_bytes)
+        def next_chunk(self):
+            return None, True
+
+    svc = MagicMock()
+    svc.files.return_value.get.return_value.execute.return_value = {
+        "modifiedTime": "2020-01-01T00:00:00.000Z"
+    }
+    with patch.object(sync, "_find_file", return_value="file-id"), \
+         patch.object(sync, "_get_service", return_value=svc), \
+         patch("claudia.gdrive_sync.MediaIoBaseDownload", FakeDownloader):
+        result = sync.download_db(target)
+
+    assert result is False
+    assert target.read_bytes() == local_bytes  # local preserved
+
+
+def test_download_db_proceeds_when_drive_newer(sync, tmp_path):
+    """The guard must not block legitimate syncs from another machine."""
+    target = tmp_path / "claudia.db"
+    target.write_bytes(_valid_db_bytes(tmp_path, "older-local"))
+
+    drive_bytes = _valid_db_bytes(tmp_path, "newer-drive")
+
+    class FakeDownloader:
+        def __init__(self, buf, _req):
+            buf.write(drive_bytes)
+        def next_chunk(self):
+            return None, True
+
+    svc = MagicMock()
+    svc.files.return_value.get.return_value.execute.return_value = {
+        "modifiedTime": "2099-01-01T00:00:00.000Z"
+    }
+    with patch.object(sync, "_find_file", return_value="file-id"), \
+         patch.object(sync, "_get_service", return_value=svc), \
+         patch("claudia.gdrive_sync.MediaIoBaseDownload", FakeDownloader):
+        result = sync.download_db(target)
+
+    assert result is True
+    rows = sqlite3.connect(str(target)).execute("SELECT v FROM m").fetchall()
+    assert rows == [("newer-drive",)]
