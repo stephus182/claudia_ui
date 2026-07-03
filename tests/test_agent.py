@@ -392,3 +392,44 @@ def test_system_prompt_rebuilt_after_reload():
     loader.reload_count += 1  # watchdog fired: a document was edited
     agent._get_system_blocks()
     assert loader.calls == 2  # rebuilt exactly once more
+
+
+# ── Prompt caching: _log_cache_usage (message_start telemetry) ───────────────
+
+import logging
+from types import SimpleNamespace
+
+from claudia.agent import _log_cache_usage
+
+
+def test_log_cache_usage_reports_all_three_fields(caplog):
+    usage = SimpleNamespace(
+        cache_creation_input_tokens=12000,
+        cache_read_input_tokens=0,
+        input_tokens=450,
+    )
+    with caplog.at_level(logging.INFO, logger="claudia.agent"):
+        _log_cache_usage(usage)
+    assert "created=12000" in caplog.text
+    assert "read=0" in caplog.text
+    assert "uncached=450" in caplog.text
+
+
+def test_log_cache_usage_warns_when_cache_inactive(caplog):
+    # Both cache fields zero = caching silently failed (note: "Verification — do not skip")
+    usage = SimpleNamespace(
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        input_tokens=30000,
+    )
+    with caplog.at_level(logging.WARNING, logger="claudia.agent"):
+        _log_cache_usage(usage)
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_log_cache_usage_handles_missing_fields(caplog):
+    # SDK may omit the fields on models/paths without caching — must not raise
+    usage = SimpleNamespace(input_tokens=100)
+    with caplog.at_level(logging.INFO, logger="claudia.agent"):
+        _log_cache_usage(usage)
+    assert "created=0" in caplog.text

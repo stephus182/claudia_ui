@@ -262,6 +262,25 @@ def _system_blocks(system_prompt: str) -> list[dict]:
     ]
 
 
+def _log_cache_usage(usage) -> None:
+    """Log prompt-cache health from a message_start usage object.
+
+    created > 0  -> prefix written this call (1.25x input price)
+    read > 0     -> prefix served from cache (0.1x input price)
+    both zero    -> caching silently failed (below-minimum prefix, misplaced
+                    marker, or a >20-block turn outside the lookback window)
+                    -- warn so it is caught as tools evolve.
+    """
+    created = getattr(usage, "cache_creation_input_tokens", None) or 0
+    read = getattr(usage, "cache_read_input_tokens", None) or 0
+    uncached = getattr(usage, "input_tokens", None) or 0
+    log.info("prompt cache: created=%d read=%d uncached=%d", created, read, uncached)
+    if created == 0 and read == 0:
+        log.warning(
+            "prompt cache inactive (created=0, read=0) — check cache_control placement"
+        )
+
+
 def _history_to_messages(history: list[dict]) -> list[MessageParam]:
     """Convert ConversationStore rows to Anthropic message dicts."""
     messages: list[MessageParam] = []
@@ -391,7 +410,10 @@ class ClaudIAAgent:
                 async for event in stream:
                     etype = event.type
 
-                    if etype == "content_block_start":
+                    if etype == "message_start":
+                        _log_cache_usage(event.message.usage)
+
+                    elif etype == "content_block_start":
                         block = event.content_block
                         if block.type == "tool_use":
                             tool_calls.append({
