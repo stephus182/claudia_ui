@@ -80,7 +80,7 @@ The **archive** round-trips through Drive correctly, but a new session does **no
 - Upload: after `close_session`, via `files().update()` in-place (preserves file identity/sharing); create-vs-update race guarded by an `RLock`; all failures non-fatal with the local copy preserved (gdrive_sync.py:240–271).
 - `trashed=false` in every Drive query; token refresh with 0o600 enforcement; `ping()` gives real API reachability to the status lights.
 
-**Findings — three gaps, ordered by severity:**
+**Findings — three gaps, ordered by severity. ✅ ALL THREE FIXED 2026-07-03** (commits 4c0edd6 G1, 7e65d9b G2, d39d52b G3 — TDD, 17 gdrive tests green; CLAUDE.md corrected):
 
 | ID | Severity | Finding |
 |---|---|---|
@@ -150,9 +150,9 @@ The layer-2 contract is implementable against the current code with no surprises
 
 | # | Area | Severity | Finding | Recommendation |
 |---|---|---|---|---|
-| G1 | GDrive sync | Medium | No WAL checkpoint before `upload_db`; CLAUDE.md documents one that doesn't exist; torn/stale upload possible | Use SQLite backup API to temp file, upload the temp; fix CLAUDE.md |
-| G2 | GDrive sync | Medium | Failed upload + process restart → older Drive copy overwrites newer local DB (silent session loss) | Freshness guard: compare Drive `modifiedTime` vs local mtime before replacing |
-| G3 | GDrive sync | Low | Stale `-wal`/`-shm` sidecars can be replayed into a freshly downloaded DB after a crash | Unlink both sidecars in `download_db` when replacing |
+| G1 | GDrive sync | ~~Medium~~ **FIXED** | No WAL checkpoint before `upload_db`; CLAUDE.md documented one that didn't exist; torn/stale upload possible | ✅ 2026-07-03 (4c0edd6): `sqlite3.Connection.backup()` snapshot uploaded instead of the live file; CLAUDE.md corrected |
+| G2 | GDrive sync | ~~Medium~~ **FIXED** | Failed upload + process restart → older Drive copy overwrites newer local DB (silent session loss) | ✅ 2026-07-03 (7e65d9b): freshness guard — Drive `modifiedTime` vs local mtime (incl. `-wal`); local-newer keeps local |
+| G3 | GDrive sync | ~~Low~~ **FIXED** | Stale `-wal`/`-shm` sidecars can be replayed into a freshly downloaded DB after a crash | ✅ 2026-07-03 (d39d52b): both sidecars unlinked before the downloaded file lands |
 | M1 | Memory | Medium (RAG-relevant) | Tool results persisted but neither FTS-indexed nor replayed — no retrieval path for past tool/scrape data | Accept + document; RAG design must not assume archived tool data is recoverable |
 | M2 | Memory | Low | `relationships` table and `search_decisions` are dead code (no tool, no caller) | Wire them or remove them (clean-architecture preference) |
 | S1 | Scrapes | Low (verify) | `fetch_web_page` follows redirects without re-running the SSRF guard per hop | Disable redirects or validate each hop; check the 2026-06-25 audit scope |
