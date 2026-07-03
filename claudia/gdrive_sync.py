@@ -17,6 +17,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -196,6 +197,28 @@ class GDriveSync:
             if file_id is None:
                 log.info("claudia.db not found on Drive (first run or not yet uploaded)")
                 return False
+
+            # Freshness guard: if the previous end-session upload failed and the
+            # process restarted, the Drive copy is OLDER than the local DB —
+            # replacing it would silently lose the last session. Compare Drive
+            # modifiedTime (RFC 3339) against the local mtime (including the -wal
+            # sidecar: in WAL mode the main file's mtime does not advance on writes).
+            # Source: https://developers.google.com/drive/api/reference/rest/v3/files
+            if local_path.exists():
+                meta = svc.files().get(fileId=file_id, fields="modifiedTime").execute()
+                drive_mtime = datetime.fromisoformat(meta["modifiedTime"])
+                local_ts = local_path.stat().st_mtime
+                wal = Path(str(local_path) + "-wal")
+                if wal.exists():
+                    local_ts = max(local_ts, wal.stat().st_mtime)
+                local_mtime = datetime.fromtimestamp(local_ts, tz=timezone.utc)
+                if local_mtime > drive_mtime:
+                    log.warning(
+                        "claudia.db on Drive (%s) is older than local (%s) — keeping "
+                        "local; it will sync to Drive at session end",
+                        drive_mtime.isoformat(), local_mtime.isoformat(),
+                    )
+                    return False
 
             local_path.parent.mkdir(parents=True, exist_ok=True)
             tmp_fd = tempfile.NamedTemporaryFile(
