@@ -301,3 +301,31 @@ def test_download_db_proceeds_when_drive_newer(sync, tmp_path):
     assert result is True
     rows = sqlite3.connect(str(target)).execute("SELECT v FROM m").fetchall()
     assert rows == [("newer-drive",)]
+
+
+# ── G3: stale WAL/SHM sidecars removed when download replaces the DB ─────────
+
+def test_download_db_removes_stale_wal_shm_sidecars(sync, tmp_path):
+    """Sidecars from a crashed prior run must not be replayed into a freshly
+    downloaded DB — review finding G3."""
+    target = tmp_path / "claudia.db"
+    (tmp_path / "claudia.db-wal").write_bytes(b"stale wal from crashed run")
+    (tmp_path / "claudia.db-shm").write_bytes(b"stale shm from crashed run")
+
+    drive_bytes = _valid_db_bytes(tmp_path, "fresh-from-drive")
+
+    class FakeDownloader:
+        def __init__(self, buf, _req):
+            buf.write(drive_bytes)
+        def next_chunk(self):
+            return None, True
+
+    svc = MagicMock()
+    with patch.object(sync, "_find_file", return_value="file-id"), \
+         patch.object(sync, "_get_service", return_value=svc), \
+         patch("claudia.gdrive_sync.MediaIoBaseDownload", FakeDownloader):
+        result = sync.download_db(target)  # target absent -> guard not involved
+
+    assert result is True
+    assert not (tmp_path / "claudia.db-wal").exists()
+    assert not (tmp_path / "claudia.db-shm").exists()

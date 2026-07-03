@@ -250,6 +250,11 @@ class GDriveSync:
                 finally:
                     conn.close()
 
+                # Remove stale WAL/SHM sidecars from a crashed prior run BEFORE the
+                # new file lands — SQLite would otherwise replay old WAL frames into
+                # the freshly downloaded database on first open.
+                Path(str(local_path) + "-wal").unlink(missing_ok=True)
+                Path(str(local_path) + "-shm").unlink(missing_ok=True)
                 shutil.move(str(tmp_path), local_path)
                 log.info("Downloaded claudia.db from Drive to %s", local_path)
                 return True
