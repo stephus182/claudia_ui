@@ -299,6 +299,38 @@ def _history_to_messages(history: list[dict]) -> list[MessageParam]:
     return messages
 
 
+def _with_history_cache_marker(messages: list) -> list:
+    """Return a copy of messages with a prompt-cache breakpoint on the final content block.
+
+    Third breakpoint (after tools and system): caches the conversation prefix so
+    each tool-loop call reads the prior prefix at 0.1x and writes only the newly
+    added blocks at 1.25x. Copies the last message and its block list — the
+    caller's list is the loop's working state and must never carry markers
+    between iterations.
+
+    Caveat (documented in docs/prompt-caching-upgrade.md): a single turn adding
+    more than 20 content blocks (10+ parallel tool calls) falls outside the
+    20-block lookback window and re-writes instead of reading — visible as
+    created>0/read=0 in the _log_cache_usage line.
+    Source: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    """
+    if not messages:
+        return messages
+    last = dict(messages[-1])
+    content = last["content"]
+    if isinstance(content, str):
+        if not content:
+            return messages  # "empty text blocks cannot be cached" (official docs)
+        blocks = [{"type": "text", "text": content}]
+    else:
+        blocks = list(content)
+        if not blocks:
+            return messages
+    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+    last["content"] = blocks
+    return messages[:-1] + [last]
+
+
 class ClaudIAAgent:
     """
     Manages one chat session's Anthropic API interaction.
@@ -404,7 +436,7 @@ class ClaudIAAgent:
                 model=self._model,
                 max_tokens=4096,
                 system=system_blocks,
-                messages=messages,
+                messages=_with_history_cache_marker(messages),
                 tools=self._all_tools,
             ) as stream:
                 async for event in stream:
