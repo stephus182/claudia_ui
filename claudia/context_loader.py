@@ -69,6 +69,10 @@ class ContextLoader:
         self._principles_override: str | None = principles_text
         self._watch: ObservedWatch | None = None
         self._reload_callback: Callable[[str, str], None] | None = None
+        # Incremented on every document-change event. Agents cache the built
+        # system prompt keyed on this counter, so version/document checks run
+        # at load time and on edits only — never per prompt.
+        self.reload_count: int = 0
 
     def _get_text(self, override: str | None, path: Path, name: str) -> str:
         if override is not None:
@@ -127,6 +131,7 @@ class ContextLoader:
         # local files become the sole source of truth after any edit.
         self._context_override = None
         self._principles_override = None
+        self.reload_count += 1
         if self._reload_callback:
             try:
                 new_prompt = self.load_system_prompt()

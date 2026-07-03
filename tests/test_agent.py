@@ -347,3 +347,48 @@ def test_system_blocks_preserves_full_prompt():
     blocks = _system_blocks(prompt)
     assert len(blocks) == 1
     assert blocks[0]["text"] == prompt  # byte-identical — any change invalidates the cache
+
+
+# ── Prompt caching: system prompt built once per session (Task 3) ────────────
+
+class _StubLoader:
+    """Loader stub counting document reads; reload_count mimics the watchdog."""
+
+    def __init__(self):
+        self.reload_count = 0
+        self.calls = 0
+
+    def load_system_prompt(self):
+        self.calls += 1
+        return "# Role\nStub.\n\n# Principles\nStub."
+
+
+def _make_agent_with_loader(loader):
+    toolkit = MagicMock()
+    toolkit.tools = []
+    with patch("claudia.agent.AsyncAnthropic"):
+        return ClaudIAAgent(
+            toolkit=toolkit,
+            store=None,
+            context_loader=loader,
+            session_id="test-session",
+        )
+
+
+def test_system_prompt_built_once_per_session():
+    loader = _StubLoader()
+    agent = _make_agent_with_loader(loader)
+    b1 = agent._get_system_blocks()
+    b2 = agent._get_system_blocks()
+    assert b1 is b2           # same cached object — no rebuild between messages
+    assert loader.calls == 1  # documents read exactly once per session
+    assert b1[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_system_prompt_rebuilt_after_reload():
+    loader = _StubLoader()
+    agent = _make_agent_with_loader(loader)
+    agent._get_system_blocks()
+    loader.reload_count += 1  # watchdog fired: a document was edited
+    agent._get_system_blocks()
+    assert loader.calls == 2  # rebuilt exactly once more

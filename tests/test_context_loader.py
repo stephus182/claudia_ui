@@ -144,3 +144,14 @@ def test_file_change_clears_context_override(docs_dir):
     assert fired_prompts
     assert "Local Context" in fired_prompts[-1]
     assert "Drive Context" not in fired_prompts[-1]
+
+
+def test_reload_count_increments_on_change(tmp_path):
+    (tmp_path / "context.md").write_text("# Role\nX")
+    (tmp_path / "principles.md").write_text("# P\nY")
+    loader = ContextLoader(tmp_path)
+    assert loader.reload_count == 0
+    loader._handle_change("context.md")
+    assert loader.reload_count == 1
+    loader._handle_change("principles.md")
+    assert loader.reload_count == 2
