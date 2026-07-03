@@ -324,3 +324,26 @@ def test_all_tools_last_entry_carries_cache_marker():
     tools = agent._all_tools
     assert tools[-1]["cache_control"] == {"type": "ephemeral"}
     assert all("cache_control" not in t for t in tools[:-1])
+
+
+# ── Prompt caching: _system_blocks (system breakpoint) ───────────────────────
+
+from claudia.agent import _system_blocks
+
+
+def test_system_blocks_shape():
+    blocks = _system_blocks("You are ClaudIA.")
+    assert blocks == [
+        {
+            "type": "text",
+            "text": "You are ClaudIA.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def test_system_blocks_preserves_full_prompt():
+    prompt = _build_system_prompt("# Role\nTrader assistant.\n\n# Principles\nRisk first.")
+    blocks = _system_blocks(prompt)
+    assert len(blocks) == 1
+    assert blocks[0]["text"] == prompt  # byte-identical — any change invalidates the cache

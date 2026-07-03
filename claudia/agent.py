@@ -247,6 +247,21 @@ def _build_system_prompt(
     return _build_version_note(doc_version, store) + context_prompt + trade_block + _SAFETY_BLOCK
 
 
+def _system_blocks(system_prompt: str) -> list[dict]:
+    """Wrap the system prompt in block form with a prompt-cache breakpoint.
+
+    The marker on the last (only) system block caches tools + system together.
+    Source: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    """
+    return [
+        {
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
 def _history_to_messages(history: list[dict]) -> list[MessageParam]:
     """Convert ConversationStore rows to Anthropic message dicts."""
     messages: list[MessageParam] = []
@@ -351,7 +366,7 @@ class ClaudIAAgent:
             async with self._client.messages.stream(
                 model=self._model,
                 max_tokens=4096,
-                system=system,
+                system=_system_blocks(system),
                 messages=messages,
                 tools=self._all_tools,
             ) as stream:
