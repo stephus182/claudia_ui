@@ -218,6 +218,10 @@ Both use the same resolve-then-check pattern. Blocked:
 - Any literal IP address in a private, loopback, link-local, or reserved range (`ipaddress.ip_address`)
 - Decimal/hex-encoded IP bypasses (e.g. `http://2130706433/` = 127.0.0.1): hostname is resolved via
   `socket.gethostbyname()` and the resolved IP is re-checked against the same guard
+- **Redirects to private addresses** (fixed 2026-07-03, finding S1): `fetch_web_page` follows
+  redirects manually (`allow_redirects=False`, max 5 hops) and re-runs the full guard
+  (`ClaudIAAgent._validate_public_url`) on every hop — a public URL that 302s to
+  `localhost:5055` is blocked, not followed
 
 **Layer 2 — Playwright route handler (`ibkr_core_mcp/scrape_fallback.py → _reject_private_requests()`):**
 
@@ -409,6 +413,7 @@ Run this checklist before any significant code change to ClaudIA:
 - [ ] Any new shared state accessed from `cl.make_async()` handlers is protected by a `threading.Lock` or `threading.RLock` (use `RLock` if any method holding the lock calls another method that also acquires it)
 - [ ] Any new connectivity check returns a plain bool, wraps all exceptions, and does not log or expose credentials on failure
 - [ ] Any new tool that makes outbound HTTP requests blocks localhost / private IP ranges (SSRF guard — see §8 `fetch_web_page` pattern)
+- [ ] Any new outbound HTTP path re-validates **every redirect hop** against the SSRF guard (never `allow_redirects=True` on an LLM-driven fetch — S1, 2026-07-03)
 
 ---
 

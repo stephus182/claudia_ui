@@ -12,7 +12,7 @@ Chainlit UI (localhost:8000)
 claudia/app.py              — session lifecycle, action callbacks, startup buttons
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
-claudia/conversation_store.py — SQLite: sessions, messages, decisions, relationships, doc_versions
+claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
 claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / upload at stop
 claudia/order_flow.py       — cl.Action order staging → ibkr_core_mcp biometric gates
 claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health
@@ -328,8 +328,9 @@ All interactions are stored in `data/claudia.db` (separate from ibkr_core_mcp's 
 | `sessions` | One row per Chainlit session, with start/end time, document hash, and `doc_version` |
 | `messages` | Full message history (user, assistant, tool calls and results) — primary memory store |
 | `decisions` | User-directed trade proposals surfaced by ClaudIA — each tagged with `doc_version`. ClaudIA does not decide to trade; it surfaces a proposal when directed by the user. The user decides at the button → Touch ID → confirmation dialog. |
-| `relationships` | Accumulated symbol-level observations built over time |
 | `doc_versions` | Versioned snapshots of `context.md` + `principles.md` — full text, hash, date |
+
+(A `relationships` table and a decisions FTS index were removed 2026-07-03 — never wired to any caller; symbol-level knowledge belongs to the planned knowledge layer. Existing DBs are migrated safely: derived index dropped, `relationships` dropped only if empty.)
 
 **Search:** ClaudIA uses SQLite FTS5 to search full conversation history. Ask: *"What did we discuss about NVDA last month?"* The `search_past_conversations` tool searches all messages across all sessions. Results include the doc version active at the time.
 
