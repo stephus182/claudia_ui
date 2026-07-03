@@ -607,11 +607,18 @@ This rule exists because two bugs in one session were caught instantly by checki
 
 **Anthropic API** (`claudia/agent.py`)
 
+Note: `docs.anthropic.com` 301-redirects to `platform.claude.com` (verified 2026-07-02). New references should use the canonical `platform.claude.com` host.
+
 | Topic | Official source |
 |---|---|
 | Messages API (streaming, tool use) | https://docs.anthropic.com/en/api/messages |
 | Tool use reference | https://docs.anthropic.com/en/docs/build-with-claude/tool-use |
 | Model names and capabilities | https://docs.anthropic.com/en/docs/about-claude/models |
+| Prompt caching (breakpoints, pricing, lookback, invalidation) | https://platform.claude.com/docs/en/build-with-claude/prompt-caching |
+| Streaming events (`message_start` usage shape) | https://platform.claude.com/docs/en/build-with-claude/streaming |
+| Context engineering for agents (just-in-time retrieval, memory, compaction) | https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents |
+
+Scraped-evidence convention: design docs and plans that assert API behavior carry a claim→source table with verbatim quotes and scrape dates — see `docs/2026-07-03-llm-best-practices-sources.md` for the reference example.
 
 **Google Drive API v3** (`claudia/gdrive_sync.py`)
 
