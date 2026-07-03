@@ -316,12 +316,33 @@ class ClaudIAAgent:
         self._trade_context = trade_context
         self._tv_tool_names: set[str] = {t["name"] for t in self._extra_tools}
         self._client = AsyncAnthropic()
+        self._system_blocks_cache: list[dict] | None = None
+        self._system_reload_seen: int = -1
 
     def set_tv_bridge(self, bridge: "TradingViewBridge", tools: list[dict]) -> None:
         """Update TradingView connection mid-session (called by on_launch_tradingview)."""
         self._tv_bridge = bridge
         self._extra_tools = tools
         self._tv_tool_names = {t["name"] for t in tools}
+
+    def _get_system_blocks(self) -> list[dict]:
+        """Return the cached system-prompt blocks, built at most once per session.
+
+        Version note, documents, and market calendar are resolved when ClaudIA
+        loads — not on each prompt. The only rebuild trigger is the loader's
+        reload_count (event-driven hot-reload); steady-state per-message cost is
+        one int comparison. Byte-identical blocks across calls also guarantee
+        prompt-cache stability for the system segment.
+        """
+        count = self._loader.reload_count
+        if self._system_blocks_cache is None or count != self._system_reload_seen:
+            prompt = _build_system_prompt(
+                self._loader.load_system_prompt(), self._doc_version, self._store,
+                self._trade_context,
+            )
+            self._system_blocks_cache = _system_blocks(prompt)
+            self._system_reload_seen = count
+        return self._system_blocks_cache
 
     @property
     def _all_tools(self) -> list[dict]:
@@ -349,10 +370,7 @@ class ClaudIAAgent:
                 content = list(content) + images  # type: ignore[operator]
                 messages[-1] = {"role": "user", "content": content}
 
-        system = _build_system_prompt(
-            self._loader.load_system_prompt(), self._doc_version, self._store,
-            self._trade_context,
-        )
+        system_blocks = self._get_system_blocks()
 
         # Multi-turn tool loop
         full_response_text = ""
@@ -366,7 +384,7 @@ class ClaudIAAgent:
             async with self._client.messages.stream(
                 model=self._model,
                 max_tokens=4096,
-                system=_system_blocks(system),
+                system=system_blocks,
                 messages=messages,
                 tools=self._all_tools,
             ) as stream:
