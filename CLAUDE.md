@@ -353,7 +353,8 @@ breakpoint closes that gap — each call reads the prior prefix at 0.1× and wri
 newly appended blocks at 1.25×.
 
 **Live-verified** (2026-07-03, exact production request shape): a ~22K-token static prefix
-(42+ tool schemas + system prompt) written once (`cache_creation_input_tokens=22047`), then
+(46 tool schemas — 42 `ibkr_core_mcp` + 4 local — + system prompt) written once
+(`cache_creation_input_tokens=22047`), then
 read at 0.1× on every subsequent call (`cache_read_input_tokens=22047`); an appended
 assistant+user turn wrote only its 17-token delta. Full numbers:
 [`docs/live-test-log.md`](docs/live-test-log.md#run-2026-07-03-1).
@@ -757,6 +758,16 @@ When updating ibkr_core_mcp (e.g. after adding new tools), re-run `pip install -
 No restart of the Chainlit app is needed for tool definition changes; restart required for
 Python module changes.
 
-Tools in ibkr_core_mcp (shipped):
+**Full tool catalog:** `ibkr_core_mcp/docs/tools-reference.md` is the authoritative, current
+reference for every `ClaudeToolkit` tool — **40 core tools + 2 optional web-scraper tools**
+(`firecrawl_search`, `firecrawl_crawl`, gated on `FIRECRAWL_API_KEY`) = **42 total**, matching
+the `TOOL_DEFINITIONS` count merged into `_all_tools` in `claudia/agent.py`. This file does
+**not** duplicate that catalog — check it first for tool inputs/outputs/IBKR-endpoint mapping
+before adding a new tool or debugging an existing one. Categories: Portfolio & Account,
+Orders, Trades, Market Data, Contracts, Cache, Analysis, Alerts, Watchlists, Notifications,
+Scanner, Web Scraper (optional).
+
+Notable historical additions (not exhaustive — see the catalog above for the current set):
 - `preview_order` — read-only whatif order preview (`ibkr_core_mcp/claude_tools.py`)
 - `get_pnl` — real-time partitioned P&L (`ibkr_core_mcp/claude_tools.py`)
+- `firecrawl_search` / `firecrawl_crawl` — web scraper tools, optional (`FIRECRAWL_API_KEY`), shipped `ibkr_core_mcp` v1.0.0 (2026-06-27) — see `ibkr_core_mcp/CHANGELOG.md`
