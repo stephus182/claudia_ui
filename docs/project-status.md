@@ -1,7 +1,7 @@
 # ClaudIA — Project Status
 
 > Living document. Update after each sprint, live test session, or notable fix.  
-> Last updated: 2026-07-02
+> Last updated: 2026-07-03
 
 ---
 
@@ -57,12 +57,20 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-06-27 | — | **Full docstring audit (superpowers:code-reviewer)** — `status.py`, `conversation_store.py`, `agent.py`, `tradingview.py`, `context_loader.py`, `session_reporter.py`, `gdrive_sync.py`; `BrowserCookieAuth(config.gateway_url)` bug fixed in `order_flow.py`; `test_count_messages` added; test count 163 → 164 |
 | 2026-06-30 | `290b6e0` | Bug fix — TradingView launch used wrong app name `"Trading View"` (with space) → `"TradingView"`; added `_tv_already_running_without_debug()` to detect and warn when TV is running without the CDP debug port instead of waiting 30s and timing out |
 | 2026-06-30 | `4775771` | Bug fix — Python 3.14 anyio crash in MCP receive loop: `AsyncIOTaskInfo(None).get_coro()` → AttributeError; patched `AsyncIOTaskInfo.__init__` to stub TaskInfo when `task=None`; `task_info` only used in `__repr__` so stub is safe; 5th Python 3.14/anyio compat patch; TradingView sidecar now connects when CDP port is open |
-| 2026-07-02 | uncommitted | **Order staging live test — 8 bugs fixed** (see Live Test Log); Gate 2 dialog replaced tkinter with AppKit NSAlert subprocess (`_order_dialog.py`): green banner=BUY, red=SELL, Enter disabled, 60s auto-cancel |
-| 2026-07-02 | uncommitted | ORDER PARAMETER IMMUTABILITY rule added to `agent.py` system prompt — ClaudIA must never change user-specified order parameter (symbol, price, qty, type, TIF) without explicit user approval; saved to memory |
-| 2026-07-02 | uncommitted | **Futures order staging** — `sec_type` added to proposal schema; conid resolution dispatches to `/trsrv/futures` (front month) for FUT; `manualIndicator: True` + `extOperator: "ClaudIA"` auto-added for FUT/FOP (CME Rule 536-B, required May 1 2025); Gate 2 total uses `price × qty × multiplier` |
-| 2026-07-02 | uncommitted | Bug fix — `_resolve_conid` in `claude_tools.py` used `/iserver/secdef/search` for FUT (undocumented for that type); now dispatches to `/trsrv/futures` same as `_resolve_snapshot_conid`; `_preview_order` now also adds 536-B fields for FUT/FOP |
-| 2026-07-02 | uncommitted | Bug fix — `_preview_order` order type `"STP LMT"` not a valid IBKR name (IBKR uses `"STOP_LIMIT"`); aligned `_VALID_ORDER_TYPES` with place-order field spec; `quantity` changed from `float` to `int` to match `place_order` convention |
-| 2026-07-02 | uncommitted | IBKR CP API place-order field spec scraped and documented inline in `order_flow.py` (2026-07-02); CLAUDE.md Order Staging Flow section fully rewritten; README.md new Order Staging section |
+| 2026-07-02 | `b6ef2e4` | Bug fix — `place_order called with list instead of dict` — Touch ID was never reached; AppKit NSAlert subprocess built to replace tkinter Gate 2 dialog: green banner=BUY, red=SELL, Enter disabled, 60s auto-cancel |
+| 2026-07-02 | `314dfe8` | **Futures/FOP order staging** — `sec_type` added to proposal schema; conid resolution dispatches to `/trsrv/futures` (front month) for FUT; `manualIndicator: True` + `extOperator: "ClaudIA"` auto-added for FUT/FOP (CME Rule 536-B, required May 1 2025); Gate 2 total uses `price × qty × multiplier`; FOP without pre-resolved `conid` → clear rejection message; 30 tests |
+| 2026-07-02 | `314dfe8` | ORDER PARAMETER IMMUTABILITY rule added to `agent.py` system prompt — ClaudIA must never change user-specified order parameter (symbol, price, qty, type, TIF) without explicit user approval |
+| 2026-07-02 | `314dfe8` | Bug fix — `_resolve_conid` in `claude_tools.py` used `/iserver/secdef/search` for FUT (undocumented for that type); now dispatches to `/trsrv/futures` same as `_resolve_snapshot_conid`; `_preview_order` adds 536-B fields for FUT/FOP; `"STP LMT"` → `"STOP_LIMIT"`; `quantity` `float` → `int` |
+| 2026-07-02 | `314dfe8` | IBKR CP API place-order field spec scraped and documented inline in `order_flow.py`; CLAUDE.md Order Staging Flow section fully rewritten; README.md new Order Staging section |
+| 2026-07-03 (mcp) | `252729f` | Bug fix — `_get_statement` in `flex_query.py` no longer swallows Warn/1019 as a successful statement |
+| 2026-07-03 (mcp) | `3fb22f4` | Bug fix — `get_analytics` annualizes by timeframe (daily/weekly/monthly), not always as daily returns |
+| 2026-07-03 (mcp) | `9a4181d` | Bug fix — `get_positions` tolerates present-but-null `mktValue`/`unrealizedPnl` fields (IBKR sends null for some position types) |
+| 2026-07-03 (mcp) | `7559ff2` | Bug fix — backtest sandbox error detail now reaches the LLM for self-correction (was swallowed) |
+| 2026-07-03 | `f60b740` `f68c43d` | **Prompt caching** — cache usage telemetry (`_log_cache_usage`); prompt-cache breakpoint on tools array; WARNING when cache inactive (silent failure detection) |
+| 2026-07-03 | `bb77111` `c53c91c` | **Prompt caching contd.** — system prompt to block form (2nd breakpoint); conversation history cache marker (3rd breakpoint); system prompt built **once per session** (load-time), hot-reload event-driven — not per-message; live-verified: 22 047-token static prefix cached at 0.1× on every subsequent call |
+| 2026-07-03 | `4c0edd6` `7e65d9b` `d39d52b` | **GDrive sync correctness** (G1-G3): `upload_db` sends WAL-consistent SQLite backup snapshot (G1); `download_db` freshness guard — never overwrites newer local DB with older Drive copy (G2); stale WAL/SHM sidecars removed before downloaded DB lands (G3) |
+| 2026-07-03 | `1ea122d` | Bug fix — `fetch_web_page` SSRF guard applied to every redirect hop (S1); previously only checked the initial URL |
+| 2026-07-03 | `ddb0ef9` | Refactor — remove dead `relationships` table and `decisions` FTS index (M2); never wired to any caller; existing DBs migrated safely |
 
 ---
 
@@ -91,7 +99,7 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 
 Everything below is unit-tested but has not been verified with a real running session. These are the live test checklist items to work through.
 
-**Priority order:** §4c Market & Account Data → §6 TradingView Live → §5 Order Staging → §7 Flex History → §9.3 Security → §4b Price Alerts (deferred)
+**Priority order for next session:** §5 Order Submit Re-test (AAPL STK, SPY ETF, ES FUT) → §6 TradingView Live → §4b Price Alerts → §9.3 Security
 
 ---
 
@@ -288,6 +296,43 @@ Everything below is unit-tested but has not been verified with a real running se
 | 2026-06-24 | inline | GDrive DB download (§2.1), hot-reload (§2.3), End Session + Drive upload (§2.4), doc versioning list+get (§3), conversation memory FTS5 recall (§8), security refusals (§9.1, §9.2) | 6 bugs found and fixed: GDrive deadlock, IBKR auth check, hot-reload async bridge (3 separate bugs), `_LOCAL_TOOL_NAMES` dispatch gap, `get_last_context_hash` open-session filter, watchdog path comparison | PASS (IBKR/TV skipped — offline) |
 | 2026-06-30 | inline | §1 startup (runs 1–3), §7 flex integrity (2 runs), TV sidecar debugging and fix | 3 bugs found and fixed: wrong app name `"Trading View"`→`"TradingView"`; `_tv_already_running_without_debug()` detection; `AsyncIOTaskInfo.__init__` Python 3.14 compat (5th anyio patch); Drive: TESTREF artifact deleted, duplicate XML deleted; verify_flex_import CLEAN PASS 9 files/983 tradeIDs; TV connected run 3: 78 tools/14 curated | IN PROGRESS — §6 TV live tests next |
 | 2026-07-01/02 | inline | §5 Order Staging live test — full flow from proposal to dialog | 9 bugs found and fixed (see §5 checklist); ORDER PARAMETER IMMUTABILITY violation caught; AppKit NSAlert built to replace tkinter; full futures order support added (CME 536-B, conid dispatch, multiplier-aware notional); IBKR field spec scraped + documented; HTTP 400 "incorrect type" diagnosed + fixed; CLAUDE.md + README.md fully rewritten for order staging | IN PROGRESS — §5 submit success + §6 TV live next |
+| 2026-07-03 | inline | Prompt caching (3 breakpoints), GDrive G1-G3, SSRF S1 redirect fix, M2 dead code removal; ibkr_core_mcp analytics/positions/backtest/flex fixes; project-status.md alignment review | No new bugs found during review; all `agent.py` + `claude_tools.py` changes verified aligned with CLAUDE.md | COMPLETE — next: §5 order submit re-test + §6 TV live |
+
+---
+
+## Next Session Plan (2026-07-03 → )
+
+**Goal:** Complete §5 order submit end-to-end, then §6 TradingView live tools.
+
+### §5 Order Submit — re-test + new asset classes
+
+For each instrument: `get_order_preview` (whatif) → stage proposal → approve Gate 2 dialog → confirm success + `get_live_orders` → cancel order.
+
+| Instrument | Type | Why |
+|---|---|---|
+| `BUY 1 AAPL LMT @ $100 GTC` | STK | Blocked since 2026-07-01 — HTTP 400 fixed but not re-tested |
+| `BUY 1 SPY LMT @ $400 GTC` | STK (ETF) | ETF-specific rules — check `get_contract_rules` first |
+| `BUY 1 ES front-month LMT @ $4000 GTC` | FUT | CME 536-B fields, `get_futures` conid, multiplier in notional |
+
+After each: verify with `get_live_orders`, then `cancel_order` — confirm gone.
+
+Also test: `reply_order` if IBKR returns a mid-order question/confirmation prompt.
+
+**Gate reminder:** §5 tests go through the ClaudIA Chainlit UI (biometric + NSAlert gates). Raw IBKRClient order-write tests (if any) stay in a separate file, not `test_client_live.py`.
+
+### §6 TradingView Live Tools
+
+Requires TradingView Desktop running with `--remote-debugging-port=9222`.
+
+- "What's on my chart right now?" → `chart_get_state` → symbol + timeframe + indicators
+- "What's the current price of TSLA?" → `quote_get` → live price
+- "Write a 20/50 SMA crossover in Pine Script" → code generated → "Inject into TradingView" button → `pine_set_source` → Pine Editor populated
+- "Change chart to NVDA daily" → `chart_set_symbol` + `chart_set_timeframe` → chart updates
+- Drag/paste a screenshot → ClaudIA analyzes via vision (no sidecar needed)
+
+### §9.3 Security
+
+- Confirm `ANTHROPIC_API_KEY` never appears in chat output or Chainlit logs
 
 ---
 
@@ -313,7 +358,7 @@ Everything below is unit-tested but has not been verified with a real running se
 | Env allowlist tested twice (tradingview + security_regressions) | both test files | Low maintenance risk |
 | Drive archive creates duplicate files on double `on_chat_start` | `ibkr_core_mcp/cache.py` `upload_account_file_bytes` | 2026-06-30: page refresh fires `on_chat_start` twice → two uploads of same XML; `_find_file` pattern already used for `claudia.db` should be applied here — check for existing filename before uploading, update in place |
 | TradingView sidecar crashes on Python 3.14 when TV Desktop not running | `claudia/tradingview.py` | 2026-06-30: **FIXED in `app.py`** — patched `AsyncIOTaskInfo.__init__` to return stub TaskInfo when `task=None`; `task_info` only used in `__repr__`, stub is safe. Sidecar now connects when CDP port 9222 is up (confirmed run 3: 78 tools, 14 curated). Residual: when TV Desktop is truly not running, the sidecar subprocess exits immediately and the same cleanup path fires — screenshot mode remains the correct fallback in that case. |
-| §5 order submit not yet confirmed end-to-end | `claudia/order_flow.py` | 2026-07-02: HTTP 400 "incorrect type" diagnosed and fixed (`int(qty)`, no 536-B fields for STK) but not re-tested in live session. Next session: re-run `BUY 1 AAPL LMT @ $100 GTC` and verify success + `get_live_orders` + cancel. |
+| §5 order submit not yet confirmed end-to-end | `claudia/order_flow.py` | 2026-07-02: HTTP 400 "incorrect type" diagnosed and fixed (`int(qty)`, no 536-B fields for STK) but not re-tested in live session. **Next session (top priority):** re-run `BUY 1 AAPL LMT @ $100 GTC` → approve dialog → verify success + `get_live_orders` + cancel. Then repeat for SPY (ETF) and ES front-month (FUT). |
 | FOP conid resolution requires pre-resolved conid | `claudia/order_flow.py` | 2026-07-02: FOP without `conid` in proposal → clear error message directing user to call `get_option_strikes` first. FOP with `conid` set → proceeds normally with 536-B fields. Full chain resolution (expiry+strike+right) requires OPT/FOP conid lookup flow — same gap as item 12 in pending doc verification. |
 
 ---
