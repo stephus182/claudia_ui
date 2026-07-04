@@ -203,7 +203,7 @@ All four subfolders are auto-created on first use. Set `GDRIVE_DB_FOLDER_ID`, `G
 4. To enable Drive context/principles: upload `docs/context.md` and `docs/principles.md`
    to the **root** folder via the Drive web UI (not inside `db/`)
 
-### Hot-reload behaviour
+### Hot-reload behavior
 
 Drive texts are fetched once per session start. The watchdog still watches local files — editing `docs/context.md` while a session runs clears the Drive override and uses the local file from the next message.
 
