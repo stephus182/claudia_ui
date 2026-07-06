@@ -262,6 +262,20 @@ async def test_execute_staged_order_dialog_cancel_error():
 
 
 @pytest.mark.asyncio
+async def test_execute_staged_order_reply_chain_decline_error():
+    """'declined IBKR order reply' (place_order_and_confirm mid-chain decline) →
+    a message distinct from the Touch ID failure text, since Gate 1 succeeded and
+    the user consciously declined a follow-up IBKR prompt after the order was placed."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.side_effect = RuntimeError("User declined IBKR order reply")
+    action = _make_action()
+    mock_cl = await _run(action, ibkr_mod)
+    contents = _sent_contents(mock_cl)
+    assert any("follow-up IBKR confirmation" in c for c in contents)
+    assert not any("authentication failed or was cancelled" in c for c in contents)
+
+
+@pytest.mark.asyncio
 async def test_execute_staged_order_generic_error():
     """Generic exception → generic 'Order staging failed' message."""
     ibkr_mod, client = _make_ibkr_mock()
