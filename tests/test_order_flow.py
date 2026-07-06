@@ -157,7 +157,7 @@ def _make_ibkr_mock():
          "contractDesc": "ES SEP 26"},
     ]
     client.get_accounts.return_value = [{"accountId": "U12345"}]
-    client.place_order.return_value = [{"orderId": "999"}]
+    client.place_order_and_confirm.return_value = [{"orderId": "999"}]
     return mod, client
 
 
@@ -214,7 +214,7 @@ async def test_execute_staged_order_contract_not_found():
     action = _make_action()
     mock_cl = await _run(action, ibkr_mod)
     assert any("Could not find contract" in c for c in _sent_contents(mock_cl))
-    client.place_order.assert_not_called()
+    client.place_order_and_confirm.assert_not_called()
     action.remove.assert_called_once()
 
 
@@ -245,7 +245,7 @@ async def test_execute_staged_order_success_logs_decision():
 async def test_execute_staged_order_touch_id_error():
     """'authentication' in error → Touch ID failure message."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.place_order.side_effect = RuntimeError("Authentication challenge failed")
+    client.place_order_and_confirm.side_effect = RuntimeError("Authentication challenge failed")
     action = _make_action()
     mock_cl = await _run(action, ibkr_mod)
     assert any("Touch ID" in c for c in _sent_contents(mock_cl))
@@ -255,7 +255,7 @@ async def test_execute_staged_order_touch_id_error():
 async def test_execute_staged_order_dialog_cancel_error():
     """'cancelled by user' in error → dialog cancellation message."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.place_order.side_effect = RuntimeError("Order cancelled by user")
+    client.place_order_and_confirm.side_effect = RuntimeError("Order cancelled by user")
     action = _make_action()
     mock_cl = await _run(action, ibkr_mod)
     assert any("cancelled at" in c for c in _sent_contents(mock_cl))
@@ -265,7 +265,7 @@ async def test_execute_staged_order_dialog_cancel_error():
 async def test_execute_staged_order_generic_error():
     """Generic exception → generic 'Order staging failed' message."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.place_order.side_effect = RuntimeError("Connection reset")
+    client.place_order_and_confirm.side_effect = RuntimeError("Connection reset")
     action = _make_action()
     mock_cl = await _run(action, ibkr_mod)
     assert any("Order staging failed" in c or "Order not placed" in c
@@ -285,7 +285,7 @@ async def test_execute_staged_order_remove_called_on_success():
 async def test_execute_staged_order_remove_called_on_exception():
     """action.remove() called even when place_order raises."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.place_order.side_effect = RuntimeError("IBKR error")
+    client.place_order_and_confirm.side_effect = RuntimeError("IBKR error")
     action = _make_action()
     await _run(action, ibkr_mod)
     action.remove.assert_called_once()
@@ -300,8 +300,8 @@ async def test_execute_staged_order_limit_price_in_order_body():
         "order_type": "LMT", "limit_price": 245.0, "stop_price": None, "reason": "Dip buy",
     })
     await _run(action, ibkr_mod)
-    client.place_order.assert_called_once()
-    _account_id, order_body = client.place_order.call_args.args
+    client.place_order_and_confirm.assert_called_once()
+    _account_id, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("price") == 245.0
     assert order_body.get("orderType") == "LMT"
 
@@ -315,7 +315,7 @@ async def test_execute_staged_order_quantity_is_int():
         "order_type": "MKT",
     })
     await _run(action, ibkr_mod)
-    _, order_body = client.place_order.call_args.args
+    _, order_body = client.place_order_and_confirm.call_args.args
     assert isinstance(order_body.get("quantity"), int)
 
 
@@ -328,7 +328,7 @@ async def test_execute_staged_order_stk_no_cme_fields():
         "order_type": "MKT", "sec_type": "STK",
     })
     await _run(action, ibkr_mod)
-    _, order_body = client.place_order.call_args.args
+    _, order_body = client.place_order_and_confirm.call_args.args
     assert "manualIndicator" not in order_body
     assert "extOperator" not in order_body
 
@@ -357,7 +357,7 @@ async def test_execute_staged_order_fut_cme_536b_fields():
         "order_type": "MKT", "sec_type": "FUT",
     })
     await _run(action, ibkr_mod)
-    _, order_body = client.place_order.call_args.args
+    _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("manualIndicator") is True
     assert order_body.get("extOperator") == "ClaudIA"
 
@@ -376,7 +376,7 @@ async def test_execute_staged_order_fut_multiplier_in_order_body():
         "order_type": "LMT", "limit_price": 5500.0, "sec_type": "FUT",
     })
     await _run(action, ibkr_mod)
-    _, order_body = client.place_order.call_args.args
+    _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("_multiplier") == 50.0
 
 
@@ -392,7 +392,7 @@ async def test_execute_staged_order_fut_no_multiplier_field_when_absent():
         "order_type": "MKT", "sec_type": "FUT",
     })
     await _run(action, ibkr_mod)
-    _, order_body = client.place_order.call_args.args
+    _, order_body = client.place_order_and_confirm.call_args.args
     assert "_multiplier" not in order_body
 
 
@@ -407,7 +407,7 @@ async def test_execute_staged_order_fut_not_found():
     })
     mock_cl = await _run(action, ibkr_mod)
     assert any("futures contracts" in c for c in _sent_contents(mock_cl))
-    client.place_order.assert_not_called()
+    client.place_order_and_confirm.assert_not_called()
     action.remove.assert_called_once()
 
 
@@ -425,7 +425,7 @@ async def test_execute_staged_order_fut_front_month_selected():
         "order_type": "MKT", "sec_type": "FUT",
     })
     await _run(action, ibkr_mod)
-    _, order_body = client.place_order.call_args.args
+    _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("conid") == 495512557  # lowest expirationDate = front month
 
 
@@ -442,7 +442,7 @@ async def test_execute_staged_order_conid_override_skips_resolution():
     await _run(action, ibkr_mod)
     client.search_contract.assert_not_called()
     client.get_futures.assert_not_called()
-    _, order_body = client.place_order.call_args.args
+    _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("conid") == 265598
 
 
@@ -456,7 +456,7 @@ async def test_execute_staged_order_conid_override_works_for_fut():
     })
     await _run(action, ibkr_mod)
     client.get_futures.assert_not_called()
-    _, order_body = client.place_order.call_args.args
+    _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("conid") == 495512557
     # FUT 536-B fields still added when sec_type is FUT
     assert order_body.get("manualIndicator") is True
@@ -476,7 +476,7 @@ async def test_execute_staged_order_fop_without_conid_sends_error():
     contents = _sent_contents(mock_cl)
     assert any("FOP" in c or "Futures Options" in c or "conid" in c.lower()
                for c in contents)
-    client.place_order.assert_not_called()
+    client.place_order_and_confirm.assert_not_called()
     action.remove.assert_called_once()
 
 
@@ -489,8 +489,8 @@ async def test_execute_staged_order_fop_with_conid_proceeds():
         "order_type": "LMT", "limit_price": 50.0, "sec_type": "FOP", "conid": 999888,
     })
     await _run(action, ibkr_mod)
-    client.place_order.assert_called_once()
-    _, order_body = client.place_order.call_args.args
+    client.place_order_and_confirm.assert_called_once()
+    _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("conid") == 999888
     assert order_body.get("manualIndicator") is True
     assert order_body.get("extOperator") == "ClaudIA"
