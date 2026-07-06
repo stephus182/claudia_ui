@@ -6,9 +6,11 @@ The LLM never calls this code directly. Flow:
   2. agent.py parses it and calls render_order_proposal().
   3. User sees a message with full order details + "Stage this order" button.
   4. User clicks the button → execute_staged_order() fires.
-  5. IBKRClient.place_order() fires:
+  5. IBKRClient.place_order_and_confirm() fires:
        Gate 1 — Touch ID (human_auth.require_touch_id)
        Gate 2 — AppKit colored dialog, green/BUY or red/SELL (order_confirm)
+       Any chained IBKR reply prompts are resolved in a loop, each re-running
+       Gate 1 + Gate 2 with the real IBKR warning text, until a terminal response.
   6. On success, result is logged to ConversationStore.decisions (if store is wired).
 
 No order can be placed without steps 3–5 happening via physical user interaction.
@@ -94,7 +96,8 @@ async def execute_staged_order(
     store: "ConversationStore | None" = None,
 ) -> None:
     """
-    Execute the staged order by calling IBKRClient.place_order().
+    Execute the staged order by calling IBKRClient.place_order_and_confirm(), which
+    resolves any chained IBKR reply prompts before returning.
 
     Gate 1 — Touch ID (require_touch_id in ibkr_core_mcp.human_auth)
     Gate 2 — AppKit colored dialog: green for BUY, red for SELL (ibkr_core_mcp.order_confirm).
@@ -287,6 +290,8 @@ async def execute_staged_order(
         # Check most-specific patterns first so dialog-cancel doesn't show as Touch ID failure
         if "cancelled by user" in error_msg.lower():
             display_error = "Order was cancelled at the confirmation dialog."
+        elif "declined ibkr order reply" in error_msg.lower():
+            display_error = "Order was placed but declined at a follow-up IBKR confirmation prompt — check IBKR for its current status."
         elif "timed out" in error_msg.lower() and "touch" not in error_msg.lower():
             display_error = "Confirmation dialog timed out (60 seconds) — order not placed."
         elif "authentication" in error_msg.lower() or "touch" in error_msg.lower() or "HumanAuth" in exc_type:
