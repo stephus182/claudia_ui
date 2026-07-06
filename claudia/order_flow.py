@@ -252,7 +252,7 @@ async def execute_staged_order(
         account_id = accounts[0].get("accountId", accounts[0].get("acctId", accounts[0].get("id", ""))) if accounts else ""
         order_body["acctId"] = account_id
         log.info("Placing order: %s", {k: v for k, v in order_body.items() if not k.startswith("_")})
-        result = ibkr.place_order(account_id, order_body)
+        result = ibkr.place_order_and_confirm(account_id, order_body)
 
         success_text = (
             f"**Order staged successfully:** {action_str} {qty} {symbol} ({otype})\n"
