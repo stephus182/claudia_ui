@@ -732,8 +732,10 @@ Run: `python -c "import claudia.app"`
 Expected: no output, exit code 0.
 
 Run: `pytest -q`
-Expected: 242 passed (223 baseline + 19 new from Task 1/2 — this task adds no new
-tests and must not break any existing ones).
+Expected: 245 passed (223 baseline + 22 new from Task 1/2 — the original 19 grew to
+22 during the code-quality review loop, which found and fixed a concurrency bug and
+added 3 more regression/coverage tests; this task adds no new tests and must not break
+any existing ones).
 
 - [ ] **Step 7: Commit**
 
@@ -821,7 +823,7 @@ git rm claudia/pnl_stream.py tests/test_pnl_stream.py
 - [ ] **Step 3: Verify the full suite**
 
 Run: `pytest -q`
-Expected: 229 passed (242 from Task 3 minus the 13 tests in the deleted
+Expected: 232 passed (245 from Task 3 minus the 13 tests in the deleted
 `tests/test_pnl_stream.py`: 3 `_run_once` tests + 4 `_run_with_retry` tests + 3
 lifecycle tests + 3 `format_pnl_snapshot` tests = 13).
 
@@ -936,7 +938,7 @@ git commit -m "docs: document ExecutionListener, replacing PnLStreamer docs"
 - [ ] **Step 1: Run the full unit test suite**
 
 Run: `pytest -q`
-Expected: 229 passed, 0 failed (223 baseline + 19 new in `tests/test_execution_listener.py`
+Expected: 232 passed, 0 failed (223 baseline + 22 new in `tests/test_execution_listener.py`
 − 13 removed with `tests/test_pnl_stream.py`).
 
 - [ ] **Step 2: Lint the touched files only**
