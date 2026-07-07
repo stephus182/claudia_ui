@@ -408,8 +408,9 @@ async def on_chat_start():
     5. Chainlit session state: toolkit, store, agent, loader
     6. tradingview-mcp sidecar connect (non-fatal if offline)
     7. ConnectivityChecker start (singleton — survives across sessions)
-    8. Welcome message with status summary + optional startup buttons
-    9. Background Flex sync (deferred, non-blocking)
+    8. PnLStreamer start (singleton — survives across sessions)
+    9. Welcome message with status summary + optional startup buttons
+    10. Background Flex sync (deferred, non-blocking)
 
     Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-start
     """
