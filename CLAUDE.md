@@ -144,6 +144,30 @@ Source: [IBKR Campus — Request & Modify Orders](https://www.interactivebrokers
 
 ---
 
+### Live P&L Streaming
+
+`claudia/pnl_stream.py`'s `PnLStreamer` runs a background WebSocket subscription to
+`ibkr_core_mcp`'s `spl` (P&L) topic for the life of the process — one subscription
+shared across all concurrent Chainlit sessions, started from `on_chat_start` (singleton,
+same pattern as `ConnectivityChecker`). Every tick is written to
+`SQLiteStore.pnl_snapshots` via `record_pnl_snapshot()`.
+
+ClaudIA does **not** run `ibkr_core_mcp.mcp_server` — `PnLStreamer` is a self-contained
+subscriber, consistent with ClaudIA's direct-import architecture (see top of this file).
+Retry/backoff on disconnect mirrors `ibkr_core_mcp.mcp_server._stream_loop_with_retry`'s
+shape (delays: 5s, 10s, 30s, 60s).
+
+Surfaced two ways:
+- **`get_live_pnl` tool** (`claudia/agent.py`, local tool) — on-demand, reads
+  `SQLiteStore.get_latest_pnl()` directly.
+- **Opening status block** (`claudia/app.py::on_chat_start`) — a "Live P&L" line in the
+  session-start welcome message; shows a "stream connecting" note until the first tick
+  arrives.
+
+Design spec: `docs/superpowers/specs/2026-07-06-live-pnl-streaming-design.md`
+
+---
+
 ### Market Data Fetch Behavior
 
 `fetch_market_data` uses `get_market_history_paginated()` in `ibkr_core_mcp/client.py`, which calls `GET /iserver/marketdata/history` with automatic pagination for requests exceeding the **1000 data point limit** (verified from official docs). Pagination uses the `startTime` parameter to walk backwards in 1000-calendar-day chunks.
