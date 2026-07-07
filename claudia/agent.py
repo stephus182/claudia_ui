@@ -561,11 +561,11 @@ class ClaudIAAgent:
         self._log_proposal(display_text, order_proposal, msg_id)
 
     def _handle_local_tool(self, name: str, inputs: dict) -> str:
-        """Dispatch the three locally-implemented tools and return a string result.
+        """Dispatch the five locally-implemented tools and return a string result.
 
         Local tools (list_doc_versions, get_doc_version, search_past_conversations,
-        fetch_web_page) are defined in TOOL_DEFINITIONS but executed here rather than
-        via toolkit.execute(). They always return a string — never raise.
+        fetch_web_page, get_live_pnl) are defined in TOOL_DEFINITIONS but executed here
+        rather than via toolkit.execute(). They always return a string — never raise.
         """
         if name == "list_doc_versions":
             versions = self._store.list_doc_versions()
