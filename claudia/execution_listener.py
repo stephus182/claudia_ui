@@ -65,8 +65,8 @@ def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
     """
     if latest is None:
         return (
-            "Live P&L not yet available — the P&L stream may still be "
-            "connecting, or no snapshot has been recorded yet."
+            "Live P&L not yet available — no trade execution has been recorded "
+            "yet, or the execution listener may still be connecting."
         )
 
     def _fmt_signed(v: float | None) -> str:
@@ -167,7 +167,7 @@ class ExecutionListener:
         try:
             await ws.connect()
             log.info("ExecutionListener: WebSocket connected")
-            await ws.subscribe_executions()
+            await ws.subscribe_executions(realtime_updates_only=True)
             pump_task = asyncio.create_task(self._pump(ws, queue))
             try:
                 try:

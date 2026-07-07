@@ -200,9 +200,10 @@ _LOCAL_TOOLS: list[dict] = [
     {
         "name": "get_live_pnl",
         "description": (
-            "Get the latest streamed account P&L snapshot (daily P&L, unrealized P&L, "
-            "net liquidity, excess liquidity, market value) from ClaudIA's live WebSocket "
-            "P&L subscription. Use when the user asks for current/live/real-time P&L. "
+            "Get the latest account P&L snapshot (daily P&L, unrealized P&L, "
+            "net liquidity, excess liquidity, market value), automatically refreshed "
+            "each time a trade executes (any origin — mobile, TWS, web, API). "
+            "Use when the user asks for current/live/real-time P&L. "
             "For historical performance analysis use get_analytics instead."
         ),
         "input_schema": {"type": "object", "properties": {}},
