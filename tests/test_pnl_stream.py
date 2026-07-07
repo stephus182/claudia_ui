@@ -203,3 +203,36 @@ async def test_stop_before_start_is_noop():
     streamer, _ = _make_streamer()
     await streamer.stop()  # must not raise
     assert streamer._task is None
+
+
+# ── format_pnl_snapshot ────────────────────────────────────────────────────────
+
+def test_format_pnl_snapshot_none():
+    from claudia.pnl_stream import format_pnl_snapshot
+    result = format_pnl_snapshot(None)
+    assert "not yet available" in result.lower()
+
+
+def test_format_pnl_snapshot_full():
+    from claudia.pnl_stream import format_pnl_snapshot
+    result = format_pnl_snapshot({
+        "account": "DU1234567.Core", "dpl": 12.5, "nl": 10000.0,
+        "upl": 3.0, "uel": 9000.0, "mv": 5000.0,
+    })
+    assert "DU1234567.Core" in result
+    assert "+12.50" in result
+    assert "10000.00" in result
+
+
+def test_format_pnl_snapshot_partial_fields_format_as_na():
+    """The exact bug this refactor fixes: a partial tick (normal for IBKR's
+    incremental spl updates) must show 'n/a' per-field, not discard the whole
+    snapshot as 'not yet available'."""
+    from claudia.pnl_stream import format_pnl_snapshot
+    result = format_pnl_snapshot({
+        "account": "DU1234567.Core", "dpl": None, "nl": 10000.0,
+        "upl": None, "uel": None, "mv": None,
+    })
+    assert "n/a" in result
+    assert "10000.00" in result
+    assert "not yet available" not in result.lower()
