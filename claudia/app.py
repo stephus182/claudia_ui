@@ -246,6 +246,7 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.gdrive_sync import GDriveSync
 from claudia.status import ConnectivityChecker
+from claudia.pnl_stream import PnLStreamer
 from claudia.tradingview import TradingViewBridge, launch_tradingview, check_cdp_running
 
 log = logging.getLogger(__name__)
@@ -265,6 +266,7 @@ _conv_store: ConversationStore | None = None
 _tv_bridge: TradingViewBridge | None = None
 _tv_bridge_lock = _asyncio.Lock()
 _connectivity_checker: ConnectivityChecker | None = None
+_pnl_streamer: PnLStreamer | None = None
 _gdrive_sync: GDriveSync | None = None
 
 
@@ -534,6 +536,17 @@ async def on_chat_start():
     if _tv_bridge is not None:
         _connectivity_checker.set_tv_bridge(_tv_bridge)
 
+    # Start P&L streamer (singleton — persists across sessions, account-wide not
+    # session-scoped). Construction is synchronous (no await between the None-check
+    # and assignment), so — like _connectivity_checker above — no lock is needed;
+    # this differs from _get_tv_bridge()'s lock, which guards an async subprocess spawn.
+    global _pnl_streamer
+    if _pnl_streamer is None:
+        cfg = _config or Config.from_env()
+        _config = cfg
+        _pnl_streamer = PnLStreamer(cfg.gateway_url, toolkit._store)
+    _pnl_streamer.start()
+
     # Build agent for this session
     agent = ClaudIAAgent(
         toolkit=toolkit,
@@ -561,14 +574,28 @@ async def on_chat_start():
         gateway_up = await cl.make_async(toolkit.client.ping)()
         if not gateway_up:
             raise ConnectionError("IBKR gateway not reachable")
-        (opening_text, _), (orders_text, _), (positions_text, _) = await _asyncio.gather(
+        (opening_text, _), (orders_text, _), (positions_text, _), latest_pnl = await _asyncio.gather(
             cl.make_async(toolkit.execute)("get_account_summary", {}),
             cl.make_async(toolkit.execute)("get_live_orders", {}),
             cl.make_async(toolkit.execute)("get_positions", {}),
+            cl.make_async(toolkit._store.get_latest_pnl)(),
         )
+        _pnl_fields = (
+            [latest_pnl.get(k) for k in ("dpl", "upl", "nl", "uel", "mv")]
+            if latest_pnl is not None else []
+        )
+        if latest_pnl is not None and all(v is not None for v in _pnl_fields):
+            dpl, upl, nl, uel, mv = _pnl_fields
+            pnl_text = (
+                f"Daily: {dpl:+.2f} | Unrealized: {upl:+.2f} | Net Liq: {nl:.2f} | "
+                f"Excess Liq: {uel:.2f} | Mkt Value: {mv:.2f}"
+            )
+        else:
+            pnl_text = "_Live P&L stream connecting…_"
         status_block = (
             f"**Account Summary**\n{opening_text}\n\n"
             f"**Open Positions**\n{positions_text}\n\n"
+            f"**Live P&L** (streaming)\n{pnl_text}\n\n"
             f"**Live Orders**\n{orders_text}"
         )
     except Exception as exc:
