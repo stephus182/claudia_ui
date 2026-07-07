@@ -143,6 +143,46 @@ async def test_capture_timeout_does_not_poison_subsequent_reads():
     assert item.execution_id == "E2"
 
 
+@pytest.mark.asyncio
+async def test_capture_pnl_once_propagates_stop_async_iteration_on_closed_mid_wait():
+    """A _CLOSED sentinel arriving while waiting for a PnLUpdate (WS closed mid-
+    capture) must propagate as StopAsyncIteration, not be silently swallowed."""
+    from claudia.execution_listener import _CLOSED
+
+    listener, store = _make_listener()
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(_CLOSED)
+
+    ws = MagicMock()
+    ws.subscribe_pnl = AsyncMock()
+    ws.unsubscribe_pnl = AsyncMock()
+
+    with pytest.raises(StopAsyncIteration):
+        await listener._capture_pnl_once(ws, queue)
+
+    store.record_pnl_snapshot.assert_not_called()
+    ws.unsubscribe_pnl.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_capture_pnl_once_propagates_forwarded_exception_mid_wait():
+    """An exception forwarded onto the queue (as _pump does on a real WS error)
+    while waiting for a PnLUpdate must propagate, not be silently swallowed."""
+    listener, store = _make_listener()
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(ConnectionError("dropped"))
+
+    ws = MagicMock()
+    ws.subscribe_pnl = AsyncMock()
+    ws.unsubscribe_pnl = AsyncMock()
+
+    with pytest.raises(ConnectionError, match="dropped"):
+        await listener._capture_pnl_once(ws, queue)
+
+    store.record_pnl_snapshot.assert_not_called()
+    ws.unsubscribe_pnl.assert_awaited_once()
+
+
 # ── _capture_pnl_until_settled ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
