@@ -157,12 +157,18 @@ subscriber, consistent with ClaudIA's direct-import architecture (see top of thi
 Retry/backoff on disconnect mirrors `ibkr_core_mcp.mcp_server._stream_loop_with_retry`'s
 shape (delays: 5s, 10s, 30s, 60s).
 
+Both surfaces render via the same `format_pnl_snapshot()` helper (`claudia/pnl_stream.py`)
+so they can't drift out of sync: IBKR's `spl` topic sends incremental ticks, so any single
+numeric field can be `None` on the latest row even while the stream is healthy —
+`format_pnl_snapshot()` renders each field independently ("n/a" for that one field only)
+rather than discarding the whole snapshot. The "stream connecting…" fallback only appears
+before the very first snapshot has ever been recorded.
+
 Surfaced two ways:
 - **`get_live_pnl` tool** (`claudia/agent.py`, local tool) — on-demand, reads
   `SQLiteStore.get_latest_pnl()` directly.
-- **Opening status block** (`claudia/app.py::on_chat_start`) — a "Live P&L" line in the
-  session-start welcome message; shows a "stream connecting" note until the first tick
-  arrives.
+- **Opening status block** (`claudia/app.py::on_chat_start`) — an "Account P&L
+  (streaming)" section in the session-start welcome message.
 
 Design spec: `docs/superpowers/specs/2026-07-06-live-pnl-streaming-design.md`
 
