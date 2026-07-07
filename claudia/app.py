@@ -246,7 +246,7 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.gdrive_sync import GDriveSync
 from claudia.status import ConnectivityChecker
-from claudia.pnl_stream import PnLStreamer, format_pnl_snapshot
+from claudia.execution_listener import ExecutionListener, format_pnl_snapshot
 from claudia.tradingview import TradingViewBridge, launch_tradingview, check_cdp_running
 
 log = logging.getLogger(__name__)
@@ -266,7 +266,7 @@ _conv_store: ConversationStore | None = None
 _tv_bridge: TradingViewBridge | None = None
 _tv_bridge_lock = _asyncio.Lock()
 _connectivity_checker: ConnectivityChecker | None = None
-_pnl_streamer: PnLStreamer | None = None
+_execution_listener: ExecutionListener | None = None
 _gdrive_sync: GDriveSync | None = None
 
 
@@ -408,7 +408,7 @@ async def on_chat_start():
     5. Chainlit session state: toolkit, store, agent, loader
     6. tradingview-mcp sidecar connect (non-fatal if offline)
     7. ConnectivityChecker start (singleton — survives across sessions)
-    8. PnLStreamer start (singleton — survives across sessions)
+    8. ExecutionListener start (singleton — survives across sessions)
     9. Welcome message with status summary + optional startup buttons
     10. Background Flex sync (deferred, non-blocking)
 
@@ -537,16 +537,18 @@ async def on_chat_start():
     if _tv_bridge is not None:
         _connectivity_checker.set_tv_bridge(_tv_bridge)
 
-    # Start P&L streamer (singleton — persists across sessions, account-wide not
-    # session-scoped). Construction is synchronous (no await between the None-check
-    # and assignment), so — like _connectivity_checker above — no lock is needed;
-    # this differs from _get_tv_bridge()'s lock, which guards an async subprocess spawn.
-    global _pnl_streamer
-    if _pnl_streamer is None:
+    # Start execution listener (singleton — persists across sessions, account-wide
+    # not session-scoped). Listens for trade executions (any origin) and triggers a
+    # one-shot P&L check per execution — see claudia/execution_listener.py.
+    # Construction is synchronous (no await between the None-check and assignment),
+    # so — like _connectivity_checker above — no lock is needed; this differs from
+    # _get_tv_bridge()'s lock, which guards an async subprocess spawn.
+    global _execution_listener
+    if _execution_listener is None:
         cfg = _config or Config.from_env()
         _config = cfg
-        _pnl_streamer = PnLStreamer(cfg.gateway_url, toolkit._store)
-    _pnl_streamer.start()
+        _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
+    _execution_listener.start()
 
     # Build agent for this session
     agent = ClaudIAAgent(
@@ -585,7 +587,7 @@ async def on_chat_start():
         status_block = (
             f"**Account Summary**\n{opening_text}\n\n"
             f"**Open Positions**\n{positions_text}\n\n"
-            f"**Account P&L** (streaming)\n{pnl_text}\n\n"
+            f"**Account P&L**\n{pnl_text}\n\n"
             f"**Live Orders**\n{orders_text}"
         )
     except Exception as exc:
