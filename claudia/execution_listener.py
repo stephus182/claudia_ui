@@ -17,6 +17,17 @@ executions) — a sparse, meaningful signal — and transiently subscribes to sp
 only long enough to capture one P&L tick after a trade happens. See
 docs/superpowers/specs/2026-07-07-execution-triggered-pnl-design.md.
 
+A background "pump" task drains ws.listen() into an asyncio.Queue, and both
+the outer execution loop and the transient P&L capture read from that queue
+rather than driving ws.listen()'s async generator directly from two places.
+This matters: asyncio.wait_for(listen_iter.__anext__(), timeout) cancelling
+on timeout throws CancelledError into the generator at its suspension point,
+which permanently exhausts it (subsequent __anext__() calls raise
+StopAsyncIteration even though the underlying connection is still healthy) --
+silently dropping any execution that arrives after a capture timeout.
+Cancelling a queue.get() waiter has no such effect on the queue or the pump
+task producing into it.
+
 Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ws-trades-sub
 Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ws-pnl-sub
 """
@@ -41,6 +52,8 @@ log = logging.getLogger(__name__)
 
 _RETRY_DELAYS = [5, 10, 30, 60]  # seconds between reconnect attempts
 _PNL_CAPTURE_TIMEOUT = 10.0  # seconds to wait for a P&L tick after an execution
+
+_CLOSED = object()  # sentinel: the pump task signals a clean WebSocket close
 
 
 def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
@@ -70,6 +83,19 @@ def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
         f"Excess Liquidity: {_fmt(latest['uel'])} | "
         f"Market Value: {_fmt(latest['mv'])}"
     )
+
+
+async def _next_item(queue: "asyncio.Queue[Any]") -> Any:
+    """Pull the next item from the pump queue. Converts the _CLOSED sentinel
+    into StopAsyncIteration and a forwarded exception into a real raise, so
+    every caller (the outer execution loop and the P&L capture loop) shares
+    one consistent signal contract regardless of which one is reading."""
+    item = await queue.get()
+    if item is _CLOSED:
+        raise StopAsyncIteration
+    if isinstance(item, BaseException):
+        raise item
+    return item
 
 
 class ExecutionListener:
@@ -137,33 +163,52 @@ class ExecutionListener:
         cookie = session.headers.get("Cookie", "")
 
         ws = IBKRWebSocket(self._gateway_url, cookie)
+        queue: "asyncio.Queue[Any]" = asyncio.Queue()
         try:
             await ws.connect()
             log.info("ExecutionListener: WebSocket connected")
             await ws.subscribe_executions()
-            listen_iter = ws.listen()
+            pump_task = asyncio.create_task(self._pump(ws, queue))
             try:
-                while True:
-                    item = await listen_iter.__anext__()
-                    if isinstance(item, TradeExecution):
-                        await self._capture_pnl_until_settled(ws, listen_iter)
-            except StopAsyncIteration:
-                return  # WebSocket closed cleanly — _run_with_retry treats a
-                        # clean return as a reconnect-after-5s, not an error
+                try:
+                    while True:
+                        item = await _next_item(queue)
+                        if isinstance(item, TradeExecution):
+                            await self._capture_pnl_until_settled(ws, queue)
+                except StopAsyncIteration:
+                    return  # WebSocket closed cleanly — _run_with_retry treats
+                            # a clean return as a reconnect-after-5s, not an error
+            finally:
+                pump_task.cancel()
+                try:
+                    await pump_task
+                except asyncio.CancelledError:
+                    pass
         finally:
             await ws.disconnect()
 
-    async def _capture_pnl_until_settled(self, ws: IBKRWebSocket, listen_iter) -> None:
+    async def _pump(self, ws: IBKRWebSocket, queue: "asyncio.Queue[Any]") -> None:
+        """Continuously drain ws.listen() into queue. Decouples the WebSocket's
+        single underlying async generator from the multiple places that need
+        to consume from it — see the module docstring for why this matters."""
+        try:
+            async for item in ws.listen():
+                await queue.put(item)
+            await queue.put(_CLOSED)
+        except Exception as exc:
+            await queue.put(exc)
+
+    async def _capture_pnl_until_settled(self, ws: IBKRWebSocket, queue: "asyncio.Queue[Any]") -> None:
         """Run one-shot P&L capture rounds until a round completes with no
         additional executions observed during it. Account P&L is cumulative,
         so one snapshot after the last known execution is sufficient — no need
         for one snapshot per execution — but no execution may be silently
         dropped as a trigger."""
-        while await self._capture_pnl_once(ws, listen_iter):
+        while await self._capture_pnl_once(ws, queue):
             pass  # another execution landed mid-round — run one more, fresh round
 
     async def _capture_pnl_once(
-        self, ws: IBKRWebSocket, listen_iter, timeout: float = _PNL_CAPTURE_TIMEOUT
+        self, ws: IBKRWebSocket, queue: "asyncio.Queue[Any]", timeout: float = _PNL_CAPTURE_TIMEOUT
     ) -> bool:
         """Subscribe to spl, wait for exactly one PnLUpdate (bounded by timeout),
         record it, unsubscribe. Returns True if a TradeExecution arrived during
@@ -179,7 +224,7 @@ class ExecutionListener:
                     log.warning("ExecutionListener: timed out waiting for P&L tick after execution")
                     return saw_extra_execution
                 try:
-                    item = await asyncio.wait_for(listen_iter.__anext__(), remaining)
+                    item = await asyncio.wait_for(_next_item(queue), remaining)
                 except asyncio.TimeoutError:
                     log.warning("ExecutionListener: timed out waiting for P&L tick after execution")
                     return saw_extra_execution

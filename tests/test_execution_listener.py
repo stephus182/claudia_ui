@@ -40,15 +40,14 @@ async def test_capture_pnl_once_records_and_returns_false_when_no_extra_executio
         account="DU1234567.Core", row_type=1, dpl=12.5, nl=10000.0,
         upl=3.0, uel=9000.0, mv=5000.0,
     )
-
-    async def fake_iter():
-        yield pnl
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(pnl)
 
     ws = MagicMock()
     ws.subscribe_pnl = AsyncMock()
     ws.unsubscribe_pnl = AsyncMock()
 
-    result = await listener._capture_pnl_once(ws, fake_iter())
+    result = await listener._capture_pnl_once(ws, queue)
 
     assert result is False
     store.record_pnl_snapshot.assert_called_once_with(
@@ -66,16 +65,15 @@ async def test_capture_pnl_once_returns_true_when_execution_seen_mid_wait():
     listener, store = _make_listener()
     execution = TradeExecution(execution_id="E2")
     pnl = PnLUpdate(account="DU1234567.Core", dpl=1.0, nl=1.0, upl=1.0, uel=1.0, mv=1.0)
-
-    async def fake_iter():
-        yield execution
-        yield pnl
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(execution)
+    queue.put_nowait(pnl)
 
     ws = MagicMock()
     ws.subscribe_pnl = AsyncMock()
     ws.unsubscribe_pnl = AsyncMock()
 
-    result = await listener._capture_pnl_once(ws, fake_iter())
+    result = await listener._capture_pnl_once(ws, queue)
 
     assert result is True
     store.record_pnl_snapshot.assert_called_once()
@@ -84,16 +82,13 @@ async def test_capture_pnl_once_returns_true_when_execution_seen_mid_wait():
 @pytest.mark.asyncio
 async def test_capture_pnl_once_times_out_without_pnl_update():
     listener, store = _make_listener()
-
-    async def never_arrives():
-        await asyncio.sleep(1)
-        yield  # pragma: no cover — unreachable given the short timeout below
+    queue: asyncio.Queue = asyncio.Queue()  # nothing ever put on it
 
     ws = MagicMock()
     ws.subscribe_pnl = AsyncMock()
     ws.unsubscribe_pnl = AsyncMock()
 
-    result = await listener._capture_pnl_once(ws, never_arrives(), timeout=0.05)
+    result = await listener._capture_pnl_once(ws, queue, timeout=0.05)
 
     assert result is False
     store.record_pnl_snapshot.assert_not_called()
@@ -109,14 +104,43 @@ async def test_capture_pnl_once_unsubscribe_error_does_not_mask_original_excepti
     ws.subscribe_pnl = AsyncMock()
     ws.unsubscribe_pnl = AsyncMock(side_effect=RuntimeError("also broken"))
 
-    class _BrokenIter:
-        async def __anext__(self):
+    class _BrokenQueue:
+        async def get(self):
             raise ConnectionError("dropped")
 
     with pytest.raises(ConnectionError, match="dropped"):
-        await listener._capture_pnl_once(ws, _BrokenIter(), timeout=0.05)
+        await listener._capture_pnl_once(ws, _BrokenQueue(), timeout=0.05)
 
     ws.unsubscribe_pnl.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_capture_timeout_does_not_poison_subsequent_reads():
+    """Regression test for the queue-based fan-out: a capture round that times
+    out (no PnLUpdate ever arrives) must not corrupt the shared queue — a later
+    item put on the same queue must still be retrievable. A raw-async-generator
+    implementation (asyncio.wait_for(gen.__anext__(), timeout)) permanently
+    exhausts the generator on a cancelled-by-timeout __anext__() call; a
+    queue.get() call has no such effect when cancelled."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    listener, store = _make_listener()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    ws = MagicMock()
+    ws.subscribe_pnl = AsyncMock()
+    ws.unsubscribe_pnl = AsyncMock()
+
+    # Capture round times out — nothing is ever put on the queue during this call.
+    result = await listener._capture_pnl_once(ws, queue, timeout=0.05)
+    assert result is False
+    store.record_pnl_snapshot.assert_not_called()
+
+    # The SAME queue must still work correctly afterward.
+    await queue.put(TradeExecution(execution_id="E2"))
+    item = await asyncio.wait_for(queue.get(), timeout=1.0)
+    assert isinstance(item, TradeExecution)
+    assert item.execution_id == "E2"
 
 
 # ── _capture_pnl_until_settled ────────────────────────────────────────────────
