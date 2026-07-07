@@ -585,7 +585,7 @@ async def on_chat_start():
         status_block = (
             f"**Account Summary**\n{opening_text}\n\n"
             f"**Open Positions**\n{positions_text}\n\n"
-            f"**Live P&L** (streaming)\n{pnl_text}\n\n"
+            f"**Account P&L** (streaming)\n{pnl_text}\n\n"
             f"**Live Orders**\n{orders_text}"
         )
     except Exception as exc:
