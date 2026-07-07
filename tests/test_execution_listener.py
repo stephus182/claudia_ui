@@ -259,6 +259,32 @@ async def test_run_once_disconnects_even_on_listen_error():
     ws.disconnect.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_run_once_end_to_end_reconciles_burst_through_real_pump_and_capture():
+    """True integration test: drives the real (unmocked) pump -> queue ->
+    _capture_pnl_until_settled -> _capture_pnl_once chain through a burst of two
+    executions followed by two PnLUpdate ticks, confirming the whole pipeline
+    reconciles correctly end-to-end (not just each piece in isolation, which is
+    what every other test in this file does)."""
+    from ibkr_core_mcp.streaming import PnLUpdate, TradeExecution
+
+    listener, store = _make_listener()
+    fake_ws = _fake_ws([
+        TradeExecution(execution_id="E1"),
+        TradeExecution(execution_id="E2"),
+        PnLUpdate(account="DU1234567.Core", dpl=1.0, nl=1.0, upl=1.0, uel=1.0, mv=1.0),
+        PnLUpdate(account="DU1234567.Core", dpl=2.0, nl=2.0, upl=2.0, uel=2.0, mv=2.0),
+    ])
+
+    with patch("claudia.execution_listener.BrowserCookieAuth"), \
+         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws):
+        await listener._run_once()
+
+    fake_ws.subscribe_executions.assert_awaited_once()
+    assert store.record_pnl_snapshot.call_count == 2
+    fake_ws.disconnect.assert_awaited_once()
+
+
 # ── _run_with_retry ────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
