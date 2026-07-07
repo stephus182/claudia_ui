@@ -609,10 +609,11 @@ class ClaudIAAgent:
         return f"Unknown local tool: {name}"
 
     def _get_live_pnl(self) -> str:
-        """Format the latest live P&L snapshot from PnLStreamer's background WebSocket
-        subscription (claudia/pnl_stream.py). Returns a friendly message if no
+        """Format the latest live P&L snapshot recorded by ExecutionListener's
+        execution-triggered background WebSocket subscription
+        (claudia/execution_listener.py). Returns a friendly message if no
         snapshot has been recorded yet — never raises."""
-        from claudia.pnl_stream import format_pnl_snapshot
+        from claudia.execution_listener import format_pnl_snapshot
         latest = self._toolkit._store.get_latest_pnl()
         return format_pnl_snapshot(latest)
 
