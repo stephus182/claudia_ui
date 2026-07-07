@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import requests
 
@@ -30,6 +30,38 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _RETRY_DELAYS = [5, 10, 30, 60]  # seconds between reconnect attempts
+
+
+def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
+    """Format a SQLiteStore.get_latest_pnl() row into a human-readable P&L line.
+
+    Shared by the get_live_pnl tool (agent.py) and the opening status block
+    (app.py) so both surfaces render identically. IBKR's spl topic sends
+    incremental ticks — any individual numeric field can be None on the most
+    recent row even when the stream is healthy — so each field is formatted
+    independently ('n/a' for that one field) rather than discarding the whole
+    snapshot if any single field is missing.
+    """
+    if latest is None:
+        return (
+            "Live P&L not yet available — the P&L stream may still be "
+            "connecting, or no snapshot has been recorded yet."
+        )
+
+    def _fmt_signed(v: float | None) -> str:
+        return f"{v:+.2f}" if isinstance(v, (int, float)) else "n/a"
+
+    def _fmt(v: float | None) -> str:
+        return f"{v:.2f}" if isinstance(v, (int, float)) else "n/a"
+
+    return (
+        f"Live P&L ({latest['account']}):\n"
+        f"Daily P&L: {_fmt_signed(latest['dpl'])} | "
+        f"Unrealized: {_fmt_signed(latest['upl'])} | "
+        f"Net Liquidity: {_fmt(latest['nl'])} | "
+        f"Excess Liquidity: {_fmt(latest['uel'])} | "
+        f"Market Value: {_fmt(latest['mv'])}"
+    )
 
 
 class PnLStreamer:

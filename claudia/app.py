@@ -246,7 +246,7 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.gdrive_sync import GDriveSync
 from claudia.status import ConnectivityChecker
-from claudia.pnl_stream import PnLStreamer
+from claudia.pnl_stream import PnLStreamer, format_pnl_snapshot
 from claudia.tradingview import TradingViewBridge, launch_tradingview, check_cdp_running
 
 log = logging.getLogger(__name__)
@@ -581,18 +581,7 @@ async def on_chat_start():
             cl.make_async(toolkit.execute)("get_positions", {}),
             cl.make_async(toolkit._store.get_latest_pnl)(),
         )
-        _pnl_fields = (
-            [latest_pnl.get(k) for k in ("dpl", "upl", "nl", "uel", "mv")]
-            if latest_pnl is not None else []
-        )
-        if latest_pnl is not None and all(v is not None for v in _pnl_fields):
-            dpl, upl, nl, uel, mv = _pnl_fields
-            pnl_text = (
-                f"Daily: {dpl:+.2f} | Unrealized: {upl:+.2f} | Net Liq: {nl:.2f} | "
-                f"Excess Liq: {uel:.2f} | Mkt Value: {mv:.2f}"
-            )
-        else:
-            pnl_text = "_Live P&L stream connecting…_"
+        pnl_text = format_pnl_snapshot(latest_pnl)
         status_block = (
             f"**Account Summary**\n{opening_text}\n\n"
             f"**Open Positions**\n{positions_text}\n\n"

@@ -612,27 +612,9 @@ class ClaudIAAgent:
         """Format the latest live P&L snapshot from PnLStreamer's background WebSocket
         subscription (claudia/pnl_stream.py). Returns a friendly message if no
         snapshot has been recorded yet — never raises."""
+        from claudia.pnl_stream import format_pnl_snapshot
         latest = self._toolkit._store.get_latest_pnl()
-        if latest is None:
-            return (
-                "Live P&L not yet available — the P&L stream may still be "
-                "connecting, or no snapshot has been recorded yet."
-            )
-
-        def _fmt_signed(v: float | None) -> str:
-            return f"{v:+.2f}" if isinstance(v, (int, float)) else "n/a"
-
-        def _fmt(v: float | None) -> str:
-            return f"{v:.2f}" if isinstance(v, (int, float)) else "n/a"
-
-        return (
-            f"Live P&L ({latest['account']}):\n"
-            f"Daily P&L: {_fmt_signed(latest['dpl'])} | "
-            f"Unrealized: {_fmt_signed(latest['upl'])} | "
-            f"Net Liquidity: {_fmt(latest['nl'])} | "
-            f"Excess Liquidity: {_fmt(latest['uel'])} | "
-            f"Market Value: {_fmt(latest['mv'])}"
-        )
+        return format_pnl_snapshot(latest)
 
     @staticmethod
     def _validate_public_url(url: str) -> str | None:
