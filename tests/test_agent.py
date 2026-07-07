@@ -222,6 +222,38 @@ def test_handle_local_tool_unknown_name():
     assert "Unknown" in result
 
 
+def test_handle_local_tool_get_live_pnl_populated():
+    agent = _make_agent()
+    agent._toolkit._store.get_latest_pnl.return_value = {
+        "account": "DU1234567.Core", "dpl": 12.5, "nl": 10000.0,
+        "upl": 3.0, "uel": 9000.0, "mv": 5000.0,
+    }
+    result = agent._handle_local_tool("get_live_pnl", {})
+    assert "DU1234567.Core" in result
+    assert "+12.50" in result
+    assert "10000.00" in result
+
+
+def test_handle_local_tool_get_live_pnl_none():
+    agent = _make_agent()
+    agent._toolkit._store.get_latest_pnl.return_value = None
+    result = agent._handle_local_tool("get_live_pnl", {})
+    assert "not yet available" in result.lower()
+
+
+def test_handle_local_tool_get_live_pnl_partial_fields_format_as_na():
+    """A snapshot with some None numeric fields (early/partial tick) must format
+    those fields as 'n/a' rather than raising a format-spec TypeError."""
+    agent = _make_agent()
+    agent._toolkit._store.get_latest_pnl.return_value = {
+        "account": "DU1234567.Core", "dpl": None, "nl": 10000.0,
+        "upl": None, "uel": None, "mv": None,
+    }
+    result = agent._handle_local_tool("get_live_pnl", {})
+    assert "n/a" in result
+    assert "10000.00" in result  # the one populated field still formats normally
+
+
 # ── ClaudIAAgent._extract_decisions ──────────────────────────────────────────
 
 def test_log_proposal_with_order_proposal():

@@ -197,6 +197,16 @@ _LOCAL_TOOLS: list[dict] = [
             "required": ["url"],
         },
     },
+    {
+        "name": "get_live_pnl",
+        "description": (
+            "Get the latest streamed account P&L snapshot (daily P&L, unrealized P&L, "
+            "net liquidity, excess liquidity, market value) from ClaudIA's live WebSocket "
+            "P&L subscription. Use when the user asks for current/live/real-time P&L. "
+            "For historical performance analysis use get_analytics instead."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 _LOCAL_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in _LOCAL_TOOLS)
@@ -594,7 +604,35 @@ class ClaudIAAgent:
             return "\n\n---\n\n".join(parts)
         if name == "fetch_web_page":
             return self._fetch_web_page(inputs)
+        if name == "get_live_pnl":
+            return self._get_live_pnl()
         return f"Unknown local tool: {name}"
+
+    def _get_live_pnl(self) -> str:
+        """Format the latest live P&L snapshot from PnLStreamer's background WebSocket
+        subscription (claudia/pnl_stream.py). Returns a friendly message if no
+        snapshot has been recorded yet — never raises."""
+        latest = self._toolkit._store.get_latest_pnl()
+        if latest is None:
+            return (
+                "Live P&L not yet available — the P&L stream may still be "
+                "connecting, or no snapshot has been recorded yet."
+            )
+
+        def _fmt_signed(v: float | None) -> str:
+            return f"{v:+.2f}" if isinstance(v, (int, float)) else "n/a"
+
+        def _fmt(v: float | None) -> str:
+            return f"{v:.2f}" if isinstance(v, (int, float)) else "n/a"
+
+        return (
+            f"Live P&L ({latest['account']}):\n"
+            f"Daily P&L: {_fmt_signed(latest['dpl'])} | "
+            f"Unrealized: {_fmt_signed(latest['upl'])} | "
+            f"Net Liquidity: {_fmt(latest['nl'])} | "
+            f"Excess Liquidity: {_fmt(latest['uel'])} | "
+            f"Market Value: {_fmt(latest['mv'])}"
+        )
 
     @staticmethod
     def _validate_public_url(url: str) -> str | None:
