@@ -91,7 +91,9 @@ class PnLStreamer:
 
     async def _run_once(self) -> None:
         session = requests.Session()
-        BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")).apply(session)
+        await asyncio.to_thread(
+            BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")).apply, session
+        )
         cookie = session.headers.get("Cookie", "")
 
         ws = IBKRWebSocket(self._gateway_url, cookie)

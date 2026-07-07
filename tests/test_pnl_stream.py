@@ -1,7 +1,7 @@
 """Tests for claudia/pnl_stream.py — background P&L WebSocket subscriber."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -145,6 +145,28 @@ async def test_run_with_retry_clean_return_reconnects_after_5s():
 
     assert call_count == 2
     mock_sleep.assert_any_call(5)
+
+
+@pytest.mark.asyncio
+async def test_run_with_retry_escalates_backoff_then_caps():
+    """Consecutive exception failures must escalate through _RETRY_DELAYS and cap at
+    the last value, not retry at a flat interval."""
+    streamer, _ = _make_streamer()
+    call_count = 0
+
+    async def always_fail_then_cancel():
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 5:
+            raise ConnectionError("transient")
+        raise asyncio.CancelledError
+
+    with patch.object(streamer, "_run_once", side_effect=always_fail_then_cancel), \
+         patch("claudia.pnl_stream.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+        with pytest.raises(asyncio.CancelledError):
+            await streamer._run_with_retry()
+
+    assert mock_sleep.call_args_list == [call(5), call(10), call(30), call(60), call(60)]
 
 
 # ── start() / stop() lifecycle ─────────────────────────────────────────────────
