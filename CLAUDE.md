@@ -144,33 +144,48 @@ Source: [IBKR Campus — Request & Modify Orders](https://www.interactivebrokers
 
 ---
 
-### Live P&L Streaming
+### Execution-Triggered P&L Checks
 
-`claudia/pnl_stream.py`'s `PnLStreamer` runs a background WebSocket subscription to
-`ibkr_core_mcp`'s `spl` (P&L) topic for the life of the process — one subscription
-shared across all concurrent Chainlit sessions, started from `on_chat_start` (singleton,
-same pattern as `ConnectivityChecker`). Every tick is written to
-`SQLiteStore.pnl_snapshots` via `record_pnl_snapshot()`.
+`claudia/execution_listener.py`'s `ExecutionListener` runs one persistent WebSocket
+connection subscribed only to IBKR's `str` (trade executions) topic — capturing fills
+from any origin (mobile, TWS, web, API), not just trades ClaudIA itself places. On each
+execution, it transiently subscribes to `spl` (P&L), waits (bounded by a 10s timeout)
+for exactly one `PnLUpdate`, records it via `SQLiteStore.record_pnl_snapshot()`, and
+unsubscribes — returning to its executions-only steady state.
 
-ClaudIA does **not** run `ibkr_core_mcp.mcp_server` — `PnLStreamer` is a self-contained
-subscriber, consistent with ClaudIA's direct-import architecture (see top of this file).
-Retry/backoff on disconnect mirrors `ibkr_core_mcp.mcp_server._stream_loop_with_retry`'s
-shape (delays: 5s, 10s, 30s, 60s).
+This replaced an earlier design (`PnLStreamer`, see git history and
+`docs/superpowers/specs/2026-07-06-live-pnl-streaming-design.md`) that stayed
+continuously subscribed to `spl` and wrote every tick — judged overkill for a chat
+assistant where "live" never needed sub-second freshness, and it grew `pnl_snapshots`
+unboundedly for data nobody read between trades.
 
-Both surfaces render via the same `format_pnl_snapshot()` helper (`claudia/pnl_stream.py`)
-so they can't drift out of sync: IBKR's `spl` topic sends incremental ticks, so any single
-numeric field can be `None` on the latest row even while the stream is healthy —
-`format_pnl_snapshot()` renders each field independently ("n/a" for that one field only)
-rather than discarding the whole snapshot. The "stream connecting…" fallback only appears
-before the very first snapshot has ever been recorded.
+Reconciliation: account P&L is cumulative (not per-trade), so one snapshot after the
+*last* known execution is sufficient — but no execution is silently dropped as a
+trigger. If more executions arrive while a capture round is already waiting for its
+`PnLUpdate`, `ExecutionListener` runs one more round after the current one settles,
+repeating until a round completes with zero additional executions observed during it.
+Internally, a background "pump" task drains the WebSocket into an `asyncio.Queue` that
+both the outer execution loop and the P&L capture read from — this avoids a subtle bug
+where cancelling a shared async generator's `__anext__()` (e.g. on a capture timeout)
+permanently exhausts it; cancelling a `queue.get()` waiter has no such effect.
+
+ClaudIA does **not** run `ibkr_core_mcp.mcp_server` — `ExecutionListener` is a
+self-contained subscriber, consistent with ClaudIA's direct-import architecture (see top
+of this file). Retry/backoff on disconnect mirrors
+`ibkr_core_mcp.mcp_server._stream_loop_with_retry`'s shape (delays: 5s, 10s, 30s, 60s).
+
+Both surfaces render via the same `format_pnl_snapshot()` helper
+(`claudia/execution_listener.py`) so they can't drift out of sync — any individually
+`None` numeric field renders as "n/a" rather than discarding the whole snapshot.
 
 Surfaced two ways:
 - **`get_live_pnl` tool** (`claudia/agent.py`, local tool) — on-demand, reads
   `SQLiteStore.get_latest_pnl()` directly.
-- **Opening status block** (`claudia/app.py::on_chat_start`) — an "Account P&L
-  (streaming)" section in the session-start welcome message.
+- **Opening status block** (`claudia/app.py::on_chat_start`) — an "Account P&L" section
+  in the session-start welcome message, reflecting P&L as of the last recorded
+  execution (not literally "live" — refreshed only when a trade happens).
 
-Design spec: `docs/superpowers/specs/2026-07-06-live-pnl-streaming-design.md`
+Design spec: `docs/superpowers/specs/2026-07-07-execution-triggered-pnl-design.md`
 
 ---
 
