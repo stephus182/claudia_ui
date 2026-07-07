@@ -7,6 +7,7 @@ ClaudIA is a Chainlit-based trading assistant that gives you a persistent, princ
 ## Features
 
 - **Conversational IBKR access** — positions, P&L, live orders, account summary, market data, backtests, price alerts — all via natural language
+- **Execution-triggered P&L** — a background listener watches for trade executions (any origin — mobile, TWS, web, API) and refreshes account P&L automatically each time a trade fills; no continuous polling
 - **Full trade history** — 7-year backfill via IBKR Flex Queries; `sync_flex_trades` keeps it current; `get_trades source='store'` queries with no date limit
 - **Human-confirmed order staging** — ClaudIA proposes trades (equities and futures); you click a button → Touch ID → AppKit colored dialog (green/BUY, red/SELL). The LLM has no order-execution tools. CME Rule 536-B fields auto-added for futures
 - **TradingView live integration** — reads your active chart, sets symbols/timeframes, compiles and injects PineScript directly into the Pine Editor
@@ -95,6 +96,7 @@ claudia/context_loader.py   — docs/context.md + docs/principles.md → system 
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
 claudia/order_flow.py       — cl.Action order staging → biometric gates
 claudia/status.py           — ConnectivityChecker: polls IBKR/GDrive/TV every 60s
+claudia/execution_listener.py — ExecutionListener: WS trade-execution listener, triggers P&L checks
 claudia/tradingview.py      — tradingview-mcp sidecar, CDP health, PineScript display
 claudia/gdrive_sync.py      — claudia.db + context/principles sync to Google Drive
 claudia/session_reporter.py — auto-generate session report at session end
@@ -262,6 +264,6 @@ ClaudIA is designed to run on any machine — all persistent state lives in a si
 ## Testing
 
 ```bash
-pytest -m "not integration"   # 164 unit tests (no IBKR gateway needed)
+pytest -m "not integration"   # 233 unit tests (no IBKR gateway needed)
 pytest                        # all tests (requires live IBKR gateway)
 ```
