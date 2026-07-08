@@ -914,6 +914,56 @@ async def on_cancel_proposal(action: cl.Action):
     await action.remove()
 
 
+@cl.action_callback("cancel_order")
+async def on_cancel_order(action: cl.Action):
+    """Called when the user clicks 'Cancel this order' on a cancel proposal.
+
+    action.payload contains the serialised cancel-proposal dict. Biometric (Touch ID)
+    and AppKit modal confirmation gates are enforced inside execute_cancel_order().
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
+    from claudia.order_flow import execute_cancel_order
+    session_id = cl.user_session.get("session_id")
+    store: ConversationStore = cl.user_session.get("store")
+    await execute_cancel_order(action, session_id=session_id, store=store)
+
+
+@cl.action_callback("keep_order")
+async def on_keep_order(action: cl.Action):
+    """Called when the user clicks 'Keep order' on a cancel proposal. Removes the action button.
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
+    await cl.Message(content="Cancel proposal dismissed — order left unchanged.", author="ClaudIA").send()
+    await action.remove()
+
+
+@cl.action_callback("modify_order")
+async def on_modify_order(action: cl.Action):
+    """Called when the user clicks 'Modify this order' on a modify proposal.
+
+    action.payload contains the serialised modify-proposal dict. Biometric (Touch ID)
+    and AppKit modal confirmation gates are enforced inside execute_modify_order().
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
+    from claudia.order_flow import execute_modify_order
+    session_id = cl.user_session.get("session_id")
+    store: ConversationStore = cl.user_session.get("store")
+    await execute_modify_order(action, session_id=session_id, store=store)
+
+
+@cl.action_callback("discard_modify")
+async def on_discard_modify(action: cl.Action):
+    """Called when the user clicks 'Discard' on a modify proposal. Removes the action button.
+
+    Source: https://docs.chainlit.io/api-reference/action
+    """
+    await cl.Message(content="Modify proposal discarded — order left unchanged.", author="ClaudIA").send()
+    await action.remove()
+
+
 @cl.action_callback("end_session")
 async def on_end_session(action: cl.Action):
     """Save conversation, upload claudia.db to Drive, and confirm to the user.

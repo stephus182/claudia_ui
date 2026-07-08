@@ -77,6 +77,130 @@ def test_order_proposal_all_order_types():
         assert "order-proposal" not in clean
 
 
+# ── _make_block_stripper / cancel & modify proposal stripping ───────────────
+
+from claudia.agent import (
+    _make_block_stripper,
+    _strip_order_cancel_proposal,
+    _strip_order_modify_proposal,
+    _LOCAL_TOOL_NAMES,
+)
+
+
+def test_make_block_stripper_builds_working_stripper_for_arbitrary_tag():
+    """The factory isn't hardcoded to order tags — it works for any fenced tag."""
+    strip = _make_block_stripper("test-block")
+    text = 'Before.\n```test-block\n{"a": 1}\n```\nAfter.'
+    clean, parsed = strip(text)
+    assert parsed == {"a": 1}
+    assert "test-block" not in clean
+    assert "Before." in clean and "After." in clean
+
+
+def test_strip_order_cancel_proposal_found():
+    proposal = {"order_id": "242538143", "symbol": "AAPL", "action": "BUY", "quantity": 1}
+    text = f"Sure, let's cancel it.\n```order-cancel-proposal\n{json.dumps(proposal)}\n```"
+    clean, parsed = _strip_order_cancel_proposal(text)
+    assert "order-cancel-proposal" not in clean
+    assert parsed["order_id"] == "242538143"
+    assert "Sure, let's cancel it" in clean
+
+
+def test_strip_order_cancel_proposal_not_found():
+    text = "No cancellation here."
+    clean, parsed = _strip_order_cancel_proposal(text)
+    assert clean == text
+    assert parsed is None
+
+
+def test_strip_order_cancel_proposal_malformed_json():
+    text = "Text.\n```order-cancel-proposal\n{not json}\n```\nEnd."
+    clean, parsed = _strip_order_cancel_proposal(text)
+    assert parsed is None
+
+
+def test_strip_order_modify_proposal_found():
+    proposal = {
+        "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
+        "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
+        "tif": "GTC", "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+    }
+    text = f"Here's the modification.\n```order-modify-proposal\n{json.dumps(proposal)}\n```"
+    clean, parsed = _strip_order_modify_proposal(text)
+    assert "order-modify-proposal" not in clean
+    assert parsed["conid"] == 265598
+    assert parsed["_changed_fields"] == ["limit_price"]
+
+
+def test_strip_order_modify_proposal_not_found():
+    text = "No modification here."
+    clean, parsed = _strip_order_modify_proposal(text)
+    assert clean == text
+    assert parsed is None
+
+
+def test_strip_order_modify_proposal_malformed_json():
+    text = "Text.\n```order-modify-proposal\n{not json}\n```\nEnd."
+    clean, parsed = _strip_order_modify_proposal(text)
+    assert parsed is None
+
+
+def test_strip_order_proposal_unaffected_by_cancel_modify_tags():
+    """The three strippers only match their own exact tag — no cross-matching."""
+    cancel_text = '```order-cancel-proposal\n{"order_id": "1"}\n```'
+    assert _strip_order_proposal(cancel_text) == (cancel_text, None)
+    modify_text = '```order-modify-proposal\n{"order_id": "1", "conid": 1}\n```'
+    assert _strip_order_proposal(modify_text) == (modify_text, None)
+
+
+# ── Hard Rule 1 regression (CLAUDE.md) ───────────────────────────────────────
+
+def test_local_tool_names_excludes_order_write_tools():
+    """CLAUDE.md Hard Rule 1: the LLM must never receive a callable tool for
+    place_order/modify_order/cancel_order/reply_order — order execution is a
+    UI-layer action triggered by a physical button click, never an LLM tool call."""
+    forbidden = {"place_order", "modify_order", "cancel_order", "reply_order"}
+    assert forbidden & _LOCAL_TOOL_NAMES == set()
+
+
+# ── Safety block: order cancel/modify rules ──────────────────────────────────
+
+def test_safety_block_documents_cancel_and_modify_proposal_formats():
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    assert "order-cancel-proposal" in prompt
+    assert "order-modify-proposal" in prompt
+
+
+def test_safety_block_requires_order_id_provenance():
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    assert "get_live_orders" in prompt
+    assert "get_order_status" in prompt
+    assert "invent" in prompt.lower()
+
+
+def test_safety_block_requires_get_order_status_before_modify():
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    assert "modify proposal" in prompt.lower()
+    assert "get_order_status(order_id)" in prompt or "get_order_status" in prompt
+
+
+def test_safety_block_checks_order_editability_flags():
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    assert "order_not_editable" in prompt
+    assert "cannot_cancel_order" in prompt
+
+
+def test_safety_block_contains_modify_parameter_immutability():
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    assert "MODIFY PARAMETER IMMUTABILITY" in prompt
+    assert "byte-for-byte" in prompt
+
+
+def test_safety_block_at_most_one_proposal_block_per_message():
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    assert "at most one" in prompt.lower() or "ONE proposal block" in prompt
+
+
 # ── Imports for new tests ─────────────────────────────────────────────────────
 from unittest.mock import MagicMock, patch
 
@@ -279,6 +403,42 @@ def test_log_proposal_without_proposal():
     agent = _make_agent()
     agent._log_proposal("Just analysis, no trade.", None, msg_id=1)
     agent._store.add_decision.assert_not_called()
+
+
+def test_log_proposal_with_cancel_proposal():
+    agent = _make_agent()
+    cancel_proposal = {"order_id": "242538143", "symbol": "AAPL", "reason": "Closing test order"}
+    agent._log_proposal("Some text", None, msg_id=7, cancel_proposal=cancel_proposal)
+    agent._store.add_decision.assert_called_once()
+    kwargs = agent._store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_cancel_proposed"
+    assert "242538143" in kwargs["summary_text"]
+    assert kwargs["symbol"] == "AAPL"
+    assert kwargs["message_id"] == 7
+
+
+def test_log_proposal_with_modify_proposal():
+    agent = _make_agent()
+    modify_proposal = {"order_id": "242538143", "conid": 265598, "symbol": "AAPL", "reason": "Bumping limit"}
+    agent._log_proposal("Some text", None, msg_id=8, modify_proposal=modify_proposal)
+    agent._store.add_decision.assert_called_once()
+    kwargs = agent._store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_modify_proposed"
+    assert "242538143" in kwargs["summary_text"]
+    assert kwargs["symbol"] == "AAPL"
+    assert kwargs["message_id"] == 8
+
+
+def test_log_proposal_order_proposal_takes_priority_over_others():
+    """If somehow more than one proposal type is passed, order_proposal wins (matches
+    handle_message's elif-chain rendering priority)."""
+    agent = _make_agent()
+    order_proposal = {"symbol": "AAPL", "action": "BUY", "quantity": 1, "reason": "x"}
+    cancel_proposal = {"order_id": "1", "symbol": "MSFT", "reason": "y"}
+    agent._log_proposal("text", order_proposal, msg_id=9, cancel_proposal=cancel_proposal)
+    agent._store.add_decision.assert_called_once()
+    kwargs = agent._store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_proposed"
 
 
 # ── ClaudIAAgent.set_tv_bridge ────────────────────────────────────────────────

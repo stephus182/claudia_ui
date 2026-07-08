@@ -82,15 +82,15 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 
 ## Test Coverage
 
-**Suite:** 233 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
+**Suite:** 290 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
 
 | Module | Tests | Notes |
 |---|---|---|
 | `conversation_store.py` | 26 | Schema, CRUD, FTS5 search, decisions, relationships, doc_versions, count_messages |
-| `agent.py` | 22 | Strip proposal, system prompt, history mapping, version note, local tools, decisions, TV bridge |
+| `agent.py` | 62 | Strip proposal (order/cancel/modify + generic factory), safety-block content, Hard-Rule-1 regression, system prompt, history mapping, version note, local tools, decisions (incl. cancel/modify proposal logging), TV bridge |
 | `status.py` | 22 | IBKR/GDrive/TV connectivity checks, state transitions, /api/status; GDrive ping path; IBKR auth-state check |
 | `tradingview.py` | 17 | All 6 binary discovery candidates, CDP check, tool filtering, env allowlist |
-| `order_flow.py` | 31 | Format summary (8: STK/FUT labels, TIF, price formats), execute_staged_order (23: STK/FUT/FOP/conid-override paths, 536-B fields, multiplier, front-month selection, all error paths) |
+| `order_flow.py` | 70 | Format summary — order/cancel/modify (18: STK/FUT labels, TIF, price formats), execute_staged_order (23: STK/FUT/FOP/conid-override paths, 536-B fields, multiplier, front-month selection, all error paths), execute_cancel_order (10), execute_modify_order (17), `_resolve_account_id` (4 shared-helper cases) |
 | `context_loader.py` | 15 | Load, hash, watchdog hot-reload, Drive override, version registration |
 | `gdrive_sync.py` | 17 | Download DB, upload DB (RLock, no WAL block), read_text (size guard), chmod, ping() |
 | `execution_listener.py` | 23 | ExecutionListener execution-triggered P&L capture, queue-based fan-out, shutdown drop window, retry/backoff |
@@ -239,12 +239,17 @@ Everything below is unit-tested but has not been verified with a real running se
 - [x] Cancel proposal button → dismisses without order action — 2026-07-01 ✓
 - [x] Approve dialog → order submitted to IBKR → success + IBKR response in chat — HTTP 400 fixed 2026-07-02 (int(qty), no manualIndicator/extOperator for STK); **live-verified 2026-07-06** via `place_order_and_confirm`'s full reply-confirmation chain, a real 3-chained-reply AAPL order (orderId `242538143`) — **caveat:** per the audit doc's own phrasing, this verification mixed direct `IBKRClient` calls with UI clicks, so a clean, button-click-only re-run is still open (this becomes Batch 1.1 — see "Next Session Plan")
 - [x] Verify order in `get_live_orders` — confirmed 2026-07-06 as part of the same session
-- [ ] Cancel live order via ClaudIA — still unchecked; **blocked on Part B's build** (§5b below), not just untested — no UI wiring exists yet for order cancel
+- [ ] Cancel live order via ClaudIA — still unchecked; UI wiring now built 2026-07-08 (§5b below) but not yet live-tested — Batch 1.3
 - [ ] Cancel at Touch ID → "Touch ID authentication failed" message → button removed — not yet tested
 
-### 5b. Order Modify / Cancel (feature does not exist yet)
+### 5b. Order Modify / Cancel
 
-claudia_ui has no UI for modifying or cancelling an already-placed order — only new-order placement exists (`order_flow.py`'s `render_order_proposal`/`execute_staged_order`). The underlying `IBKRClient.modify_order`/`cancel_order`/`modify_order_and_confirm` are already built and gated (Touch ID + AppKit dialog) in `ibkr_core_mcp`, just never wired into `claudia_ui`. Build plan: see the implementation plan referenced in "Next Session Plan" below (Part B — mirrors the existing proposal-block pattern: `order-cancel-proposal`/`order-modify-proposal` blocks, `render_cancel_proposal`/`execute_cancel_order`, `render_modify_proposal`/`execute_modify_order`, four new `app.py` action callbacks). Scheduled as Batch 1.0 (build) before Batch 1.2/1.3 (live modify/cancel test).
+**Built 2026-07-08** (unit-tested, not yet live-tested — see Batch 1.2/1.3 in "Next Session Plan"). Mirrors the existing proposal-block pattern exactly: `order-cancel-proposal`/`order-modify-proposal` fenced blocks (`agent.py`), `render_cancel_proposal`/`execute_cancel_order` and `render_modify_proposal`/`execute_modify_order` (`order_flow.py`), four new `app.py` action callbacks (`cancel_order`, `keep_order`, `modify_order`, `discard_modify`). Built TDD, then given a 3-angle multi-agent code review (correctness, cleanup, altitude/conventions) — 4 real findings fixed (a reply-decline error message that said "Order was placed" even for cancel/modify; unclicked cancel/modify proposals not logged to `decisions` like order-proposals are; a silent-collision risk if the LLM ever emitted two proposal blocks in one message, now logged; STP orders missing their stop price in the cancel summary) plus a `_resolve_account_id` extraction (was duplicated 3×) and a defensive `re.escape()` on the block-stripper factory. 57 new unit tests (233 → 290 — includes both the original 49 and the review-driven fixes' tests), full suite green, ruff clean, mypy shows the same pre-existing 102 errors as before (none introduced). Full design detail: CLAUDE.md's "Order Cancellation" / "Order Modification" subsections.
+
+**Known gap found during the Step 0 doc-verification spike:** IBKR's Cancel Order endpoint documents `manualIndicator`/`extOperator` as required query params for FUT/FOP (CME Rule 536-B), but `ibkr_core_mcp.IBKRClient.cancel_order(account_id, order_id)`'s signature has no way to pass them — FUT/FOP cancellation may be rejected until fixed upstream in `ibkr_core_mcp`. STK cancellation (the Batch 1 test instrument) is unaffected. See Known Gaps table below.
+
+- [ ] Live: propose + click "Modify this order" → Touch ID → Gate 2 → `modify_order_and_confirm` fires — Batch 1.2
+- [ ] Live: propose + click "Cancel this order" → Touch ID → Gate 2 → `cancel_order` fires — Batch 1.3
 
 **Bugs found and fixed during §5 live test (2026-07-01/02):**
 
@@ -318,7 +323,7 @@ claudia_ui has no UI for modifying or cancelling an already-placed order — onl
 
 ### Batch 1 — Order Operations (send / modify / cancel / reply) — top priority
 
-**1.0 Build** — order cancel/modify UI wiring in `claudia_ui` (does not exist yet — see §5b). TDD, full green unit suite before any live step.
+**1.0 Build** — ✅ **done 2026-07-08.** Order cancel/modify UI wiring in `claudia_ui` (see §5b). TDD + multi-agent code review, 290 unit tests green (233 → 290), ruff clean, mypy unchanged (102 pre-existing errors, none new).
 
 No test order currently exists in the account (`242538143` was manually cancelled outside ClaudIA as routine EoD cleanup). Batch 1 places exactly **one** fresh disposable order and runs it through the full lifecycle — keeps the account clean (single known order, single terminal state) and exercises send/modify/cancel/reply in one continuous, easy-to-audit sequence.
 
@@ -390,8 +395,10 @@ The 7 remaining "observed, not documented" items below (trades session-scope, `?
 | Drive archive creates duplicate files on double `on_chat_start` | `ibkr_core_mcp/cache.py` `upload_account_file_bytes` | 2026-06-30: page refresh fires `on_chat_start` twice → two uploads of same XML; `_find_file` pattern already used for `claudia.db` should be applied here — check for existing filename before uploading, update in place |
 | TradingView sidecar crashes on Python 3.14 when TV Desktop not running | `claudia/tradingview.py` | 2026-06-30: **FIXED in `app.py`** — patched `AsyncIOTaskInfo.__init__` to return stub TaskInfo when `task=None`; `task_info` only used in `__repr__`, stub is safe. Sidecar now connects when CDP port 9222 is up (confirmed run 3: 78 tools, 14 curated). Residual: when TV Desktop is truly not running, the sidecar subprocess exits immediately and the same cleanup path fires — screenshot mode remains the correct fallback in that case. |
 | §5 order submit not yet confirmed end-to-end (button-click-only) | `claudia/order_flow.py` | 2026-07-02: HTTP 400 "incorrect type" diagnosed and fixed (`int(qty)`, no 536-B fields for STK). 2026-07-06: live-verified via `place_order_and_confirm`'s reply chain (orderId `242538143`), but that run mixed direct `IBKRClient` calls with UI clicks. **Open:** a clean, button-click-only re-run (Batch 1.1). |
-| No UI wiring exists for order modify/cancel | `claudia/order_flow.py`, `claudia/agent.py`, `claudia/app.py` | Only new-order placement exists today. `IBKRClient.modify_order`/`cancel_order`/`modify_order_and_confirm` are built and gated in `ibkr_core_mcp` but never wired into `claudia_ui`. See §5b — build tracked as Batch 1.0. |
+| Order modify/cancel UI wiring built but not live-tested | `claudia/order_flow.py`, `claudia/agent.py`, `claudia/app.py` | **Built 2026-07-08** (see §5b) — 49 new unit tests green. Live exercise of `modify_order_and_confirm`'s reply chain and `cancel_order` via a real button click is still open — Batch 1.2/1.3. |
+| Cancel proposal has no FUT/FOP CME 536-B query-param support | `claudia/order_flow.py` (`execute_cancel_order`), `ibkr_core_mcp/client.py` (`cancel_order`) | Found 2026-07-08 during doc verification: IBKR's Cancel Order endpoint requires `manualIndicator`/`extOperator` query params for FUT/FOP; `cancel_order(account_id, order_id)`'s signature can't pass them. STK cancellation unaffected. Fix belongs in `ibkr_core_mcp`, out of this repo's scope. |
 | FOP conid resolution requires pre-resolved conid | `claudia/order_flow.py` | 2026-07-02: FOP without `conid` in proposal → clear error message directing user to call `get_option_strikes` first. FOP with `conid` set → proceeds normally with 536-B fields. Full chain resolution (expiry+strike+right) requires OPT/FOP conid lookup flow — same gap as item 12 in pending doc verification. |
+| MIDPRICE/TRAIL/TRAILLMT order types have no price-field handling | `claudia/order_flow.py` (`execute_staged_order` and, as of 2026-07-08, `execute_modify_order`) | Found 2026-07-08 during code review of the new modify path — pre-existing in placement too, not newly introduced. Both functions only populate `price`/`auxPrice` for LMT/STP/STOP_LIMIT; the agent.py prompt schema also only documents those four `order_type` values (MKT/LMT/STP/STOP_LIMIT). A MIDPRICE/TRAIL/TRAILLMT order can be proposed/placed/modified as MKT-equivalent (no price fields) but not with its type-specific pricing. Not fixed here — would require symmetric changes across all three proposal schemas and both execute functions; tracked as a follow-up, not blocking Batch 1 (uses a plain LMT order). |
 
 ---
 

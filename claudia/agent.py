@@ -109,25 +109,104 @@ The user decides. You propose, they confirm.
 
 You MUST NEVER change a user-specified order parameter without the user explicitly approving
 the new value in a follow-up message. This includes price, quantity, symbol, order type, and TIF.
+
+## ORDER CANCEL / MODIFY FORMAT
+
+To cancel an existing order, include exactly one fenced block:
+
+```order-cancel-proposal
+{
+  "order_id": "<string, from a real get_live_orders/get_order_status/diagnose_orders call>",
+  "symbol": "TICKER",
+  "action": "BUY" or "SELL",
+  "quantity": <integer>,
+  "order_type": "MKT" or "LMT" or "STP" or "STOP_LIMIT",
+  "limit_price": <float or null>,
+  "stop_price": <float or null>,
+  "tif": "DAY" or "GTC" or "IOC" or "OPG",
+  "reason": "<one-line rationale>"
+}
+```
+
+To modify an existing order, include exactly one fenced block:
+
+```order-modify-proposal
+{
+  "order_id": "<string, from a real get_order_status call>",
+  "conid": <integer, from the same get_order_status call — required, no fallback resolution>,
+  "symbol": "TICKER",
+  "action": "BUY" or "SELL",
+  "quantity": <integer>,
+  "order_type": "MKT" or "LMT" or "STP" or "STOP_LIMIT",
+  "limit_price": <float or null>,
+  "stop_price": <float or null>,
+  "tif": "DAY" or "GTC" or "IOC" or "OPG",
+  "sec_type": "STK" or "FUT" or "OPT" or "FOP" or "CASH",
+  "reason": "<one-line rationale>",
+  "_changed_fields": ["<field name(s) actually being changed>"],
+  "_previous_values": {"<field name>": "<previous value>"}
+}
+```
+
+Include at most ONE proposal block total per message — order-proposal, order-cancel-proposal,
+or order-modify-proposal. Never combine two in the same response.
+
+## ORDER CANCEL / MODIFY RULES — NON-OVERRIDABLE
+
+- `order_id` MUST come from a real `get_live_orders`, `get_order_status`, or `diagnose_orders`
+  tool call made earlier in THIS conversation. Never invent, guess, or reuse an order_id from
+  memory or a previous session.
+- Before proposing a cancel or modify, check the order's origin and editability:
+  - `get_live_orders` already documents that orders placed via IBKR mobile or TWS cannot be
+    modified or cancelled through the API — if the order's origin is external, say so and
+    stop; do not propose a cancel/modify for it.
+  - `get_order_status` returns `order_not_editable` and `cannot_cancel_order` boolean fields.
+    If the relevant flag is true, tell the user the order cannot be changed/cancelled and why
+    — do not propose the action anyway.
+- A modify proposal REQUIRES calling `get_order_status(order_id)` first — it returns the
+  contract id (`conid`) and full current field set that `get_live_orders` does not expose.
+  Never build an order-modify-proposal from `get_live_orders` data alone.
+
+## MODIFY PARAMETER IMMUTABILITY — NON-OVERRIDABLE
+
+Every field in an order-modify-proposal that the user did NOT ask to change must be copied
+byte-for-byte (the exact value) from the latest `get_order_status` result for that order. Only
+the specific field(s) the user asked to change may differ. List every changed field in
+`_changed_fields` and its prior value in `_previous_values` so the confirmation dialog can show
+a clear before/after diff.
+
+You MUST NEVER change an unrequested order field when building a modify proposal. This mirrors
+the ORDER PARAMETER IMMUTABILITY rule above — the user decides, you propose, they confirm.
 """
 
-_ORDER_PROPOSAL_RE = re.compile(
-    r"```order-proposal\s*\n(.*?)\n```", re.DOTALL
-)
+
+def _make_block_stripper(tag: str):
+    """Build a function that extracts and removes a fenced ```{tag} block from text.
+
+    Shared by order-proposal, order-cancel-proposal, and order-modify-proposal — each is
+    a single JSON block the LLM emits in place of calling an order-execution tool directly
+    (see Hard Rule 1 in CLAUDE.md); a human later approves it via a physical button click.
+    """
+    pattern = re.compile(rf"```{re.escape(tag)}\s*\n(.*?)\n```", re.DOTALL)
+
+    def _strip(text: str) -> tuple[str, dict | None]:
+        m = pattern.search(text)
+        if not m:
+            return text, None
+        try:
+            proposal = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            log.warning("Malformed %s JSON in response", tag)
+            return text, None
+        clean = pattern.sub("", text).strip()
+        return clean, proposal
+
+    return _strip
 
 
-def _strip_order_proposal(text: str) -> tuple[str, dict | None]:
-    """Remove the order-proposal block from display text and return it separately."""
-    m = _ORDER_PROPOSAL_RE.search(text)
-    if not m:
-        return text, None
-    try:
-        proposal = json.loads(m.group(1))
-    except json.JSONDecodeError:
-        log.warning("Malformed order-proposal JSON in response")
-        return text, None
-    clean = _ORDER_PROPOSAL_RE.sub("", text).strip()
-    return clean, proposal
+_strip_order_proposal = _make_block_stripper("order-proposal")
+_strip_order_cancel_proposal = _make_block_stripper("order-cancel-proposal")
+_strip_order_modify_proposal = _make_block_stripper("order-modify-proposal")
 
 
 _LOCAL_TOOLS: list[dict] = [
@@ -543,6 +622,8 @@ class ClaudIAAgent:
 
         # --- Final response ---
         display_text, order_proposal = _strip_order_proposal(full_response_text)
+        display_text, cancel_proposal = _strip_order_cancel_proposal(display_text)
+        display_text, modify_proposal = _strip_order_modify_proposal(display_text)
 
         # Persist final assistant message
         msg_id = self._store.add_message(
@@ -553,13 +634,31 @@ class ClaudIAAgent:
         if display_text:
             await cl.Message(content=display_text).send()
 
-        # Render order proposal button if present
+        # Render a proposal button if present — at most one type per message.
+        # The system prompt instructs at most one proposal block per response; if the
+        # LLM ever violates that, only order_proposal renders — log so it's not silent.
+        proposal_count = sum(1 for p in (order_proposal, cancel_proposal, modify_proposal) if p)
+        if proposal_count > 1:
+            log.warning(
+                "Multiple proposal blocks in one response (order=%s cancel=%s modify=%s) — "
+                "only the highest-priority one is rendered/logged",
+                bool(order_proposal), bool(cancel_proposal), bool(modify_proposal),
+            )
         if order_proposal:
             from claudia.order_flow import render_order_proposal
             await render_order_proposal(order_proposal, session_id=self._session_id)
+        elif cancel_proposal:
+            from claudia.order_flow import render_cancel_proposal
+            await render_cancel_proposal(cancel_proposal, session_id=self._session_id)
+        elif modify_proposal:
+            from claudia.order_flow import render_modify_proposal
+            await render_modify_proposal(modify_proposal, session_id=self._session_id)
 
         # Log any user-directed trade proposal for future recall
-        self._log_proposal(display_text, order_proposal, msg_id)
+        self._log_proposal(
+            display_text, order_proposal, msg_id,
+            cancel_proposal=cancel_proposal, modify_proposal=modify_proposal,
+        )
 
     def _handle_local_tool(self, name: str, inputs: dict) -> str:
         """Dispatch the five locally-implemented tools and return a string result.
@@ -712,13 +811,21 @@ class ClaudIAAgent:
         return f"[Fetched: {url}]\n\n{text}"
 
     def _log_proposal(
-        self, text: str, order_proposal: dict | None, msg_id: int
+        self,
+        text: str,
+        order_proposal: dict | None,
+        msg_id: int,
+        cancel_proposal: dict | None = None,
+        modify_proposal: dict | None = None,
     ) -> None:
         """Log a user-directed trade proposal to the proposals table for future recall.
 
         ClaudIA does not decide to trade — it surfaces a proposal when directed by the user.
-        The user decides at the 'Stage this order' button → Touch ID → confirmation dialog.
-        This records that a proposal was surfaced, not that a decision was made.
+        The user decides at the button → Touch ID → confirmation dialog. This records that
+        a proposal was *surfaced*, not that a decision was made — so an unclicked cancel or
+        modify proposal is still recorded here, same as an unclicked order-proposal.
+        Priority mirrors handle_message's render order: order_proposal wins if more than
+        one type is somehow present in the same response.
         """
         if order_proposal:
             symbol = order_proposal.get("symbol", "")
@@ -732,6 +839,30 @@ class ClaudIAAgent:
                 symbol=symbol,
                 message_id=msg_id,
                 metadata={"order": order_proposal},
+            )
+        elif cancel_proposal:
+            symbol = cancel_proposal.get("symbol", "")
+            order_id = cancel_proposal.get("order_id", "")
+            reason = cancel_proposal.get("reason", "")
+            self._store.add_decision(
+                session_id=self._session_id,
+                decision_type="trade_cancel_proposed",
+                summary_text=f"CANCEL order {order_id} ({symbol}): {reason}",
+                symbol=symbol,
+                message_id=msg_id,
+                metadata={"order": cancel_proposal},
+            )
+        elif modify_proposal:
+            symbol = modify_proposal.get("symbol", "")
+            order_id = modify_proposal.get("order_id", "")
+            reason = modify_proposal.get("reason", "")
+            self._store.add_decision(
+                session_id=self._session_id,
+                decision_type="trade_modify_proposed",
+                summary_text=f"MODIFY order {order_id} ({symbol}): {reason}",
+                symbol=symbol,
+                message_id=msg_id,
+                metadata={"order": modify_proposal},
             )
 
     async def handle_image(self, image_b64: str, media_type: str, caption: str = "") -> None:
