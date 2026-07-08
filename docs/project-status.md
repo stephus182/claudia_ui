@@ -1,7 +1,7 @@
 # ClaudIA — Project Status
 
 > Living document. Update after each sprint, live test session, or notable fix.  
-> Last updated: 2026-07-03
+> Last updated: 2026-07-08
 
 ---
 
@@ -71,12 +71,18 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-07-03 | `4c0edd6` `7e65d9b` `d39d52b` | **GDrive sync correctness** (G1-G3): `upload_db` sends WAL-consistent SQLite backup snapshot (G1); `download_db` freshness guard — never overwrites newer local DB with older Drive copy (G2); stale WAL/SHM sidecars removed before downloaded DB lands (G3) |
 | 2026-07-03 | `1ea122d` | Bug fix — `fetch_web_page` SSRF guard applied to every redirect hop (S1); previously only checked the initial URL |
 | 2026-07-03 | `ddb0ef9` | Refactor — remove dead `relationships` table and `decisions` FTS index (M2); never wired to any caller; existing DBs migrated safely |
+| 2026-07-06 | `b012f6c` `0fb1fba` | `order_flow.py` calls `place_order_and_confirm` to follow IBKR's full reply-confirmation chain instead of declaring success after the first response; distinct error message for a mid-chain reply decline |
+| 2026-07-06 (mcp) | — | `place_order_and_confirm`/`modify_order_and_confirm` added to `client.py`; live-verified via a real 3-chained-reply AAPL order (orderId `242538143`); that order was later manually cancelled by the user outside ClaudIA as routine EoD cleanup — does not count as a live "cancel via ClaudIA" test (see §5b, Batch 1) |
+| 2026-07-06 (mcp) | — | `preview_order` gains `STOP_LIMIT`/`MIDPRICE` order types + `stop_price` + `sec_type` params (fixes a live HTTP 500) |
+| 2026-07-07 | — | `ExecutionListener` replaces `PnLStreamer` for execution-triggered P&L (full detail in `CLAUDE.md`; not otherwise touched here) |
+| 2026-07-08 (mcp) | — | **claude_tools test suite reorganized**: the 2,373-line/177-test `tests/test_claude_tools.py` monolith deleted, replaced by `tests/claude_tools/` (11 files by domain, 181 tests, `TEST_INDEX.md`, new pytest markers `orders`/`flex`/`alerts`/`market_data`/`account`/`trades`/`pa_analytics`/`backtest_pinescript`/`web_scraping`/`errors`/`integration`). Repo-wide: **757 tests total — 673 unit + 84 integration** |
+| 2026-07-08 (mcp) | — | docs-accuracy pass: Touch ID policy corrected (biometric with system-password fallback, not biometric-only), `CLAUDE.md` package-structure diagram +7 modules, market-calendar exchange-count fix, stale version-pin fix |
 
 ---
 
 ## Test Coverage
 
-**Suite:** 180 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
+**Suite:** 233 tests, 0 failures (non-integration). Run: `pytest -m "not integration" -q`
 
 | Module | Tests | Notes |
 |---|---|---|
@@ -84,14 +90,17 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | `agent.py` | 22 | Strip proposal, system prompt, history mapping, version note, local tools, decisions, TV bridge |
 | `status.py` | 22 | IBKR/GDrive/TV connectivity checks, state transitions, /api/status; GDrive ping path; IBKR auth-state check |
 | `tradingview.py` | 17 | All 6 binary discovery candidates, CDP check, tool filtering, env allowlist |
-| `order_flow.py` | 30 | Format summary (8: STK/FUT labels, TIF, price formats), execute_staged_order (22: STK/FUT/FOP/conid-override paths, 536-B fields, multiplier, front-month selection, all error paths) |
-| `context_loader.py` | 14 | Load, hash, watchdog hot-reload, Drive override, version registration |
-| `gdrive_sync.py` | 14 | Download DB, upload DB (RLock, no WAL block), read_text (size guard), chmod, ping() |
+| `order_flow.py` | 31 | Format summary (8: STK/FUT labels, TIF, price formats), execute_staged_order (23: STK/FUT/FOP/conid-override paths, 536-B fields, multiplier, front-month selection, all error paths) |
+| `context_loader.py` | 15 | Load, hash, watchdog hot-reload, Drive override, version registration |
+| `gdrive_sync.py` | 17 | Download DB, upload DB (RLock, no WAL block), read_text (size guard), chmod, ping() |
+| `execution_listener.py` | 23 | ExecutionListener execution-triggered P&L capture, queue-based fan-out, shutdown drop window, retry/backoff |
+| `session_reporter.py` | 15 | Session report generation, tool call/decision aggregation |
 | Security regressions | 21 | 9 (2026-06-12) + 11 SSRF (2026-06-25) + 1 decimal/hex IP bypass (2026-06-27) — must stay green |
 | `app.py` | **0** | Chainlit session wiring — not unit-testable; covered by live tests below |
 
-**ibkr_core_mcp** (separate repo, own venv):  
-`ping()` retry tests (+4) added 2026-06-15. Full suite: run `pytest` in `/Users/steph/Claude_Projects/ibkr_core_mcp`.
+**ibkr_core_mcp** (separate repo, own venv): **757 tests total — 673 unit** (`pytest -m "not integration"`) **+ 84 integration** (`pytest -m integration`). Test suite reorganized 2026-07-08: `claude_tools.py` tests split from a single monolith into `tests/claude_tools/` (11 files by domain, domain-specific pytest markers, `TEST_INDEX.md`). Run targeted: `pytest tests/claude_tools/ -m orders`, etc. — see `ibkr_core_mcp/CLAUDE.md`.
+
+Note: `ibkr_core_mcp/CHANGELOG.md` is stale since 2026-06-27 (predates all of the above) — flagged, not fixed here (out of this repo's scope; follow-up for whoever maintains that repo's changelog).
 
 ---
 
@@ -99,7 +108,7 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 
 Everything below is unit-tested but has not been verified with a real running session. These are the live test checklist items to work through.
 
-**Priority order for next session:** §5 Order Submit Re-test (AAPL STK, SPY ETF, ES FUT) → §6 TradingView Live → §4b Price Alerts → §9.3 Security
+**Priority order:** see the batched plan — Batch 1 Order Operations (send/modify/cancel/reply, §5/§5b) → Batch 2 TradingView Live (§6) → Batch 3 Price Alerts (§4b) → Batch 4 Security (§9.3). Order send/modify/cancel/reply are now bundled as one batch rather than listed as a single "§5 re-test" item — see "Next Session Plan" below for the full breakdown.
 
 ---
 
@@ -148,9 +157,7 @@ Everything below is unit-tested but has not been verified with a real running se
 - [ ] "What alerts do I have?" → `get_alerts` → list returned
 - [x] Multi-turn: follow-up referencing earlier position data → history preserved — 2026-06-25
 
-### 4b. Price Alerts (low priority — defer until market/account data complete)
-
-> Skip for now. Alert tools exist and are unit-tested; live verification deferred.
+> §4b Price Alerts moved below (dedicated batch, scheduled as Batch 3) — see the section after §4c.
 
 ### 4c. Market & Account Data (priority batch — 2026-06-26)
 
@@ -230,10 +237,14 @@ Everything below is unit-tested but has not been verified with a real running se
 - [x] AppKit NSAlert dialog appears (green banner for BUY) with symbol, company name, qty, price, TIF, total — 2026-07-01 ✓ (after 3 bug fixes: ticker field, _companyName key, tif in proposal schema)
 - [x] Cancel at dialog → "Order was cancelled at the confirmation dialog" in chat → button removed — 2026-07-01 ✓ (after error routing fix: dialog-cancel was misrouted to "Touch ID failed")
 - [x] Cancel proposal button → dismisses without order action — 2026-07-01 ✓
-- [ ] Approve dialog → order submitted to IBKR → success + IBKR response in chat — **BLOCKED 2026-07-01**: HTTP 400 "orders request includes parameter with incorrect type"; fixed in 2026-07-02 session (int(qty), removed manualIndicator/extOperator for STK); **not yet re-tested**
-- [ ] Verify order in `get_live_orders` — pending (depends on submit success above)
-- [ ] Cancel live order via ClaudIA — pending
+- [x] Approve dialog → order submitted to IBKR → success + IBKR response in chat — HTTP 400 fixed 2026-07-02 (int(qty), no manualIndicator/extOperator for STK); **live-verified 2026-07-06** via `place_order_and_confirm`'s full reply-confirmation chain, a real 3-chained-reply AAPL order (orderId `242538143`) — **caveat:** per the audit doc's own phrasing, this verification mixed direct `IBKRClient` calls with UI clicks, so a clean, button-click-only re-run is still open (this becomes Batch 1.1 — see "Next Session Plan")
+- [x] Verify order in `get_live_orders` — confirmed 2026-07-06 as part of the same session
+- [ ] Cancel live order via ClaudIA — still unchecked; **blocked on Part B's build** (§5b below), not just untested — no UI wiring exists yet for order cancel
 - [ ] Cancel at Touch ID → "Touch ID authentication failed" message → button removed — not yet tested
+
+### 5b. Order Modify / Cancel (feature does not exist yet)
+
+claudia_ui has no UI for modifying or cancelling an already-placed order — only new-order placement exists (`order_flow.py`'s `render_order_proposal`/`execute_staged_order`). The underlying `IBKRClient.modify_order`/`cancel_order`/`modify_order_and_confirm` are already built and gated (Touch ID + AppKit dialog) in `ibkr_core_mcp`, just never wired into `claudia_ui`. Build plan: see the implementation plan referenced in "Next Session Plan" below (Part B — mirrors the existing proposal-block pattern: `order-cancel-proposal`/`order-modify-proposal` blocks, `render_cancel_proposal`/`execute_cancel_order`, `render_modify_proposal`/`execute_modify_order`, four new `app.py` action callbacks). Scheduled as Batch 1.0 (build) before Batch 1.2/1.3 (live modify/cancel test).
 
 **Bugs found and fixed during §5 live test (2026-07-01/02):**
 
@@ -297,30 +308,42 @@ Everything below is unit-tested but has not been verified with a real running se
 | 2026-06-30 | inline | §1 startup (runs 1–3), §7 flex integrity (2 runs), TV sidecar debugging and fix | 3 bugs found and fixed: wrong app name `"Trading View"`→`"TradingView"`; `_tv_already_running_without_debug()` detection; `AsyncIOTaskInfo.__init__` Python 3.14 compat (5th anyio patch); Drive: TESTREF artifact deleted, duplicate XML deleted; verify_flex_import CLEAN PASS 9 files/983 tradeIDs; TV connected run 3: 78 tools/14 curated | IN PROGRESS — §6 TV live tests next |
 | 2026-07-01/02 | inline | §5 Order Staging live test — full flow from proposal to dialog | 9 bugs found and fixed (see §5 checklist); ORDER PARAMETER IMMUTABILITY violation caught; AppKit NSAlert built to replace tkinter; full futures order support added (CME 536-B, conid dispatch, multiplier-aware notional); IBKR field spec scraped + documented; HTTP 400 "incorrect type" diagnosed + fixed; CLAUDE.md + README.md fully rewritten for order staging | IN PROGRESS — §5 submit success + §6 TV live next |
 | 2026-07-03 | inline | Prompt caching (3 breakpoints), GDrive G1-G3, SSRF S1 redirect fix, M2 dead code removal; ibkr_core_mcp analytics/positions/backtest/flex fixes; project-status.md alignment review | No new bugs found during review; all `agent.py` + `claude_tools.py` changes verified aligned with CLAUDE.md | COMPLETE — next: §5 order submit re-test + §6 TV live |
+| 2026-07-06 | inline (mcp) | Order reply-chain fix (`place_order_and_confirm`) + live 3-chained-reply AAPL test, orderId `242538143` | None — reply chain auto-resolved; **caveat:** verification mixed direct `IBKRClient` calls with UI clicks, not a clean button-click-only run. `242538143` was subsequently cancelled manually by the user outside ClaudIA as routine EoD cleanup — not a ClaudIA-cancel test | PASS (with caveat) |
 
 ---
 
-## Next Session Plan (2026-07-03 → )
+## Next Session Plan (2026-07-08 → )
 
-**Goal:** Complete §5 order submit end-to-end, then §6 TradingView live tools.
+**Goal:** Batch 1 Order Operations (send/modify/cancel/reply) first, then TradingView, price alerts, security. Full plan: [`docs/superpowers/plans/2026-07-08-order-cancel-modify.md`](superpowers/plans/2026-07-08-order-cancel-modify.md) — Part B is the order cancel/modify UI wiring build, Part C is this batch plan.
 
-### §5 Order Submit — re-test + new asset classes
+### Batch 1 — Order Operations (send / modify / cancel / reply) — top priority
 
-For each instrument: `get_order_preview` (whatif) → stage proposal → approve Gate 2 dialog → confirm success + `get_live_orders` → cancel order.
+**1.0 Build** — order cancel/modify UI wiring in `claudia_ui` (does not exist yet — see §5b). TDD, full green unit suite before any live step.
 
-| Instrument | Type | Why |
-|---|---|---|
-| `BUY 1 AAPL LMT @ $100 GTC` | STK | Blocked since 2026-07-01 — HTTP 400 fixed but not re-tested |
-| `BUY 1 SPY LMT @ $400 GTC` | STK (ETF) | ETF-specific rules — check `get_contract_rules` first |
-| `BUY 1 ES front-month LMT @ $4000 GTC` | FUT | CME 536-B fields, `get_futures` conid, multiplier in notional |
+No test order currently exists in the account (`242538143` was manually cancelled outside ClaudIA as routine EoD cleanup). Batch 1 places exactly **one** fresh disposable order and runs it through the full lifecycle — keeps the account clean (single known order, single terminal state) and exercises send/modify/cancel/reply in one continuous, easy-to-audit sequence.
 
-After each: verify with `get_live_orders`, then `cancel_order` — confirm gone.
+**1.1 Send — clean UI-only placement**
+- Stage a fresh, deliberately unfillable order purely by clicking "Stage this order" in chat — no direct client calls, closing the "mixed verification" caveat left over from the 2026-07-06 session (e.g. `BUY 1 AAPL LMT @ <~65-70% below market> GTC`, or any liquid symbol).
+- Confirm Touch ID + Gate 2 fire, any IBKR reply chain auto-resolves with zero manual intervention, success message shown.
+- Verify via `get_live_orders`/`get_order_status`; record the new orderId.
 
-Also test: `reply_order` if IBKR returns a mid-order question/confirmation prompt.
+**1.2 Modify — same order**
+- Ask ClaudIA about the order (triggers `get_order_status`) so it can build an `order-modify-proposal` (e.g. bump `limit_price` a few dollars, staying well below market so it remains unfillable).
+- Click "Modify this order" → Touch ID → Gate 2 → confirm `modify_order_and_confirm` fires and any reply chain auto-resolves — **first-ever live exercise of this path**.
+- Verify the new price via `get_order_status(order_id)`.
 
-**Gate reminder:** §5 tests go through the ClaudIA Chainlit UI (biometric + NSAlert gates). Raw IBKRClient order-write tests (if any) stay in a separate file, not `test_client_live.py`.
+**1.3 Cancel — same order**
+- Propose cancelling the now-modified order.
+- Click "Cancel this order" → Touch ID → Gate 2 → confirm `cancel_order` fires.
+- Verify removed from `get_live_orders` / status shows Cancelled — account ends this batch with zero open test orders.
 
-### §6 TradingView Live Tools
+**1.4 Reply-chain verification** — not a separate click-through; graded from 1.1 and 1.2 above. Record explicitly whether IBKR raised any reply/confirmation prompt at each step and whether it auto-resolved without manual intervention.
+
+**1.5 Docs** — update this file's §5/§5b, Live Test Log, Known Gaps, Test Coverage counts, and `CLAUDE.md`'s Order Staging Flow section with the real dates/order ID/results from 1.1-1.4.
+
+**Gate reminder:** Batch 1 tests go through the ClaudIA Chainlit UI (biometric + NSAlert gates) — real Touch ID and a real GUI click, run interactively on the user's machine. Raw IBKRClient order-write tests (if any) stay in a separate file, not `test_client_live.py`.
+
+### Batch 2 — TradingView Live Tools (§6)
 
 Requires TradingView Desktop running with `--remote-debugging-port=9222`.
 
@@ -330,9 +353,17 @@ Requires TradingView Desktop running with `--remote-debugging-port=9222`.
 - "Change chart to NVDA daily" → `chart_set_symbol` + `chart_set_timeframe` → chart updates
 - Drag/paste a screenshot → ClaudIA analyzes via vision (no sidecar needed)
 
-### §9.3 Security
+### Batch 3 — Price Alerts (§4b)
+
+Unchanged from the existing dedicated batch: single alerts (explicit price, %loss, %gain, $loss, $gain), bulk alerts, modify, cancel/deactivate.
+
+### Batch 4 — Security (§9.3)
 
 - Confirm `ANTHROPIC_API_KEY` never appears in chat output or Chainlit logs
+
+### Batch 5 (lower priority, parallel-track) — Pending Doc Verification
+
+The 7 remaining "observed, not documented" items below (trades session-scope, `?days=7` param, PA response shapes, Flex T+1 cutoff, Flex error 1025, rate-limit/`Retry-After` policy) — doc-verification homework, not live order testing; doesn't gate Batches 1-4.
 
 ---
 
@@ -358,7 +389,8 @@ Requires TradingView Desktop running with `--remote-debugging-port=9222`.
 | Env allowlist tested twice (tradingview + security_regressions) | both test files | Low maintenance risk |
 | Drive archive creates duplicate files on double `on_chat_start` | `ibkr_core_mcp/cache.py` `upload_account_file_bytes` | 2026-06-30: page refresh fires `on_chat_start` twice → two uploads of same XML; `_find_file` pattern already used for `claudia.db` should be applied here — check for existing filename before uploading, update in place |
 | TradingView sidecar crashes on Python 3.14 when TV Desktop not running | `claudia/tradingview.py` | 2026-06-30: **FIXED in `app.py`** — patched `AsyncIOTaskInfo.__init__` to return stub TaskInfo when `task=None`; `task_info` only used in `__repr__`, stub is safe. Sidecar now connects when CDP port 9222 is up (confirmed run 3: 78 tools, 14 curated). Residual: when TV Desktop is truly not running, the sidecar subprocess exits immediately and the same cleanup path fires — screenshot mode remains the correct fallback in that case. |
-| §5 order submit not yet confirmed end-to-end | `claudia/order_flow.py` | 2026-07-02: HTTP 400 "incorrect type" diagnosed and fixed (`int(qty)`, no 536-B fields for STK) but not re-tested in live session. **Next session (top priority):** re-run `BUY 1 AAPL LMT @ $100 GTC` → approve dialog → verify success + `get_live_orders` + cancel. Then repeat for SPY (ETF) and ES front-month (FUT). |
+| §5 order submit not yet confirmed end-to-end (button-click-only) | `claudia/order_flow.py` | 2026-07-02: HTTP 400 "incorrect type" diagnosed and fixed (`int(qty)`, no 536-B fields for STK). 2026-07-06: live-verified via `place_order_and_confirm`'s reply chain (orderId `242538143`), but that run mixed direct `IBKRClient` calls with UI clicks. **Open:** a clean, button-click-only re-run (Batch 1.1). |
+| No UI wiring exists for order modify/cancel | `claudia/order_flow.py`, `claudia/agent.py`, `claudia/app.py` | Only new-order placement exists today. `IBKRClient.modify_order`/`cancel_order`/`modify_order_and_confirm` are built and gated in `ibkr_core_mcp` but never wired into `claudia_ui`. See §5b — build tracked as Batch 1.0. |
 | FOP conid resolution requires pre-resolved conid | `claudia/order_flow.py` | 2026-07-02: FOP without `conid` in proposal → clear error message directing user to call `get_option_strikes` first. FOP with `conid` set → proceeds normally with 536-B fields. Full chain resolution (expiry+strike+right) requires OPT/FOP conid lookup flow — same gap as item 12 in pending doc verification. |
 
 ---
