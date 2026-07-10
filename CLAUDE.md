@@ -561,11 +561,23 @@ Gate 1 (Touch ID) + Gate 2 (AppKit dialog) pair used by placement — the gates 
 `get_live_orders`/`get_order_status`/`diagnose_orders` call earlier in the conversation — never
 invented. A successful cancel logs `decision_type="trade_cancelled"` to `ConversationStore`.
 
-**Known gap:** IBKR's documented Cancel Order endpoint requires `manualIndicator`/`extOperator`
+**Live-verified 2026-07-10**: button click → Touch ID → Gate 2 → `cancel_order` fired on a
+disposable AAPL order (orderId `567317535`), confirmed gone from `get_live_orders` on the next
+check. STK cancellation works end to end.
+
+**Known gap (FUT/FOP):** IBKR's documented Cancel Order endpoint requires `manualIndicator`/`extOperator`
 **query params** for FUT/FOP (CME Rule 536-B), but `ibkr_core_mcp.IBKRClient.cancel_order()`'s
 signature (`account_id, order_id`) has no way to pass them — FUT/FOP cancellation may be
 rejected by IBKR until that's added upstream in `ibkr_core_mcp`. STK cancellation is unaffected.
 Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#cancel-order
+
+**Known gap (Gate 2 detail, found live 2026-07-10, user-flagged as a hard requirement):**
+`confirm_cancel_dialog(order_id, account_id)` in `ibkr_core_mcp/order_confirm.py` only displays
+`{"Order ID": ..., "Account": ...}` — no symbol/side/qty/order type/price/TIF, unlike the place
+and modify Gate 2 dialogs, which both receive and display the full order dict. `order_flow.py`'s
+`execute_cancel_order()` already has the full proposal in hand; it's just never passed through
+`cancel_order()`'s signature. Not fixed as of this writing — needs an `order_details` param
+threaded through `cancel_order()` → `confirm_cancel_dialog()`, mirroring the modify path.
 
 ### Order Modification
 
@@ -618,10 +630,19 @@ system prompt requires checking these before proposing a modify/cancel and expla
 user if either blocks the action, rather than proposing it anyway.
 
 Calls `IBKRClient.modify_order_and_confirm(account_id, order_id, order_body)` — the reply-chain-aware
-variant (same loop as `place_order_and_confirm()`), **first-ever live exercise of this specific
-path** as of this writing (only `place_order_and_confirm`'s reply chain has been live-verified,
-2026-07-06 — see Live Test Log in `docs/project-status.md`). A successful modify logs
-`decision_type="trade_modified"` to `ConversationStore`.
+variant (same loop as `place_order_and_confirm()`). **Live-verified 2026-07-10**: a clean,
+button-click-only send → modify → cancel cycle on a disposable AAPL order (orderId `567317535`,
+limit $100.00 → $105.00), zero manual reply-chain intervention at any step — see Live Test Log
+in `docs/project-status.md`. A successful modify logs `decision_type="trade_modified"` to
+`ConversationStore`.
+
+**Known gap found during the 2026-07-10 live test:** `get_live_orders`/`diagnose_orders` mislabel
+every order's origin as `EXTERNAL` — they check `orderRef`/`cOID`, but IBKR's actual Live Orders
+field is `order_ref` (snake_case). This caused ClaudIA to correctly refuse to auto-propose a
+modify on its own just-placed order (per its hard rule: never modify/cancel an order flagged
+external) until the user manually confirmed at the gate — empirically proving the mislabel is
+cosmetic (IBKR accepted the modify) but still a real usability regression. Fix (`order_ref`
+lookup) not yet applied — see Known Gaps in `docs/project-status.md`.
 
 ---
 
