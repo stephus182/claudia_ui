@@ -201,6 +201,17 @@ def test_safety_block_at_most_one_proposal_block_per_message():
     assert "at most one" in prompt.lower() or "ONE proposal block" in prompt
 
 
+def test_safety_block_requires_fresh_tool_call_on_retry():
+    """2026-07-10 live finding: 'retry'-phrased requests sometimes skipped the actual
+    tool call and fabricated a plausible result instead (confirmed 3x independently:
+    a fake TSLA quote, a fake Pine Script injection disproven by a live screenshot, a
+    fake alert-creation retry). This rule closes that gap explicitly."""
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    assert "TOOL RESULT FRESHNESS" in prompt
+    assert "fresh tool call" in prompt.lower()
+    assert "retry" in prompt.lower()
+
+
 # ── Imports for new tests ─────────────────────────────────────────────────────
 from unittest.mock import MagicMock, patch
 
