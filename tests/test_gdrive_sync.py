@@ -175,6 +175,68 @@ def test_read_text_error_returns_none(sync):
     assert result is None
 
 
+def test_read_text_skips_when_local_not_older_than_drive(sync, tmp_path):
+    """A stale Drive copy must not silently override a local context.md/principles.md
+    edit that was never re-uploaded — the same gap download_db already guards against
+    for claudia.db. Found live 2026-07-10 (v3 local vs v1 stale Drive copy)."""
+    local_file = tmp_path / "context.md"
+    local_file.write_text("local content")  # mtime = now
+
+    svc = MagicMock()
+    svc.files.return_value.get.return_value.execute.return_value = {
+        "size": "13", "modifiedTime": "2020-01-01T00:00:00.000Z"
+    }
+    with patch.object(sync, "_find_file", return_value="file-id"), \
+         patch.object(sync, "_get_service", return_value=svc):
+        result = sync.read_text("context.md", local_path=local_file)
+
+    assert result is None
+
+
+def test_read_text_proceeds_when_drive_newer(sync, tmp_path):
+    """The guard must not block legitimate updates uploaded from another machine."""
+    local_file = tmp_path / "context.md"
+    local_file.write_text("stale local content")
+
+    class FakeDownloader:
+        def __init__(self, buf, _req):
+            buf.write(b"fresh drive content")
+        def next_chunk(self):
+            return None, True
+
+    svc = MagicMock()
+    svc.files.return_value.get.return_value.execute.return_value = {
+        "size": "20", "modifiedTime": "2099-01-01T00:00:00.000Z"
+    }
+    with patch.object(sync, "_find_file", return_value="file-id"), \
+         patch.object(sync, "_get_service", return_value=svc), \
+         patch("claudia.gdrive_sync.MediaIoBaseDownload", FakeDownloader):
+        result = sync.read_text("context.md", local_path=local_file)
+
+    assert result == "fresh drive content"
+
+
+def test_read_text_without_local_path_downloads_unconditionally(sync):
+    """Backward compatibility: a caller that doesn't pass local_path gets the old
+    unconditional-download behavior (no local file to compare against)."""
+    class FakeDownloader:
+        def __init__(self, buf, _req):
+            buf.write(b"drive content")
+        def next_chunk(self):
+            return None, True
+
+    svc = MagicMock()
+    svc.files.return_value.get.return_value.execute.return_value = {
+        "size": "13", "modifiedTime": "2026-01-01T00:00:00.000Z"
+    }
+    with patch.object(sync, "_find_file", return_value="file-id"), \
+         patch.object(sync, "_get_service", return_value=svc), \
+         patch("claudia.gdrive_sync.MediaIoBaseDownload", FakeDownloader):
+        result = sync.read_text("context.md")
+
+    assert result == "drive content"
+
+
 # ── _get_service ──────────────────────────────────────────────────────────────
 
 def test_get_service_writes_back_refreshed_token(sync, tmp_path):

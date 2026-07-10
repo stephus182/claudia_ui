@@ -433,8 +433,8 @@ async def on_chat_start():
     drive_context: str | None = None
     drive_principles: str | None = None
     if _gdrive_sync is not None:
-        drive_context = _gdrive_sync.read_text("context.md")
-        drive_principles = _gdrive_sync.read_text("principles.md")
+        drive_context = _gdrive_sync.read_text("context.md", local_path=_DOCS_PATH / "context.md")
+        drive_principles = _gdrive_sync.read_text("principles.md", local_path=_DOCS_PATH / "principles.md")
 
     # Load documents
     loader = ContextLoader(_DOCS_PATH, context_text=drive_context, principles_text=drive_principles)
