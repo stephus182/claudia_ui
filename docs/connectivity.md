@@ -102,7 +102,7 @@ goes red it means one of:
 | Cause | Fix |
 |---|---|
 | Network unreachable | Restore internet connectivity; checker auto-recovers |
-| Token file deleted | Re-run `ibkr_core_mcp` GDriveCache OAuth flow to regenerate `token.json` |
+| Token file deleted | Re-run `ibkr_core_mcp` GDriveCache OAuth flow to regenerate `token_ibkr_core_mcp.json` |
 | OAuth app revoked | Re-authorize via Google Account → Security → Third-party apps |
 
 The checker auto-detects recovery on the next poll cycle.
