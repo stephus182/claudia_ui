@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 import shutil
 import sqlite3
 import tempfile
@@ -21,12 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 from ibkr_core_mcp.config import Config
+from ibkr_core_mcp.gdrive_auth import load_or_refresh_credentials
 
 log = logging.getLogger(__name__)
 
@@ -52,42 +50,23 @@ class GDriveSync:
     def _get_service(self) -> Any:
         """Return an authenticated Drive API v3 service object (cached per instance).
 
-        Token refresh: if the access token is expired but a refresh_token is present,
-        google-auth calls the OAuth2 token endpoint automatically via creds.refresh(Request()).
-        The refreshed token is written back to the token file with strict permissions (0o600)
-        so subsequent processes reuse it without re-prompting.
+        Delegates token loading/refresh to ibkr_core_mcp.gdrive_auth.load_or_refresh_credentials
+        (shared with ibkr_core_mcp's GDriveCache). Unlike GDriveCache, this never runs the
+        interactive bootstrap flow — if no valid token exists, it raises, since popping a
+        browser mid-chat-session is not acceptable here. Authenticate via GDriveCache
+        (ibkr_core_mcp) first to establish the initial token.
 
-        Two-step chmod: os.open with O_CREAT mode 0o600 only applies the permission on
-        file creation, not on an existing file. os.chmod is called unconditionally after
-        the write to enforce 0o600 regardless of whether the file was created or truncated.
-
-        Source (google-auth credentials): https://google-auth.readthedocs.io/en/stable/reference/google.oauth2.credentials.html
         Source (Drive API v3 service): https://developers.google.com/drive/api/reference/rest/v3
         """
         with self._lock:
             if self._service:
                 return self._service
-            token_file = self._config.gdrive_token_file
-            if not token_file.exists():
+            creds = load_or_refresh_credentials(self._config.gdrive_token_file, _SCOPES)
+            if creds is None:
                 raise RuntimeError(
-                    f"GDrive token file not found: {token_file}. "
+                    f"GDrive token file not found or invalid: {self._config.gdrive_token_file}. "
                     "Authenticate via GDriveCache (ibkr_core_mcp) first."
                 )
-            creds = Credentials.from_authorized_user_file(str(token_file), _SCOPES)
-            if not creds.valid:
-                if creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                    token_path = str(self._config.gdrive_token_file)
-                    fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    with os.fdopen(fd, "w") as fh:
-                        fh.write(creds.to_json())
-                    # chmod separately: O_CREAT mode only applies on creation, not on existing files.
-                    os.chmod(token_path, 0o600)
-                else:
-                    raise RuntimeError(
-                        "GDrive credentials are invalid and cannot be refreshed. "
-                        "Re-authenticate via GDriveCache (ibkr_core_mcp)."
-                    )
             self._service = build("drive", "v3", credentials=creds)
             return self._service
 
