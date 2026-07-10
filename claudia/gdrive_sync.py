@@ -303,12 +303,19 @@ class GDriveSync:
 
     _MAX_TEXT_BYTES = 1 * 1024 * 1024  # 1 MB — generous for context/principles docs
 
-    def read_text(self, filename: str) -> str | None:
+    def read_text(self, filename: str, local_path: Path | None = None) -> str | None:
         """Download a text file (e.g. "context.md") from Drive.
 
-        Returns content string, or None if not found or on any error.
+        Returns content string, or None if not found, if Drive's copy is not newer than
+        the local file (freshness guard), or on any error.
 
-        files().get(fields="size") fetches only the file's metadata size field — avoids
+        Freshness guard: if local_path is given and exists, Drive's copy is skipped when
+        its modifiedTime is not newer than the local file's mtime — mirrors download_db's
+        identical guard for claudia.db. Closes a gap found live 2026-07-10: with no guard,
+        a stale Drive copy could silently overwrite a newer local context.md/principles.md
+        edit that was never re-uploaded, reverting ClaudIA's persona without warning.
+
+        files().get(fields="size,modifiedTime") fetches only file metadata — avoids
         downloading the content twice. The 1 MB guard prevents a runaway context.md from
         bloating the system prompt.
 
@@ -320,7 +327,17 @@ class GDriveSync:
             file_id = self._find_file(filename)
             if file_id is None:
                 return None
-            meta = svc.files().get(fileId=file_id, fields="size").execute()
+            meta = svc.files().get(fileId=file_id, fields="size,modifiedTime").execute()
+            if local_path is not None and local_path.exists():
+                drive_mtime = datetime.fromisoformat(meta["modifiedTime"])
+                local_mtime = datetime.fromtimestamp(local_path.stat().st_mtime, tz=timezone.utc)
+                if local_mtime >= drive_mtime:
+                    log.warning(
+                        "GDriveSync.read_text(%r): Drive copy (%s) is not newer than local "
+                        "(%s) — keeping local",
+                        filename, drive_mtime.isoformat(), local_mtime.isoformat(),
+                    )
+                    return None
             size = int(meta.get("size", 0))
             if size > self._MAX_TEXT_BYTES:
                 log.warning(
