@@ -49,3 +49,6 @@ vendor/tradingview-mcp/index.js
 vendor/tradingview-mcp/src/
 vendor/tradingview-mcp/node_modules/
 vendor/tradingview-mcp/package-lock.json
+
+# Playwright MCP session artifacts — console logs, page snapshots (ephemeral debug output)
+.playwright-mcp/
