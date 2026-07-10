@@ -331,6 +331,11 @@ class GDriveSync:
             if local_path is not None and local_path.exists():
                 drive_mtime = datetime.fromisoformat(meta["modifiedTime"])
                 local_mtime = datetime.fromtimestamp(local_path.stat().st_mtime, tz=timezone.utc)
+                # >= (tie-inclusive), unlike download_db's strict >: context.md/principles.md
+                # are hand-edited at human cadence, so an exact mtime tie means "no local
+                # edit since last sync" far more often than a real race — skip is the safer
+                # default here. download_db stays strict because DB writes are frequent and
+                # machine-generated, where a tie is genuinely ambiguous. Do not "unify" these.
                 if local_mtime >= drive_mtime:
                     log.warning(
                         "GDriveSync.read_text(%r): Drive copy (%s) is not newer than local "

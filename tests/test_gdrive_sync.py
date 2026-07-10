@@ -1,6 +1,8 @@
 """Tests for GDriveSync — Drive download/upload for claudia.db and text files."""
 
+import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -185,6 +187,27 @@ def test_read_text_skips_when_local_not_older_than_drive(sync, tmp_path):
     svc = MagicMock()
     svc.files.return_value.get.return_value.execute.return_value = {
         "size": "13", "modifiedTime": "2020-01-01T00:00:00.000Z"
+    }
+    with patch.object(sync, "_find_file", return_value="file-id"), \
+         patch.object(sync, "_get_service", return_value=svc):
+        result = sync.read_text("context.md", local_path=local_file)
+
+    assert result is None
+
+
+def test_read_text_skips_on_exact_mtime_tie(sync, tmp_path):
+    """The one case that actually distinguishes read_text's >= from download_db's strict
+    > : an exact tie between local mtime and Drive's modifiedTime must skip (see the
+    comment at the comparison in read_text for why the two guards differ)."""
+    local_file = tmp_path / "context.md"
+    local_file.write_text("local content")
+
+    tie_dt = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+    os.utime(local_file, (tie_dt.timestamp(), tie_dt.timestamp()))
+
+    svc = MagicMock()
+    svc.files.return_value.get.return_value.execute.return_value = {
+        "size": "13", "modifiedTime": "2026-01-01T00:00:00.000Z"
     }
     with patch.object(sync, "_find_file", return_value="file-id"), \
          patch.object(sync, "_get_service", return_value=svc):
