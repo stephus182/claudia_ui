@@ -724,9 +724,10 @@ async def test_execute_cancel_order_success_sends_success_message():
 @pytest.mark.asyncio
 async def test_execute_cancel_order_calls_client_with_account_and_order_id():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_cancel_action({"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
+    proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    action = _make_cancel_action(proposal)
     await _run_cancel(action, ibkr_mod)
-    client.cancel_order.assert_called_once_with("U12345", "555")
+    client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
 
 
 @pytest.mark.asyncio

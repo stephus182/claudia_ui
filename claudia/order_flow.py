@@ -452,7 +452,7 @@ async def execute_cancel_order(
         account_id = _resolve_account_id(accounts)
 
         log.info("Cancelling order %s (%s)", order_id, symbol)
-        result = ibkr.cancel_order(account_id, order_id)
+        result = ibkr.cancel_order(account_id, order_id, order_details=proposal)
 
         success_text = (
             f"**Order cancelled:** order {order_id} ({symbol})\n"
