@@ -1,0 +1,55 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - img "ClaudIA" [ref=e3]
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - 'generic "GDrive: ok" [ref=e6]'
+        - generic [ref=e7]: GDrive
+      - generic [ref=e8]:
+        - 'generic "IBKR: ok" [ref=e9]'
+        - generic [ref=e10]: IBKR
+      - generic [ref=e11]:
+        - 'generic "TradingView: ok" [ref=e12]'
+        - generic [ref=e13]: TradingView
+  - generic [ref=e17]:
+    - generic [ref=e18]:
+      - button [ref=e21] [cursor=pointer]
+      - generic [ref=e22]:
+        - button "Readme" [ref=e23] [cursor=pointer]
+        - button "Toggle theme" [ref=e25] [cursor=pointer]
+    - generic [ref=e30]:
+      - generic [ref=e33]:
+        - generic [ref=e37]:
+          - img "Avatar for System" [ref=e40]
+          - article [ref=e45]: "WARNING: context.md / principles.md changed: v3 → v1. Please verify the content before continuing."
+        - generic [ref=e49]:
+          - img "Avatar for ClaudIA" [ref=e52]
+          - generic [ref=e53]:
+            - generic [ref=e56]:
+              - article [ref=e57]: "ClaudIA is ready. TradingView: connected (16 tools)"
+              - article [ref=e58]: "Account Summary Account: U1675699 Net Liquidation: $64,761.44 USD Cash: $18,065.76 USD Gross Position Val: $68,556.57 USD Unrealized P&L: — Realized P&L: — Buying Power: $188,303.45 USD"
+              - article [ref=e59]: "Open Positions Open positions (4):"
+              - list [ref=e60]:
+                - listitem [ref=e61]: "GLD: 100.0 qty, mktVal=37623.81, unrealPnL=-703.28"
+                - listitem [ref=e62]: "SOXX: -19.0 qty, mktVal=-10928.70, unrealPnL=-3372.87"
+                - listitem [ref=e63]: "CRM: 50.0 qty, mktVal=8245.82, unrealPnL=-4009.10"
+                - listitem [ref=e64]: "IGV: 125.0 qty, mktVal=11758.25, unrealPnL=-454.56"
+              - article [ref=e65]: Account P&L Live P&L not yet available — no trade execution has been recorded yet, or the execution listener may still be connecting.
+              - article [ref=e66]: "Live Orders Live orders (1):"
+              - list [ref=e67]:
+                - listitem [ref=e68]: orderId=1569507027 EEM BUY 1.0 @ 50.00 [Submitted] TIF=GTC origin=EXTERNAL (mobile/TWS/web portal) — read-only via API
+              - article [ref=e69]: "Historical dataset loaded: 1088 trades (2020-04-15 → 2026-07-09, integrity validated) — last refreshed 2026-07-09"
+              - article [ref=e70]: Ask me anything about your portfolio, markets, or strategy.
+            - generic [ref=e71]:
+              - button "End Session" [disabled]
+        - article [ref=e97]: Can you propose a BUY order for 1 share of AAPL? Use a GTC limit order priced about 65-70% below the current market price so it's deliberately unfillable — this is a disposable test order for verifying the order staging UI end to end.
+        - generic [ref=e101]:
+          - img "Avatar for get_market_snapshot" [ref=e104]
+          - paragraph [ref=e106]:
+            - generic [ref=e107]: Using
+            - text: get_market_snapshot
+      - generic [ref=e74]:
+        - generic [ref=e75]:
+          - textbox "Type your message here..." [active] [ref=e77]
+          - button [ref=e109] [cursor=pointer]
+        - article [ref=e111]: LLMs can make mistakes. Check important info.
