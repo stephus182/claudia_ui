@@ -1,0 +1,62 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - img "ClaudIA" [ref=e3]
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - 'generic "GDrive: ok" [ref=e6]'
+        - generic [ref=e7]: GDrive
+      - generic [ref=e8]:
+        - 'generic "IBKR: ok" [ref=e9]'
+        - generic [ref=e10]: IBKR
+      - generic [ref=e11]:
+        - 'generic "TradingView: error" [ref=e12]'
+        - generic [ref=e13]: TradingView
+  - generic [ref=e17]:
+    - generic [ref=e18]:
+      - button [ref=e21] [cursor=pointer]
+      - generic [ref=e22]:
+        - button "Readme" [ref=e23] [cursor=pointer]
+        - button "Toggle theme" [ref=e25] [cursor=pointer]
+    - generic [ref=e30]:
+      - generic [ref=e33]:
+        - generic [ref=e37]:
+          - img "Avatar for ClaudIA" [ref=e40]
+          - generic [ref=e41]:
+            - generic [ref=e44]:
+              - article [ref=e45]: "ClaudIA is ready. TradingView: sidecar ready (16 tools) — launch Desktop for live tools"
+              - article [ref=e46]: "Account Summary Account: U1675699 Net Liquidation: $64,457.12 USD Cash: $18,065.76 USD Gross Position Val: $68,189.03 USD Unrealized P&L: — Realized P&L: — Buying Power: $187,460.02 USD"
+              - article [ref=e47]: "Open Positions Open positions (4):"
+              - list [ref=e48]:
+                - listitem [ref=e49]: "GLD: 100.0 qty, mktVal=37551.91, unrealPnL=-775.18"
+                - listitem [ref=e50]: "SOXX: -19.0 qty, mktVal=-10897.09, unrealPnL=-3341.27"
+                - listitem [ref=e51]: "CRM: 50.0 qty, mktVal=8179.53, unrealPnL=-4075.39"
+                - listitem [ref=e52]: "IGV: 125.0 qty, mktVal=11560.50, unrealPnL=-652.31"
+              - article [ref=e53]: Account P&L Live P&L not yet available — no trade execution has been recorded yet, or the execution listener may still be connecting.
+              - article [ref=e54]: "Live Orders Live orders (1):"
+              - list [ref=e55]:
+                - listitem [ref=e56]: orderId=1569507027 EEM BUY 1.0 @ 50.00 [Submitted] TIF=GTC origin=EXTERNAL (mobile/TWS/web portal) — read-only via API
+              - article [ref=e57]: "Historical dataset loaded: 1088 trades (2020-04-15 → 2026-07-09, integrity validated) — last refreshed 2026-07-09"
+              - article [ref=e58]: Ask me anything about your portfolio, markets, or strategy.
+            - button "End Session" [ref=e61] [cursor=pointer]
+        - generic [ref=e78]:
+          - img "Avatar for System" [ref=e81]
+          - article [ref=e86]: ▶ Launching TradingView Desktop with remote debugging…
+        - generic [ref=e90]:
+          - img "Avatar for System" [ref=e93]
+          - article [ref=e98]: "✕ TradingView launch failed: TradingView is already running without the remote debug port. Quit TradingView, then relaunch it: open -a 'TradingView' --args --remote-debugging-port=9222"
+        - article [ref=e111]: open -a 'TradingView' --args --remote-debugging-port=9222
+        - generic [ref=e115]:
+          - img "Avatar for ClaudIA" [ref=e118]
+          - generic [ref=e119]:
+            - generic [ref=e122]:
+              - article [ref=e123]: That's a shell command to launch the TradingView desktop app with the remote debugging port open — that's what lets me connect to your chart via CDP. You'll need to run that in your terminal yourself; I can't execute shell commands.
+              - article [ref=e124]: Once you've run it and TradingView is up, let me know (or just say "go") and I'll verify the connection with a health check and pull the current chart state.
+            - button [ref=e126] [cursor=pointer]
+      - generic [ref=e63]:
+        - generic [ref=e64]:
+          - textbox "Type your message here..." [active] [ref=e66]
+          - generic [ref=e67]:
+            - button [ref=e70] [cursor=pointer]
+            - generic [ref=e71]:
+              - button [disabled]
+        - article [ref=e128]: LLMs can make mistakes. Check important info.
