@@ -188,8 +188,8 @@ def test_get_service_writes_back_refreshed_token(sync, tmp_path):
     mock_creds.refresh_token = "rt"
     mock_creds.to_json.return_value = '{"refreshed": true}'
 
-    with patch("claudia.gdrive_sync.Credentials.from_authorized_user_file", return_value=mock_creds), \
-         patch("claudia.gdrive_sync.Request"), \
+    with patch("ibkr_core_mcp.gdrive_auth.Credentials.from_authorized_user_file", return_value=mock_creds), \
+         patch("ibkr_core_mcp.gdrive_auth.Request"), \
          patch("claudia.gdrive_sync.build"):
         sync._get_service()
 
