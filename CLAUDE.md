@@ -81,12 +81,12 @@ pytest                        # all tests, requires live IBKR gateway
   memory. Always `WebFetch` the official doc before writing any error message, fix, or
   diagnosis. Cite the source URL in the error string and commit message. This rule exists
   because two production bugs went undetected for months and were caught instantly once
-  docs were checked. Full source table: @docs/api-reference.md
+  docs were checked. Full source table: `docs/api-reference.md`
 - `context.md` / `principles.md` define ClaudIA's persona and trading rules. Hot-reloaded
-  mid-session, never commit either file. Loading/versioning mechanics: @docs/context-loading-reference.md
+  mid-session, never commit either file. Loading/versioning mechanics: `docs/context-loading-reference.md`
 - Prompt caching uses 3 breakpoints (tools → system → messages). Mechanics and live-verified
-  numbers: @docs/context-loading-reference.md. Design rationale and the three-round
-  consistency review: @docs/superpowers/plans/2026-07-03-prompt-caching-upgrade.md
+  numbers: `docs/context-loading-reference.md`. Design rationale and the three-round
+  consistency review: `docs/superpowers/plans/2026-07-03-prompt-caching-upgrade.md`
 
 ---
 
@@ -105,7 +105,7 @@ These rules must never be violated when extending ClaudIA:
 
 ---
 
-## Order Staging (safety-critical — summary only, full spec: @docs/order-api-reference.md)
+## Order Staging (safety-critical — summary only, full spec: `docs/order-api-reference.md`)
 
 ClaudIA **cannot** place, modify, or cancel orders autonomously:
 1. ClaudIA embeds an `order-proposal` JSON block in its response.
@@ -136,11 +136,11 @@ check there before adding/debugging a tool. Recent additions log: `ibkr_core_mcp
 
 ## Pointers
 
-- Trade data sync (Flex vs live API, integrity checks): @docs/flex-query-setup.md and @docs/trading-data-reference.md
-- Market calendar (20 exchanges, futures schedules): @docs/market-calendar-reference.md
-- GDrive sync (folder layout, error handling): @docs/gdrive-sync-reference.md
-- TradingView integration (sidecar, curated tools, recovery): @docs/tradingview-reference.md and @docs/tradingview-mcp-recovery.md
-- Environment variables (full reference): @docs/env-vars-reference.md
-- Conversation memory schema: @docs/conversation-memory-reference.md
-- API source-of-truth URLs (IBKR, Anthropic, Drive, Chainlit, libraries): @docs/api-reference.md
-- Known gaps, live test log, project status: @docs/project-status.md
+- Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and `docs/trading-data-reference.md`
+- Market calendar (20 exchanges, futures schedules): `docs/market-calendar-reference.md`
+- GDrive sync (folder layout, error handling): `docs/gdrive-sync-reference.md`
+- TradingView integration (sidecar, curated tools, recovery): `docs/tradingview-reference.md` and `docs/tradingview-mcp-recovery.md`
+- Environment variables (full reference): `docs/env-vars-reference.md`
+- Conversation memory schema: `docs/conversation-memory-reference.md`
+- API source-of-truth URLs (IBKR, Anthropic, Drive, Chainlit, libraries): `docs/api-reference.md`
+- Known gaps, live test log, project status: `docs/project-status.md`
