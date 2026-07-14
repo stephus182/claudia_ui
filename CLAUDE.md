@@ -121,7 +121,7 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   explicit user approval in a follow-up message. Enforced in `claudia/agent.py` system
   prompt and in memory (`feedback-order-parameter-immutability.md`).
 - Modify requests require the **full original order**, not a diff (IBKR API requirement).
-- FUT/FOP require `conid` pre-resolved via `get_option_strikes`/`get_futures` — no fallback
+- FUT/FOP require `conid` pre-resolved via `get_option_chain`/`get_futures` — no fallback
   symbol-based resolution for modify/cancel.
 
 ---
