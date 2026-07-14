@@ -151,3 +151,4 @@ the fix that established this (75,480 → 2,910 tokens/session).
 - Conversation memory schema: `docs/conversation-memory-reference.md`
 - API source-of-truth URLs (IBKR, Anthropic, Drive, Chainlit, libraries): `docs/api-reference.md`
 - Known gaps, live test log, project status: `docs/project-status.md`
+- Full documentation catalog (every doc in `docs/`, categorized): `docs/README.md`
