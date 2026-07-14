@@ -67,7 +67,10 @@ These form the core of ClaudIA's system prompt.
 
 - Drive texts are fetched once per session start (may override local files)
 - A `watchdog` file observer is started to detect live edits mid-session
-- If a file is missing, the loader falls back to the example template or empty string
+- If a file is missing, `ContextLoader._read_required()` raises `FileNotFoundError` and
+  `on_chat_start` aborts the session with a "Setup required" chat message — there is no
+  template or empty-string fallback (`claudia/context_loader.py:142-149`,
+  `claudia/app.py:440-448`)
 
 ---
 
@@ -111,7 +114,7 @@ Binary discovery order:
 **File:** `claudia/status.py` → `ConnectivityChecker`
 
 The connectivity checker is a **process-level singleton** — created once and reused
-across Chainlit sessions. It polls every 15 seconds.
+across Chainlit sessions. It polls every 60 seconds (`POLL_INTERVAL` in `claudia/status.py`).
 
 | Service | Check method | Condition for OK |
 |---|---|---|
@@ -131,8 +134,25 @@ the authentication token. Symptom: auth completes on mobile but the session
 immediately drops.
 
 **Side effect of `/tickle`:** resets the IBKR session keepalive timer. Polling
-every 15s prevents IBKR auto-logout (session times out after ~5-10 minutes
+every 60s prevents IBKR auto-logout (session times out after ~5-10 minutes
 without a tickle call).
+
+---
+
+## Phase 4.5 — Execution listener
+
+**File:** `claudia/execution_listener.py` → `ExecutionListener`
+
+Like `ConnectivityChecker`, this is a **process-level singleton** — constructed and started
+right after the connectivity checker (`claudia/app.py`, `on_chat_start` step 8), before the
+IBKR ping check in Phase 5.
+
+- Subscribes to IBKR's execution WebSocket feed (any order origin, not just ClaudIA's own)
+- On each trade execution, triggers a one-shot P&L snapshot check, which drives the
+  "Account P&L" line shown in the welcome message
+- Connection failures retry on a backoff schedule (5s, 10s, 30s, 60s) rather than failing the
+  session — a listener outage only affects the auto-triggered P&L snapshot after a fill, not
+  order placement/modify/cancel (`get_live_pnl` still works by reading the last stored snapshot)
 
 ---
 
@@ -253,7 +273,13 @@ No container restart. No login. Session uninterrupted.
 
 1. ConnectivityChecker detects `authenticated=false` → "IBKR Gateway disconnected" alert in chat
 2. "Start IBKR Gateway" button appears (or was already in the welcome message)
-3. User clicks → `GatewayManager.startup()` runs (same logic: skip if already connected, full path otherwise)
+3. User clicks → the `start_gateway` action callback (`claudia/app.py`'s `on_start_gateway`) runs
+   directly — **not** `GatewayManager.startup()`, and there is no "skip if already connected"
+   check on this path. It calls `ensure_docker_running()` then `start()`, which
+   **unconditionally** removes and recreates the gateway container every time, then
+   `wait_for_gateway()` and `open_login_page()`. (The fast-path skip-if-authenticated logic
+   in `startup()` is only used by `start-claudia.sh`'s pre-Chainlit Phase -1, not this in-chat
+   button.)
 4. ConnectivityChecker detects recovery → "IBKR Gateway reconnected" alert
 
 **Common issues:**

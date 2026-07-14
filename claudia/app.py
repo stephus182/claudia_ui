@@ -994,9 +994,11 @@ async def on_end_session(action: cl.Action):
 async def on_start_gateway(action: cl.Action):
     """Non-interactively launch the IBKR Client Portal Gateway container.
 
-    Runs GatewayManager.startup() in a background task so the UI stays
-    responsive during the 120s wait. Progress messages are streamed via
-    cl.Message. The action button is removed immediately on click.
+    Calls ensure_docker_running() + start() directly in a background task (not
+    GatewayManager.startup() — this path always removes and recreates the container,
+    with no skip-if-already-authenticated check) so the UI stays responsive during the
+    120s wait. Progress messages are streamed via cl.Message. The action button is
+    removed immediately on click.
 
     Source: https://docs.chainlit.io/api-reference/action
     """
