@@ -169,10 +169,14 @@ All three checks verified against live services:
 
 | Bug | Symptom | Fix | Commit |
 |---|---|---|---|
-| `check_ibkr()` checked HTTP status only | Green light when not logged in | Parse `iserver.authStatus` JSON | `ee49b9b` |
-| `check_gdrive()` checked token file only | Green light when API unreachable | `GDriveSync.ping()` round-trip | `3170595` |
-| `upload_db()` deadlocked | Hung indefinitely when session active | `Lock` → `RLock` | `9780963` |
-| `upload_db()` WAL checkpoint blocked | Same hang, different cause | Remove checkpoint | `9780963` |
+| `check_ibkr()` checked HTTP status only | Green light when not logged in | Parse `iserver.authStatus` JSON | `3bb3302` |
+| `check_gdrive()` checked token file only | Green light when API unreachable | `GDriveSync.ping()` round-trip | `04a59b4` |
+| `upload_db()` deadlocked | Hung indefinitely when session active | `Lock` → `RLock` | `096e05b` |
+| `upload_db()` WAL checkpoint blocked | Same hang, different cause | Remove checkpoint | `096e05b` |
+
+Commit hashes updated 2026-07-14 — the originals (`ee49b9b`/`3170595`/`9780963`) no longer
+resolve after the 2026-07-10 `git-filter-repo` history rewrite; these are the same fixes under
+their new hashes.
 
 ---
 
@@ -183,6 +187,6 @@ claudia/status.py          — ConnectivityChecker, check_ibkr(), check_gdrive()
 claudia/gdrive_sync.py     — GDriveSync.ping(), upload_db(), download_db()
 ibkr_core_mcp/client.py   — IBKRClient.ping(), tickle(), get_auth_status()
 claudia/app.py             — ConnectivityChecker construction (passes gdrive_sync=)
-public/custom.js           — 60s status bar poll → GET /api/status → lights update
-claudia/status.py:65       — GET /api/status response shape
+claudia/assets/custom.js   — 5s status bar poll (POLL_MS) → GET /api/status → lights update
+claudia/app.py:273-278     — GET /api/status route + response shape
 ```
