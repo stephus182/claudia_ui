@@ -53,7 +53,7 @@ newly appended blocks at 1.25×.
 (46 tool schemas — 42 `ibkr_core_mcp` + 4 local — + system prompt) written once
 (`cache_creation_input_tokens=22047`), then read at 0.1× on every subsequent call
 (`cache_read_input_tokens=22047`); an appended assistant+user turn wrote only its 17-token
-delta. Full numbers: `docs/live-test-log.md#run-2026-07-03-1`.
+delta. Full numbers: `docs/audits/live-test-log.md#run-2026-07-03-1`.
 
 **Health telemetry:** every call logs `prompt cache: created=… read=… uncached=…` at INFO
 (`_log_cache_usage`), with a WARNING if both `created` and `read` are zero — the silent-failure
@@ -69,7 +69,7 @@ signal for a below-minimum prefix (1,024 tokens on `claude-opus-4-8`) or a mispl
   messages prefix and that cache misses once per user turn (tools+system unaffected)
 
 Full design rationale, source-verified claims, and the three-round consistency review:
-`docs/superpowers/plans/2026-07-03-prompt-caching-upgrade.md` ·
-`docs/2026-07-03-llm-best-practices-sources.md`.
+`docs/plans/2026-07-03-prompt-caching-upgrade.md` ·
+`docs/audits/2026-07-03-llm-best-practices-sources.md`.
 
 Source: https://platform.claude.com/docs/en/build-with-claude/prompt-caching

@@ -19,7 +19,7 @@ process (claudia_ui imports ibkr_core_mcp directly). They are not in a service/c
 relationship: each builds its own `googleapiclient.discovery.build("drive", "v3", ...)`
 service object. As of 2026-07-10 both delegate the actual credential load/refresh/persist
 logic to the shared `ibkr_core_mcp.gdrive_auth` module (see
-`docs/superpowers/specs/2026-07-10-gdrive-auth-dedup-design.md`) — `GDriveCache` additionally
+`docs/plans/2026-07-10-gdrive-auth-dedup-design.md`) — `GDriveCache` additionally
 owns the interactive first-time OAuth bootstrap, which `GDriveSync` deliberately does not
 have (it raises if no valid token exists, rather than popping a browser mid-chat-session).
 
