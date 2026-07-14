@@ -193,7 +193,14 @@
       "Bash(curl -sk --max-time 10 -w \"\\\\nHTTP_STATUS:%{http_code}\\\\n\" https://localhost:5055/v1/api/tickle)",
       "Bash(.venv/bin/pytest tests/test_gdrive_sync.py -k read_text -v)",
       "Bash(curl -sk --max-time 5 -w \"\\\\nHTTP_STATUS:%{http_code}\\\\n\" https://localhost:5055/v1/api/tickle)",
-      "Bash(.venv/bin/python /private/tmp/claude-501/-Users-steph-Claude-Projects-claudia-ui/daa12d55-fce5-448f-987c-3e0b1ab805dc/scratchpad/count_tokens.py)"
+      "Bash(.venv/bin/python /private/tmp/claude-501/-Users-steph-Claude-Projects-claudia-ui/daa12d55-fce5-448f-987c-3e0b1ab805dc/scratchpad/count_tokens.py)",
+      "Bash(git reflog *)",
+      "Bash(git gc *)",
+      "Bash(git count-objects *)",
+      "Bash(rm -rf /private/tmp/claude-501/-Users-steph-Claude-Projects-claudia-ui/daa12d55-fce5-448f-987c-3e0b1ab805dc/scratchpad/verify-clone)",
+      "Bash(grep -n *)",
+      "Bash(grep -nP '[ \\\\t]+$' CLAUDE.md)",
+      "Bash(xxd)"
     ],
     "additionalDirectories": [
       "/Users/steph/.claude/plans"
