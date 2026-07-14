@@ -86,7 +86,7 @@ pytest                        # all tests, requires live IBKR gateway
   mid-session, never commit either file. Loading/versioning mechanics: `docs/context-loading-reference.md`
 - Prompt caching uses 3 breakpoints (tools → system → messages). Mechanics and live-verified
   numbers: `docs/context-loading-reference.md`. Design rationale and the three-round
-  consistency review: `docs/superpowers/plans/2026-07-03-prompt-caching-upgrade.md`
+  consistency review: `docs/plans/2026-07-03-prompt-caching-upgrade.md`
 
 ---
 
@@ -140,7 +140,7 @@ Plain file references below, not `@import`s — read on demand via normal file t
 loaded into every session's context automatically. Compliant with the official Claude Code
 memory docs (verified 2026-07-10, https://code.claude.com/docs/en/memory): a bare `@path` is
 a real import ("expanded and loaded into context at launch"); backtick-wrapping keeps it a
-literal path instead. See `docs/superpowers/plans/2026-07-10-claude-md-delink-imports.md` for
+literal path instead. See `docs/plans/2026-07-10-claude-md-delink-imports.md` for
 the fix that established this (75,480 → 2,910 tokens/session).
 
 - Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and `docs/trading-data-reference.md`

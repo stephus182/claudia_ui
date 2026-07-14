@@ -44,7 +44,7 @@ references should use the canonical `platform.claude.com` host.
 
 Scraped-evidence convention: design docs and plans that assert API behavior carry a
 claim→source table with verbatim quotes and scrape dates — see
-`docs/2026-07-03-llm-best-practices-sources.md` for the reference example.
+`docs/audits/2026-07-03-llm-best-practices-sources.md` for the reference example.
 
 ## Claude Code Memory (`CLAUDE.md` itself)
 
@@ -58,7 +58,7 @@ reduce context, since imported files load at launch." Backtick-wrapping a path (
 keeps it a literal reference instead of an import; import parsing already skips Markdown
 code spans and fenced code blocks. This repo's `CLAUDE.md` was found in violation (13 bare
 `@docs/...` imports pulling 72,570 tokens into every session) and fixed —
-`docs/superpowers/plans/2026-07-10-claude-md-delink-imports.md` — reducing the per-session
+`docs/plans/2026-07-10-claude-md-delink-imports.md` — reducing the per-session
 load from 75,480 to 2,910 tokens. `CLAUDE.md`'s own "Pointers" section now carries a short
 compliance note citing this same source.
 

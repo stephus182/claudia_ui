@@ -421,8 +421,8 @@ Run this checklist before any significant code change to ClaudIA:
 
 | Date | Scope | Findings | Status | Doc |
 |---|---|---|---|---|
-| 2026-06-12 | `gdrive_sync.py`, `tradingview.py`, `app.py`, `ibkr_core_mcp/client.py` | 2 High, 4 Medium, 2 Low | All 8 resolved | [`docs/security-audit-2026-06-12.md`](docs/security-audit-2026-06-12.md) |
-| 2026-06-25 | All 8 claudia_ui modules (full re-audit) | 1 High, 0 Medium, 3 Low | H-1 fixed; 3 Low accepted | [`docs/security-audit-2026-06-25.md`](docs/security-audit-2026-06-25.md) |
+| 2026-06-12 | `gdrive_sync.py`, `tradingview.py`, `app.py`, `ibkr_core_mcp/client.py` | 2 High, 4 Medium, 2 Low | All 8 resolved | [`docs/audits/security-audit-2026-06-12.md`](docs/audits/security-audit-2026-06-12.md) |
+| 2026-06-25 | All 8 claudia_ui modules (full re-audit) | 1 High, 0 Medium, 3 Low | H-1 fixed; 3 Low accepted | [`docs/audits/security-audit-2026-06-25.md`](docs/audits/security-audit-2026-06-25.md) |
 | 2026-06-27 | ibkr_core_mcp v1.0 pre-release audit (ported back to `agent.py`) | 1 Medium ported | Decimal/hex IP bypass (`http://2130706433/`) fixed via `socket.gethostbyname()` resolve-then-check | see commit |
 
 **Regression tests:** `tests/test_security_regressions.py` — 21 tests covering all three audits. These must stay green.

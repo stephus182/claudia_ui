@@ -11,11 +11,11 @@ ibkr_core_mcp.mcp_server._stream_loop_with_retry.
 
 Design: rather than staying continuously subscribed to IBKR's spl (P&L) topic
 (the previous, since-removed PnLStreamer design — see
-docs/superpowers/specs/2026-07-06-live-pnl-streaming-design.md for why that
+docs/plans/2026-07-06-live-pnl-streaming-design.md for why that
 was judged overkill), this module stays subscribed only to str (trade
 executions) — a sparse, meaningful signal — and transiently subscribes to spl
 only long enough to capture one P&L tick after a trade happens. See
-docs/superpowers/specs/2026-07-07-execution-triggered-pnl-design.md.
+docs/plans/2026-07-07-execution-triggered-pnl-design.md.
 
 A background "pump" task drains ws.listen() into an asyncio.Queue, and both
 the outer execution loop and the transient P&L capture read from that queue

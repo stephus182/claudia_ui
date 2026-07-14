@@ -63,7 +63,7 @@ for exactly one `PnLUpdate`, records it via `SQLiteStore.record_pnl_snapshot()`,
 unsubscribes — returning to its executions-only steady state.
 
 This replaced an earlier design (`PnLStreamer`, see git history and
-`docs/superpowers/specs/2026-07-06-live-pnl-streaming-design.md`) that stayed
+`docs/plans/2026-07-06-live-pnl-streaming-design.md`) that stayed
 continuously subscribed to `spl` and wrote every tick — judged overkill for a chat
 assistant where "live" never needed sub-second freshness, and it grew `pnl_snapshots`
 unboundedly for data nobody read between trades.
@@ -94,7 +94,7 @@ Surfaced two ways:
   in the session-start welcome message, reflecting P&L as of the last recorded
   execution (not literally "live" — refreshed only when a trade happens).
 
-Design spec: `docs/superpowers/specs/2026-07-07-execution-triggered-pnl-design.md`
+Design spec: `docs/plans/2026-07-07-execution-triggered-pnl-design.md`
 
 ## Market Data Fetch Behavior
 
