@@ -12,7 +12,9 @@ Two complementary sources — each covers what the other cannot:
 Flex never has today's trades. The live API fills that gap.
 
 **Startup sync decision** (in `app.py → _background_flex_sync`):
-1. `stale == False` → skip (newest == last NYSE trading day — calendar-aware, not a fixed day count)
+1. `stale == False` → skip (`newest >= penultimate_trading_day` — calendar-aware, not a fixed
+   day count; a one-trading-day gap is normal Flex T+1 lag, not staleness — see
+   `docs/market-calendar-reference.md`)
 2. Last `flex_sync` log entry < 4h ago → skip (recent attempt, avoid API lockout)
 3. Otherwise → sync, log result, back up `store.db` to Drive `account_data/`
 

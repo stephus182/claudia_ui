@@ -22,7 +22,9 @@ This is a **pure JavaScript** package — no TypeScript compilation step.
 ~/.tradingview-mcp/
   src/
     server.js          ← MCP stdio entry point (node src/server.js)
-    connection.js      ← CDP connection (hardcoded port 9222)
+    connection.js      ← CDP connection (port configurable via CHROME_REMOTE_DEBUG_PORT
+                          env var, default 9222 — claudia_ui sets this itself from its own
+                          TRADINGVIEW_DEBUG_PORT, not hardcoded on either side)
     tools/             ← 78 tool implementations
   package.json
   node_modules/        ← npm install (only @modelcontextprotocol/sdk + chrome-remote-interface)
@@ -272,6 +274,12 @@ but still subject to change.
 ---
 
 ## Staying current without surprises
+
+**Known drift (checked 2026-07-14):** the installed sidecar is pinned at commit `4795784a`
+(2026-04-03, 78 tools). Upstream is at `55534aab8` (2026-07-06, 84 tools) and has since added
+a `tv_update` self-update tool/CLI that automates the `git pull && npm install` steps below —
+neither exists yet in the installed version. Worth running the upgrade steps below and
+re-archiving, then using `tv_update` going forward once it's present locally.
 
 ```bash
 # Before any upgrade, check what changed

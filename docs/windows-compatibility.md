@@ -86,16 +86,24 @@ cross-platform; only the shell syntax needs porting.
 
 **Problem:**
 ```python
-subprocess.run(["open", "-a", "Trading View", "--args", "--remote-debugging-port=9222"])
+subprocess.Popen(["open", "-a", _TV_APP_NAME, "--args", f"--remote-debugging-port={_TV_DEBUG_PORT}"])
 ```
-`open -a` is macOS-only. Windows equivalent:
+`open -a` is macOS-only (`_TV_APP_NAME = "TradingView"`, no space — an earlier version of this
+code had a space-containing "Trading View" app name bug, fixed 2026-06-30, see
+`docs/project-status.md`). Windows equivalent:
 ```python
 subprocess.Popen([r"C:\...\TradingView.exe", "--remote-debugging-port=9222"])
 ```
 The TradingView executable path on Windows is not standardized (varies by install location).
 
-**Fix:** Detect `platform.system()` and use `subprocess.Popen` with a configurable
-`TRADINGVIEW_EXE_PATH` env var on Windows. Add `start /D` fallback if path not set.
+**Already partially built:** `launch_tradingview()` already has a `platform.system() != "Darwin"`
+branch (`claudia/tradingview.py`) that raises a clear `RuntimeError` with manual-launch
+instructions on non-macOS — only the actual Windows auto-launch path is missing, not the
+platform detection itself.
+
+**Fix:** Add a `subprocess.Popen` branch for Windows with a configurable `TRADINGVIEW_EXE_PATH`
+env var, replacing the current `RuntimeError` on that platform. Add `start /D` fallback if path
+not set.
 
 ---
 
@@ -221,4 +229,4 @@ garbled in cmd.exe. No fix needed unless cmd.exe support is a requirement.
 6. **B1** — Windows Hello biometric gate (most complex — defer until needed)
 7. **S7 / M8 / M9 / M10** — documentation and minor polish
 
-*Last updated: 2026-06-25*
+*Last updated: 2026-07-14 (S4 refreshed to match current `claudia/tradingview.py`)*

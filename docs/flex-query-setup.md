@@ -17,7 +17,9 @@ ClaudIA uses two complementary data sources — each covers what the other canno
 **Key rule:** Flex never has today's trades. The most current Flex data is always yesterday's settled activity. Today's intraday executions are only available via the live API.
 
 **Startup sync logic:**
-- Skip if `days_since_newest <= 1` — data is fully current (Flex can't give anything newer)
+- Skip if `newest >= penultimate_trading_day` (NYSE-calendar-aware, not a fixed day count) —
+  a one-trading-day gap is normal Flex T+1 lag, not staleness; see
+  `docs/market-calendar-reference.md`
 - Skip if last sync attempt was < 4 hours ago — avoid API lockout from repeated restarts
 - Sync otherwise — pulls last 30 days, upserts idempotently, logs the event
 
@@ -143,6 +145,16 @@ Then import each file in ClaudIA:
 import_flex_file path=~/.ibkr_core/flex_archive/flex_2020.xml
 ```
 
+**Gap — this backfill is not covered by the integrity check:** `import_flex_file` only upserts
+into local SQLite; it never uploads anything to Drive. `verify_flex_import` (Step 6's underlying
+check) only scans Drive's `account_data/` folder, matching either the manual-archive pattern
+(`ClaudIA_Full_Activity_*.xml`) or the auto-synced pattern (`flex_U*.xml`) — see
+`docs/trading-data-reference.md`. Files named `flex_2020.xml` etc. living only in
+`~/.ibkr_core/flex_archive/` match neither pattern and aren't in Drive at all, so the years of
+history imported this way are invisible to that check. If you want this backfill covered, also
+upload each file to Drive's `account_data/` folder, named to match the manual-archive pattern
+(e.g. `ClaudIA_Full_Activity_2020.xml`).
+
 ## Step 6 — Verify Coverage
 
 ```
@@ -203,7 +215,7 @@ parsed as each feature is implemented in code.
 | Error | Cause | Fix |
 |---|---|---|
 | `Flex SendRequest HTTP 401` | Invalid token | Re-copy token from IBKR → Flex Web Service |
-| `Flex SendRequest unexpected response: status='Warn'` | Query not found | Verify Query ID in IBKR UI |
+| `Flex error 1014: Query is invalid.` | Query ID not found | Verify Query ID in IBKR UI (Reports → Flex Queries) |
 | `Flex statement not ready after 5 attempts` | IBKR server slow | Increase `_MAX_POLL_RETRIES` in `flex_query.py` or retry later |
 | `Unexpected Flex dateTime format` | Wrong date format set | Re-check Date Format = `yyyyMMdd;HHmmss` in query config |
 | Empty trades list | Date range too narrow | Widen the period in the query config |

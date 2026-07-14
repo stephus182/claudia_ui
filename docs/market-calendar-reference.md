@@ -65,6 +65,9 @@ Sun–Thu; Fridays appear as "closed" from a Mon–Fri perspective — correct, 
 Cache lives in `_market_calendar_cache` (module-level dict in `ibkr_core_mcp/store.py`). Key:
 `(date_str, tuple(exchange_codes))` — auto-invalidates at midnight, no manual expiry needed.
 
-**Staleness check** also uses the NYSE calendar: `stale = newest < last_trading_day`. This
-correctly handles weekends and holidays — no false stale on Saturdays, no missed sync after a
-holiday Monday.
+**Staleness check** also uses the NYSE calendar: `stale = newest < penultimate_trading_day`
+(the trading day *before* the last trading day, not the last trading day itself) — Flex
+publishes yesterday's trades today, so `newest == last_trading_day` is always normal lag, not
+staleness; only 2+ trading days behind counts as stale. Falls back to `days_since_newest > 2`
+if `exchange_calendars` import fails. This correctly handles weekends and holidays — no false
+stale on Saturdays, no missed sync after a holiday Monday.
