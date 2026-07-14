@@ -179,6 +179,7 @@ Implementation plan and live-verified numbers —
 
 | File | Contents |
 |---|---|
+| [`docs/README.md`](docs/README.md) | Full documentation catalog — every doc in `docs/`, categorized |
 | [`CLAUDE.md`](CLAUDE.md) | Developer guide: setup, env vars, architecture, hard rules |
 | [`SECURITY.md`](SECURITY.md) | Security model: order barriers, threat model, audit checklist |
 | [`docs/flex-query-setup.md`](docs/flex-query-setup.md) | IBKR Flex Query setup: token, query config, backfill, ongoing sync |
