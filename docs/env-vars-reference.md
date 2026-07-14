@@ -2,16 +2,16 @@
 
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | ✅ | Claude API key |
-| `IBKR_GATEWAY_URL` | ✅ | IBKR Client Portal Gateway URL |
+| `ANTHROPIC_API_KEY` | ✅ | Claude API key — the only variable `Config.from_env()` raises `ConfigError` for if unset |
+| `IBKR_GATEWAY_URL` | optional | IBKR Client Portal Gateway URL (default: `https://localhost:5055/v1/api`) |
 | `IBKR_AUTH_BROWSER` | optional | Browser whose localhost cookies `BrowserCookieAuth` reads for IBKR session auth: `chrome`, `safari`, `firefox`, `edge` (default: `chrome`) |
-| `GOOGLE_DRIVE_FOLDER_ID` | ✅ | Root Drive folder — parent of `db/`, `market_data/`, and `account_data/` subfolders |
+| `GOOGLE_DRIVE_FOLDER_ID` | optional | Root Drive folder — parent of `db/`, `market_data/`, and `account_data/` subfolders (default: `""` — Drive sync disabled) |
 | `GDRIVE_DB_FOLDER_ID` | optional | Drive folder for claudia.db (auto-created as `db/` inside root if unset) |
 | `GDRIVE_CACHE_FOLDER_ID` | optional | Drive folder for Parquet cache (auto-created as `market_data/` inside root if unset) |
 | `GDRIVE_ACCOUNT_FOLDER_ID` | optional | Drive folder for Flex XML archives + `store.db` backup (auto-created as `account_data/` inside root if unset) |
-| `GDRIVE_TOKEN_FILE` | ✅ | OAuth2 token file path |
-| `GDRIVE_CREDENTIALS_FILE` | ✅ | OAuth2 credentials file path |
-| `IBKR_SQLITE_PATH` | ✅ | ibkr_core_mcp SQLite store path |
+| `GDRIVE_TOKEN_FILE` | optional | OAuth2 token file path (default: `~/.ibkr_core/token.json`) |
+| `GDRIVE_CREDENTIALS_FILE` | optional | OAuth2 credentials file path (default: `~/.ibkr_core/credentials.json`) |
+| `IBKR_SQLITE_PATH` | optional | ibkr_core_mcp SQLite store path (default: `~/.ibkr_core/store.db`) |
 | `IBKR_FLEX_TOKEN` | optional | For full trade history sync |
 | `IBKR_FLEX_QUERY_ID` | optional | For full trade history sync |
 | `CLAUDIA_MODEL` | optional | Claude model (default: `claude-opus-4-8`) |

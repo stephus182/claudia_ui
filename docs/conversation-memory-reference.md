@@ -16,7 +16,9 @@ migrated safely: derived index dropped, `relationships` dropped only if empty.)
 
 **Search:** ClaudIA uses SQLite FTS5 to search full conversation history. Ask: *"What did we
 discuss about NVDA last month?"* The `search_past_conversations` tool searches all messages
-across all sessions. Results include the doc version active at the time.
+across all sessions via `messages_fts` — it does **not** join to `sessions`/`doc_version`, so
+results do not include which document version was active at the time. (`get_decisions_for_symbol`
+does join to `doc_version`, but that method isn't exposed as an LLM tool today.)
 
 **Version snapshots** are also written to `docs/versions/{label}/` as human-readable files for
 reference.

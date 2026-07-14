@@ -29,9 +29,12 @@ ClaudIA has two tools to reason about version history:
 - `list_doc_versions` — enumerate registered versions with dates
 - `get_doc_version("v1")` — retrieve the full content of any past version to check for contradictions with current rules
 
-Past conversation history retrieved from memory always includes which document version was
-active, so ClaudIA can flag if something discussed under old rules conflicts with the current
-principles.
+**Not currently wired to a tool:** `sessions.doc_version` is stored per session and
+`get_decisions_for_symbol` (`conversation_store.py`) joins to it, but that method isn't exposed
+to the LLM. `search_past_conversations` (the tool ClaudIA actually calls) searches `messages_fts`
+only and does not join to `sessions`/`doc_version` — search results do **not** include which
+document version was active at the time. `list_doc_versions`/`get_doc_version` are the only way
+to check historical rules today.
 
 ## Prompt Caching (mechanics — design rationale lives in the superpowers plan doc)
 
@@ -50,7 +53,8 @@ breakpoint closes that gap — each call reads the prior prefix at 0.1× and wri
 newly appended blocks at 1.25×.
 
 **Live-verified** (2026-07-03, exact production request shape): a ~22K-token static prefix
-(46 tool schemas — 42 `ibkr_core_mcp` + 4 local — + system prompt) written once
+(46 tool schemas at the time — 42 `ibkr_core_mcp` + 4 local — + system prompt; now 47 total
+after `get_live_pnl` was added 2026-07-06, see `claudia/agent.py`'s `_LOCAL_TOOLS`) written once
 (`cache_creation_input_tokens=22047`), then read at 0.1× on every subsequent call
 (`cache_read_input_tokens=22047`); an appended assistant+user turn wrote only its 17-token
 delta. Full numbers: `docs/audits/live-test-log.md#run-2026-07-03-1`.
