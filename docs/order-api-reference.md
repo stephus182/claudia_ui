@@ -73,7 +73,7 @@ routing depends on `sec_type`:
 - `/iserver/secdef/search` does not document FOP either, and FOP conid can't be derived from
   symbol alone (needs expiry + strike + put/call) — a proposal without `conid` set is
   **rejected with a chat message** directing the user to have ClaudIA call
-  `get_option_strikes` first and re-issue the proposal with `conid` filled in
+  `get_option_chain` first and re-issue the proposal with `conid` filled in
 - Once `conid` is set, resolution is a pass-through (no `search_contract`/`get_futures` call)
 - Same `manualIndicator: True` + `extOperator: "ClaudIA"` requirement as FUT (CME Rule 536-B applies to FOP too)
 
@@ -114,13 +114,14 @@ signature (`account_id, order_id`) has no way to pass them — FUT/FOP cancellat
 rejected by IBKR until that's added upstream in `ibkr_core_mcp`. STK cancellation is unaffected.
 Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#cancel-order
 
-**Known gap (Gate 2 detail, found live 2026-07-10, user-flagged as a hard requirement):**
-`confirm_cancel_dialog(order_id, account_id)` in `ibkr_core_mcp/order_confirm.py` only displays
-`{"Order ID": ..., "Account": ...}` — no symbol/side/qty/order type/price/TIF, unlike the place
-and modify Gate 2 dialogs, which both receive and display the full order dict. `order_flow.py`'s
-`execute_cancel_order()` already has the full proposal in hand; it's just never passed through
-`cancel_order()`'s signature. Not fixed as of this writing — needs an `order_details` param
-threaded through `cancel_order()` → `confirm_cancel_dialog()`, mirroring the modify path.
+**Gate 2 shows full order detail on cancel (fixed 2026-07-10):** `confirm_cancel_dialog(order_id,
+account_id, order=None)` in `ibkr_core_mcp/order_confirm.py` takes an optional `order` param —
+when provided, the dialog displays the same symbol/side/qty/order type/price/TIF detail the place
+and modify Gate 2 dialogs already showed. `cancel_order()` gained a matching optional
+`order_details` param; `order_flow.py`'s `execute_cancel_order()` passes its in-hand `proposal`
+through (`ibkr.cancel_order(account_id, order_id, order_details=proposal)`). See the resolved
+Known Gaps entry in `docs/project-status.md` for commit references and two flagged (non-blocking)
+residuals.
 
 ## Order Modification
 
@@ -179,10 +180,12 @@ limit $100.00 → $105.00), zero manual reply-chain intervention at any step —
 in `docs/project-status.md`. A successful modify logs `decision_type="trade_modified"` to
 `ConversationStore`.
 
-**Known gap found during the 2026-07-10 live test:** `get_live_orders`/`diagnose_orders` mislabel
-every order's origin as `EXTERNAL` — they check `orderRef`/`cOID`, but IBKR's actual Live Orders
-field is `order_ref` (snake_case). This caused ClaudIA to correctly refuse to auto-propose a
-modify on its own just-placed order (per its hard rule: never modify/cancel an order flagged
-external) until the user manually confirmed at the gate — empirically proving the mislabel is
-cosmetic (IBKR accepted the modify) but still a real usability regression. Fix (`order_ref`
-lookup) not yet applied — see Known Gaps in `docs/project-status.md`.
+**Order-origin labeling fixed (2026-07-10):** `get_live_orders`/`diagnose_orders` now check
+`order_ref` (IBKR's actual Live Orders field, snake_case) first, with `orderRef`/`cOID`/
+`clientOrderId` kept only as fallbacks. Before the fix, both checked the fallback keys only, so
+every order — including ClaudIA's own — fell through to an unreliable `clientId` check and was
+mislabeled `EXTERNAL`; this made ClaudIA correctly refuse to auto-propose a modify on its own
+just-placed order per its hard rule, requiring a manual gate confirmation instead of an autonomous
+proposal. Empirically the mislabel itself was cosmetic (IBKR accepted the modify regardless), but
+the usability regression was real. See the resolved Known Gaps entry in `docs/project-status.md`
+for commit references and a known residual edge case.

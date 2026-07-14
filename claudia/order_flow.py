@@ -185,7 +185,7 @@ async def execute_staged_order(
         # Resolve conid — routing depends on sec_type and optional conid override.
         # /iserver/secdef/search only documents STK, IND, BOND — NOT FUT, FOP, or CASH.
         # FOP requires expiry+strike+right — cannot infer from symbol alone; caller must
-        # pre-resolve via get_option_strikes and embed conid in the proposal.
+        # pre-resolve via get_option_chain and embed conid in the proposal.
         # Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#sec-search
         multiplier: float | None = None
         override_conid = proposal.get("conid")
@@ -196,13 +196,13 @@ async def execute_staged_order(
             company_name = proposal.get("_companyName", "")
         elif sec_type == "FOP":
             # FOP conid resolution requires expiry + strike + put/call — cannot derive
-            # from symbol alone. ClaudIA must call get_option_strikes first and re-issue
+            # from symbol alone. ClaudIA must call get_option_chain first and re-issue
             # the order proposal with the conid field set.
             await cl.Message(
                 content=(
                     f"Futures Options (FOP) orders require a pre-resolved contract ID. "
                     f"Ask ClaudIA to look up the specific contract "
-                    f"(expiry, strike, call/put) for **{symbol}** via `get_option_strikes`, "
+                    f"(expiry, strike, call/put) for **{symbol}** via `get_option_chain`, "
                     f"then re-issue the order proposal with the `conid` field set."
                 ),
                 author="System",
