@@ -34,18 +34,6 @@ tradingview-mcp repo: https://github.com/tradesdontlie/tradingview-mcp
   CDP injection sanitization added April 3, 2026 (safeString + requireFinite guards).
   Source: https://github.com/tradesdontlie/tradingview-mcp/blob/main/README.md
   Setup guide: https://github.com/tradesdontlie/tradingview-mcp/blob/main/SETUP_GUIDE.md
-
-Python 3.14 / anyio compatibility (fixed 2026-06-30):
-  The sidecar now starts successfully regardless of whether TradingView Desktop is
-  running. Previously, sidecar startup failed when CDP port 9222 was unreachable:
-  anyio._MemoryObjectItemReceiver instantiation calls AsyncIOTaskInfo(current_task())
-  but Python 3.14 returns None from current_task() during async generator cleanup,
-  causing AttributeError: 'NoneType' object has no attribute 'get_coro'.
-  Fix: AsyncIOTaskInfo.__init__ is patched in claudia/app.py to stub a TaskInfo when
-  task=None (task_info is only used in __repr__ — stub is safe). anyio 4.14.1 and
-  MCP 1.28.1 do not fix this upstream as of 2026-06-30.
-  Residual: when TV Desktop is not running, sidecar starts and lists its 78 tools but
-  tool calls fail at the CDP layer — ClaudIA falls back to screenshot mode.
 """
 
 from __future__ import annotations
