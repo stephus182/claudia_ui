@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "claudia_ui"
 version = "0.1.0"
 description = "ClaudIA — AI trading assistant powered by ibkr_core_mcp"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "chainlit>=2.0",
     "anthropic>=0.28",
@@ -41,7 +41,3 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-
-[tool.ruff.lint.per-file-ignores]
-# app.py imports Chainlit after an asyncio patch that must run at module level first
-"claudia/app.py" = ["E402"]
