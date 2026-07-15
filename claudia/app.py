@@ -20,210 +20,12 @@ Chainlit API references used in this file:
   Custom CSS/JS     https://docs.chainlit.io/customisation/custom-js
 """
 
+import asyncio
 import base64
 import contextvars
 import logging
 import os
 from pathlib import Path
-
-# ── Python 3.14 + anyio/sniffio compatibility fix ────────────────────────────
-# anyio.to_thread.run_sync fails in every Chainlit static-file route (/assets/,
-# /logo, /favicon) because sniffio cannot detect the asyncio backend — uvicorn
-# does not set sniffio's ContextVar.  The error surfaces in two places inside
-# FileResponse: the os.stat() call in __call__ AND the anyio.open_file() call
-# in _handle_simple that actually streams the file bytes.
-#
-# Root fix: patch anyio.to_thread.run_sync to fall back to asyncio.to_thread
-# on NoEventLoopError.  This covers all internal anyio I/O at once.
-# The FileResponse.__init__ pre-stat patch is kept as a cheap optimisation
-# (avoids dispatching to a thread for a stat call that would succeed anyway).
-import asyncio as _asyncio
-import anyio as _anyio
-import anyio.to_thread as _anyio_to_thread
-import sniffio as _sniffio
-from starlette.responses import FileResponse as _FileResponse
-
-# ── Python 3.14 + sniffio/Anthropic SDK compatibility fix ────────────────────
-# uvicorn does not set the sniffio ContextVar, so sniffio.current_async_library()
-# raises AsyncLibraryNotFoundError in every ASGI-dispatched coroutine.
-# The Anthropic SDK calls this on its first request (asyncify(get_platform)).
-# Patch: return "asyncio" as fallback — correct because uvicorn always uses asyncio.
-_orig_sniffio_cal = _sniffio.current_async_library
-
-def _sniffio_cal_compat() -> str:
-    try:
-        return _orig_sniffio_cal()
-    except _sniffio.AsyncLibraryNotFoundError:
-        return "asyncio"
-
-_sniffio.current_async_library = _sniffio_cal_compat
-# ─────────────────────────────────────────────────────────────────────────────
-
-_orig_anyio_run_sync = _anyio_to_thread.run_sync
-
-async def _anyio_run_sync_compat(
-    func, *args, abandon_on_cancel: bool = False, cancellable=None, limiter=None
-):
-    # anyio's run_sync_in_worker_thread acquires a CapacityLimiter which calls
-    # CancelScope, which needs asyncio.current_task() to be non-None.  In
-    # uvicorn's ASGI context (Python 3.14) current_task() is None for many
-    # request-handling coroutines, so anyio fails with TypeError or AssertionError
-    # deep inside its internals.  Detect upfront and bypass anyio entirely.
-    if _asyncio.current_task() is None:
-        return await _asyncio.to_thread(func, *args)
-    try:
-        return await _orig_anyio_run_sync(
-            func, *args,
-            abandon_on_cancel=abandon_on_cancel,
-            cancellable=cancellable,
-            limiter=limiter,
-        )
-    except _anyio.NoEventLoopError:
-        return await _asyncio.to_thread(func, *args)
-
-_anyio_to_thread.run_sync = _anyio_run_sync_compat
-
-_orig_fr_init = _FileResponse.__init__
-
-def _fr_init_with_stat(self, path, *args, stat_result=None, **kwargs):
-    if stat_result is None:
-        try:
-            stat_result = os.stat(path)
-        except OSError:
-            pass  # missing file — FileResponse will raise a clearer error later
-    _orig_fr_init(self, path, *args, stat_result=stat_result, **kwargs)
-
-_FileResponse.__init__ = _fr_init_with_stat
-
-# ── Python 3.14 + engineio compatibility fix ─────────────────────────────────
-# asyncio.wait_for() uses asyncio.timeout() internally. Python 3.14 added a
-# strict check: asyncio.timeout().__aenter__ raises RuntimeError if
-# asyncio.current_task() is None.  In uvicorn's ASGI context current_task()
-# can return None, which crashes engineio's _service_task and drops the
-# WebSocket connection ("Could not reach the server").
-#
-# Fix: patch asyncio.wait_for to fall back to asyncio.wait() (which does NOT
-# use asyncio.timeout) when current_task() is None.  The fallback fully
-# preserves TimeoutError semantics.
-_orig_asyncio_wait_for = _asyncio.wait_for
-
-async def _asyncio_wait_for_compat(fut, timeout=None, **kwargs):
-    if _asyncio.current_task() is not None:
-        # Normal case: task context exists, original works fine.
-        return await _orig_asyncio_wait_for(fut, timeout=timeout, **kwargs)
-    # No current task: asyncio.timeout().__aenter__ raises RuntimeError even
-    # for timeout=None (Python 3.14 always uses asyncio.timeout internally).
-    if _asyncio.iscoroutine(fut):
-        fut = _asyncio.ensure_future(fut)
-    if timeout is None:
-        return await fut
-    # With a real timeout: use asyncio.wait() (loop.call_later-based, no
-    # current_task requirement).
-    done, pending = await _asyncio.wait({fut}, timeout=timeout)
-    if pending:
-        for p in pending:
-            p.cancel()
-            try:
-                await p
-            except (_asyncio.CancelledError, Exception):
-                pass
-        raise _asyncio.TimeoutError()
-    return next(iter(done)).result()
-
-_asyncio.wait_for = _asyncio_wait_for_compat
-
-# ── Python 3.14 + anyio _task_states compatibility fix ───────────────────────
-# anyio's CancelScope.__enter__ does:
-#     task_state = _task_states[host_task]  (WeakKeyDictionary)
-# …with only `except KeyError` around it.  When asyncio.current_task() is None
-# (uvicorn ASGI context, Python 3.14), WeakKeyDictionary[None] raises TypeError
-# ("cannot create weak reference to 'NoneType' object") — not KeyError — so
-# anyio's handler is bypassed and the exception propagates, crashing every
-# httpcore connection teardown and every anyio.to_thread call in the app.
-#
-# Fix: replace _task_states with a proxy that raises KeyError for None keys.
-# anyio's existing `except KeyError` branch then creates a fresh TaskState and
-# execution continues normally (no cancellation scope for taskless context, which
-# is the correct no-op behaviour in a development setting).
-import anyio._backends._asyncio as _anyio_be
-
-class _SafeTaskStates:
-    def __init__(self, wrapped):
-        self._d = wrapped
-    def __getitem__(self, key):
-        if key is None:
-            raise KeyError(None)
-        return self._d[key]
-    def __setitem__(self, key, value):
-        if key is not None:
-            self._d[key] = value
-    def __delitem__(self, key):
-        if key is not None:
-            del self._d[key]
-    def __contains__(self, key):
-        return key is not None and key in self._d
-    def get(self, key, default=None):
-        if key is None:
-            return default
-        return self._d.get(key, default)
-
-if hasattr(_anyio_be, "_task_states"):
-    _anyio_be._task_states = _SafeTaskStates(_anyio_be._task_states)
-
-# CancelScope.__exit__ has `assert self._host_task is not None` (line 460) and
-# a `_task_states.get(self._host_task)` check that raises RuntimeError when
-# host_task is None.  Patch __exit__ to short-circuit cleanly in that case.
-_orig_cs_exit = _anyio_be.CancelScope.__exit__
-
-def _cs_exit_compat(self, extype, value, tb):
-    if self._host_task is None:
-        if self._active:
-            self._active = False
-            self._tasks.discard(None)
-        return False
-    return _orig_cs_exit(self, extype, value, tb)
-
-_anyio_be.CancelScope.__exit__ = _cs_exit_compat
-
-# ── Python 3.14 + anyio _MemoryObjectItemReceiver fix ────────────────────────
-# anyio.streams.memory._MemoryObjectItemReceiver is a dataclass with:
-#     task_info: TaskInfo = field(init=False, default_factory=get_current_task)
-# Instantiating it calls get_current_task() → AsyncIOTaskInfo(current_task()).
-# Python 3.14 returns None from current_task() in certain async generator
-# execution contexts (e.g. MCP stdio_client's receive loop when connecting to
-# the TradingView sidecar).
-# Result: AttributeError: 'NoneType' object has no attribute 'get_coro'
-#
-# Fix: patch AsyncIOTaskInfo.__init__ to substitute a stub TaskInfo when
-# task is None.  task_info in _MemoryObjectItemReceiver is only ever used
-# in __repr__ — it is never read for scheduling or signaling — so a stub
-# with id=0, name="<no-task>", coro=None is fully safe.
-# has_pending_cancellation calls self._task() → None (falsy) → returns False,
-# which is the correct answer when there is no real task.
-#
-# This fix allows the MCP receive loop to register itself as a waiter and
-# actually exchange messages with the tradingview-mcp Node.js sidecar.
-# Without it the sidecar crashes before the MCP initialize handshake completes.
-# Source: https://anyio.readthedocs.io/en/stable/versionhistory.html
-import anyio._core._testing as _anyio_testing
-
-_orig_asyncio_task_info_init = _anyio_be.AsyncIOTaskInfo.__init__
-
-def _asyncio_task_info_init_py314(self, task):
-    if task is None:
-        _anyio_testing.TaskInfo.__init__(self, 0, None, "<no-task>", None)
-        self._task = lambda: None
-        return
-    _orig_asyncio_task_info_init(self, task)
-
-_anyio_be.AsyncIOTaskInfo.__init__ = _asyncio_task_info_init_py314
-# ─────────────────────────────────────────────────────────────────────────────
-# Re-export asyncio under its standard name for use throughout the rest of the
-# file. The compat block above uses the _asyncio alias by convention (signals
-# "patching the module"), but application code should use the normal name.
-# Both names reference the same module object — patches applied via _asyncio
-# are visible through asyncio.
-import asyncio  # noqa: E402
 
 import chainlit as cl
 from chainlit.server import app as _server_app
@@ -264,7 +66,7 @@ _config: Config | None = None
 _toolkit: ClaudeToolkit | None = None
 _conv_store: ConversationStore | None = None
 _tv_bridge: TradingViewBridge | None = None
-_tv_bridge_lock = _asyncio.Lock()
+_tv_bridge_lock = asyncio.Lock()
 _connectivity_checker: ConnectivityChecker | None = None
 _execution_listener: ExecutionListener | None = None
 _gdrive_sync: GDriveSync | None = None
@@ -577,7 +379,7 @@ async def on_chat_start():
         gateway_up = await cl.make_async(toolkit.client.ping)()
         if not gateway_up:
             raise ConnectionError("IBKR gateway not reachable")
-        (opening_text, _), (orders_text, _), (positions_text, _), latest_pnl = await _asyncio.gather(
+        (opening_text, _), (orders_text, _), (positions_text, _), latest_pnl = await asyncio.gather(
             cl.make_async(toolkit.execute)("get_account_summary", {}),
             cl.make_async(toolkit.execute)("get_live_orders", {}),
             cl.make_async(toolkit.execute)("get_positions", {}),
@@ -783,7 +585,7 @@ async def on_chat_start():
                         author="System",
                     ).send()
 
-        _asyncio.create_task(_background_flex_sync())
+        asyncio.create_task(_background_flex_sync())
 
 
 # ── Message handler ────────────────────────────────────────────────────────────
@@ -1047,7 +849,7 @@ async def on_start_gateway(action: cl.Action):
                 author="System",
             ).send()
 
-    _asyncio.create_task(_run())
+    asyncio.create_task(_run())
 
 
 # ── TradingView launch callback ────────────────────────────────────────────────
@@ -1119,4 +921,4 @@ async def on_launch_tradingview(action: cl.Action):
                 author="System",
             ).send()
 
-    _asyncio.create_task(_run())
+    asyncio.create_task(_run())
