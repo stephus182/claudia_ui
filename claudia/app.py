@@ -80,9 +80,8 @@ async def api_status():
     return JSONResponse({"ibkr": "unknown", "gdrive": "unknown", "tv": "unknown"})
 
 
-# Chainlit's /public/{filename} handler uses anyio.to_thread which fails on
-# Python 3.14. Serve all custom assets via plain Response so FileResponse
-# is never called. No files live in public/ — nothing for Chainlit to serve.
+# Custom assets don't live in a Chainlit-managed public/ folder, so Chainlit
+# has nothing to auto-serve here — these routes serve them directly instead.
 _ASSETS = Path(__file__).parent / "assets"
 
 
@@ -305,7 +304,7 @@ async def on_chat_start():
         tv_tools = tv.get_tools()
         # Sidecar connected and provided its tool list — but TradingView Desktop must also be
         # running with CDP (port 9222) for live tools to work. Check separately: the sidecar
-        # can start without TV Desktop since our Python 3.14 anyio patch (2026-06-30).
+        # can start without TV Desktop — CDP connectivity is checked separately below.
         cdp_up = check_cdp_running()
         if tv_tools and cdp_up:
             tv_status = f"TradingView: connected ({len(tv_tools)} tools)"
