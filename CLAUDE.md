@@ -134,6 +134,14 @@ for Python module changes. Full tool catalog (40 core + 2 optional web-scraper =
 matching `_all_tools` in `claudia/agent.py`): `ibkr_core_mcp/docs/tools-reference.md` —
 check there before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.md`.
 
+No extras (e.g. `[server]`) are needed for the plain install above. `websockets` — the sole
+runtime dependency of `IBKRWebSocket`, which `claudia/execution_listener.py` uses
+unconditionally for live P&L/execution tracking — is a base dependency of ibkr_core_mcp, not
+gated behind an extra. (It briefly wasn't: a bare install used to leave `websockets` missing
+and `ExecutionListener` would silently retry-loop forever on `ModuleNotFoundError`. Fixed
+ibkr_core_mcp-side by moving `websockets` out of `[server]` into base `dependencies`, since
+`IBKRWebSocket`/`AlertManager` are core public API, not server-only.)
+
 ## Pointers
 
 Plain file references below, not `@import`s — read on demand via normal file tools, not
