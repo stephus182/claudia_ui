@@ -96,30 +96,31 @@ _server_app.get("/cl/custom.js")(_static_route("custom.js", "application/javascr
 _server_app.get("/cl/claudia-logo.png")(_static_route("claudia-logo.png", "image/png"))
 
 
-# Chainlit registers /{full_path:path} (SPA catch-all) before our routes are
-# added, so it intercepts every request including /api/status and /cl/*.
-# Fix: move our specific routes immediately before the catch-all in the router.
+# Chainlit's SPA catch-all ('/{full_path:path}') isn't a literal top-level route at the
+# point this module loads (confirmed by inspecting _server_app.router.routes live: it
+# doesn't exist yet here) — Chainlit registers it later, inside an APIRouter it includes
+# by reference, so requests can still reach it even though it's absent right now. Our own
+# routes below get appended to the same top-level list *before* that inclusion point, which
+# means Starlette tries the included router (and its catch-all) first, shadowing ours.
+# Fix: don't try to locate the catch-all at all (fragile — depends on Chainlit's internal
+# routing structure, which is what broke the original version of this fix). Our routes are
+# all exact literal paths with no pattern overlap against '/openapi.json', '/docs', etc., so
+# moving them to the very front of the routing table guarantees Starlette tries them first
+# for any matching request, regardless of what else is registered or how.
 def _fix_route_priority() -> None:
     _OUR_PATHS = {"/api/status", "/cl/custom.css", "/cl/custom.js", "/cl/claudia-logo.png"}
     routes = _server_app.router.routes
-    spa_idx = next(
-        (i for i, r in enumerate(routes) if getattr(r, "path", None) == "/{full_path:path}"),
-        None,
-    )
-    if spa_idx is None:
-        log.warning(
-            "_fix_route_priority: SPA catch-all route '/{full_path:path}' not found — "
-            "/api/* and /cl/* routes may be shadowed by Chainlit's SPA handler"
-        )
-        return
     our = [r for r in routes if getattr(r, "path", None) in _OUR_PATHS]
+    if len(our) != len(_OUR_PATHS):
+        log.warning(
+            "_fix_route_priority: expected %d routes (%s), found %d — "
+            "/api/* and /cl/* routes may still be shadowed by Chainlit's SPA handler",
+            len(_OUR_PATHS), sorted(_OUR_PATHS), len(our),
+        )
     for r in our:
         routes.remove(r)
-    spa_idx = next(
-        i for i, r in enumerate(routes) if getattr(r, "path", None) == "/{full_path:path}"
-    )
     for offset, r in enumerate(our):
-        routes.insert(spa_idx + offset, r)
+        routes.insert(offset, r)
 
 _fix_route_priority()
 
