@@ -457,3 +457,30 @@ def test_format_pnl_snapshot_partial_fields_format_as_na():
     assert "n/a" in result
     assert "10000.00" in result
     assert "not yet available" not in result.lower()
+
+
+# ── get_live_pnl_text ──────────────────────────────────────────────────────────
+
+def test_get_live_pnl_text_uses_cache_when_populated():
+    from unittest.mock import MagicMock
+    from claudia.execution_listener import get_live_pnl_text
+    toolkit = MagicMock()
+    toolkit._store.get_latest_pnl.return_value = {
+        "account": "U1675699.Core", "dpl": 12.5, "nl": 10000.0,
+        "upl": 3.0, "uel": 9000.0, "mv": 5000.0,
+    }
+    result = get_live_pnl_text(toolkit)
+    assert "U1675699.Core" in result
+    toolkit.execute.assert_not_called()
+
+
+def test_get_live_pnl_text_falls_back_to_ledger_when_cache_empty():
+    from unittest.mock import MagicMock
+    from claudia.execution_listener import get_live_pnl_text
+    toolkit = MagicMock()
+    toolkit._store.get_latest_pnl.return_value = None
+    toolkit.execute.return_value = ("Account Ledger (USD):\n  Realized P&L : +461.56", None)
+    result = get_live_pnl_text(toolkit)
+    assert "Realized P&L" in result
+    assert "+461.56" in result
+    toolkit.execute.assert_called_once_with("get_ledger", {})
