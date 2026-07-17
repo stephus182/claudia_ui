@@ -151,6 +151,7 @@ class ExecutionListener:
                 log.warning(
                     "ExecutionListener error (attempt %d), retrying in %ds: %s",
                     attempt + 1, delay, type(exc).__name__,
+                    exc_info=True,
                 )
                 await asyncio.sleep(delay)
                 attempt += 1

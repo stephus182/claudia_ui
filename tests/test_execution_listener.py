@@ -1,6 +1,7 @@
 """Tests for claudia/execution_listener.py — execution-triggered P&L checks."""
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -342,6 +343,30 @@ async def test_run_with_retry_clean_return_reconnects_after_5s():
 
     assert call_count == 2
     mock_sleep.assert_any_call(5)
+
+
+@pytest.mark.asyncio
+async def test_run_with_retry_logs_traceback_on_error(caplog):
+    """The previous type(exc).__name__-only logging hid the real cause of a repeating
+    RuntimeError for a full live-test session (2026-07-10) before this fix — exc_info=True
+    is required so the actual traceback is captured, not just the exception class name."""
+    listener, _ = _make_listener()
+    call_count = 0
+
+    async def fail_then_cancel():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("Timeout should be used inside a task")
+        raise asyncio.CancelledError
+
+    with patch.object(listener, "_run_once", side_effect=fail_then_cancel), \
+         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()), \
+         caplog.at_level(logging.WARNING):
+        with pytest.raises(asyncio.CancelledError):
+            await listener._run_with_retry()
+
+    assert any(r.exc_info is not None for r in caplog.records)
 
 
 @pytest.mark.asyncio
