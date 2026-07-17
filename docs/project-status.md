@@ -353,6 +353,13 @@ live-verified, a first for this path.
 
 ## Next Session Plan (2026-07-08 → )
 
+**Next live test session: see [`docs/plans/2026-07-18-live-test-session.md`](plans/2026-07-18-live-test-session.md).**
+Prepared 2026-07-17 following the 2026-07-15 Python 3.11 revert (see that section below) — the
+revert has only been boot-tested so far, never through a real live session, so this doc's
+Phase 1 is the first live verification of it. It also carries forward the still-open Tasks 5-7
+of `docs/plans/2026-07-10-live-test-bugfixes.md` (Task 6's mechanical logging prep, Steps 1-5,
+is already done as of 2026-07-17 — see that doc's status snapshot).
+
 **Goal:** Batch 1 Order Operations (send/modify/cancel/reply) first, then TradingView, price alerts, security. Full plan: [`docs/plans/2026-07-08-order-cancel-modify.md`](plans/2026-07-08-order-cancel-modify.md) — Part B is the order cancel/modify UI wiring build, Part C is this batch plan.
 
 **Status as of 2026-07-10 end of session:** Batches 1-4 all attempted; Batch 1 fully passed,
