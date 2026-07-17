@@ -78,6 +78,7 @@ ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an A
 | 2026-07-08 (mcp) | — | **claude_tools test suite reorganized**: the 2,373-line/177-test `tests/test_claude_tools.py` monolith deleted, replaced by `tests/claude_tools/` (11 files by domain, 181 tests, `TEST_INDEX.md`, new pytest markers `orders`/`flex`/`alerts`/`market_data`/`account`/`trades`/`pa_analytics`/`backtest_pinescript`/`web_scraping`/`errors`/`integration`). Repo-wide: **757 tests total — 673 unit + 84 integration** |
 | 2026-07-08 (mcp) | — | docs-accuracy pass: Touch ID policy corrected (biometric with system-password fallback, not biometric-only), `CLAUDE.md` package-structure diagram +7 modules, market-calendar exchange-count fix, stale version-pin fix |
 | 2026-07-17 | `a56f403` | Bug fix — status lights (`/api/status`) shadowed by Chainlit's SPA catch-all: `_fix_route_priority()` searched for a literal top-level `/{full_path:path}` route to reposition ours ahead of, but that route doesn't exist at the top level at the point this code runs (Chainlit registers it later, inside an included sub-router) — the search always silently failed, leaving `/api/status`, `/cl/custom.js`, `/cl/custom.css` shadowed and returning the SPA's `index.html` instead of real content. Fixed by moving our exact-literal-path routes to the very front of the routing table unconditionally, instead of trying to locate the catch-all at all. Live-verified: `/api/status` returns real JSON, status lights render correctly in the browser |
+| 2026-07-17 | `406d60f`/`3f81bb6`/`22ab979`/`fa77e85` (mcp+ui) | **Account P&L / Account Summary display fixes** — all 3 tasks of `docs/plans/2026-07-17-account-pnl-display-fixes.md` implemented, subagent-driven TDD + independent spec-compliance review + independent code-quality review, merged to `main` in both repos. Task 1 (`ibkr_core_mcp` `406d60f`): `_get_account_summary` no longer claims P&L fields `/portfolio/summary` never returns. Task 2 (`ibkr_core_mcp` `3f81bb6` + review follow-ups `ac713fd`/`3cf3b13`): `get_pnl` self-primes — root-caused live that `/iserver/account/pnl/partitioned` needs an `spl` WS subscription touch before returning data on a cold session; `_get_pnl` now does a best-effort WS touch + paced retry, never raising. Task 3 (`claudia_ui` `22ab979` + latency fix `fa77e85`): new shared `get_live_pnl_text()` helper falls back to a live `get_ledger` pull when `ExecutionListener`'s reactive cache is empty (the common cold-start case), used by both `_get_live_pnl` and the opening status card, joined into the startup `asyncio.gather` to avoid added latency. Full suites green: `ibkr_core_mcp` 740→745, `claudia_ui` 296→298. **Not yet live-verified** — IBKR gateway session repeatedly dropped this session (2FA blocker on re-login); deferred to next time the gateway is up, see Next Session Plan |
 
 ---
 
@@ -363,9 +364,15 @@ on it before the two live findings below.
 
 **Top priority — fix these two 2026-07-17 findings:**
 
-1. Account P&L / Account Summary display bugs — plan ready to execute:
+1. ~~Account P&L / Account Summary display bugs~~ — **✅ DONE 2026-07-17**, all 3 tasks of
    [`docs/plans/2026-07-17-account-pnl-display-fixes.md`](plans/2026-07-17-account-pnl-display-fixes.md)
-   (Tasks 1 and 3 are ready-to-implement TDD; Task 2 is diagnostic-first)
+   implemented, reviewed, merged to `main` in both repos (see Feature Timeline + Known Gaps for
+   detail). **Remaining:** live re-verification against a real gateway session — blocked this
+   session by a repeated IBKR 2FA/login issue that cost the gateway for the rest of the day (user
+   is investigating a side-fix for the underlying session-drop problem separately). Next session:
+   restart ClaudIA fresh (no trade yet that process) under `caffeinate`, confirm the opening
+   status card shows real ledger P&L instead of "not yet available," then ask ClaudIA "what's my
+   P&L" and confirm `get_live_pnl` matches.
 2. Order-proposal button silently missing on the second+ proposal in one chat session — not yet
    root-caused; needs investigation into `claudia/agent.py`'s order-proposal emission before a
    fix can be planned (see Known Gaps for the reproduction steps)
