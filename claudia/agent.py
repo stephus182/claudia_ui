@@ -729,13 +729,10 @@ class ClaudIAAgent:
         return f"Unknown local tool: {name}"
 
     def _get_live_pnl(self) -> str:
-        """Format the latest live P&L snapshot recorded by ExecutionListener's
-        execution-triggered background WebSocket subscription
-        (claudia/execution_listener.py). Returns a friendly message if no
-        snapshot has been recorded yet — never raises."""
-        from claudia.execution_listener import format_pnl_snapshot
-        latest = self._toolkit._store.get_latest_pnl()
-        return format_pnl_snapshot(latest)
+        """Best-available live P&L text — see execution_listener.get_live_pnl_text
+        for the cache-then-ledger-fallback logic. Never raises."""
+        from claudia.execution_listener import get_live_pnl_text
+        return get_live_pnl_text(self._toolkit)
 
     @staticmethod
     def _validate_public_url(url: str) -> str | None:

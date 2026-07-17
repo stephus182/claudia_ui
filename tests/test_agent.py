@@ -369,11 +369,13 @@ def test_handle_local_tool_get_live_pnl_populated():
     assert "10000.00" in result
 
 
-def test_handle_local_tool_get_live_pnl_none():
+def test_handle_local_tool_get_live_pnl_none_falls_back_to_ledger():
     agent = _make_agent()
     agent._toolkit._store.get_latest_pnl.return_value = None
+    agent._toolkit.execute.return_value = ("Account Ledger (USD):\n  Realized P&L : +461.56", None)
     result = agent._handle_local_tool("get_live_pnl", {})
-    assert "not yet available" in result.lower()
+    assert "Realized P&L" in result
+    agent._toolkit.execute.assert_called_once_with("get_ledger", {})
 
 
 def test_handle_local_tool_get_live_pnl_partial_fields_format_as_na():
