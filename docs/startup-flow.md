@@ -134,8 +134,11 @@ the authentication token. Symptom: auth completes on mobile but the session
 immediately drops.
 
 **Side effect of `/tickle`:** resets the IBKR session keepalive timer. Polling
-every 60s prevents IBKR auto-logout (session times out after ~5-10 minutes
-without a tickle call).
+every 60s prevents IBKR auto-logout (session times out after ~5-6 minutes
+without a tickle call, per IBKR's official FAQ — see
+[`docs/connectivity.md` § Session lifecycle](connectivity.md#session-lifecycle-verified-against-official-docs-2026-07-17)
+for the full breakdown including the unavoidable 24h/midnight absolute session
+cap and the not-yet-implemented `ssodh/init` soft-recovery path).
 
 ---
 
