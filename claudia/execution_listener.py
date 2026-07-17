@@ -85,6 +85,25 @@ def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
     )
 
 
+def get_live_pnl_text(toolkit: Any) -> str:
+    """Best-available live P&L text for display: the ExecutionListener's last
+    captured snapshot if this process observed a trade execution, otherwise a
+    live ledger pull.
+
+    The reactive cache (SQLiteStore.pnl_snapshots) is empty whenever no
+    execution has been observed during this process's lifetime — e.g. the
+    user's last trade happened before ClaudIA started, or in an earlier
+    session. get_account_ledger (/portfolio/{accountId}/ledger) has no such
+    dependency: it returns correct realized/unrealized P&L on every call,
+    live-verified 2026-07-17 (docs/plans/2026-07-17-account-pnl-display-fixes.md).
+    """
+    latest = toolkit._store.get_latest_pnl()
+    if latest is not None:
+        return format_pnl_snapshot(latest)
+    text, _ = toolkit.execute("get_ledger", {})
+    return text
+
+
 async def _next_item(queue: asyncio.Queue[Any]) -> Any:
     """Pull the next item from the pump queue. Converts the _CLOSED sentinel
     into StopAsyncIteration and a forwarded exception into a real raise, so
