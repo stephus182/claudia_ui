@@ -20,6 +20,45 @@ official docs — and had gone undetected for months because nobody checked:
 | Web API reference | https://www.interactivebrokers.com/campus/ibkr-api-page/webapi-ref/ |
 | Orders / modify (two-call pattern) | https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/ |
 | IBKR Campus (general) | https://www.interactivebrokers.com/campus/ibkr-api-page/ |
+| Session lifecycle FAQ (timeout duration, `/tickle` interval, 24h/midnight cap) | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#tickle |
+| `POST /iserver/auth/ssodh/init` — current, non-deprecated brokerage-session init | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ssodh-init |
+| `POST /iserver/reauthenticate` — **Deprecated**, superseded by `ssodh/init` | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#reauthenticate |
+| Competing-session / gateway launch walkthrough | https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/ |
+
+**Scraped 2026-07-17 (Firecrawl keyless tier — `interactivebrokers.com` 403s direct `WebFetch`,
+see [[feedback-documentation-firecrawl]]).** Verbatim findings, load-bearing for any gateway
+session-resilience work:
+
+- *"A session can remain authenticated for up to 24 hours, resetting at midnight for New York,
+  U.S.; Zug, Switzerland; or Hong Kong time depending on your nearest connection."* — an absolute
+  cap, independent of activity. No keepalive/tickle mechanism can prevent it; a fresh browser +
+  2FA login is required at least once every 24h. *"Daily maintenance of IBKR's servers could
+  result in a disconnect earlier than the 24 hour period."*
+- *"Sessions will time out after approximately 6 minutes without sending new requests or
+  maintaining the /tickle endpoint at least every 5 minutes."* Separately: *"A Client Portal API
+  brokerage session will timeout if no requests are received within a period of 5 minutes... it
+  is recommended to call this endpoint approximately every minute."* — `ConnectivityChecker`'s
+  60s poll (`claudia/status.py:28`) is comfortably inside every stated threshold.
+- *"If the brokerage session has timed out but the session is still connected to the IBKR
+  backend, the response to /auth/status returns 'connected':true and 'authenticated':false.
+  Calling the /iserver/auth/ssodh/init endpoint will initialize a new brokerage session."* —
+  a documented, silent (no browser/2FA) recovery path for the soft-timeout case specifically,
+  distinct from the deprecated `/iserver/reauthenticate` that [[feedback-ibkr-session-safety]]
+  already (correctly) bans calling proactively. `ibkr_core_mcp/client.py:243-261`'s
+  `reauthenticate()` docstring reasoned `ssodh/init` doesn't need implementing because it's
+  "invoked by the browser-based login flow itself" — that predates this FAQ text, which
+  describes the client calling it directly for this exact case. Not yet implemented or
+  live-tested; see `docs/plans/` for the in-progress resilience plan before wiring this into
+  `ConnectivityChecker`.
+- `POST /iserver/auth/ssodh/init` body params: `publish` (bool, required, must be `true` or a
+  500 is returned) and `compete` (bool, required — *"Determines if other brokerage sessions
+  should be disconnected to prioritize this connection"*). `compete:true` would force-evict a
+  concurrent IBKR Mobile/TWS session — any implementation must default this to `false`.
+- *"You cannot be logged into the account you are authenticating with anywhere else before you
+  authenticate. You should make sure to log out of the account before attempting to
+  authenticate... Just closing the window or application may cause a stale login session."*
+  — confirms the `authStatus.competing` warning path in `check_ibkr()` (`claudia/status.py:102-103`)
+  reflects a real, documented failure mode, not a hypothetical.
 
 ## IBKR Flex Web Service (`ibkr_core_mcp/flex_query.py`)
 

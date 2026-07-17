@@ -43,6 +43,41 @@ that is running but not logged in returns `authenticated: false` and triggers a 
 **Side effect:** `/tickle` resets the IBKR session inactivity timer. Polling every 60s
 prevents automatic session expiry while ClaudIA is running.
 
+### Session lifecycle (verified against official docs, 2026-07-17)
+
+Source: [IBKR Client Portal API — session lifecycle FAQ](https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#tickle)
+(scraped via Firecrawl — `interactivebrokers.com` 403s a direct `WebFetch`).
+
+Two independent, non-overlapping timeout mechanisms:
+
+| Mechanism | Threshold | Prevented by |
+|---|---|---|
+| Inactivity timeout | ~5–6 min without a request / `/tickle` | `ConnectivityChecker`'s 60s poll (well inside the window) |
+| **Absolute session cap** | **24h, resets at midnight NY/Zug/HK** (whichever region the gateway connects to) | **Nothing — unavoidable.** A fresh browser + 2FA login is required at least once every 24h no matter how well the inactivity timer is serviced. Accepted as a known, permanent constraint — not a bug to chase. |
+
+Daily IBKR server maintenance can also force a disconnect earlier than the 24h mark; IBKR's own
+guidance is to restart the gateway after the maintenance window rather than expect continuity
+through it.
+
+**Soft-timeout recovery (not yet implemented):** when the inactivity timer lapses,
+`/iserver/auth/status` returns `connected:true, authenticated:false` — a state distinct from a
+hard disconnect. Official docs describe `POST /iserver/auth/ssodh/init` (`publish:true,
+compete:false`) as a silent recovery for exactly this state, no browser/2FA required. This is
+the current, non-deprecated endpoint — `POST /iserver/reauthenticate` is explicitly marked
+**Deprecated** by IBKR and remains banned from proactive use (it disrupts fresh logins — see
+`ibkr_core_mcp/client.py`'s `reauthenticate()` docstring). `ssodh/init` is a different endpoint
+from `reauthenticate` and is being evaluated separately (see `docs/plans/` for the resilience
+plan) before any wiring into `ConnectivityChecker` — not implemented yet, needs a live-test
+protocol that can't risk an already-authenticated session.
+
+**Competing sessions:** IBKR's own gateway walkthrough states you *"cannot be logged into the
+account you are authenticating with anywhere else before you authenticate"* and that merely
+closing another IBKR window/app (instead of using its "Log Out") *"may cause a stale login
+session"* — confirming `check_ibkr()`'s `authStatus.competing` warning
+(`claudia/status.py:102-103`) reflects a real, IBKR-documented failure mode: opening IBKR
+Mobile/TWS/another browser tab during a live ClaudIA session can force-kick the gateway session.
+Source: [Launching and Authenticating the Gateway](https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/).
+
 ### ibkr_core_mcp ping
 
 `IBKRClient.ping()` (used by tools, not the UI) uses a different endpoint:
@@ -73,6 +108,33 @@ The two pings serve different purposes:
 
 **Docker Desktop not running:**
 Same as above but step 2 also launches Docker Desktop automatically (macOS only).
+
+### Always-on keepalive daemon (shipped 2026-07-17)
+
+`ConnectivityChecker`'s 60s tickle and `start-claudia.sh`'s `caffeinate` only protect the
+session while ClaudIA's own process is running — the gap between stopping ClaudIA (e.g. a dev
+restart) and starting it again was previously unprotected unless someone remembered to run
+`scripts/ibkr-keepalive.sh` manually in a separate terminal.
+
+`scripts/install-ibkr-keepalive-daemon.sh` installs `scripts/ibkr-keepalive.sh` as a macOS
+LaunchAgent (`~/Library/LaunchAgents/com.claudia-ui.ibkr-keepalive.plist`, `RunAtLoad` +
+`KeepAlive`), so the gateway is tickled every 55s and the Mac is kept awake **independent of
+ClaudIA, terminals, or dev restarts** — install once, it survives logouts/crashes/reboots.
+It only holds the `caffeinate -i` sleep-prevention assertion while the gateway actually responds
+to `/tickle`, and releases it the moment the container goes unreachable, so it doesn't keep the
+Mac permanently awake when nothing needs protecting.
+
+```bash
+./scripts/install-ibkr-keepalive-daemon.sh              # install + load
+./scripts/install-ibkr-keepalive-daemon.sh --uninstall   # unload + remove
+```
+
+Logs: `~/Library/Logs/claudia-ui/ibkr-keepalive.log` (+ `.err.log`). Only logs on OK/WARN state
+transitions, not every tick, to keep the log bounded over a long-running install.
+
+Redundant with `ConnectivityChecker`'s own tickle when ClaudIA is running (both are idempotent
+`GET /tickle` calls, well inside IBKR's `1 req/sec` pacing limit for that endpoint) — that's
+intentional defense in depth, not a conflict.
 
 ---
 
