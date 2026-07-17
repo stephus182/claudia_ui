@@ -48,7 +48,7 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.gdrive_sync import GDriveSync
 from claudia.status import ConnectivityChecker
-from claudia.execution_listener import ExecutionListener, format_pnl_snapshot
+from claudia.execution_listener import ExecutionListener
 from claudia.tradingview import TradingViewBridge, launch_tradingview, check_cdp_running
 
 log = logging.getLogger(__name__)
@@ -378,13 +378,13 @@ async def on_chat_start():
         gateway_up = await cl.make_async(toolkit.client.ping)()
         if not gateway_up:
             raise ConnectionError("IBKR gateway not reachable")
-        (opening_text, _), (orders_text, _), (positions_text, _), latest_pnl = await asyncio.gather(
+        (opening_text, _), (orders_text, _), (positions_text, _) = await asyncio.gather(
             cl.make_async(toolkit.execute)("get_account_summary", {}),
             cl.make_async(toolkit.execute)("get_live_orders", {}),
             cl.make_async(toolkit.execute)("get_positions", {}),
-            cl.make_async(toolkit._store.get_latest_pnl)(),
         )
-        pnl_text = format_pnl_snapshot(latest_pnl)
+        from claudia.execution_listener import get_live_pnl_text
+        pnl_text = await cl.make_async(get_live_pnl_text)(toolkit)
         status_block = (
             f"**Account Summary**\n{opening_text}\n\n"
             f"**Open Positions**\n{positions_text}\n\n"
