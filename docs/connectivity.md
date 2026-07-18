@@ -59,16 +59,30 @@ Daily IBKR server maintenance can also force a disconnect earlier than the 24h m
 guidance is to restart the gateway after the maintenance window rather than expect continuity
 through it.
 
-**Soft-timeout recovery (not yet implemented):** when the inactivity timer lapses,
-`/iserver/auth/status` returns `connected:true, authenticated:false` — a state distinct from a
-hard disconnect. Official docs describe `POST /iserver/auth/ssodh/init` (`publish:true,
-compete:false`) as a silent recovery for exactly this state, no browser/2FA required. This is
-the current, non-deprecated endpoint — `POST /iserver/reauthenticate` is explicitly marked
-**Deprecated** by IBKR and remains banned from proactive use (it disrupts fresh logins — see
-`ibkr_core_mcp/client.py`'s `reauthenticate()` docstring). `ssodh/init` is a different endpoint
-from `reauthenticate` and is being evaluated separately (see `docs/plans/` for the resilience
-plan) before any wiring into `ConnectivityChecker` — not implemented yet, needs a live-test
-protocol that can't risk an already-authenticated session.
+**Soft-timeout recovery (implemented 2026-07-17, unit-tested — not yet live-verified):** when the
+inactivity timer lapses, `/iserver/auth/status` returns `connected:true, authenticated:false` — a
+state distinct from a hard disconnect. `ConnectivityChecker._run_checks()` detects this exact
+signature, but only on a transition from a previously-confirmed `OK` state (never from `UNKNOWN`,
+which covers the fragile first-seconds-after-login window, and never from `ERROR`) — and calls
+`_attempt_soft_recovery()`, which POSTs `POST /iserver/auth/ssodh/init` (`publish:true,
+compete:false`) to silently re-establish the session. If recovery succeeds, the disconnect is
+invisible to the user — no alert fires, since the service never visibly left `OK` (the
+transition-detection loop re-checks `check_ibkr()` before comparing states). If it fails,
+behavior falls back exactly to the pre-existing manual browser+2FA flow — one normal disconnect
+alert, identical to today. `compete` is hardcoded `false` and must never be changed — `true`
+would force-evict a concurrent IBKR Mobile/TWS session. This is the current, non-deprecated
+endpoint — `POST /iserver/reauthenticate` is explicitly marked **Deprecated** by IBKR and remains
+banned from proactive use (it disrupts fresh logins — see `ibkr_core_mcp/client.py`'s
+`reauthenticate()` docstring), unaffected by this change since it's a different endpoint.
+Implementation: `claudia/status.py` — `_last_ibkr_auth_status` (auth-detail capture),
+`_attempt_soft_recovery()` (the recovery call), wired into `_run_checks()`. 12 dedicated unit
+tests cover every safety-relevant branch: never fires from `UNKNOWN`/`ERROR`/hard-disconnect,
+successful recovery suppresses the alert, failed recovery (including a recovery that "succeeds"
+but the re-check still fails differently) produces exactly one normal disconnect alert. **Not yet
+live-verified** — needs a live-test protocol that deliberately lets an authenticated session idle
+past ~6 minutes; see `docs/plans/2026-07-17-ibkr-soft-timeout-recovery.md` Task 5 for the
+safety-scoped protocol (framed so the worst case is identical to today's status quo, since the
+soft-timeout has already occurred naturally by the time recovery is tested).
 
 **Competing sessions:** IBKR's own gateway walkthrough states you *"cannot be logged into the
 account you are authenticating with anywhere else before you authenticate"* and that merely
