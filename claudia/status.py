@@ -76,6 +76,7 @@ class ConnectivityChecker:
             "gdrive": ServiceStatus.UNKNOWN,
             "tv":     ServiceStatus.UNKNOWN,
         }
+        self._last_ibkr_auth_status: dict = {}
         self._task: asyncio.Task | None = None
 
     def get_status(self) -> dict[str, ServiceStatus]:
@@ -97,12 +98,15 @@ class ConnectivityChecker:
                 verify=False,  # IBKR gateway uses a self-signed cert on localhost
             )
             if resp.status_code != 200:
+                self._last_ibkr_auth_status = {}
                 return False
             auth = resp.json().get("iserver", {}).get("authStatus", {})
+            self._last_ibkr_auth_status = auth
             if auth.get("competing"):
                 log.warning("IBKR: competing session detected — another TWS/gateway session is active")
             return bool(auth.get("authenticated") and auth.get("connected"))
         except Exception:
+            self._last_ibkr_auth_status = {}
             return False
 
     def check_gdrive(self) -> bool:
@@ -129,6 +133,35 @@ class ConnectivityChecker:
             with socket.create_connection(("localhost", _TV_DEBUG_PORT), timeout=1.0):
                 return True
         except OSError:
+            return False
+
+    def _attempt_soft_recovery(self) -> bool:
+        """Silently re-establish a soft-timed-out brokerage session.
+
+        Only ever called from _run_checks() when the previous poll was OK and the
+        current poll shows IBKR's documented soft-timeout signature
+        (connected=true, authenticated=false) — never on a fresh/settling login
+        (that transition starts from UNKNOWN) and never on a hard disconnect
+        (connected=false). `compete` is hardcoded False: it must never force-evict
+        a concurrent IBKR Mobile/TWS session — if a real competing session is the
+        actual cause, IBKR returns HTTP 200 with authenticated:false in the body
+        (same response shape as /tickle) rather than an error status, so this
+        method checks the body, not just the status code, before reporting success.
+
+        Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ssodh-init
+        Endpoint: POST /iserver/auth/ssodh/init
+        """
+        try:
+            resp = requests.post(
+                f"{self._gateway_url}/iserver/auth/ssodh/init",
+                json={"publish": True, "compete": False},
+                timeout=5,
+                verify=False,
+            )
+            if resp.status_code != 200:
+                return False
+            return bool(resp.json().get("authenticated"))
+        except Exception:
             return False
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
@@ -172,6 +205,12 @@ class ConnectivityChecker:
 
     async def _run_checks(self) -> None:
         ibkr_ok = await asyncio.to_thread(self.check_ibkr)
+        if not ibkr_ok and self._status["ibkr"] == ServiceStatus.OK:
+            auth = self._last_ibkr_auth_status
+            if auth.get("connected") and not auth.get("authenticated"):
+                if await asyncio.to_thread(self._attempt_soft_recovery):
+                    log.info("IBKR: soft-timeout recovered silently via ssodh/init")
+                    ibkr_ok = await asyncio.to_thread(self.check_ibkr)
         gdrive_ok = await asyncio.to_thread(self.check_gdrive)
         tv_ok = await asyncio.to_thread(self.check_tradingview)
         new = {
