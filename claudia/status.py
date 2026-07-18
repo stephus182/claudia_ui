@@ -144,8 +144,9 @@ class ConnectivityChecker:
         (that transition starts from UNKNOWN) and never on a hard disconnect
         (connected=false). `compete` is hardcoded False: it must never force-evict
         a concurrent IBKR Mobile/TWS session — if a real competing session is the
-        actual cause, this call fails harmlessly and the normal disconnect alert
-        fires instead.
+        actual cause, IBKR returns HTTP 200 with authenticated:false in the body
+        (same response shape as /tickle) rather than an error status, so this
+        method checks the body, not just the status code, before reporting success.
 
         Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ssodh-init
         Endpoint: POST /iserver/auth/ssodh/init
@@ -157,7 +158,9 @@ class ConnectivityChecker:
                 timeout=5,
                 verify=False,
             )
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                return False
+            return bool(resp.json().get("authenticated"))
         except Exception:
             return False
 
