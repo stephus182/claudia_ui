@@ -242,6 +242,7 @@ async def test_run_checks_recovers_silently_from_soft_timeout(checker_with_token
     }
     recovery_resp = MagicMock()
     recovery_resp.status_code = 200
+    recovery_resp.json.return_value = {"authenticated": True, "connected": True}
 
     with patch(
         "claudia.status.requests.get",
@@ -278,6 +279,7 @@ async def test_run_checks_recovery_succeeds_but_recheck_still_fails(checker_with
     }
     recovery_resp = MagicMock()
     recovery_resp.status_code = 200
+    recovery_resp.json.return_value = {"authenticated": True, "connected": True}
 
     with patch(
         "claudia.status.requests.get",
@@ -450,6 +452,7 @@ async def test_run_checks_tv_unknown_when_no_bridge(checker):
 def test_attempt_soft_recovery_success(checker):
     m = MagicMock()
     m.status_code = 200
+    m.json.return_value = {"authenticated": True, "connected": True, "competing": False}
     with patch("claudia.status.requests.post", return_value=m) as mock_post:
         assert checker._attempt_soft_recovery() is True
     mock_post.assert_called_once_with(
@@ -458,6 +461,17 @@ def test_attempt_soft_recovery_success(checker):
         timeout=5,
         verify=False,
     )
+
+
+def test_attempt_soft_recovery_200_but_body_says_not_authenticated_returns_false(checker):
+    """HTTP 200 alone isn't success — IBKR returns 200 with authenticated:false in
+    the body for e.g. a real competing session denying the reconnect. Same lesson
+    check_ibkr() already learned about this gateway."""
+    m = MagicMock()
+    m.status_code = 200
+    m.json.return_value = {"authenticated": False, "connected": True, "competing": True}
+    with patch("claudia.status.requests.post", return_value=m):
+        assert checker._attempt_soft_recovery() is False
 
 
 def test_attempt_soft_recovery_non_200_returns_false(checker):
