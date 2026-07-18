@@ -202,6 +202,12 @@ class ConnectivityChecker:
 
     async def _run_checks(self) -> None:
         ibkr_ok = await asyncio.to_thread(self.check_ibkr)
+        if not ibkr_ok and self._status["ibkr"] == ServiceStatus.OK:
+            auth = self._last_ibkr_auth_status
+            if auth.get("connected") and not auth.get("authenticated"):
+                if await asyncio.to_thread(self._attempt_soft_recovery):
+                    log.info("IBKR: soft-timeout recovered silently via ssodh/init")
+                    ibkr_ok = await asyncio.to_thread(self.check_ibkr)
         gdrive_ok = await asyncio.to_thread(self.check_gdrive)
         tv_ok = await asyncio.to_thread(self.check_tradingview)
         new = {
