@@ -67,6 +67,39 @@ def test_check_ibkr_timeout(checker):
         assert checker.check_ibkr() is False
 
 
+def test_check_ibkr_ok_stashes_auth_status(checker):
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()):
+        checker.check_ibkr()
+    assert checker._last_ibkr_auth_status == {"authenticated": True, "connected": True}
+
+
+def test_check_ibkr_soft_timeout_stashes_auth_status(checker):
+    m = MagicMock()
+    m.status_code = 200
+    m.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": True}}
+    }
+    with patch("claudia.status.requests.get", return_value=m):
+        assert checker.check_ibkr() is False
+    assert checker._last_ibkr_auth_status == {"authenticated": False, "connected": True}
+
+
+def test_check_ibkr_non_200_clears_auth_status(checker):
+    checker._last_ibkr_auth_status = {"authenticated": True, "connected": True}
+    m = MagicMock()
+    m.status_code = 401
+    with patch("claudia.status.requests.get", return_value=m):
+        checker.check_ibkr()
+    assert checker._last_ibkr_auth_status == {}
+
+
+def test_check_ibkr_exception_clears_auth_status(checker):
+    checker._last_ibkr_auth_status = {"authenticated": True, "connected": True}
+    with patch("claudia.status.requests.get", side_effect=ConnectionError("refused")):
+        checker.check_ibkr()
+    assert checker._last_ibkr_auth_status == {}
+
+
 def test_check_gdrive_falls_back_to_token_file_when_no_sync(checker, tmp_path):
     token = tmp_path / "token.json"
     token.write_text("{}")
@@ -198,6 +231,182 @@ async def test_run_checks_ok_to_error_emits_disconnect(checker_with_token):
 
 
 @pytest.mark.asyncio
+async def test_run_checks_recovers_silently_from_soft_timeout(checker_with_token):
+    """OK -> soft-timeout -> ssodh/init succeeds -> stays OK, no alert."""
+    checker_with_token._status["ibkr"] = ServiceStatus.OK
+
+    soft_timeout_resp = MagicMock()
+    soft_timeout_resp.status_code = 200
+    soft_timeout_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": True}}
+    }
+    recovery_resp = MagicMock()
+    recovery_resp.status_code = 200
+    recovery_resp.json.return_value = {"authenticated": True, "connected": True}
+
+    with patch(
+        "claudia.status.requests.get",
+        side_effect=[soft_timeout_resp, _ibkr_ok_response()],
+    ), patch(
+        "claudia.status.requests.post", return_value=recovery_resp
+    ) as mock_post, patch.object(
+        checker_with_token, "_send_alert", new_callable=AsyncMock
+    ) as mock_alert:
+        await checker_with_token._run_checks()
+
+    mock_post.assert_called_once()
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.OK
+    ibkr_calls = [c for c in mock_alert.call_args_list if c.args[0] == "ibkr"]
+    assert ibkr_calls == []  # never visibly disconnected
+
+
+@pytest.mark.asyncio
+async def test_run_checks_recovery_succeeds_but_recheck_still_fails(checker_with_token):
+    """Recovery POST returns 200, but the immediate re-check still fails (possibly
+    with a different signature than the original) — must still produce exactly one
+    normal disconnect alert, not a masked or duplicated one."""
+    checker_with_token._status["ibkr"] = ServiceStatus.OK
+
+    soft_timeout_resp = MagicMock()
+    soft_timeout_resp.status_code = 200
+    soft_timeout_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": True}}
+    }
+    hard_disconnect_resp = MagicMock()
+    hard_disconnect_resp.status_code = 200
+    hard_disconnect_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": False}}
+    }
+    recovery_resp = MagicMock()
+    recovery_resp.status_code = 200
+    recovery_resp.json.return_value = {"authenticated": True, "connected": True}
+
+    with patch(
+        "claudia.status.requests.get",
+        side_effect=[soft_timeout_resp, hard_disconnect_resp],
+    ), patch(
+        "claudia.status.requests.post", return_value=recovery_resp
+    ) as mock_post, patch.object(
+        checker_with_token, "_send_alert", new_callable=AsyncMock
+    ) as mock_alert:
+        await checker_with_token._run_checks()
+
+    mock_post.assert_called_once()
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.ERROR
+    ibkr_calls = [c for c in mock_alert.call_args_list if c.args[0] == "ibkr"]
+    assert len(ibkr_calls) == 1
+    assert ibkr_calls[0].args[1] == ServiceStatus.OK
+    assert ibkr_calls[0].args[2] == ServiceStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_run_checks_soft_recovery_failure_falls_back_to_disconnect_alert(checker_with_token):
+    """OK -> soft-timeout -> ssodh/init fails -> normal ERROR alert, same as today."""
+    checker_with_token._status["ibkr"] = ServiceStatus.OK
+
+    soft_timeout_resp = MagicMock()
+    soft_timeout_resp.status_code = 200
+    soft_timeout_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": True}}
+    }
+    failed_recovery = MagicMock()
+    failed_recovery.status_code = 500
+
+    with patch(
+        "claudia.status.requests.get", return_value=soft_timeout_resp
+    ), patch(
+        "claudia.status.requests.post", return_value=failed_recovery
+    ) as mock_post, patch.object(
+        checker_with_token, "_send_alert", new_callable=AsyncMock
+    ) as mock_alert:
+        await checker_with_token._run_checks()
+
+    mock_post.assert_called_once()
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.ERROR
+    ibkr_calls = [c for c in mock_alert.call_args_list if c.args[0] == "ibkr"]
+    assert len(ibkr_calls) == 1
+    assert ibkr_calls[0].args[1] == ServiceStatus.OK
+    assert ibkr_calls[0].args[2] == ServiceStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_run_checks_no_recovery_attempt_from_unknown_state(checker_with_token):
+    """UNKNOWN -> soft-timeout-shaped response: never attempt recovery — this is the
+    fresh/settling-login window, exactly what the existing no-proactive-reauth rule
+    protects. Must go straight to a normal ERROR, untouched."""
+    soft_timeout_resp = MagicMock()
+    soft_timeout_resp.status_code = 200
+    soft_timeout_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": True}}
+    }
+
+    with patch(
+        "claudia.status.requests.get", return_value=soft_timeout_resp
+    ), patch(
+        "claudia.status.requests.post"
+    ) as mock_post, patch.object(
+        checker_with_token, "_send_alert", new_callable=AsyncMock
+    ):
+        await checker_with_token._run_checks()
+
+    mock_post.assert_not_called()
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_run_checks_no_recovery_attempt_from_error_state(checker_with_token):
+    """ERROR -> soft-timeout-shaped response: never attempt recovery — only a
+    transition FROM a previously-confirmed OK state may trigger it, per the same
+    rule that excludes UNKNOWN. A prior real disconnect that happens to look
+    soft-timeout-shaped on the next poll must not silently paper over it."""
+    checker_with_token._status["ibkr"] = ServiceStatus.ERROR
+
+    soft_timeout_resp = MagicMock()
+    soft_timeout_resp.status_code = 200
+    soft_timeout_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": True}}
+    }
+
+    with patch(
+        "claudia.status.requests.get", return_value=soft_timeout_resp
+    ), patch(
+        "claudia.status.requests.post"
+    ) as mock_post, patch.object(
+        checker_with_token, "_send_alert", new_callable=AsyncMock
+    ):
+        await checker_with_token._run_checks()
+
+    mock_post.assert_not_called()
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_run_checks_no_recovery_attempt_on_hard_disconnect(checker_with_token):
+    """OK -> connected:false (hard disconnect, e.g. competing session or container
+    down): never attempt recovery — ssodh/init cannot fix this, only a real
+    browser+2FA login can."""
+    checker_with_token._status["ibkr"] = ServiceStatus.OK
+
+    hard_disconnect_resp = MagicMock()
+    hard_disconnect_resp.status_code = 200
+    hard_disconnect_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": False}}
+    }
+
+    with patch(
+        "claudia.status.requests.get", return_value=hard_disconnect_resp
+    ), patch(
+        "claudia.status.requests.post"
+    ) as mock_post, patch.object(
+        checker_with_token, "_send_alert", new_callable=AsyncMock
+    ):
+        await checker_with_token._run_checks()
+
+    mock_post.assert_not_called()
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.ERROR
+
+
+@pytest.mark.asyncio
 async def test_run_checks_error_to_ok_emits_reconnect(checker):
     """ERROR → OK: _send_alert called with (service, ERROR, OK)."""
     checker._status["ibkr"] = ServiceStatus.ERROR
@@ -236,6 +445,55 @@ async def test_run_checks_tv_unknown_when_no_bridge(checker):
         await checker._run_checks()
 
     assert checker.get_status()["tv"] == ServiceStatus.UNKNOWN
+
+
+# ── _attempt_soft_recovery() ────────────────────────────────────────────────
+
+def test_attempt_soft_recovery_success(checker):
+    m = MagicMock()
+    m.status_code = 200
+    m.json.return_value = {"authenticated": True, "connected": True, "competing": False}
+    with patch("claudia.status.requests.post", return_value=m) as mock_post:
+        assert checker._attempt_soft_recovery() is True
+    mock_post.assert_called_once_with(
+        "https://localhost:5055/v1/api/iserver/auth/ssodh/init",
+        json={"publish": True, "compete": False},
+        timeout=5,
+        verify=False,
+    )
+
+
+def test_attempt_soft_recovery_200_but_body_says_not_authenticated_returns_false(checker):
+    """HTTP 200 alone isn't success — IBKR returns 200 with authenticated:false in
+    the body for e.g. a real competing session denying the reconnect. Same lesson
+    check_ibkr() already learned about this gateway."""
+    m = MagicMock()
+    m.status_code = 200
+    m.json.return_value = {"authenticated": False, "connected": True, "competing": True}
+    with patch("claudia.status.requests.post", return_value=m):
+        assert checker._attempt_soft_recovery() is False
+
+
+def test_attempt_soft_recovery_non_200_returns_false(checker):
+    m = MagicMock()
+    m.status_code = 500
+    with patch("claudia.status.requests.post", return_value=m):
+        assert checker._attempt_soft_recovery() is False
+
+
+def test_attempt_soft_recovery_exception_returns_false(checker):
+    with patch("claudia.status.requests.post", side_effect=req.ConnectionError()):
+        assert checker._attempt_soft_recovery() is False
+
+
+def test_attempt_soft_recovery_never_sets_compete_true(checker):
+    """Regression guard: compete must never be true — it would force-evict a
+    concurrent IBKR Mobile/TWS session."""
+    m = MagicMock()
+    m.status_code = 200
+    with patch("claudia.status.requests.post", return_value=m) as mock_post:
+        checker._attempt_soft_recovery()
+    assert mock_post.call_args.kwargs["json"]["compete"] is False
 
 
 @pytest.mark.asyncio
