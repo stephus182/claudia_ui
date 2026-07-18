@@ -88,7 +88,7 @@ soft-timeout has already occurred naturally by the time recovery is tested).
 account you are authenticating with anywhere else before you authenticate"* and that merely
 closing another IBKR window/app (instead of using its "Log Out") *"may cause a stale login
 session"* — confirming `check_ibkr()`'s `authStatus.competing` warning
-(`claudia/status.py:102-103`) reflects a real, IBKR-documented failure mode: opening IBKR
+(`claudia/status.py:105-106`) reflects a real, IBKR-documented failure mode: opening IBKR
 Mobile/TWS/another browser tab during a live ClaudIA session can force-kick the gateway session.
 Source: [Launching and Authenticating the Gateway](https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/).
 

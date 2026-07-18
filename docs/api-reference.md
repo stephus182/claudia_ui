@@ -43,21 +43,29 @@ session-resilience work:
   backend, the response to /auth/status returns 'connected':true and 'authenticated':false.
   Calling the /iserver/auth/ssodh/init endpoint will initialize a new brokerage session."* —
   a documented, silent (no browser/2FA) recovery path for the soft-timeout case specifically,
-  distinct from the deprecated `/iserver/reauthenticate` that [[feedback-ibkr-session-safety]]
-  already (correctly) bans calling proactively. `ibkr_core_mcp/client.py:243-261`'s
-  `reauthenticate()` docstring reasoned `ssodh/init` doesn't need implementing because it's
-  "invoked by the browser-based login flow itself" — that predates this FAQ text, which
-  describes the client calling it directly for this exact case. Not yet implemented or
-  live-tested; see `docs/plans/` for the in-progress resilience plan before wiring this into
-  `ConnectivityChecker`.
+  distinct from the deprecated `/iserver/reauthenticate` that the existing rule against
+  proactively calling session-touching endpoints (see `claudia/status.py`'s `check_ibkr()`
+  docstring and `ibkr_core_mcp/client.py`'s `reauthenticate()` docstring) already (correctly)
+  bans calling proactively. That `reauthenticate()` docstring reasoned `ssodh/init` doesn't need
+  implementing because it's "invoked by the browser-based login flow itself" — that predated
+  this FAQ text, which describes the client calling it directly for this exact case.
+  **Implemented 2026-07-17** in `claudia_ui` (not `ibkr_core_mcp` — kept intentionally scoped to
+  `ConnectivityChecker`): `claudia/status.py`'s `_attempt_soft_recovery()`, wired into
+  `_run_checks()` behind a narrow safety condition (previous poll confirmed `OK`, current poll
+  shows this exact signature — never on a fresh/settling login or hard disconnect). Unit-tested
+  (14 dedicated tests), not yet live-verified — see
+  `docs/plans/2026-07-17-ibkr-soft-timeout-recovery.md` Task 5.
 - `POST /iserver/auth/ssodh/init` body params: `publish` (bool, required, must be `true` or a
   500 is returned) and `compete` (bool, required — *"Determines if other brokerage sessions
   should be disconnected to prioritize this connection"*). `compete:true` would force-evict a
-  concurrent IBKR Mobile/TWS session — any implementation must default this to `false`.
+  concurrent IBKR Mobile/TWS session — hardcoded to `false` in `_attempt_soft_recovery()`. Note
+  also: IBKR returns HTTP 200 regardless of whether the reconnect actually succeeded (same
+  behavior as `/tickle`) — the response body's `authenticated` field is the real signal, not the
+  status code; `_attempt_soft_recovery()` checks the body for this reason.
 - *"You cannot be logged into the account you are authenticating with anywhere else before you
   authenticate. You should make sure to log out of the account before attempting to
   authenticate... Just closing the window or application may cause a stale login session."*
-  — confirms the `authStatus.competing` warning path in `check_ibkr()` (`claudia/status.py:102-103`)
+  — confirms the `authStatus.competing` warning path in `check_ibkr()` (`claudia/status.py:105-106`)
   reflects a real, documented failure mode, not a hypothetical.
 
 ## IBKR Flex Web Service (`ibkr_core_mcp/flex_query.py`)
