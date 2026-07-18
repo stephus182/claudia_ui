@@ -67,6 +67,32 @@ def test_check_ibkr_timeout(checker):
         assert checker.check_ibkr() is False
 
 
+def test_check_ibkr_ok_stashes_auth_status(checker):
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()):
+        checker.check_ibkr()
+    assert checker._last_ibkr_auth_status == {"authenticated": True, "connected": True}
+
+
+def test_check_ibkr_soft_timeout_stashes_auth_status(checker):
+    m = MagicMock()
+    m.status_code = 200
+    m.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": True}}
+    }
+    with patch("claudia.status.requests.get", return_value=m):
+        assert checker.check_ibkr() is False
+    assert checker._last_ibkr_auth_status == {"authenticated": False, "connected": True}
+
+
+def test_check_ibkr_non_200_clears_auth_status(checker):
+    checker._last_ibkr_auth_status = {"authenticated": True, "connected": True}
+    m = MagicMock()
+    m.status_code = 401
+    with patch("claudia.status.requests.get", return_value=m):
+        checker.check_ibkr()
+    assert checker._last_ibkr_auth_status == {}
+
+
 def test_check_gdrive_falls_back_to_token_file_when_no_sync(checker, tmp_path):
     token = tmp_path / "token.json"
     token.write_text("{}")

@@ -76,6 +76,7 @@ class ConnectivityChecker:
             "gdrive": ServiceStatus.UNKNOWN,
             "tv":     ServiceStatus.UNKNOWN,
         }
+        self._last_ibkr_auth_status: dict = {}
         self._task: asyncio.Task | None = None
 
     def get_status(self) -> dict[str, ServiceStatus]:
@@ -97,12 +98,15 @@ class ConnectivityChecker:
                 verify=False,  # IBKR gateway uses a self-signed cert on localhost
             )
             if resp.status_code != 200:
+                self._last_ibkr_auth_status = {}
                 return False
             auth = resp.json().get("iserver", {}).get("authStatus", {})
+            self._last_ibkr_auth_status = auth
             if auth.get("competing"):
                 log.warning("IBKR: competing session detected — another TWS/gateway session is active")
             return bool(auth.get("authenticated") and auth.get("connected"))
         except Exception:
+            self._last_ibkr_auth_status = {}
             return False
 
     def check_gdrive(self) -> bool:
