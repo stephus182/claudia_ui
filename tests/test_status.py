@@ -260,6 +260,44 @@ async def test_run_checks_recovers_silently_from_soft_timeout(checker_with_token
 
 
 @pytest.mark.asyncio
+async def test_run_checks_recovery_succeeds_but_recheck_still_fails(checker_with_token):
+    """Recovery POST returns 200, but the immediate re-check still fails (possibly
+    with a different signature than the original) — must still produce exactly one
+    normal disconnect alert, not a masked or duplicated one."""
+    checker_with_token._status["ibkr"] = ServiceStatus.OK
+
+    soft_timeout_resp = MagicMock()
+    soft_timeout_resp.status_code = 200
+    soft_timeout_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": True}}
+    }
+    hard_disconnect_resp = MagicMock()
+    hard_disconnect_resp.status_code = 200
+    hard_disconnect_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": False}}
+    }
+    recovery_resp = MagicMock()
+    recovery_resp.status_code = 200
+
+    with patch(
+        "claudia.status.requests.get",
+        side_effect=[soft_timeout_resp, hard_disconnect_resp],
+    ), patch(
+        "claudia.status.requests.post", return_value=recovery_resp
+    ) as mock_post, patch.object(
+        checker_with_token, "_send_alert", new_callable=AsyncMock
+    ) as mock_alert:
+        await checker_with_token._run_checks()
+
+    mock_post.assert_called_once()
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.ERROR
+    ibkr_calls = [c for c in mock_alert.call_args_list if c.args[0] == "ibkr"]
+    assert len(ibkr_calls) == 1
+    assert ibkr_calls[0].args[1] == ServiceStatus.OK
+    assert ibkr_calls[0].args[2] == ServiceStatus.ERROR
+
+
+@pytest.mark.asyncio
 async def test_run_checks_soft_recovery_failure_falls_back_to_disconnect_alert(checker_with_token):
     """OK -> soft-timeout -> ssodh/init fails -> normal ERROR alert, same as today."""
     checker_with_token._status["ibkr"] = ServiceStatus.OK
