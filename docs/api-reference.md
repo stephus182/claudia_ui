@@ -53,15 +53,18 @@ session-resilience work:
   `ConnectivityChecker`): `claudia/status.py`'s `_attempt_soft_recovery()`, wired into
   `_run_checks()` behind a narrow safety condition (previous poll confirmed `OK`, current poll
   shows this exact signature — never on a fresh/settling login or hard disconnect). Unit-tested
-  (14 dedicated tests), not yet live-verified — see
+  (15 dedicated tests), not yet live-verified — see
   `docs/plans/2026-07-17-ibkr-soft-timeout-recovery.md` Task 5.
 - `POST /iserver/auth/ssodh/init` body params: `publish` (bool, required, must be `true` or a
   500 is returned) and `compete` (bool, required — *"Determines if other brokerage sessions
   should be disconnected to prioritize this connection"*). `compete:true` would force-evict a
   concurrent IBKR Mobile/TWS session — hardcoded to `false` in `_attempt_soft_recovery()`. Note
-  also: IBKR returns HTTP 200 regardless of whether the reconnect actually succeeded (same
-  behavior as `/tickle`) — the response body's `authenticated` field is the real signal, not the
-  status code; `_attempt_soft_recovery()` checks the body for this reason.
+  also: the docs page's own example response for this endpoint has the same shape as `/tickle`'s
+  (`authenticated`/`competing`/`connected`/`message` fields) — not a verbatim-quoted guarantee
+  that HTTP 200 is returned regardless of outcome the way `/tickle` is documented to (that
+  specific sentence isn't in the scraped text for this endpoint), but `_attempt_soft_recovery()`
+  checks the body's `authenticated` field rather than trusting the status code alone as a
+  defensive precaution given the shared shape — cheap to do, and correct either way.
 - *"You cannot be logged into the account you are authenticating with anywhere else before you
   authenticate. You should make sure to log out of the account before attempting to
   authenticate... Just closing the window or application may cause a stale login session."*
