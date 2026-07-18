@@ -314,6 +314,33 @@ async def test_run_checks_no_recovery_attempt_from_unknown_state(checker_with_to
 
 
 @pytest.mark.asyncio
+async def test_run_checks_no_recovery_attempt_from_error_state(checker_with_token):
+    """ERROR -> soft-timeout-shaped response: never attempt recovery — only a
+    transition FROM a previously-confirmed OK state may trigger it, per the same
+    rule that excludes UNKNOWN. A prior real disconnect that happens to look
+    soft-timeout-shaped on the next poll must not silently paper over it."""
+    checker_with_token._status["ibkr"] = ServiceStatus.ERROR
+
+    soft_timeout_resp = MagicMock()
+    soft_timeout_resp.status_code = 200
+    soft_timeout_resp.json.return_value = {
+        "iserver": {"authStatus": {"authenticated": False, "connected": True}}
+    }
+
+    with patch(
+        "claudia.status.requests.get", return_value=soft_timeout_resp
+    ), patch(
+        "claudia.status.requests.post"
+    ) as mock_post, patch.object(
+        checker_with_token, "_send_alert", new_callable=AsyncMock
+    ):
+        await checker_with_token._run_checks()
+
+    mock_post.assert_not_called()
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.ERROR
+
+
+@pytest.mark.asyncio
 async def test_run_checks_no_recovery_attempt_on_hard_disconnect(checker_with_token):
     """OK -> connected:false (hard disconnect, e.g. competing session or container
     down): never attempt recovery — ssodh/init cannot fix this, only a real
