@@ -75,7 +75,7 @@ endpoint — `POST /iserver/reauthenticate` is explicitly marked **Deprecated** 
 banned from proactive use (it disrupts fresh logins — see `ibkr_core_mcp/client.py`'s
 `reauthenticate()` docstring), unaffected by this change since it's a different endpoint.
 Implementation: `claudia/status.py` — `_last_ibkr_auth_status` (auth-detail capture),
-`_attempt_soft_recovery()` (the recovery call), wired into `_run_checks()`. 12 dedicated unit
+`_attempt_soft_recovery()` (the recovery call), wired into `_run_checks()`. 15 dedicated unit
 tests cover every safety-relevant branch: never fires from `UNKNOWN`/`ERROR`/hard-disconnect,
 successful recovery suppresses the alert, failed recovery (including a recovery that "succeeds"
 but the re-check still fails differently) produces exactly one normal disconnect alert. **Not yet
