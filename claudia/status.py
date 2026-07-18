@@ -135,6 +135,32 @@ class ConnectivityChecker:
         except OSError:
             return False
 
+    def _attempt_soft_recovery(self) -> bool:
+        """Silently re-establish a soft-timed-out brokerage session.
+
+        Only ever called from _run_checks() when the previous poll was OK and the
+        current poll shows IBKR's documented soft-timeout signature
+        (connected=true, authenticated=false) — never on a fresh/settling login
+        (that transition starts from UNKNOWN) and never on a hard disconnect
+        (connected=false). `compete` is hardcoded False: it must never force-evict
+        a concurrent IBKR Mobile/TWS session — if a real competing session is the
+        actual cause, this call fails harmlessly and the normal disconnect alert
+        fires instead.
+
+        Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ssodh-init
+        Endpoint: POST /iserver/auth/ssodh/init
+        """
+        try:
+            resp = requests.post(
+                f"{self._gateway_url}/iserver/auth/ssodh/init",
+                json={"publish": True, "compete": False},
+                timeout=5,
+                verify=False,
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False
+
     # ── Lifecycle ───────────────────────────────────────────────────────────
 
     def set_tv_bridge(self, bridge: "TradingViewBridge") -> None:

@@ -271,6 +271,43 @@ async def test_run_checks_tv_unknown_when_no_bridge(checker):
     assert checker.get_status()["tv"] == ServiceStatus.UNKNOWN
 
 
+# ── _attempt_soft_recovery() ────────────────────────────────────────────────
+
+def test_attempt_soft_recovery_success(checker):
+    m = MagicMock()
+    m.status_code = 200
+    with patch("claudia.status.requests.post", return_value=m) as mock_post:
+        assert checker._attempt_soft_recovery() is True
+    mock_post.assert_called_once_with(
+        "https://localhost:5055/v1/api/iserver/auth/ssodh/init",
+        json={"publish": True, "compete": False},
+        timeout=5,
+        verify=False,
+    )
+
+
+def test_attempt_soft_recovery_non_200_returns_false(checker):
+    m = MagicMock()
+    m.status_code = 500
+    with patch("claudia.status.requests.post", return_value=m):
+        assert checker._attempt_soft_recovery() is False
+
+
+def test_attempt_soft_recovery_exception_returns_false(checker):
+    with patch("claudia.status.requests.post", side_effect=req.ConnectionError()):
+        assert checker._attempt_soft_recovery() is False
+
+
+def test_attempt_soft_recovery_never_sets_compete_true(checker):
+    """Regression guard: compete must never be true — it would force-evict a
+    concurrent IBKR Mobile/TWS session."""
+    m = MagicMock()
+    m.status_code = 200
+    with patch("claudia.status.requests.post", return_value=m) as mock_post:
+        checker._attempt_soft_recovery()
+    assert mock_post.call_args.kwargs["json"]["compete"] is False
+
+
 @pytest.mark.asyncio
 async def test_stop_cancels_task(checker):
     """stop() cancels the poll loop; start() can restart it."""
