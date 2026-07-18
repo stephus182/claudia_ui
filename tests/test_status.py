@@ -93,6 +93,13 @@ def test_check_ibkr_non_200_clears_auth_status(checker):
     assert checker._last_ibkr_auth_status == {}
 
 
+def test_check_ibkr_exception_clears_auth_status(checker):
+    checker._last_ibkr_auth_status = {"authenticated": True, "connected": True}
+    with patch("claudia.status.requests.get", side_effect=ConnectionError("refused")):
+        checker.check_ibkr()
+    assert checker._last_ibkr_auth_status == {}
+
+
 def test_check_gdrive_falls_back_to_token_file_when_no_sync(checker, tmp_path):
     token = tmp_path / "token.json"
     token.write_text("{}")
