@@ -52,3 +52,7 @@ vendor/tradingview-mcp/package-lock.json
 
 # Playwright MCP session artifacts — console logs, page snapshots (ephemeral debug output)
 .playwright-mcp/
+
+# Personal research notes — kept local + Google Drive only, not for git history
+docs/plans/2026-07-19-ui-framework-research.md
+docs/plans/2026-07-19-ui-framework-research.html
