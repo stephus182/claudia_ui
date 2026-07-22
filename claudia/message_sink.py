@@ -55,7 +55,7 @@ class ChainlitMessageSink:
     async def send_message(self, text: str) -> None:
         await cl.Message(content=text).send()
 
-    def tool_step(self, name: str):
+    def tool_step(self, name: str) -> cl.Step:
         return cl.Step(name=name, type="tool")
 
     async def send_max_tokens_warning(self) -> None:
