@@ -1043,6 +1043,7 @@ def test_build_chat_app_returns_a_chat_interface_with_callback_wired():
         patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
         patch("claudia.panel_app._get_store", return_value=mock_store),
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.agent.AsyncAnthropic"),
     ):
         mock_loader_cls.return_value.load_system_prompt.return_value = "# Role\nStub."
         mock_loader_cls.return_value.reload_count = 0
@@ -1051,12 +1052,26 @@ def test_build_chat_app_returns_a_chat_interface_with_callback_wired():
     assert chat.callback is not None
 ```
 
+**Verified finding, 2026-07-22 (Task 2.2 execution):** the test above must patch
+`claudia.agent.AsyncAnthropic` (added above, wasn't in the original draft) — `ClaudIAAgent.__init__`
+constructs a real `AsyncAnthropic()` client otherwise, matching every other
+`ClaudIAAgent`-constructing test's convention in `tests/test_agent.py`. Without it the test
+only passes because a real `ANTHROPIC_API_KEY` happens to be set locally — it would fail in
+CI or a fresh clone without one.
+
 - [ ] **Step 2: Run to verify failure**
 
 Run: `pytest tests/test_panel_app.py -v`
 Expected: `ModuleNotFoundError: No module named 'claudia.panel_app'`
 
 - [ ] **Step 3: Implement `claudia/panel_app.py`**
+
+**Verified finding, 2026-07-22 (Task 2.2 execution):** a bare `import panel as pn` does
+**not** eagerly import the `fastapi` submodule (`panel/io/__init__.py` keeps it optional
+since `fastapi` is only pulled in via the `panel[fastapi]` extra) — `@pn.io.fastapi.add_application`
+fails with `AttributeError: module 'panel.io' has no attribute 'fastapi'`. Reproduced in a
+clean process, confirmed environment-independent (not a local fluke), fixed below by
+importing the function directly.
 
 ```python
 """Panel entry point for ClaudIA (Phase 2: walking skeleton).
@@ -1077,7 +1092,15 @@ import uuid
 import panel as pn
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from ibkr_core_mcp import BrowserCookieAuth, ClaudeToolkit, Config, GDriveCache, IBKRClient, SQLiteStore
+from ibkr_core_mcp import (
+    BrowserCookieAuth,
+    ClaudeToolkit,
+    Config,
+    GDriveCache,
+    IBKRClient,
+    SQLiteStore,
+)
+from panel.io.fastapi import add_application
 
 from claudia.agent import ClaudIAAgent
 from claudia.context_loader import ContextLoader
@@ -1162,7 +1185,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
 app = FastAPI()
 
 
-@pn.io.fastapi.add_application("/", app=app, title="ClaudIA (Panel preview)")
+@add_application("/", app=app, title="ClaudIA (Panel preview)")
 def _serve_chat_app() -> pn.chat.ChatInterface:
     return _build_chat_app()
 ```
@@ -1175,7 +1198,7 @@ Expected: `1 passed`
 - [ ] **Step 5: Run the full unit suite**
 
 Run: `pytest -m "not integration" -q`
-Expected: `327 passed` (322 + 4 new in test_panel_sink.py + 1 new in test_panel_app.py), 0 failures.
+Expected: `330 passed` (329 baseline after Task 2.1's own fixes + 1 new), 0 failures.
 
 - [ ] **Step 6: Manual verification — safe (no live IBKR gateway required to prove the skeleton)**
 
@@ -1274,6 +1297,13 @@ this — clone it before hand-building anything, per the kickoff prompt's own gu
 `claudia/panel_status.py` if the hand-built version grows beyond a trivial wrapper.
 
 ## Phase 5: Session lifecycle completeness — outline
+
+**Carry over from Task 2.2 (2026-07-22):** the Phase 2 skeleton's `_build_chat_app()` calls
+`loader.load_system_prompt()` with no error handling — `claudia/app.py`'s `on_chat_start`
+wraps the equivalent call in `try/except FileNotFoundError` and sends a friendly "Setup
+required" message instead of letting a missing `docs/context.md`/`principles.md` surface as
+a raw uncaught exception during session creation. Bring this in line as part of this
+phase's parity work, not before — Phase 2 was intentionally minimal.
 
 **Goal:** Bring `claudia/panel_app.py`'s per-session factory up to parity with
 `claudia/app.py`'s full `on_chat_start` (`app.py:215-604`): GDrive DB download (first
