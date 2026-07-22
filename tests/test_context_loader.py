@@ -1,5 +1,6 @@
 """Tests for ContextLoader — document loading, hashing, watchdog."""
 
+import re
 import time
 
 import pytest
@@ -42,14 +43,14 @@ def test_hash_changes_on_file_edit(docs_dir):
 def test_missing_context_raises(tmp_path):
     (tmp_path / "principles.md").write_text("# Principles")
     loader = ContextLoader(tmp_path)
-    with pytest.raises(FileNotFoundError, match="context.md"):
+    with pytest.raises(FileNotFoundError, match=re.escape("context.md")):
         loader.load_system_prompt()
 
 
 def test_missing_principles_raises(tmp_path):
     (tmp_path / "context.md").write_text("# Role")
     loader = ContextLoader(tmp_path)
-    with pytest.raises(FileNotFoundError, match="principles.md"):
+    with pytest.raises(FileNotFoundError, match=re.escape("principles.md")):
         loader.load_system_prompt()
 
 

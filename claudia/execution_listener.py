@@ -35,6 +35,7 @@ Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ws-pnl
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -146,10 +147,8 @@ class ExecutionListener:
         """Cancel the background task. Safe to call if never started."""
         if self._task and not self._task.done():
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         self._task = None
 
     async def _run_with_retry(self) -> None:
@@ -199,10 +198,8 @@ class ExecutionListener:
                             # a clean return as a reconnect-after-5s, not an error
             finally:
                 pump_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await pump_task
-                except asyncio.CancelledError:
-                    pass
         finally:
             await ws.disconnect()
 
@@ -268,7 +265,7 @@ class ExecutionListener:
                 if isinstance(item, TradeExecution):
                     saw_extra_execution = True
         finally:
-            try:
+            # suppress() is equivalent to try/except/pass here — does not mask an
+            # exception already propagating from the try block above.
+            with contextlib.suppress(Exception):
                 await ws.unsubscribe_pnl()
-            except Exception:
-                pass  # must not mask an exception already propagating from the try block

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 POLL_INTERVAL = 60  # seconds — matches IBKR /tickle keepalive requirement
 
 
-class ServiceStatus(str, Enum):
+class ServiceStatus(StrEnum):
     UNKNOWN = "unknown"
     OK = "ok"
     ERROR = "error"
@@ -207,10 +207,13 @@ class ConnectivityChecker:
         ibkr_ok = await asyncio.to_thread(self.check_ibkr)
         if not ibkr_ok and self._status["ibkr"] == ServiceStatus.OK:
             auth = self._last_ibkr_auth_status
-            if auth.get("connected") and not auth.get("authenticated"):
-                if await asyncio.to_thread(self._attempt_soft_recovery):
-                    log.info("IBKR: soft-timeout recovered silently via ssodh/init")
-                    ibkr_ok = await asyncio.to_thread(self.check_ibkr)
+            if (
+                auth.get("connected")
+                and not auth.get("authenticated")
+                and await asyncio.to_thread(self._attempt_soft_recovery)
+            ):
+                log.info("IBKR: soft-timeout recovered silently via ssodh/init")
+                ibkr_ok = await asyncio.to_thread(self.check_ibkr)
         gdrive_ok = await asyncio.to_thread(self.check_gdrive)
         tv_ok = await asyncio.to_thread(self.check_tradingview)
         new = {

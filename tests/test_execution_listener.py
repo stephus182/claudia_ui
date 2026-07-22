@@ -253,9 +253,9 @@ async def test_run_once_disconnects_even_on_listen_error():
     ws.listen = broken_listen
 
     with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=ws):
-        with pytest.raises(ConnectionError):
-            await listener._run_once()
+         patch("claudia.execution_listener.IBKRWebSocket", return_value=ws), \
+         pytest.raises(ConnectionError):
+        await listener._run_once()
 
     ws.disconnect.assert_awaited_once()
 
@@ -302,9 +302,9 @@ async def test_run_with_retry_retries_on_error_then_cancels():
         raise asyncio.CancelledError
 
     with patch.object(listener, "_run_once", side_effect=flaky_run_once), \
-         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()):
-        with pytest.raises(asyncio.CancelledError):
-            await listener._run_with_retry()
+         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()), \
+         pytest.raises(asyncio.CancelledError):
+        await listener._run_with_retry()
 
     assert call_count == 2
 
@@ -317,9 +317,9 @@ async def test_run_with_retry_cancelled_propagates_immediately():
     async def always_cancel():
         raise asyncio.CancelledError
 
-    with patch.object(listener, "_run_once", side_effect=always_cancel):
-        with pytest.raises(asyncio.CancelledError):
-            await listener._run_with_retry()
+    with patch.object(listener, "_run_once", side_effect=always_cancel), \
+         pytest.raises(asyncio.CancelledError):
+        await listener._run_with_retry()
 
 
 @pytest.mark.asyncio
@@ -337,9 +337,9 @@ async def test_run_with_retry_clean_return_reconnects_after_5s():
         raise asyncio.CancelledError
 
     with patch.object(listener, "_run_once", side_effect=clean_then_cancel), \
-         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()) as mock_sleep:
-        with pytest.raises(asyncio.CancelledError):
-            await listener._run_with_retry()
+         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
+         pytest.raises(asyncio.CancelledError):
+        await listener._run_with_retry()
 
     assert call_count == 2
     mock_sleep.assert_any_call(5)
@@ -383,9 +383,9 @@ async def test_run_with_retry_escalates_backoff_then_caps():
         raise asyncio.CancelledError
 
     with patch.object(listener, "_run_once", side_effect=always_fail_then_cancel), \
-         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()) as mock_sleep:
-        with pytest.raises(asyncio.CancelledError):
-            await listener._run_with_retry()
+         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
+         pytest.raises(asyncio.CancelledError):
+        await listener._run_with_retry()
 
     assert mock_sleep.call_args_list == [call(5), call(10), call(30), call(60), call(60)]
 

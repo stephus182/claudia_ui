@@ -1,9 +1,27 @@
 """Tests for the ClaudIAAgent — order proposal parsing, decision extraction."""
 
 import json
+import logging
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock, patch
 
-from claudia.agent import _build_system_prompt, _strip_order_proposal
+from claudia.agent import (
+    _LOCAL_TOOL_NAMES,
+    _LOCAL_TOOLS,
+    ClaudIAAgent,
+    _build_system_prompt,
+    _build_version_note,
+    _history_to_messages,
+    _log_cache_usage,
+    _make_block_stripper,
+    _strip_order_cancel_proposal,
+    _strip_order_modify_proposal,
+    _strip_order_proposal,
+    _system_blocks,
+    _with_cache_marker,
+    _with_history_cache_marker,
+)
 
 
 def test_strip_order_proposal_found():
@@ -41,7 +59,7 @@ def test_strip_order_proposal_not_found():
 
 def test_strip_order_proposal_malformed_json():
     text = "Some text.\n```order-proposal\n{not valid json}\n```\nEnd."
-    clean, parsed = _strip_order_proposal(text)
+    _clean, parsed = _strip_order_proposal(text)
     # Malformed JSON: block not stripped, proposal is None
     assert parsed is None
 
@@ -79,14 +97,6 @@ def test_order_proposal_all_order_types():
 
 # ── _make_block_stripper / cancel & modify proposal stripping ───────────────
 
-from claudia.agent import (
-    _LOCAL_TOOL_NAMES,
-    _make_block_stripper,
-    _strip_order_cancel_proposal,
-    _strip_order_modify_proposal,
-)
-
-
 def test_make_block_stripper_builds_working_stripper_for_arbitrary_tag():
     """The factory isn't hardcoded to order tags — it works for any fenced tag."""
     strip = _make_block_stripper("test-block")
@@ -115,7 +125,7 @@ def test_strip_order_cancel_proposal_not_found():
 
 def test_strip_order_cancel_proposal_malformed_json():
     text = "Text.\n```order-cancel-proposal\n{not json}\n```\nEnd."
-    clean, parsed = _strip_order_cancel_proposal(text)
+    _clean, parsed = _strip_order_cancel_proposal(text)
     assert parsed is None
 
 
@@ -141,7 +151,7 @@ def test_strip_order_modify_proposal_not_found():
 
 def test_strip_order_modify_proposal_malformed_json():
     text = "Text.\n```order-modify-proposal\n{not json}\n```\nEnd."
-    clean, parsed = _strip_order_modify_proposal(text)
+    _clean, parsed = _strip_order_modify_proposal(text)
     assert parsed is None
 
 
@@ -210,16 +220,6 @@ def test_safety_block_requires_fresh_tool_call_on_retry():
     assert "TOOL RESULT FRESHNESS" in prompt
     assert "fresh tool call" in prompt.lower()
     assert "retry" in prompt.lower()
-
-
-# ── Imports for new tests ─────────────────────────────────────────────────────
-from unittest.mock import MagicMock, patch
-
-from claudia.agent import (
-    ClaudIAAgent,
-    _build_version_note,
-    _history_to_messages,
-)
 
 
 def _make_agent():
@@ -491,9 +491,6 @@ def test_all_tools_includes_toolkit_extra_and_local():
 
 # ── Prompt caching: _with_cache_marker (tools breakpoint) ────────────────────
 
-from claudia.agent import _LOCAL_TOOLS, _with_cache_marker
-
-
 def test_with_cache_marker_marks_only_last_tool():
     tools = [
         {"name": "a", "input_schema": {"type": "object"}},
@@ -534,9 +531,6 @@ def test_all_tools_last_entry_carries_cache_marker():
 
 
 # ── Prompt caching: _system_blocks (system breakpoint) ───────────────────────
-
-from claudia.agent import _system_blocks
-
 
 def test_system_blocks_shape():
     blocks = _system_blocks("You are ClaudIA.")
@@ -603,12 +597,6 @@ def test_system_prompt_rebuilt_after_reload():
 
 # ── Prompt caching: _log_cache_usage (message_start telemetry) ───────────────
 
-import logging
-from types import SimpleNamespace
-
-from claudia.agent import _log_cache_usage
-
-
 def test_log_cache_usage_reports_all_three_fields(caplog):
     usage = SimpleNamespace(
         cache_creation_input_tokens=12000,
@@ -643,8 +631,6 @@ def test_log_cache_usage_handles_missing_fields(caplog):
 
 
 # ── Prompt caching: _with_history_cache_marker (messages breakpoint) ─────────
-
-from claudia.agent import _with_history_cache_marker
 
 
 def test_history_marker_string_content_becomes_marked_block():

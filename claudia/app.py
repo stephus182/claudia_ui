@@ -25,8 +25,10 @@ import base64
 import contextvars
 import logging
 import os
+from collections.abc import Coroutine
 from datetime import UTC
 from pathlib import Path
+from typing import Any
 
 import chainlit as cl
 from chainlit.server import app as _server_app
@@ -69,6 +71,19 @@ _tv_bridge_lock = asyncio.Lock()
 _connectivity_checker: ConnectivityChecker | None = None
 _execution_listener: ExecutionListener | None = None
 _gdrive_sync: GDriveSync | None = None
+
+# asyncio.create_task()'s own docs warn the event loop only holds a weak reference —
+# an unreferenced task can be garbage-collected mid-execution. Fire-and-forget
+# background tasks (Flex sync, gateway start, TradingView reconnect) are tracked
+# here so that can't happen; each task discards itself on completion.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background_task(coro: Coroutine[Any, Any, None]) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 @_server_app.get("/api/status")
@@ -444,7 +459,7 @@ async def on_chat_start():
                 "XTKS": "TSE Tokyo", "XHKG": "HKEX Hong Kong", "XSHG": "SSE Shanghai",
                 "XBOM": "BSE Mumbai", "XKRX": "KRX Seoul", "XASX": "ASX Sydney",
                 "XTSE": "TSX Toronto", "BVMF": "B3 São Paulo", "XMEX": "BMV Mexico City",
-                "XJSE": "JSE Johannesburg", "XSAU": "Tadawul (Sun–Thu week)",
+                "XJSE": "JSE Johannesburg", "XSAU": "Tadawul (Sun–Thu week)",  # noqa: RUF001 — correct en-dash for a day range
                 "XIDX": "IDX Jakarta", "XIST": "Borsa Istanbul",
             }
             _holiday_lines = []
@@ -586,7 +601,7 @@ async def on_chat_start():
                         author="System",
                     ).send()
 
-        asyncio.create_task(_background_flex_sync())
+        _spawn_background_task(_background_flex_sync())
 
 
 # ── Message handler ────────────────────────────────────────────────────────────
@@ -850,7 +865,7 @@ async def on_start_gateway(action: cl.Action):
                 author="System",
             ).send()
 
-    asyncio.create_task(_run())
+    _spawn_background_task(_run())
 
 
 # ── TradingView launch callback ────────────────────────────────────────────────
@@ -922,4 +937,4 @@ async def on_launch_tradingview(action: cl.Action):
                 author="System",
             ).send()
 
-    asyncio.create_task(_run())
+    _spawn_background_task(_run())
