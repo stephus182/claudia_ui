@@ -561,6 +561,9 @@ async def on_chat_start():
                 await cl.Message(content=f"✅ {result}", author="System").send()
                 # Back up the updated store.db to Drive account_data/
                 try:
+                    # _config is set atomically with _toolkit in _get_toolkit() and never
+                    # reset — toolkit (used above) being available guarantees _config is too.
+                    assert _config is not None, "_config unset despite toolkit being available"
                     await cl.make_async(toolkit._cache.upload_account_file)(
                         _config.sqlite_path, "store.db"
                     )
@@ -898,7 +901,7 @@ async def on_launch_tradingview(action: cl.Action):
                 if _tv_bridge is not None:
                     await _tv_bridge.stop()
                     _tv_bridge = None
-            await _get_tv_bridge()  # creates new bridge under its own lock
+            _tv_bridge = await _get_tv_bridge()  # creates new bridge under its own lock
 
             if _connectivity_checker is not None:
                 _connectivity_checker.set_tv_bridge(_tv_bridge)

@@ -17,6 +17,7 @@ planned knowledge layer.)
 import json
 import logging
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +44,7 @@ class ConversationStore:
         self._init_schema()
 
     @contextmanager
-    def _conn(self):
+    def _conn(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         # WAL mode allows concurrent readers during a write — required because
@@ -194,7 +195,7 @@ class ConversationStore:
             if row := conn.execute(
                 "SELECT version FROM doc_versions WHERE context_hash = ?", (context_hash,)
             ).fetchone():
-                return row["version"]
+                return str(row["version"])  # sqlite3.Row.__getitem__ is typed Any; column is TEXT
             count = conn.execute("SELECT COUNT(*) FROM doc_versions").fetchone()[0]
             version = f"v{count + 1}"
             conn.execute(

@@ -188,7 +188,9 @@ def test_upload_db_is_protected_by_lock(tmp_path):
         def __exit__(self, *a):
             self.release()
 
-    sync._lock = TrackingLock()
+    # Duck-typed test double (acquire/release/__enter__/__exit__ only) — not a real RLock
+    # subclass, deliberately, to observe lock usage without needing threading internals.
+    sync._lock = TrackingLock()  # type: ignore[assignment]
 
     svc = MagicMock()
     svc.files.return_value.update.return_value.execute.return_value = {}

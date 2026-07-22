@@ -41,3 +41,22 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["claudia", "tests"]
+warn_return_any = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+strict_equality = true
+no_implicit_optional = true
+check_untyped_defs = true
+show_error_codes = true
+
+# The only genuinely unstubbed import in claudia/ or tests/ (verified 2026-07-21 against the
+# actual venv — chainlit, mcp, and ibkr_core_mcp all ship py.typed, so ignore_missing_imports
+# is not needed for them).
+[[tool.mypy.overrides]]
+module = ["googleapiclient.*"]
+ignore_missing_imports = true

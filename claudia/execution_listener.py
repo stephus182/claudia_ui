@@ -46,7 +46,7 @@ from ibkr_core_mcp.auth import BrowserCookieAuth
 from ibkr_core_mcp.streaming import IBKRWebSocket, PnLUpdate, TradeExecution
 
 if TYPE_CHECKING:
-    from ibkr_core_mcp import SQLiteStore
+    from ibkr_core_mcp import ClaudeToolkit, SQLiteStore
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
     )
 
 
-def get_live_pnl_text(toolkit: Any) -> str:
+def get_live_pnl_text(toolkit: ClaudeToolkit) -> str:
     """Best-available live P&L text for display: the ExecutionListener's last
     captured snapshot if this process observed a trade execution, otherwise a
     live ledger pull.

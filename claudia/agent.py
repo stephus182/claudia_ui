@@ -436,7 +436,9 @@ def _with_history_cache_marker(messages: list) -> list:
         blocks = list(content)
         if not blocks:
             return messages
-    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+    # cache_control's nested dict alongside str fields is correct at runtime (same
+    # plain-dict-request-body pattern as the SDK call in _run_turn) — not a str-only dict.
+    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}  # type: ignore[dict-item]
     last["content"] = blocks
     return messages[:-1] + [last]
 
@@ -542,20 +544,26 @@ class ClaudIAAgent:
             tool_calls: list[dict] = []
             stop_reason: str | None = None
 
+            # system/tools/messages are built as plain dicts throughout this file rather than
+            # the SDK's precise TypedDict unions (far simpler to construct/mutate JSON-shaped
+            # request bodies this way) — structurally correct at runtime, not statically
+            # provable against the SDK's param types. Covered by test_agent.py's 63 tests.
             async with self._client.messages.stream(
                 model=self._model,
                 max_tokens=4096,
-                system=system_blocks,
+                system=system_blocks,  # type: ignore[arg-type]
                 messages=_with_history_cache_marker(messages),
-                tools=self._all_tools,
+                tools=self._all_tools,  # type: ignore[arg-type]
             ) as stream:
                 async for event in stream:
-                    etype = event.type
-
-                    if etype == "message_start":
+                    # Narrow on `event.type`/`delta.type` directly (not a copied variable) —
+                    # mypy's discriminated-union narrowing only tracks the checked expression
+                    # itself, so branching on a pre-assigned copy defeats it. Same runtime
+                    # behavior, but lets mypy verify each branch's attribute access.
+                    if event.type == "message_start":
                         _log_cache_usage(event.message.usage)
 
-                    elif etype == "content_block_start":
+                    elif event.type == "content_block_start":
                         block = event.content_block
                         if block.type == "tool_use":
                             tool_calls.append({
@@ -564,14 +572,14 @@ class ClaudIAAgent:
                                 "input_json": "",
                             })
 
-                    elif etype == "content_block_delta":
+                    elif event.type == "content_block_delta":
                         delta = event.delta
                         if delta.type == "text_delta":
                             response_text += delta.text
                         elif delta.type == "input_json_delta" and tool_calls:
                             tool_calls[-1]["input_json"] += delta.partial_json
 
-                    elif etype == "message_delta":
+                    elif event.type == "message_delta":
                         stop_reason = event.delta.stop_reason
 
             # --- Stream complete ---
@@ -638,7 +646,7 @@ class ClaudIAAgent:
                     "content": result_text,
                 })
 
-            messages.append({"role": "user", "content": tool_results})
+            messages.append({"role": "user", "content": tool_results})  # type: ignore[typeddict-item]
 
         # --- Final response ---
         display_text, order_proposal = _strip_order_proposal(full_response_text)

@@ -244,7 +244,7 @@ async def test_run_once_disconnects_even_on_listen_error():
 
     async def broken_listen():
         raise ConnectionError("dropped")
-        yield  # pragma: no cover — unreachable, makes this an async generator
+        yield  # type: ignore[unreachable]  # pragma: no cover — makes this an async generator
 
     ws = MagicMock()
     ws.connect = AsyncMock()

@@ -22,7 +22,7 @@ from typing import Callable
 
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from watchdog.observers import Observer
-from watchdog.observers.api import ObservedWatch
+from watchdog.observers.api import BaseObserver, ObservedWatch
 
 log = logging.getLogger(__name__)
 
@@ -31,10 +31,10 @@ log = logging.getLogger(__name__)
 # "already scheduled" because the kernel-level watch isn't freed between
 # stop() and the next Observer's start(). Scheduling/unscheduling on one
 # persistent Observer avoids this entirely.
-_shared_observer: Observer | None = None
+_shared_observer: BaseObserver | None = None
 
 
-def _get_shared_observer() -> Observer:
+def _get_shared_observer() -> BaseObserver:
     global _shared_observer
     if _shared_observer is None or not _shared_observer.is_alive():
         _shared_observer = Observer()
