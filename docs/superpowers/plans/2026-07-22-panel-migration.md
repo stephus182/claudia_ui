@@ -897,6 +897,19 @@ Expected: `ModuleNotFoundError: No module named 'claudia.panel_sink'`
 
 - [ ] **Step 3: Implement `claudia/panel_sink.py`**
 
+**Verified findings, 2026-07-22 (Task 2.1 execution) — two real bugs in this section's
+original code, both fixed below, not just a style pass:**
+1. The placeholder wording originally read "Order staging **isn't** available..." while
+   the test below checks for the substring `"not available"`/`"not yet available"` — those
+   don't match (`"isn't"` ≠ `"not"`). Wording corrected to "is **not yet** available" across
+   all three placeholder methods so it actually satisfies the test (and matches the
+   docstring's own stated intent).
+2. `self._message = None` with no type annotation makes mypy infer the attribute's type as
+   `None`, then flag the later `self._message.object = ...` in `__aexit__` as invalid — a
+   real regression against this project's documented 0-error mypy baseline (see
+   `docs/audits/2026-07-22-code-quality-pre-migration-audit.md`). Fixed with an explicit
+   `self._message: Any = None` annotation (`from typing import Any` added to the imports).
+
 ```python
 """Panel-side MessageSink implementation.
 
@@ -908,6 +921,7 @@ message-with-buttons pattern to Panel (claudia/panel_order_flow.py).
 from __future__ import annotations
 
 import json
+from typing import Any
 
 
 class _PanelToolStepHandle:
@@ -923,7 +937,7 @@ class _PanelToolStepHandle:
         self._name = name
         self.input: str = ""
         self.output: str = ""
-        self._message = None
+        self._message: Any = None
 
     async def __aenter__(self) -> _PanelToolStepHandle:
         self._message = self._chat.send(
@@ -963,7 +977,7 @@ class PanelMessageSink:
 
     async def send_order_proposal(self, proposal: dict) -> None:
         self._chat.send(
-            f"Order staging isn't available in this preview build yet.\n\n"
+            f"Order staging is not yet available in this preview build.\n\n"
             f"Proposed: `{json.dumps(proposal)}`",
             user="System",
             respond=False,
@@ -971,7 +985,7 @@ class PanelMessageSink:
 
     async def send_cancel_proposal(self, proposal: dict) -> None:
         self._chat.send(
-            f"Order cancellation isn't available in this preview build yet.\n\n"
+            f"Order cancellation is not yet available in this preview build.\n\n"
             f"Proposed: `{json.dumps(proposal)}`",
             user="System",
             respond=False,
@@ -979,7 +993,7 @@ class PanelMessageSink:
 
     async def send_modify_proposal(self, proposal: dict) -> None:
         self._chat.send(
-            f"Order modification isn't available in this preview build yet.\n\n"
+            f"Order modification is not yet available in this preview build.\n\n"
             f"Proposed: `{json.dumps(proposal)}`",
             user="System",
             respond=False,
@@ -1238,6 +1252,15 @@ Shadow-DOM claim was.
 **Goal:** Replace `_PanelToolStepHandle`'s Phase-2 placeholder (plain message,
 before/after) with something closer to Chainlit's collapsible `cl.Step` UX — the `cl.Step`
 equivalent issue #6291 **[research]** flags as still-in-progress in Panel core.
+
+**Carry over from Task 2.1's code review (2026-07-22):** the Phase-2 placeholder's
+`__aexit__` ignores `exc_type`/`exc`/`tb` entirely — if a tool call ever raised inside
+`async with self._sink.tool_step(...)`, the user would see a blank "Output:" with no error
+indication, unlike `cl.Step.__aexit__` which sets `self.output = str(exc_val)` and an error
+flag before re-raising. Currently dormant (every actual tool-execution path —
+`ClaudeToolkit.execute`, `TradingViewBridge.execute`, `_handle_local_tool` — is documented
+to never raise), but the real replacement built in this phase should handle the exception
+case properly rather than carry the gap forward a second time.
 
 **First action of this phase, before any code:** re-check
 [holoviz/panel#6291](https://github.com/holoviz/panel/issues/6291)'s current state — it was
