@@ -448,7 +448,8 @@ def _with_history_cache_marker(messages: list) -> list:
 class ClaudIAAgent:
     """
     Manages one chat session's Anthropic API interaction.
-    Instantiated once per Chainlit session via cl.user_session.
+    Instantiated once per chat session by whichever UI entry point owns that session
+    (claudia/app.py today, claudia/panel_app.py once the Panel migration lands).
     """
 
     def __init__(
@@ -464,8 +465,10 @@ class ClaudIAAgent:
         doc_version: str | None = None,
         trade_context: str | None = None,
     ) -> None:
-        """Initialise the agent for one Chainlit session.
+        """Initialise the agent for one chat session.
 
+        sink: the MessageSink this session renders output through — decouples this
+            class from any specific UI framework (see claudia/message_sink.py).
         extra_tools: TradingView tool definitions from TradingViewBridge.get_tools();
             merged into the Anthropic tools= list alongside toolkit's 42 IBKR tools.
         trade_context: optional market-calendar string injected into the system prompt
