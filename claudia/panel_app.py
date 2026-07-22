@@ -100,7 +100,11 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     )
 
     async def _on_user_input(contents: str, user: str, instance: pn.chat.ChatInterface) -> None:
-        await agent.handle_message(contents)
+        try:
+            await agent.handle_message(contents)
+        except Exception:
+            log.exception("Error handling message (session %s)", session_id)
+            raise  # Panel's callback_exception="summary" still renders the friendly message
 
     chat.callback = _on_user_input
     chat.send(
