@@ -9,6 +9,7 @@ description = "ClaudIA — AI trading assistant powered by ibkr_core_mcp"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "chainlit>=2.0",
+    "panel[fastapi]>=1.9",
     "anthropic>=0.28",
     # ibkr_core_mcp is installed separately: pip install -e ../ibkr_core_mcp
     "watchdog>=4.0",
