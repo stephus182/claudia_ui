@@ -1207,7 +1207,18 @@ Expected: `1 passed`
 Run: `pytest -m "not integration" -q`
 Expected: `330 passed` (329 baseline after Task 2.1's own fixes + 1 new), 0 failures.
 
-- [ ] **Step 6: Manual verification — safe (no live IBKR gateway required to prove the skeleton)**
+- [x] **Step 6: Manual verification — safe (no live IBKR gateway required to prove the skeleton)**
+
+**Done, 2026-07-22.** Ran `uvicorn claudia.panel_app:app --port 8001`, drove it with Playwright
+and a real human message in parallel. Welcome message rendered correctly; a real
+conversation round-tripped end to end including a 4-tool-call sequence
+(`get_live_pnl`/`get_pnl`/`get_account_summary`/`get_positions`, all correctly erroring since
+IBKR gateway was intentionally offline at the time), each rendering as its own tool-step card
+via `PanelMessageSink.tool_step()`. Notably, the model's final response correctly invoked the
+hardcoded safety block's data-integrity rule ("I have no valid data, and per my
+data-integrity rules I won't guess or show remembered figures") when all 4 tool calls
+failed — concrete, live proof the safety-critical constraints survive unchanged through the
+new Panel frontend. Console: 0 real errors (one benign missing-favicon 404, unrelated).
 
 ```bash
 uvicorn claudia.panel_app:app --port 8001 --reload
