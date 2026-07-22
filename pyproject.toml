@@ -13,7 +13,10 @@ dependencies = [
     # ibkr_core_mcp is installed separately: pip install -e ../ibkr_core_mcp
     "watchdog>=4.0",
     "python-dotenv>=1.0",
-    "mcp>=1.0",
+    # <2 pin required: the SDK's own README (verified 2026-07-22) documents v2 as a
+    # pre-release/alpha-beta line — "Do not use v2 in production" — and explicitly
+    # recommends this exact bound until v2 stabilizes.
+    "mcp>=1.27,<2",
     "requests>=2.31",
     "html2text>=2024.2",
 ]

@@ -76,7 +76,33 @@ session-resilience work:
 | Topic | Official source |
 |---|---|
 | Flex Web Service setup (endpoints, headers) | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3.htm |
-| Flex error codes (all 21 codes) | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm |
+| Flex error codes (20 codes) | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm |
+
+**Scraped 2026-07-21 (Firecrawl keyless tier).** Verbatim findings:
+
+- flex3.htm (setup): generated tokens are *"valid for a 6 hour period by
+  default"* and can optionally be restricted to a specific *"Valid For IP
+  Address"*; generating a new token *"invalidate[s] the current one."* The
+  `SendRequest` call requires `t` (token), `q` (Flex Query ID), and `v=3`
+  (*"if you do not specify a Version, the system will use Version 2"*), plus
+  optional `fd`/`td` (yyyymmdd date-range override, up to 365 days) or `p`
+  (period override). Programmatic access *"requires the User-Agent HTTP
+  header to be set"* (e.g. `Python/3.4.1`). **No content on this page
+  discusses a T+1 cutoff or a fixed daily generation schedule for Flex
+  statements** — only token/request mechanics; that question is not
+  answered by this URL and needs a different source. Page footer: "Last
+  updated on June 8, 2026."
+- flex3error.htm (error codes): the scraped table lists **20**
+  ErrorCode/ErrorMessage rows (1001, 1003–1021 — note **1002 is absent**
+  from the published table), not 21 as this doc previously stated; the
+  "Topic" cell above has been corrected accordingly. Error 1018 documents
+  an explicit rate limit: *"Too many requests have been made from this
+  token... Limited to one request per second, 10 requests per minute (per
+  token)."* Several codes (1001, 1004–1009, 1019, 1021) are explicitly
+  transient/"try again shortly" conditions, distinct from hard failures
+  (1011 inactive, 1012 expired, 1013 IP restriction, 1015 invalid token,
+  1016 invalid account, 1017 invalid reference code). Page footer: "Last
+  updated on August 18, 2025."
 
 ## Anthropic API (`claudia/agent.py`)
 
@@ -119,12 +145,76 @@ compliance note citing this same source.
 | Drive API v3 reference | https://developers.google.com/drive/api/reference/rest/v3 |
 | Files: upload / download | https://developers.google.com/drive/api/guides/manage-uploads |
 
+**Scraped 2026-07-21 (Firecrawl keyless tier).** Note: both URLs now
+301/soft-redirect to a `.../workspace/drive/api/...` path segment
+(`developers.google.com/workspace/drive/api/reference/rest/v3` and
+`.../workspace/drive/api/guides/manage-uploads`); the originally-cited
+URLs without `workspace/` still resolve and served the current content —
+no action needed. Verbatim findings:
+
+- Reference page: service is `googleapis.com/drive/v3`; *"This service has
+  the following service endpoint and all URIs below are relative to this
+  service endpoint: `https://www.googleapis.com`."* No v3 deprecation
+  notice appeared on the scraped page. Resource list: `about`,
+  `accessproposals`, `approvals`, `apps`, `changes`, `channels`,
+  `comments`, `drives`, `files`, `operations`, `permissions`, `replies`,
+  `revisions` — includes `accessproposals`/`approvals`, which are newer
+  additions not present in older v3 snapshots.
+- Manage-uploads page: three upload types are documented. *"Simple upload
+  (`uploadType=media`)... a small media file (5 MB or less) without
+  supplying metadata."* *"Multipart upload (`uploadType=multipart`)... a
+  small file (5 MB or less) along with metadata."* *"Resumable upload
+  (`uploadType=resumable`)... for large files (greater than 5 MB) and when
+  there's a high chance of network interruption... also a good choice for
+  most applications because they also work for small files at a minimal
+  cost of one additional HTTP request per upload."* — i.e. 5 MB is the
+  documented simple/multipart ceiling, not an overall API upload-size
+  limit. Whether `gdrive_sync.py`'s `claudia.db` upload currently uses
+  simple, multipart, or resumable was not checked as part of this
+  citation pass — worth a follow-up read of `claudia/gdrive_sync.py`
+  against this contract if `claudia.db` can exceed 5 MB.
+
 ## TradingView MCP (`claudia/tradingview.py`)
 
 | Topic | Official source |
 |---|---|
 | tradingview-mcp tool list and usage | https://github.com/tradesdontlie/tradingview-mcp |
 | Chrome DevTools Protocol | https://chromedevtools.github.io/devtools-protocol/ |
+
+**Scraped 2026-07-21 (Firecrawl keyless tier).** `tradingview-mcp` is a
+third-party GitHub repo, not TradingView Inc. documentation — verified
+against its actual README and repo metadata, not a vendor docs site.
+Verbatim findings:
+
+- tradesdontlie/tradingview-mcp: MIT-licensed (*"MIT — see LICENSE... The
+  MIT license applies to the source code of this project only. It does
+  not grant any rights to TradingView's software, data, trademarks, or
+  intellectual property"*). ~5k stars / 2.2k forks, 19 branches, **0
+  tags** (no pinned releases — the repo tracks `main` directly, consistent
+  with this project's `./scripts/archive-tv-mcp.sh` snapshot-to-`vendor/`
+  approach rather than trusting a release tag). Latest commit at scrape
+  time: `0ac960a` (PR #377, "docs/tool-count-84," Jul 21 2026). README:
+  *"Personal AI assistant for your TradingView Desktop charts. Connects
+  Claude Code to your locally running TradingView app via Chrome DevTools
+  Protocol..."* Explicit warnings: *"This tool is not affiliated with,
+  endorsed by, or associated with TradingView Inc."*; *"Requires a valid
+  TradingView subscription. This tool does not bypass or circumvent any
+  TradingView paywall or access control."*; and — directly relevant to
+  `docs/tradingview-mcp-recovery.md`'s fragility framing — *"This tool
+  accesses undocumented internal TradingView APIs via the Electron debug
+  interface. These can change or break without notice in any TradingView
+  update. Pin your TradingView Desktop version if stability matters to
+  you."*
+- chromedevtools.github.io/devtools-protocol/: *"The Chrome DevTools
+  Protocol allows for tools to instrument, inspect, debug and profile
+  Chromium, Chrome and other Blink-based browsers."* Three documented
+  protocol variants: tip-of-tree (*"changes frequently and can break at
+  any time... no backwards compatibility support guaranteed"*),
+  v8-inspector (Node.js debugging), and *"stable 1.3 protocol... tagged at
+  Chrome 64... a smaller subset of the complete protocol."* The page does
+  not state which variant TradingView Desktop's Electron build exposes at
+  `--remote-debugging-port=9222` — an open question this URL alone does
+  not answer.
 
 ## Chainlit (`claudia/app.py`)
 
@@ -142,3 +232,41 @@ compliance note citing this same source.
 | `html2text` | `claudia/agent.py` (HTML → Markdown for web fetch) | https://github.com/Alir3z4/html2text |
 | `watchdog` | `claudia/context_loader.py` (file system event monitoring) | https://watchdog.readthedocs.io/en/stable/ |
 | `mcp` | `claudia/tradingview.py` (MCP stdio client for tradingview-mcp sidecar) | https://github.com/modelcontextprotocol/python-sdk |
+
+**Scraped 2026-07-21 (Firecrawl keyless tier).** The two GitHub-repo
+entries (`html2text`, `mcp`) were verified against their actual README
+and repo metadata, not a "documentation site." Verbatim findings:
+
+- `requests`: `docs.python-requests.org` redirects to
+  `requests.readthedocs.io`; current release *"Release v2.34.2"*;
+  *"Requests officially supports Python 3.10+, and runs great on PyPy."*
+- `html2text`: GitHub repo (`Alir3z4/html2text`), 2.2k stars / 297 forks /
+  29 tags. *"html2text is a Python script that converts a page of HTML
+  into clean, easy-to-read plain ASCII text. Better yet, that ASCII also
+  happens to be valid Markdown."* The README's own license line:
+  *"Originally written by Aaron Swartz. This code is distributed under
+  the GPLv3."* — GPLv3, not a permissive license; not otherwise verified
+  here whether that's a problem for claudia_ui (no stated dependency
+  license policy found in this doc).
+- `watchdog`: the "stable" ReadTheDocs alias this doc cites
+  (`/en/stable/`) is headed **"watchdog 0.9.0 documentation"** verbatim
+  in the scraped page — this looks stale relative to `watchdog`'s actual
+  current PyPI releases (`watchdog` has shipped well past 0.9.0 for
+  years). Flagged rather than assumed current, since this project's own
+  convention is not to state library versions without a scraped source,
+  and the scraped source itself looks out of date for what a "stable"
+  alias implies — worth checking `pip show watchdog` in the venv directly
+  rather than trusting this URL for version claims. Content itself:
+  *"Python API library and shell utilities to monitor file system
+  events... A cross-platform API."*
+- `mcp`: GitHub repo (`modelcontextprotocol/python-sdk`), 23.7k stars /
+  3.7k forks / 70 tags, MIT-licensed. Load-bearing find — a production
+  warning on the scraped README: *"This README documents v2 of the MCP
+  Python SDK — a pre-release (alpha/beta) line under active development.
+  Do not use v2 in production... v1.x is the only stable release line and
+  remains recommended for production... If your package depends on
+  `mcp`, add a `<2` upper bound to your version constraint (for example
+  `mcp>=1.27,<2`) before the stable release lands."* `claudia_ui`'s
+  `pyproject.toml` pin for `mcp` was not checked as part of this citation
+  pass — worth a follow-up to confirm it already excludes `2.0.0aN`/
+  `2.0.0bN` pre-releases.
