@@ -16,13 +16,12 @@ import shutil
 import sqlite3
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-
 from ibkr_core_mcp.config import Config
 from ibkr_core_mcp.gdrive_auth import load_or_refresh_credentials
 
@@ -113,7 +112,7 @@ class GDriveSync:
         return self._resolved_db_folder
 
     @staticmethod
-    def _download_chunked(downloader: "MediaIoBaseDownload") -> None:
+    def _download_chunked(downloader: MediaIoBaseDownload) -> None:
         done = False
         while not done:
             _, done = downloader.next_chunk()
@@ -190,7 +189,7 @@ class GDriveSync:
                 wal = Path(str(local_path) + "-wal")
                 if wal.exists():
                     local_ts = max(local_ts, wal.stat().st_mtime)
-                local_mtime = datetime.fromtimestamp(local_ts, tz=timezone.utc)
+                local_mtime = datetime.fromtimestamp(local_ts, tz=UTC)
                 if local_mtime > drive_mtime:
                     log.warning(
                         "claudia.db on Drive (%s) is older than local (%s) — keeping "
@@ -330,7 +329,7 @@ class GDriveSync:
             meta = svc.files().get(fileId=file_id, fields="size,modifiedTime").execute()
             if local_path is not None and local_path.exists():
                 drive_mtime = datetime.fromisoformat(meta["modifiedTime"])
-                local_mtime = datetime.fromtimestamp(local_path.stat().st_mtime, tz=timezone.utc)
+                local_mtime = datetime.fromtimestamp(local_path.stat().st_mtime, tz=UTC)
                 # >= (tie-inclusive), unlike download_db's strict >: context.md/principles.md
                 # are hand-edited at human cadence, so an exact mtime tie means "no local
                 # edit since last sync" far more often than a real race — skip is the safer

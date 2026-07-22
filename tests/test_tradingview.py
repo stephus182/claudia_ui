@@ -1,6 +1,5 @@
 """Unit tests for claudia/tradingview.py — binary discovery, env, tool filtering, CDP."""
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,7 +10,6 @@ from claudia.tradingview import (
     _find_tv_mcp_bin,
     check_cdp_running,
 )
-
 
 # ── _find_tv_mcp_bin — TRADINGVIEW_MCP_PATH env var ──────────────────────────
 

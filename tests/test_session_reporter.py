@@ -3,7 +3,7 @@
 import pytest
 
 from claudia.conversation_store import ConversationStore
-from claudia.session_reporter import generate_session_report, _TOOL_LABELS
+from claudia.session_reporter import _TOOL_LABELS, generate_session_report
 
 
 @pytest.fixture

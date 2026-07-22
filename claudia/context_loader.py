@@ -15,12 +15,12 @@ Source (watchdog Observer): https://watchdog.readthedocs.io/en/stable/api.html
 
 import hashlib
 import logging
+import threading
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-import threading
-from typing import Callable
 
-from watchdog.events import FileSystemEventHandler, FileSystemEvent
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver, ObservedWatch
 

@@ -19,16 +19,15 @@ import logging
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 log = logging.getLogger(__name__)
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class ConversationStore:
@@ -124,9 +123,8 @@ class ConversationStore:
                 END;
             """)
         # Migration for existing DBs that predate the doc_version column
-        with self._conn() as conn:
-            with suppress(sqlite3.OperationalError):
-                conn.execute("ALTER TABLE sessions ADD COLUMN doc_version TEXT")
+        with self._conn() as conn, suppress(sqlite3.OperationalError):
+            conn.execute("ALTER TABLE sessions ADD COLUMN doc_version TEXT")
         # Migration: drop dead schema (2026-07-03 review finding M2 — no caller
         # ever existed for relationships or decisions FTS search).
         # Triggers first, or decisions writes would reference a dropped table.

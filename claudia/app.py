@@ -25,13 +25,12 @@ import base64
 import contextvars
 import logging
 import os
+from datetime import UTC
 from pathlib import Path
 
 import chainlit as cl
 from chainlit.server import app as _server_app
 from dotenv import load_dotenv
-from starlette.responses import JSONResponse, Response
-
 from ibkr_core_mcp import (
     BrowserCookieAuth,
     ClaudeToolkit,
@@ -40,16 +39,16 @@ from ibkr_core_mcp import (
     IBKRClient,
     SQLiteStore,
 )
-
 from ibkr_core_mcp.gateway import GatewayManager
+from starlette.responses import JSONResponse, Response
 
 from claudia.agent import ClaudIAAgent
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
+from claudia.execution_listener import ExecutionListener, get_live_pnl_text
 from claudia.gdrive_sync import GDriveSync
 from claudia.status import ConnectivityChecker
-from claudia.execution_listener import ExecutionListener, get_live_pnl_text
-from claudia.tradingview import TradingViewBridge, launch_tradingview, check_cdp_running
+from claudia.tradingview import TradingViewBridge, check_cdp_running, launch_tradingview
 
 log = logging.getLogger(__name__)
 
@@ -528,7 +527,7 @@ async def on_chat_start():
     _skip_reason = ""
     if _flex_configured and not ibkr_offline:
         try:
-            from datetime import datetime, timezone as _tz
+            from datetime import datetime
             _cov = await cl.make_async(toolkit._store.get_trade_date_coverage)()
             if not _cov.get("stale"):
                 # newest == last trading day — fully current per NYSE calendar
@@ -539,8 +538,8 @@ async def on_chat_start():
                     n=1, event="flex_sync"
                 )
                 if last_attempts:
-                    last_ts = datetime.fromisoformat(last_attempts[0]["ts"]).replace(tzinfo=_tz.utc)
-                    hours_since = (datetime.now(_tz.utc) - last_ts).total_seconds() / 3600
+                    last_ts = datetime.fromisoformat(last_attempts[0]["ts"]).replace(tzinfo=UTC)
+                    hours_since = (datetime.now(UTC) - last_ts).total_seconds() / 3600
                     if hours_since < 4:
                         _skip_reason = f"already attempted {hours_since:.1f}h ago (newest: {_cov['newest']})"
                     else:

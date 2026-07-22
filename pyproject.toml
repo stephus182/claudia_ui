@@ -42,6 +42,13 @@ asyncio_mode = "auto"
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RUF", "FA"]
+ignore = [
+    "E501",  # line-too-long — ~160 pre-existing lines exceed 100 chars, mostly
+             # docstrings/URLs/system-prompt text; revisit as a dedicated pass if prioritized
+]
+
 [tool.mypy]
 python_version = "3.11"
 files = ["claudia", "tests"]

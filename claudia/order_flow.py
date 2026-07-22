@@ -135,7 +135,7 @@ async def render_order_proposal(proposal: dict, session_id: str | None = None) -
 async def execute_staged_order(
     action: cl.Action,
     session_id: str | None = None,
-    store: "ConversationStore | None" = None,
+    store: ConversationStore | None = None,
 ) -> None:
     """
     Execute the staged order by calling IBKRClient.place_order_and_confirm(), which
@@ -176,8 +176,8 @@ async def execute_staged_order(
     ).send()
 
     try:
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
         from dotenv import load_dotenv
+        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
         load_dotenv(override=False)
         config = Config.from_env()
         ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))
@@ -401,7 +401,7 @@ async def render_cancel_proposal(proposal: dict, session_id: str | None = None) 
 async def execute_cancel_order(
     action: cl.Action,
     session_id: str | None = None,
-    store: "ConversationStore | None" = None,
+    store: ConversationStore | None = None,
 ) -> None:
     """
     Execute a staged cancel by calling IBKRClient.cancel_order() directly — no reply
@@ -449,8 +449,8 @@ async def execute_cancel_order(
     ).send()
 
     try:
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
         from dotenv import load_dotenv
+        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
         load_dotenv(override=False)
         config = Config.from_env()
         ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))
@@ -544,7 +544,7 @@ async def render_modify_proposal(proposal: dict, session_id: str | None = None) 
 async def execute_modify_order(
     action: cl.Action,
     session_id: str | None = None,
-    store: "ConversationStore | None" = None,
+    store: ConversationStore | None = None,
 ) -> None:
     """
     Execute a staged modify by calling IBKRClient.modify_order_and_confirm(), which
@@ -610,8 +610,8 @@ async def execute_modify_order(
     ).send()
 
     try:
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
         from dotenv import load_dotenv
+        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
         load_dotenv(override=False)
         config = Config.from_env()
         ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))

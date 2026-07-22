@@ -32,10 +32,11 @@ from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
 if TYPE_CHECKING:
-    from claudia.conversation_store import ConversationStore
-    from claudia.context_loader import ContextLoader
-    from claudia.tradingview import TradingViewBridge
     from ibkr_core_mcp import ClaudeToolkit
+
+    from claudia.context_loader import ContextLoader
+    from claudia.conversation_store import ConversationStore
+    from claudia.tradingview import TradingViewBridge
 
 log = logging.getLogger(__name__)
 
@@ -328,7 +329,7 @@ def _with_cache_marker(tools: list[dict]) -> list[dict]:
     return marked
 
 
-def _build_version_note(doc_version: str | None, store: "ConversationStore | None") -> str:
+def _build_version_note(doc_version: str | None, store: ConversationStore | None) -> str:
     """Return the active-version header line for the system prompt, or "" if no version."""
     if not doc_version:
         return ""
@@ -345,7 +346,7 @@ def _build_version_note(doc_version: str | None, store: "ConversationStore | Non
 def _build_system_prompt(
     context_prompt: str,
     doc_version: str | None = None,
-    store: "ConversationStore | None" = None,
+    store: ConversationStore | None = None,
     trade_context: str | None = None,
 ) -> str:
     """Assemble the full system prompt: version note + context + trade context + safety block.
@@ -451,13 +452,13 @@ class ClaudIAAgent:
 
     def __init__(
         self,
-        toolkit: "ClaudeToolkit",
-        store: "ConversationStore",
-        context_loader: "ContextLoader",
+        toolkit: ClaudeToolkit,
+        store: ConversationStore,
+        context_loader: ContextLoader,
         session_id: str,
         model: str = "claude-opus-4-8",
         extra_tools: list[dict] | None = None,
-        tv_bridge: "TradingViewBridge | None" = None,
+        tv_bridge: TradingViewBridge | None = None,
         doc_version: str | None = None,
         trade_context: str | None = None,
     ) -> None:
@@ -482,7 +483,7 @@ class ClaudIAAgent:
         self._system_blocks_cache: list[dict] | None = None
         self._system_reload_seen: int = -1
 
-    def set_tv_bridge(self, bridge: "TradingViewBridge", tools: list[dict]) -> None:
+    def set_tv_bridge(self, bridge: TradingViewBridge, tools: list[dict]) -> None:
         """Update TradingView connection mid-session (called by on_launch_tradingview)."""
         self._tv_bridge = bridge
         self._extra_tools = tools
@@ -786,8 +787,9 @@ class ClaudIAAgent:
     _MAX_REDIRECTS = 5
 
     def _fetch_web_page(self, inputs: dict) -> str:
-        import html2text
         import urllib.parse
+
+        import html2text
         import requests as _req
         url = inputs.get("url", "").strip()
         if not url:
