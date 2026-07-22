@@ -367,11 +367,14 @@ async def on_chat_start():
     _execution_listener.start()
 
     # Build agent for this session
+    from claudia.message_sink import ChainlitMessageSink
+    sink = ChainlitMessageSink(session_id=session_id)
     agent = ClaudIAAgent(
         toolkit=toolkit,
         store=store,
         context_loader=loader,
         session_id=session_id,
+        sink=sink,
         model=_MODEL,
         extra_tools=tv_tools,
         tv_bridge=_tv_bridge,
