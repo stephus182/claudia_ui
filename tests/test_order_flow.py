@@ -1,21 +1,20 @@
 """Tests for order_flow — order summary formatting and execute_staged_order."""
 
 # ── Imports ──────────────────────────────────────────────────────────────────
-import asyncio
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from claudia.order_flow import (
-    _format_order_summary,
     _format_cancel_summary,
     _format_modify_summary,
+    _format_order_summary,
     _resolve_account_id,
-    execute_staged_order,
     execute_cancel_order,
     execute_modify_order,
+    execute_staged_order,
 )
-
 
 # ── _resolve_account_id ──────────────────────────────────────────────────────
 

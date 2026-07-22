@@ -362,9 +362,8 @@ async def test_run_with_retry_logs_traceback_on_error(caplog):
 
     with patch.object(listener, "_run_once", side_effect=fail_then_cancel), \
          patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()), \
-         caplog.at_level(logging.WARNING):
-        with pytest.raises(asyncio.CancelledError):
-            await listener._run_with_retry()
+         caplog.at_level(logging.WARNING), pytest.raises(asyncio.CancelledError):
+        await listener._run_with_retry()
 
     assert any(r.exc_info is not None for r in caplog.records)
 
@@ -463,6 +462,7 @@ def test_format_pnl_snapshot_partial_fields_format_as_na():
 
 def test_get_live_pnl_text_uses_cache_when_populated():
     from unittest.mock import MagicMock
+
     from claudia.execution_listener import get_live_pnl_text
     toolkit = MagicMock()
     toolkit._store.get_latest_pnl.return_value = {
@@ -476,6 +476,7 @@ def test_get_live_pnl_text_uses_cache_when_populated():
 
 def test_get_live_pnl_text_falls_back_to_ledger_when_cache_empty():
     from unittest.mock import MagicMock
+
     from claudia.execution_listener import get_live_pnl_text
     toolkit = MagicMock()
     toolkit._store.get_latest_pnl.return_value = None

@@ -150,7 +150,7 @@ def _decisions_section(decisions: list[dict]) -> list[str]:
 
 def generate_session_report(
     session_id: str,
-    store: "ConversationStore",
+    store: ConversationStore,
     connectivity: dict[str, str] | None = None,
     doc_version: str | None = None,
 ) -> Path | None:

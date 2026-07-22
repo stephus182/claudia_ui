@@ -4,14 +4,12 @@ Each test corresponds to one resolved finding from either audit.
 These tests MUST stay green — a failure here means a security control was regressed.
 """
 
-import os
 import sqlite3
 import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── Fix #1 + #3 — env allowlist: secrets not in subprocess, CDP port present ──
 
@@ -275,6 +273,7 @@ async def test_start_logs_selected_binary_path(tmp_path, monkeypatch, caplog):
 def _make_agent():
     """Build a minimal ClaudIAAgent for testing _fetch_web_page."""
     from unittest.mock import MagicMock
+
     from claudia.agent import ClaudIAAgent
     toolkit = MagicMock()
     toolkit.tools = []
@@ -308,7 +307,6 @@ def test_fetch_web_page_ssrf_guard_blocks_internal(url, expected_fragment):
 
 def test_fetch_web_page_ssrf_guard_allows_public(monkeypatch):
     """SSRF guard must pass through public https:// URLs to the actual fetch."""
-    import requests
     from unittest.mock import MagicMock, patch
     agent = _make_agent()
 
@@ -334,7 +332,6 @@ def test_fetch_web_page_ssrf_guard_blocks_decimal_ip(monkeypatch):
     because the host is "2130706433", not "127.0.0.1". The resolve-then-check step does.
     Fix ported from ibkr_core_mcp v1.0 pre-release security audit (finding 1, Medium).
     """
-    import socket
     from unittest.mock import patch
 
     agent = _make_agent()

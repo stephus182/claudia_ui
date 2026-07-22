@@ -38,10 +38,9 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import requests
-
 from ibkr_core_mcp.auth import BrowserCookieAuth
 from ibkr_core_mcp.streaming import IBKRWebSocket, PnLUpdate, TradeExecution
 
@@ -128,7 +127,7 @@ class ExecutionListener:
       await listener.stop()  — cancel the task cleanly
     """
 
-    def __init__(self, gateway_url: str, store: "SQLiteStore") -> None:
+    def __init__(self, gateway_url: str, store: SQLiteStore) -> None:
         self._gateway_url = gateway_url
         self._store = store
         self._task: asyncio.Task | None = None
@@ -256,7 +255,7 @@ class ExecutionListener:
                     return saw_extra_execution
                 try:
                     item = await asyncio.wait_for(_next_item(queue), remaining)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     log.warning("ExecutionListener: timed out waiting for P&L tick after execution")
                     return saw_extra_execution
                 if isinstance(item, PnLUpdate):

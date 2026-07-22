@@ -13,7 +13,7 @@ import logging
 import socket
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import requests
 
@@ -59,8 +59,8 @@ class ConnectivityChecker:
         self,
         gateway_url: str,
         gdrive_token_file: Path,
-        tv_bridge: Optional["TradingViewBridge"] = None,
-        gdrive_sync: Optional["GDriveSync"] = None,
+        tv_bridge: TradingViewBridge | None = None,
+        gdrive_sync: GDriveSync | None = None,
     ) -> None:
         """Initialise the checker. Call start() to begin polling.
 
@@ -166,7 +166,7 @@ class ConnectivityChecker:
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
 
-    def set_tv_bridge(self, bridge: "TradingViewBridge") -> None:
+    def set_tv_bridge(self, bridge: TradingViewBridge) -> None:
         """Update the TradingView bridge reference after checker construction."""
         self._tv_bridge = bridge
 

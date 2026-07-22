@@ -3,8 +3,7 @@
 import json
 from typing import Any
 
-
-from claudia.agent import _strip_order_proposal, _build_system_prompt
+from claudia.agent import _build_system_prompt, _strip_order_proposal
 
 
 def test_strip_order_proposal_found():
@@ -81,10 +80,10 @@ def test_order_proposal_all_order_types():
 # ── _make_block_stripper / cancel & modify proposal stripping ───────────────
 
 from claudia.agent import (
+    _LOCAL_TOOL_NAMES,
     _make_block_stripper,
     _strip_order_cancel_proposal,
     _strip_order_modify_proposal,
-    _LOCAL_TOOL_NAMES,
 )
 
 
@@ -492,7 +491,7 @@ def test_all_tools_includes_toolkit_extra_and_local():
 
 # ── Prompt caching: _with_cache_marker (tools breakpoint) ────────────────────
 
-from claudia.agent import _with_cache_marker, _LOCAL_TOOLS
+from claudia.agent import _LOCAL_TOOLS, _with_cache_marker
 
 
 def test_with_cache_marker_marks_only_last_tool():
