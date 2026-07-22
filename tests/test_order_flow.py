@@ -391,7 +391,7 @@ async def test_execute_staged_order_contract_not_found():
 @pytest.mark.asyncio
 async def test_execute_staged_order_success_sends_success_message():
     """Happy path → 'staged successfully' in chat."""
-    ibkr_mod, client = _make_ibkr_mock()
+    ibkr_mod, _client = _make_ibkr_mock()
     action = _make_action()
     mock_cl = await _run(action, ibkr_mod)
     assert any("staged successfully" in c for c in _sent_contents(mock_cl))
@@ -400,7 +400,7 @@ async def test_execute_staged_order_success_sends_success_message():
 @pytest.mark.asyncio
 async def test_execute_staged_order_success_logs_decision():
     """Happy path → store.add_decision called with decision_type='trade_staged'."""
-    ibkr_mod, client = _make_ibkr_mock()
+    ibkr_mod, _client = _make_ibkr_mock()
     store = MagicMock()
     action = _make_action()
     await _run(action, ibkr_mod, store=store, session_id="s42")
@@ -459,7 +459,7 @@ async def test_execute_staged_order_generic_error():
 @pytest.mark.asyncio
 async def test_execute_staged_order_remove_called_on_success():
     """action.remove() called after successful staging."""
-    ibkr_mod, client = _make_ibkr_mock()
+    ibkr_mod, _client = _make_ibkr_mock()
     action = _make_action()
     await _run(action, ibkr_mod)
     action.remove.assert_called_once()
@@ -714,7 +714,7 @@ async def test_execute_cancel_order_missing_order_id_sends_error():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_success_sends_success_message():
-    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     action = _make_cancel_action()
     mock_cl = await _run_cancel(action, ibkr_mod)
     assert any("cancelled" in c.lower() for c in _sent_contents(mock_cl))
@@ -731,7 +731,7 @@ async def test_execute_cancel_order_calls_client_with_account_and_order_id():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_success_logs_decision():
-    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     store = MagicMock()
     action = _make_cancel_action()
     await _run_cancel(action, ibkr_mod, store=store, session_id="s42")
@@ -771,7 +771,7 @@ async def test_execute_cancel_order_generic_error():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_remove_called_on_success():
-    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     action = _make_cancel_action()
     await _run_cancel(action, ibkr_mod)
     action.remove.assert_called_once()
@@ -840,7 +840,7 @@ async def test_execute_modify_order_missing_conid_sends_error_directing_to_get_o
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_success_sends_success_message():
-    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action()
     mock_cl = await _run_modify(action, ibkr_mod)
     assert any("modified" in c.lower() for c in _sent_contents(mock_cl))
@@ -848,7 +848,7 @@ async def test_execute_modify_order_success_sends_success_message():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_success_logs_decision():
-    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     store = MagicMock()
     action = _make_modify_action()
     await _run_modify(action, ibkr_mod, store=store, session_id="s42")
@@ -982,7 +982,7 @@ async def test_execute_modify_order_generic_error():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_remove_called_on_success():
-    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action()
     await _run_modify(action, ibkr_mod)
     action.remove.assert_called_once()

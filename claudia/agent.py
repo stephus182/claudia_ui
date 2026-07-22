@@ -441,7 +441,7 @@ def _with_history_cache_marker(messages: list) -> list:
     # plain-dict-request-body pattern as the SDK call in _run_turn) — not a str-only dict.
     blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}  # type: ignore[dict-item]
     last["content"] = blocks
-    return messages[:-1] + [last]
+    return [*messages[:-1], last]
 
 
 class ClaudIAAgent:

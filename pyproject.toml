@@ -49,6 +49,13 @@ ignore = [
              # docstrings/URLs/system-prompt text; revisit as a dedicated pass if prioritized
 ]
 
+# RUF002 (ambiguous-unicode in docstrings) can't take an inline noqa — the comment would
+# become literal docstring text. Both hits are correct typography (en-dash for a numeric
+# range, × for a count), not encoding mistakes.
+[tool.ruff.lint.per-file-ignores]
+"claudia/order_flow.py" = ["RUF002"]
+"tests/test_session_reporter.py" = ["RUF002"]
+
 [tool.mypy]
 python_version = "3.11"
 files = ["claudia", "tests"]

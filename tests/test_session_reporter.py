@@ -116,7 +116,7 @@ def test_report_shows_tool_count_when_called_multiple_times(store, tmp_path, mon
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_id, store)
     assert path is not None
-    assert "×3" in path.read_text()
+    assert "×3" in path.read_text()  # noqa: RUF001 — matches _tool_section's output format
 
 
 def test_report_no_tools_shows_placeholder(store, tmp_path, monkeypatch):

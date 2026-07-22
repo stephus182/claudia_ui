@@ -1,5 +1,6 @@
 """Tests for ConversationStore — SQLite schema, FTS5 search, CRUD."""
 
+import sqlite3
 
 import pytest
 
@@ -202,8 +203,6 @@ def test_get_decisions_for_symbol_includes_doc_version(store):
 
 
 # ── M2: dead schema removed (relationships, decisions_fts) ───────────────────
-
-import sqlite3
 
 # Pre-M2 schema fragment — what existing claudia.db files contain on disk.
 _OLD_DEAD_DDL = """

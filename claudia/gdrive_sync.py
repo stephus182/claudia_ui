@@ -199,7 +199,10 @@ class GDriveSync:
                     return False
 
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_fd = tempfile.NamedTemporaryFile(
+            # delete=False + explicit close() below is deliberate: the path is reused after
+            # closing (sqlite3.connect, then shutil.move) — a `with` block would keep the fd
+            # open across that. try/except below unlinks it on any failure.
+            tmp_fd = tempfile.NamedTemporaryFile(  # noqa: SIM115
                 dir=local_path.parent, suffix=".db.tmp", delete=False
             )
             tmp_path = Path(tmp_fd.name)
@@ -269,7 +272,9 @@ class GDriveSync:
             # snapshot (main file + committed WAL pages) even while other connections
             # are active — upload that snapshot, never the live file.
             # Source: https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup
-            tmp_fd = tempfile.NamedTemporaryFile(
+            # delete=False + explicit close() below is deliberate — same reused-path pattern
+            # as download_db(); the outer finally unlinks the snapshot unconditionally.
+            tmp_fd = tempfile.NamedTemporaryFile(  # noqa: SIM115
                 dir=local_path.parent, suffix=".upload.tmp", delete=False
             )
             tmp_fd.close()
