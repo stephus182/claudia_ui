@@ -4,7 +4,9 @@ import json
 import logging
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from claudia.agent import (
     _LOCAL_TOOL_NAMES,
@@ -236,6 +238,7 @@ def _make_agent():
             store=store,
             context_loader=loader,
             session_id="test-session",
+            sink=MagicMock(),
         )
 
 
@@ -573,6 +576,7 @@ def _make_agent_with_loader(loader):
             store=MagicMock(),  # unused by these tests — no doc_version passed
             context_loader=loader,
             session_id="test-session",
+            sink=MagicMock(),
         )
 
 
@@ -716,3 +720,116 @@ def test_fetch_web_page_blocks_redirect_loop():
     with patch("requests.get", side_effect=[hop] * 10):
         result = agent._fetch_web_page({"url": "https://example.com/loop"})
     assert "Blocked" in result and "redirect" in result.lower()
+
+
+# ── handle_message() → MessageSink (Task 1.3) ───────────────────────────────
+
+class _FakeStream:
+    """Fakes AsyncAnthropic().messages.stream()'s async-context-manager + async-iterator
+    shape, replaying a canned event sequence. Mirrors the SimpleNamespace-based fake-event
+    pattern already used by test_log_cache_usage_* above for the same SDK event shapes."""
+
+    def __init__(self, events):
+        self._events = events
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def __aiter__(self):
+        for event in self._events:
+            yield event
+
+
+def _text_response_events(text: str, stop_reason: str = "end_turn"):
+    return [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="text_delta", text=text),
+        ),
+        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason=stop_reason)),
+    ]
+
+
+def _make_agent_with_sink(sink=None):
+    """Like _make_agent(), but returns (agent, sink) — sink defaults to a fresh MagicMock
+    with async methods pre-wired as AsyncMock so callers can assert on them."""
+    sink = sink or MagicMock()
+    sink.send_message = AsyncMock()
+    sink.send_max_tokens_warning = AsyncMock()
+    sink.send_order_proposal = AsyncMock()
+    sink.send_cancel_proposal = AsyncMock()
+    sink.send_modify_proposal = AsyncMock()
+    toolkit = MagicMock()
+    toolkit.tools = []
+    store = MagicMock()
+    store.list_doc_versions.return_value = []
+    store.get_doc_version.return_value = None
+    store.get_history.return_value = []
+    loader = MagicMock()
+    loader.reload_count = 0
+    loader.load_system_prompt.return_value = "# Role\nStub.\n\n# Principles\nStub."
+    with patch("claudia.agent.AsyncAnthropic"):
+        agent = ClaudIAAgent(
+            toolkit=toolkit, store=store, context_loader=loader,
+            session_id="test-session", sink=sink,
+        )
+    return agent, sink
+
+
+@pytest.mark.asyncio
+async def test_handle_message_sends_final_response_via_sink():
+    agent, sink = _make_agent_with_sink()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events("Hello there."))
+    )
+    await agent.handle_message("Hi")
+    sink.send_message.assert_awaited_once_with("Hello there.")
+
+
+@pytest.mark.asyncio
+async def test_handle_message_max_tokens_calls_sink_warning():
+    agent, sink = _make_agent_with_sink()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events("Truncated...", stop_reason="max_tokens"))
+    )
+    await agent.handle_message("Hi")
+    sink.send_max_tokens_warning.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_message_tool_call_uses_sink_tool_step():
+    agent, sink = _make_agent_with_sink()
+    tool_use_events = [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
+        SimpleNamespace(
+            type="content_block_start",
+            content_block=SimpleNamespace(type="tool_use", id="t1", name="get_positions"),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="input_json_delta", partial_json="{}"),
+        ),
+        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="tool_use")),
+    ]
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(tool_use_events),
+            _FakeStream(_text_response_events("You hold 100 AAPL.")),
+        ]
+    )
+    agent._toolkit.execute = MagicMock(return_value=("100 AAPL", None))
+    step_cm = MagicMock()
+    step_handle = MagicMock(input="", output="")
+    step_cm.__aenter__ = AsyncMock(return_value=step_handle)
+    step_cm.__aexit__ = AsyncMock(return_value=False)
+    sink.tool_step = MagicMock(return_value=step_cm)
+
+    await agent.handle_message("What are my positions?")
+
+    sink.tool_step.assert_called_once_with("get_positions")
+    assert step_handle.output == "100 AAPL"
+    sink.send_message.assert_awaited_once_with("You hold 100 AAPL.")

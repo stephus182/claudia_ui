@@ -281,7 +281,10 @@ def _make_agent():
     store.list_doc_versions.return_value = []
     loader = MagicMock()
     loader.load_system_prompt.return_value = ""
-    return ClaudIAAgent(toolkit=toolkit, store=store, context_loader=loader, session_id="test")
+    return ClaudIAAgent(
+        toolkit=toolkit, store=store, context_loader=loader, session_id="test",
+        sink=MagicMock(),
+    )
 
 
 @pytest.mark.parametrize("url,expected_fragment", [
