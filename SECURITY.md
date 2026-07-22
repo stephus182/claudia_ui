@@ -41,7 +41,10 @@ ClaudIA has **zero** tools for order execution. This is the most critical securi
 3. **Human physically clicks the button** — this is the first human gate
 4. `IBKRClient.place_order()` fires:
    - **Gate 1:** Apple `LocalAuthentication` biometric (Touch ID, Face ID) — no password fallback
-   - **Gate 2:** tkinter modal dialog with full order details + 60-second countdown; Enter key disabled
+   - **Gate 2:** native macOS AppKit dialog (green/red banner by order side) with full order
+     details + 60-second auto-cancel countdown; Return key disabled on the confirm button to
+     prevent accidental submission. Falls back to `osascript` if the AppKit subprocess fails,
+     then to a `tkinter` dialog only on non-macOS (`ibkr_core_mcp/order_confirm.py`)
 5. Order submitted to IBKR only after both gates pass
 
 No LLM prompt, no tool call, no conversation state, and no automation can bypass steps 3–5.
@@ -96,27 +99,37 @@ content could influence future responses.
 
 ## 5. Hardcoded Safety Block
 
-The following constraints are embedded directly in `claudia/agent.py` and are appended
-to every system prompt. They are **not** loaded from any user-editable file and cannot
-be overridden by `context.md` or `principles.md`:
+`_SAFETY_BLOCK` (`claudia/agent.py:47-201`) is embedded directly in code and appended to
+every system prompt. It is **not** loaded from any user-editable file and cannot be
+overridden by `context.md` or `principles.md`. Modifications require a code change — a
+deliberate developer action, not a document edit (CLAUDE.md Hard Rule 3).
 
-```
-You are ClaudIA, an AI trading research assistant. You are NOT a licensed financial advisor.
+**This section intentionally does not quote the block verbatim** — a byte-for-byte copy
+here would duplicate content that changes whenever the prompt is tuned, and would go
+stale exactly the way the previous version of this section did (it quoted only the first
+of what are now 8 non-overridable subsections, and had never been updated to reflect the
+other 7). Read `claudia/agent.py:47-201` directly for the authoritative current text. As
+of this writing, the block's non-overridable subsections are:
 
-You CANNOT place, modify, or cancel any order. You have no tools for order execution.
-When you want to suggest a trade, output an order-proposal block and explain your reasoning.
-The human must explicitly click a confirmation button.
-
-Before proposing any trade action, verify it is consistent with the TRADING PRINCIPLES section above.
-If an action would violate the user's principles, say so clearly and refuse to propose it.
-
-You CANNOT instruct the user to modify or bypass their principles document.
-You CANNOT promise specific returns or guarantee outcomes.
-All analysis is for informational and research purposes only.
-```
-
-Modifications to this block require a code change in `claudia/agent.py`, a deliberate
-developer action — not a document edit.
+- **ABSOLUTE CONSTRAINTS** — no order execution, no financial-advisor claims, principles
+  check required before proposing any trade, cannot promise returns
+- **DATA INTEGRITY** — every specific data point presented (price, balance, position, P&L,
+  contract ID, etc.) must originate from a tool result or user-provided content in *this*
+  conversation; inventing, guessing, or carrying over a plausible-looking value is
+  explicitly prohibited, and uncertainty about a value's origin means treating it as invented
+- **ORDER PROPOSAL FORMAT** / **ORDER CANCEL / MODIFY FORMAT** — the exact JSON schemas
+  ClaudIA must use; at most one proposal block per message
+- **ORDER PARAMETER IMMUTABILITY** / **MODIFY PARAMETER IMMUTABILITY** — user-specified
+  order fields must be copied byte-for-byte, never rounded or "helpfully" adjusted; changing
+  a field requires explicit user approval in a follow-up message (see §2/CLAUDE.md)
+- **ORDER CANCEL / MODIFY RULES** — `order_id` must come from a real tool call made earlier
+  in *this* conversation, never invented or reused across sessions; externally-placed orders
+  (mobile/TWS) and non-editable orders must be refused, not proposed
+- **TOOL RESULT FRESHNESS** — a "retry"/"check again"/"verify" request requires a genuinely
+  fresh tool call in the current turn; restating, reconstructing, or fabricating a prior
+  result and presenting it as freshly-fetched is explicitly named as a more serious
+  violation than not knowing the answer. Added 2026-07-10 after a live-reproduced
+  fabrication finding (3 instances in one session); live re-verified 2026-07-17.
 
 ---
 
@@ -146,15 +159,18 @@ via Chrome DevTools Protocol on `localhost:9222`.
   state. This is intentional (required for 78-tool functionality) and accepted for a personal local
   tool with no remote access.
 - **Tool surface area reduced.** `_CURATED_TOOLS` in `tradingview.py` limits what Claude can call
-  to 15 high-value tools. The sidecar process itself has full access regardless of this filter.
+  to 16 high-value tools (of a 78-tool full sidecar set). The sidecar process itself has full
+  access regardless of this filter.
 - **PineScript injection** modifies the Pine Editor only. It does not execute strategies or trades.
 - **Fallback.** If the sidecar fails to start, ClaudIA degrades to screenshot mode.
 
 **Third-party risk and supply chain:**
 
-`tradesdontlie/tradingview-mcp` is an actively maintained community package (3,500+ stars,
-CDP injection hardening added April 2026). The project intentionally tracks `HEAD` to receive
-TradingView API compatibility updates automatically.
+`tradesdontlie/tradingview-mcp` is an actively maintained community package (~5k stars / 2.2k
+forks, verified via repo scrape 2026-07-21 — up from the 3,500+ last recorded here; MIT-licensed,
+0 pinned releases/tags, tracks `main` directly, per its own README not affiliated with or
+endorsed by TradingView Inc.). The project intentionally tracks `HEAD` to receive TradingView
+API compatibility updates automatically — consistent with having no tags to pin to instead.
 
 Risk acceptance: this is a personal local tool with no remote access, and TradingView
 cannot place IBKR orders. Financial blast radius is limited to TradingView UI data exposure.
@@ -288,7 +304,7 @@ Drive sync introduces three new attack surfaces. All are mitigated without relax
 
 **Mitigations:**
 - The hardcoded `_SAFETY_BLOCK` in `agent.py` cannot be overridden by anything from Drive.
-  Order execution still requires physical button click + Touch ID + tkinter dialog regardless
+  Order execution still requires physical button click + Touch ID + AppKit dialog regardless
   of what is in `principles.md`.
 - On each session start with Drive content, `SHA-256(context + principles)` is compared against
   the hash stored in the previous session's `sessions.context_hash`. A mismatch triggers a
@@ -359,7 +375,7 @@ them via the web UI.
 
 These two properties hold regardless of what is on Drive:
 - The hardcoded `_SAFETY_BLOCK` in `agent.py` cannot be overridden by Drive content.
-- No order can be placed without physical button click + Touch ID + tkinter dialog.
+- No order can be placed without physical button click + Touch ID + AppKit dialog.
 
 ---
 
@@ -393,6 +409,32 @@ Before this date, the IBKR light showed green whenever the gateway process was r
 Both checks were meaningless indicators of real service state. Both were replaced with
 genuine round-trip verifications. See `docs/connectivity.md` for full test results.
 
+**IBKR soft-timeout silent recovery (added 2026-07-17 — the one check above that is not
+purely passive):** when a poll finds IBKR in its documented soft-timeout state
+(`connected:true, authenticated:false`), `ConnectivityChecker._attempt_soft_recovery()`
+issues one `POST /iserver/auth/ssodh/init` to silently re-establish the session, instead
+of always forcing a manual browser+2FA re-login. This is the only connectivity check that
+makes a state-changing call to IBKR rather than just reading state, so it carries its own
+narrow safety scoping, verified directly in `claudia/status.py`:
+- **Never fires except from a confirmed-good prior state.** Only called when the *previous*
+  poll was `OK` and the *current* poll shows exactly the soft-timeout signature — never from
+  `UNKNOWN` (the fragile fresh-login/settling window) and never on a hard disconnect
+  (`connected:false`).
+- **`compete` is hardcoded `False`.** Per IBKR's own docs this determines whether other
+  brokerage sessions (Mobile, TWS) get force-evicted to prioritize this connection — always
+  `False` here, so this check can never kick out a concurrent human session.
+- **Checks the response body, not just the HTTP status.** IBKR returns `200` on this endpoint
+  regardless of outcome (same shape as `/tickle`), so a bare status check would silently
+  report false success; the code parses `authenticated` from the JSON body instead.
+- **Never touches order execution.** This endpoint only re-establishes the brokerage
+  *session* — it has no relationship to `place_order`/`modify_order`/`cancel_order`, and
+  the Order Execution Barriers in §2 are completely unaffected by whether this recovery
+  path fires.
+- 15 dedicated unit tests cover every branch (never fires from `UNKNOWN`/`ERROR`/hard-disconnect;
+  successful recovery suppresses the disconnect alert; failed recovery — including a
+  "successful" POST whose immediate re-check still fails — still alerts exactly once).
+  Full design: `docs/plans/2026-07-17-ibkr-soft-timeout-recovery.md`.
+
 ---
 
 ## 12. Audit Checklist
@@ -414,6 +456,7 @@ Run this checklist before any significant code change to ClaudIA:
 - [ ] Any new connectivity check returns a plain bool, wraps all exceptions, and does not log or expose credentials on failure
 - [ ] Any new tool that makes outbound HTTP requests blocks localhost / private IP ranges (SSRF guard — see §8 `fetch_web_page` pattern)
 - [ ] Any new outbound HTTP path re-validates **every redirect hop** against the SSRF guard (never `allow_redirects=True` on an LLM-driven fetch — S1, 2026-07-03)
+- [ ] Any new automated (non-order) state-changing call to IBKR is scoped as narrowly as `_attempt_soft_recovery()` (§11): fires only from a specific, previously-verified-good state transition, never on `UNKNOWN`/settling states, and never able to evict a competing session (`compete=False` or equivalent)
 
 ---
 
