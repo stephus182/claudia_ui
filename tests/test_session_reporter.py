@@ -68,6 +68,7 @@ def test_report_filename_is_timestamp(store, session_with_tools, tmp_path, monke
     import re
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_with_tools, store)
+    assert path is not None
     assert re.match(r"\d{4}-\d{2}-\d{2}-\d{4}\.md", path.name)
 
 
@@ -78,6 +79,7 @@ def test_report_filename_is_timestamp(store, session_with_tools, tmp_path, monke
 def test_report_contains_session_id(store, session_with_tools, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_with_tools, store)
+    assert path is not None
     content = path.read_text()
     assert session_with_tools in content
 
@@ -86,6 +88,7 @@ def test_report_labels_known_tools(store, session_with_tools, tmp_path, monkeypa
     """Known tool names are converted to readable labels in the report."""
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_with_tools, store)
+    assert path is not None
     content = path.read_text()
     assert "IBKR: positions" in content
     assert "IBKR: P&L" in content
@@ -99,6 +102,7 @@ def test_report_uses_raw_name_for_unknown_tool(store, tmp_path, monkeypatch):
                       tool_result="ok")
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_id, store)
+    assert path is not None
     assert "some_future_tool" in path.read_text()
 
 
@@ -111,6 +115,7 @@ def test_report_shows_tool_count_when_called_multiple_times(store, tmp_path, mon
                           tool_result="[]")
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_id, store)
+    assert path is not None
     assert "×3" in path.read_text()
 
 
@@ -121,6 +126,7 @@ def test_report_no_tools_shows_placeholder(store, tmp_path, monkeypatch):
     store.add_message(session_id, role="user", content="Hello")
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_id, store)
+    assert path is not None
     assert "no tool calls" in path.read_text()
 
 
@@ -128,6 +134,7 @@ def test_report_captures_error_results(store, session_with_error, tmp_path, monk
     """Tool results containing 'Error' are included in the Errors section."""
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_with_error, store)
+    assert path is not None
     content = path.read_text()
     assert "Errors / Anomalies" in content
     assert "fetch_market_data" in content
@@ -138,6 +145,7 @@ def test_report_no_errors_shows_none_detected(store, session_with_tools, tmp_pat
     """Clean session reports 'None detected' in the errors section."""
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_with_tools, store)
+    assert path is not None
     assert "None detected" in path.read_text()
 
 
@@ -146,6 +154,7 @@ def test_report_includes_connectivity(store, session_with_tools, tmp_path, monke
     monkeypatch.chdir(tmp_path)
     conn = {"ibkr": "OK", "gdrive": "OK", "tradingview": "ERROR"}
     path = generate_session_report(session_with_tools, store, connectivity=conn)
+    assert path is not None
     content = path.read_text()
     assert "IBKR=OK" in content
     assert "GDrive=OK" in content
@@ -156,6 +165,7 @@ def test_report_includes_doc_version(store, session_with_tools, tmp_path, monkey
     """Doc version label appears in the report header."""
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_with_tools, store, doc_version="v2")
+    assert path is not None
     assert "v2" in path.read_text()
 
 

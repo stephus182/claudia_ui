@@ -46,7 +46,9 @@ import platform
 import shutil
 import socket
 import subprocess
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
+from typing import Any
 
 import chainlit as cl
 from mcp import ClientSession, StdioServerParameters
@@ -224,7 +226,7 @@ class TradingViewBridge:
         self._session: ClientSession | None = None
         self._tools: list[dict] = []
         self._curated_tools: list[dict] = []
-        self._cm = None  # async context manager for stdio_client
+        self._cm: AbstractAsyncContextManager[Any] | None = None  # stdio_client's context manager
 
     async def start(self) -> None:
         """Spawn the tradingview-mcp sidecar and connect via MCP stdio.
@@ -345,8 +347,12 @@ class TradingViewBridge:
             for item in (result.content or []):
                 if hasattr(item, "text"):
                     parts.append(item.text)
-                elif isinstance(item, dict) and "text" in item:
-                    parts.append(item["text"])
+                # Unreachable per the mcp SDK's declared content types (TextContent etc., never
+                # plain dict) — kept as defense-in-depth against the tradingview-mcp sidecar's
+                # documented fragility (external Node.js process, not always SDK-conformant in
+                # practice). See project-tradingview-robustness memory.
+                elif isinstance(item, dict) and "text" in item:  # type: ignore[unreachable]
+                    parts.append(item["text"])  # type: ignore[unreachable]
             return "\n".join(parts) if parts else json.dumps(result.content)
         except Exception as exc:
             log.error("tradingview-mcp tool '%s' failed: %s", name, exc)

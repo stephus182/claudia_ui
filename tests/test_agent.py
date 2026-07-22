@@ -1,6 +1,7 @@
 """Tests for the ClaudIAAgent — order proposal parsing, decision extraction."""
 
 import json
+from typing import Any
 
 
 from claudia.agent import _strip_order_proposal, _build_system_prompt
@@ -255,14 +256,16 @@ def test_history_to_messages_user_and_assistant():
 
 def test_history_to_messages_skips_tool_rows():
     """Tool rows must be skipped — orphaned tool_result blocks cause Anthropic API 400."""
-    history = [
+    history: list[dict[str, Any]] = [
         {"role": "user", "content": "Get positions"},
         {"role": "tool", "content": None, "tool_name": "get_positions", "tool_result": "[...]"},
         {"role": "assistant", "content": "You hold 100 AAPL."},
     ]
     result = _history_to_messages(history)
     assert len(result) == 2
-    assert all(r["role"] != "tool" for r in result)
+    # Return type already excludes "tool" structurally — asserted anyway as a runtime
+    # regression check that survives a future loosening of that return type.
+    assert all(r["role"] != "tool" for r in result)  # type: ignore[comparison-overlap]
 
 
 def test_history_to_messages_empty():
@@ -574,7 +577,7 @@ def _make_agent_with_loader(loader):
     with patch("claudia.agent.AsyncAnthropic"):
         return ClaudIAAgent(
             toolkit=toolkit,
-            store=None,
+            store=MagicMock(),  # unused by these tests — no doc_version passed
             context_loader=loader,
             session_id="test-session",
         )
@@ -660,7 +663,7 @@ def test_history_marker_block_content_marks_last_block_only():
         {"type": "tool_result", "tool_use_id": "t1", "content": "r1"},
         {"type": "tool_result", "tool_use_id": "t2", "content": "r2"},
     ]
-    messages = [
+    messages: list[dict[str, Any]] = [
         {"role": "user", "content": "question"},
         {"role": "assistant", "content": [{"type": "text", "text": "calling tools"}]},
         {"role": "user", "content": tool_results},

@@ -102,7 +102,7 @@ def _resolve_account_id(accounts: list[dict]) -> str:
     if not accounts:
         return ""
     account = accounts[0]
-    return account.get("accountId", account.get("acctId", account.get("id", "")))
+    return str(account.get("accountId", account.get("acctId", account.get("id", ""))))
 
 
 async def render_order_proposal(proposal: dict, session_id: str | None = None) -> None:
@@ -220,7 +220,11 @@ async def execute_staged_order(
                 contract = min(futures, key=lambda f: int(f.get("expirationDate") or 0))
             except (ValueError, TypeError):
                 contract = futures[0]
-            conid = int(contract.get("conid"))
+            # conid is IBKR's mandatory contract identifier — always present on a successful
+            # get_futures() lookup (the `if not futures` guard above already handles the
+            # no-match case). Not user/LLM-supplied, so order-parameter-immutability doesn't
+            # apply here — this is IBKR's own response data.
+            conid = int(contract.get("conid"))  # type: ignore[arg-type]
             company_name = contract.get("contractDesc", contract.get("description", ""))
             raw_mult = contract.get("multiplier")
             try:
@@ -235,7 +239,10 @@ async def execute_staged_order(
                     author="System",
                 ).send()
                 return
-            conid = int(contracts[0].get("conid"))  # int — required by IBKR API
+            # conid is IBKR's mandatory contract identifier — always present on a successful
+            # search_contract() lookup (the `if not contracts` guard above already handles
+            # the no-match case). Not user/LLM-supplied — IBKR's own response data.
+            conid = int(contracts[0].get("conid"))  # type: ignore[arg-type]
             company_name = contracts[0].get("companyName", "")
 
         claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"
@@ -306,12 +313,12 @@ async def execute_staged_order(
         await cl.Message(content=success_text, author="ClaudIA").send()
 
         if store and session_id:
-            # Extract IBKR orderId from response for future cross-referencing
+            # Extract IBKR orderId from response for future cross-referencing.
+            # place_order_and_confirm() is declared -> list[dict[str, Any]] and always
+            # normalizes to a list internally (_as_reply_list) — never a bare dict.
             ibkr_order_id = None
-            if isinstance(result, list) and result:
+            if result:
                 ibkr_order_id = result[0].get("orderId")
-            elif isinstance(result, dict):
-                ibkr_order_id = result.get("orderId")
             store.add_decision(
                 session_id=session_id,
                 decision_type="trade_staged",
