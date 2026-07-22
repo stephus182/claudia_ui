@@ -22,12 +22,12 @@ Source (Models): https://docs.anthropic.com/en/docs/about-claude/models
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from typing import TYPE_CHECKING
 
-import chainlit as cl
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from claudia.context_loader import ContextLoader
     from claudia.conversation_store import ConversationStore
+    from claudia.message_sink import MessageSink
     from claudia.tradingview import TradingViewBridge
 
 log = logging.getLogger(__name__)
@@ -456,6 +457,7 @@ class ClaudIAAgent:
         store: ConversationStore,
         context_loader: ContextLoader,
         session_id: str,
+        sink: MessageSink,
         model: str = "claude-opus-4-8",
         extra_tools: list[dict] | None = None,
         tv_bridge: TradingViewBridge | None = None,
@@ -473,6 +475,7 @@ class ClaudIAAgent:
         self._store = store
         self._loader = context_loader
         self._session_id = session_id
+        self._sink = sink
         self._model = model
         self._extra_tools = extra_tools or []
         self._tv_bridge = tv_bridge
@@ -586,11 +589,7 @@ class ClaudIAAgent:
             # --- Stream complete ---
 
             if stop_reason == "max_tokens":
-                await cl.Message(
-                    content="_⚠ Response truncated — token limit reached. "
-                            "Ask me to continue if the answer is incomplete._",
-                    author="System",
-                ).send()
+                await self._sink.send_max_tokens_warning()
 
             # Append assistant turn to the running message list
             assistant_content: list = []
@@ -621,15 +620,15 @@ class ClaudIAAgent:
             # Execute tools and collect results
             tool_results = []
             for tc in tool_calls:
-                async with cl.Step(name=tc["name"], type="tool") as step:
+                async with self._sink.tool_step(tc["name"]) as step:
                     step.input = json.dumps(tc["input"], indent=2)
                     if tc["name"] in _LOCAL_TOOL_NAMES:
                         result_text = self._handle_local_tool(tc["name"], tc["input"])
                     elif tc["name"] in self._tv_tool_names and self._tv_bridge is not None:
                         result_text = await self._tv_bridge.execute(tc["name"], tc["input"])
                     else:
-                        result_text, _ = await cl.make_async(self._toolkit.execute)(
-                            tc["name"], tc["input"]
+                        result_text, _ = await asyncio.to_thread(
+                            self._toolkit.execute, tc["name"], tc["input"]
                         )
                     step.output = result_text
 
@@ -661,7 +660,7 @@ class ClaudIAAgent:
 
         # Render text response
         if display_text:
-            await cl.Message(content=display_text).send()
+            await self._sink.send_message(display_text)
 
         # Render a proposal button if present — at most one type per message.
         # The system prompt instructs at most one proposal block per response; if the
@@ -674,14 +673,11 @@ class ClaudIAAgent:
                 bool(order_proposal), bool(cancel_proposal), bool(modify_proposal),
             )
         if order_proposal:
-            from claudia.order_flow import render_order_proposal
-            await render_order_proposal(order_proposal, session_id=self._session_id)
+            await self._sink.send_order_proposal(order_proposal)
         elif cancel_proposal:
-            from claudia.order_flow import render_cancel_proposal
-            await render_cancel_proposal(cancel_proposal, session_id=self._session_id)
+            await self._sink.send_cancel_proposal(cancel_proposal)
         elif modify_proposal:
-            from claudia.order_flow import render_modify_proposal
-            await render_modify_proposal(modify_proposal, session_id=self._session_id)
+            await self._sink.send_modify_proposal(modify_proposal)
 
         # Log any user-directed trade proposal for future recall
         self._log_proposal(
