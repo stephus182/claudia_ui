@@ -831,5 +831,6 @@ async def test_handle_message_tool_call_uses_sink_tool_step():
     await agent.handle_message("What are my positions?")
 
     sink.tool_step.assert_called_once_with("get_positions")
+    assert step_handle.input == json.dumps({}, indent=2)
     assert step_handle.output == "100 AAPL"
     sink.send_message.assert_awaited_once_with("You hold 100 AAPL.")
