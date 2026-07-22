@@ -61,3 +61,23 @@ async def test_send_order_proposal_sends_placeholder_not_available_message():
     args, kwargs = chat.send.call_args
     assert "not available" in args[0].lower() or "not yet available" in args[0].lower()
     assert kwargs["user"] == "System"
+
+
+@pytest.mark.asyncio
+async def test_send_cancel_proposal_sends_placeholder_not_available_message():
+    chat = _make_chat()
+    sink = PanelMessageSink(chat=chat, session_id="s1")
+    await sink.send_cancel_proposal({"order_id": "123", "symbol": "AAPL"})
+    args, kwargs = chat.send.call_args
+    assert "not available" in args[0].lower() or "not yet available" in args[0].lower()
+    assert kwargs["user"] == "System"
+
+
+@pytest.mark.asyncio
+async def test_send_modify_proposal_sends_placeholder_not_available_message():
+    chat = _make_chat()
+    sink = PanelMessageSink(chat=chat, session_id="s1")
+    await sink.send_modify_proposal({"order_id": "123", "symbol": "AAPL"})
+    args, kwargs = chat.send.call_args
+    assert "not available" in args[0].lower() or "not yet available" in args[0].lower()
+    assert kwargs["user"] == "System"
