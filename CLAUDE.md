@@ -13,8 +13,10 @@ claudia/app.py              — session lifecycle, action callbacks, startup but
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
+claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger fallback
 claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / upload at stop
 claudia/order_flow.py       — cl.Action order staging → ibkr_core_mcp biometric gates
+claudia/session_reporter.py — auto-generated Markdown session report (tool calls, decisions)
 claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health
 claudia/tradingview.py      — tradingview-mcp sidecar + CDP health + PineScript display
     ↓                               ↓
@@ -134,13 +136,14 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
 
 ## ibkr_core_mcp Dependency
 
-Local editable install: `pip install -e "../ibkr_core_mcp"` — re-run after ibkr_core_mcp
-adds new tools. No Chainlit restart needed for tool definition changes; restart required
-for Python module changes. Full tool catalog (40 core + 2 optional web-scraper = 42 total,
-matching `_all_tools` in `claudia/agent.py`): `ibkr_core_mcp/docs/tools-reference.md` —
+Local editable install: see Dev Setup step 3 above for the exact command (strict editable
+mode required for `mypy` to resolve it) — re-run after ibkr_core_mcp adds new tools. No
+Chainlit restart needed for tool definition changes; restart required for Python module
+changes. Full tool catalog (40 core + 2 optional web-scraper = 42 total, matching
+`self._all_tools` in `claudia/agent.py`): `ibkr_core_mcp/docs/tools-reference.md` —
 check there before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.md`.
 
-No extras (e.g. `[server]`) are needed for the plain install above. `websockets` — the sole
+No extras (e.g. `[server]`) are needed for the install above. `websockets` — the sole
 runtime dependency of `IBKRWebSocket`, which `claudia/execution_listener.py` uses
 unconditionally for live P&L/execution tracking — is a base dependency of ibkr_core_mcp, not
 gated behind an extra. (It briefly wasn't: a bare install used to leave `websockets` missing
