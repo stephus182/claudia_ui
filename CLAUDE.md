@@ -42,7 +42,13 @@ python3.11 -m venv .venv && source .venv/bin/activate
 
 # 3. Install claudia_ui + ibkr_core_mcp (editable)
 pip install -e ".[dev]"
-pip install -e "../ibkr_core_mcp"
+pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
+# strict mode required for mypy — the default "lazy" editable install registers a
+# meta-path finder mypy's static import resolution can't see (confirmed 2026-07-21:
+# mypy reports "Cannot find implementation or library stub for module named
+# ibkr_core_mcp" without it, despite the package shipping py.typed and importing
+# fine at runtime). Strict mode still uses real symlinks to the source — genuinely
+# editable, not a frozen copy.
 
 # 4. Copy and fill in env vars
 cp .env.example .env
