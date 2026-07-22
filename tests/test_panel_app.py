@@ -16,6 +16,7 @@ def test_build_chat_app_returns_a_chat_interface_with_callback_wired():
         patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
         patch("claudia.panel_app._get_store", return_value=mock_store),
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.agent.AsyncAnthropic"),
     ):
         mock_loader_cls.return_value.load_system_prompt.return_value = "# Role\nStub."
         mock_loader_cls.return_value.reload_count = 0
