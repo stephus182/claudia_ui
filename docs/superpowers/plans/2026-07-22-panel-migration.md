@@ -822,7 +822,7 @@ sufficient for session isolation; no extra session-registry/dict is needed for t
 - Create: `claudia/panel_sink.py`
 - Create: `tests/test_panel_sink.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """Tests for PanelMessageSink — the Panel-side MessageSink implementation.
@@ -890,12 +890,12 @@ async def test_send_order_proposal_sends_placeholder_not_available_message():
     assert kwargs["user"] == "System"
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `pytest tests/test_panel_sink.py -v`
 Expected: `ModuleNotFoundError: No module named 'claudia.panel_sink'`
 
-- [ ] **Step 3: Implement `claudia/panel_sink.py`**
+- [x] **Step 3: Implement `claudia/panel_sink.py`**
 
 **Verified findings, 2026-07-22 (Task 2.1 execution) — two real bugs in this section's
 original code, both fixed below, not just a style pass:**
@@ -1000,12 +1000,12 @@ class PanelMessageSink:
         )
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `pytest tests/test_panel_sink.py -v`
 Expected: `4 passed`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add claudia/panel_sink.py tests/test_panel_sink.py
@@ -1018,7 +1018,7 @@ git commit -m "feat: add PanelMessageSink (Phase 2 scope — no proposal renderi
 - Create: `claudia/panel_app.py`
 - Create: `tests/test_panel_app.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 This tests the pure, framework-independent part — the per-session factory function —
 without needing a real running server (verifying an actual HTTP round-trip through
@@ -1066,12 +1066,12 @@ construction succeeding regardless of whether it currently happens to, and consi
 `test_agent.py`'s pattern matters against future SDK upgrades — just don't cite "prevents a
 CI crash" as the reason, since it isn't one today.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `pytest tests/test_panel_app.py -v`
 Expected: `ModuleNotFoundError: No module named 'claudia.panel_app'`
 
-- [ ] **Step 3: Implement `claudia/panel_app.py`**
+- [x] **Step 3: Implement `claudia/panel_app.py`**
 
 **Verified finding, 2026-07-22 (Task 2.2 execution):** a bare `import panel as pn` does
 **not** eagerly import the `fastapi` submodule (`panel/io/__init__.py` keeps it optional
@@ -1197,12 +1197,12 @@ def _serve_chat_app() -> pn.chat.ChatInterface:
     return _build_chat_app()
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `pytest tests/test_panel_app.py -v`
 Expected: `1 passed`
 
-- [ ] **Step 5: Run the full unit suite**
+- [x] **Step 5: Run the full unit suite**
 
 Run: `pytest -m "not integration" -q`
 Expected: `330 passed` (329 baseline after Task 2.1's own fixes + 1 new), 0 failures.
@@ -1222,7 +1222,7 @@ input/output message appears (Phase 4 will make this nicer). This does not requi
 `caffeinate` or live gateway credentials — it's safe to run without the risk-flagged
 precautions from Phase 1's Task 1.4.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add claudia/panel_app.py tests/test_panel_app.py
