@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from claudia.message_sink import ChainlitMessageSink
+from claudia.message_sink import ChainlitMessageSink, MessageSink
 
 
 @pytest.mark.asyncio
@@ -61,3 +61,7 @@ async def test_send_modify_proposal_delegates_to_order_flow_with_session_id():
     with patch("claudia.order_flow.render_modify_proposal", new=AsyncMock()) as mock_render:
         await sink.send_modify_proposal(proposal)
         mock_render.assert_awaited_once_with(proposal, session_id="sess-42")
+
+
+def test_chainlit_sink_satisfies_message_sink_protocol() -> None:
+    sink: MessageSink = ChainlitMessageSink(session_id="s1")  # noqa: F841 — mypy-only assertion
