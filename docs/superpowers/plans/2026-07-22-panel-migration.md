@@ -1055,9 +1055,16 @@ def test_build_chat_app_returns_a_chat_interface_with_callback_wired():
 **Verified finding, 2026-07-22 (Task 2.2 execution):** the test above must patch
 `claudia.agent.AsyncAnthropic` (added above, wasn't in the original draft) — `ClaudIAAgent.__init__`
 constructs a real `AsyncAnthropic()` client otherwise, matching every other
-`ClaudIAAgent`-constructing test's convention in `tests/test_agent.py`. Without it the test
-only passes because a real `ANTHROPIC_API_KEY` happens to be set locally — it would fail in
-CI or a fresh clone without one.
+`ClaudIAAgent`-constructing test's convention in `tests/test_agent.py`. **Correction to this
+finding's original justification:** initially assumed this would fail in CI/a fresh clone
+without a real key — checked directly and that's not accurate against the installed
+`anthropic==0.118.0`: its client doesn't raise at construction time even with zero
+credentials resolvable anywhere (auth failure is deferred to actual request time, confirmed
+via `env -u ANTHROPIC_API_KEY python3 -c "AsyncAnthropic()"` constructing cleanly). The patch
+is still correct to keep — a unit test shouldn't depend on real credential-resolution/HTTP-client
+construction succeeding regardless of whether it currently happens to, and consistency with
+`test_agent.py`'s pattern matters against future SDK upgrades — just don't cite "prevents a
+CI crash" as the reason, since it isn't one today.
 
 - [ ] **Step 2: Run to verify failure**
 
