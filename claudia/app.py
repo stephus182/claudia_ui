@@ -210,6 +210,15 @@ def _write_version_snapshot(version: str, context_text: str, principles_text: st
         log.warning("Could not write version snapshot for %s: %s", version, exc)
 
 
+async def _chainlit_connectivity_alert(msg: str) -> None:
+    """ConnectivityChecker subscriber: renders a connectivity state-transition alert as
+    a Chainlit chat message. The only Chainlit-specific code touching connectivity
+    alerts — mirrors ChainlitMessageSink (claudia/message_sink.py) being the only place
+    that imports chainlit directly, which is what keeps claudia/agent.py itself
+    chainlit-agnostic."""
+    await cl.Message(content=msg, author="System").send()
+
+
 # ── Session start ─────────────────────────────────────────────────────────────
 
 @cl.on_chat_start
@@ -347,6 +356,7 @@ async def on_chat_start():
             tv_bridge=_tv_bridge,
             gdrive_sync=_gdrive_sync,
         )
+        _connectivity_checker.subscribe(_chainlit_connectivity_alert)
     # Call unconditionally — start() is idempotent and restarts a cancelled task
     _connectivity_checker.start()
     # Update bridge if TradingView became available after the checker was constructed

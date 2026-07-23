@@ -3,7 +3,8 @@ Connectivity monitor for ClaudIA.
 
 Polls IBKR gateway, GDrive token file, and TradingView sidecar every 60s.
 Caches status in memory (instant reads for /api/status endpoint).
-Pushes cl.Message alerts to chat on state transitions.
+Notifies registered subscribers on state transitions; alert delivery (e.g. Chainlit
+chat messages) is wired externally via subscribe().
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -49,10 +52,9 @@ _RECONNECT_MESSAGES = {
 class ConnectivityChecker:
     """Background poller that monitors IBKR gateway, GDrive, and TradingView every 60s.
 
-    Emits Chainlit chat alerts on state transitions (UNKNOWN/OK → ERROR, ERROR → OK).
+    Notifies registered subscribers on state transitions (UNKNOWN/OK → ERROR, ERROR → OK)
+    — see subscribe().
     The cached status dict is served synchronously by GET /api/status for the UI lights.
-
-    Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-start
     """
 
     def __init__(
@@ -78,6 +80,7 @@ class ConnectivityChecker:
         }
         self._last_ibkr_auth_status: dict = {}
         self._task: asyncio.Task | None = None
+        self._subscribers: list[Callable[[str], Awaitable[None]]] = []
 
     def get_status(self) -> dict[str, ServiceStatus]:
         """Return a shallow copy of the current status dict (thread-safe for callers)."""
@@ -187,6 +190,16 @@ class ConnectivityChecker:
             self._task.cancel()
             log.info("ConnectivityChecker stopped")
 
+    def subscribe(self, callback: Callable[[str], Awaitable[None]]) -> Callable[[], None]:
+        """Register a callback to receive future alert text (e.g. the same strings
+        _DISCONNECT_MESSAGES/_RECONNECT_MESSAGES already produce today). Returns an
+        unsubscribe function."""
+        self._subscribers.append(callback)
+        def _unsubscribe() -> None:
+            with suppress(ValueError):
+                self._subscribers.remove(callback)
+        return _unsubscribe
+
     # ── Internal ────────────────────────────────────────────────────────────
 
     async def _poll_loop(self) -> None:
@@ -233,14 +246,16 @@ class ConnectivityChecker:
                 await self._send_alert(service, prev_state, new_state)
 
     async def _send_alert(self, service: str, prev: ServiceStatus, new: ServiceStatus) -> None:
-        import chainlit as cl
         if new == ServiceStatus.ERROR:
             msg = _DISCONNECT_MESSAGES.get(service, f"⚠️ {service} disconnected.")
         elif new == ServiceStatus.OK and prev == ServiceStatus.ERROR:
             msg = _RECONNECT_MESSAGES.get(service, f"✅ {service} reconnected.")
         else:
             return  # UNKNOWN → OK at startup: silent
-        try:
-            await cl.Message(content=msg, author="System").send()
-        except Exception as exc:
-            log.warning("Could not push connectivity alert: %s", exc)
+        for subscriber in list(self._subscribers):  # copy: a subscriber unsubscribing
+                                                       # itself mid-notify must not skip
+                                                       # or corrupt the remaining iteration
+            try:
+                await subscriber(msg)
+            except Exception as exc:
+                log.warning("Could not push connectivity alert to a subscriber: %s", exc)
