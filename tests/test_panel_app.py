@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from claudia.panel_app import _build_chat_app
+from claudia.panel_app import _DOCS_PATH, _build_chat_app
 
 _NO_GDRIVE = {"GOOGLE_DRIVE_FOLDER_ID": ""}
 _CALLBACK_TIMEOUT = 5
@@ -334,6 +334,12 @@ async def test_init_hash_change_sends_warning():
 
     texts = _message_texts(chat)
     assert any("WARNING" in t and "v6" in t and "v7" in t for t in texts)
+    # Ordering invariant (same technique as the D1 download-before-store test):
+    # get_last_context_hash must run BEFORE this session's create_session — the
+    # query reads the newest session row, so inserting ours first would make it
+    # see its own hash and the warning would never fire again.
+    call_names = [name for name, _args, _kwargs in mock_store.mock_calls]
+    assert call_names.index("get_last_context_hash") < call_names.index("create_session")
 
 
 @pytest.mark.asyncio
@@ -397,3 +403,7 @@ async def test_init_reads_context_docs_from_drive_when_sync_available(monkeypatc
 
     assert mock_loader_cls.call_args.kwargs["context_text"] == "drive ctx"
     assert mock_loader_cls.call_args.kwargs["principles_text"] == "drive pri"
+    # Local-fallback wiring: read_text must receive the local path so its internal
+    # freshness guard / fallback can compare against (and fall back to) the file.
+    mock_sync.read_text.assert_any_call("context.md", local_path=_DOCS_PATH / "context.md")
+    mock_sync.read_text.assert_any_call("principles.md", local_path=_DOCS_PATH / "principles.md")
