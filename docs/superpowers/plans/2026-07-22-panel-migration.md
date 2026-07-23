@@ -2551,6 +2551,98 @@ a compromise.
 `claudia/conversation_store.py` need zero changes (per the audit) — only new call sites in
 `panel_app.py`.
 
+### Phase 5 design decisions (grounded 2026-07-23 against `app.py:215-718` + current `panel_app.py`, read in full)
+
+**D1 — everything except the chat surface moves into the background init task.** The
+resolved design above said "send a lightweight ready message immediately, then
+`asyncio.create_task` the slow work." Grounding sharpens this: since the *agent* is
+constructed in the background anyway, **so can the store, loader, and GDrive sync** —
+`_build_chat_app()` shrinks to: build `ChatInterface`, send the instant welcome line,
+register the gated callback (D2), spawn `_init_session()`. This also dissolves an ordering
+constraint that would otherwise bite: the GDrive DB download **must happen before
+`ConversationStore` first opens the DB file** (`app.py:246-254` guards this with
+`if _conv_store is None` before the store exists — opening a stale local DB then
+overwriting it is exactly the G1-G3 stale-Drive-overwrite gap class from the
+info-architecture review). With store construction deferred into `_init_session()`, the
+download naturally precedes it in straight-line code — no lazy-download-inside-getter
+tricks needed.
+
+**D2 — input gating via a closed-over `asyncio.Event`, not a disabled widget.** The user
+can type the moment the page renders; the chat callback `await`s an `_init_done` event
+before dispatching, so an early message simply shows the chat's normal thinking state
+until init lands (~1-2s), then processes. A mutable holder closure (`_session: dict`)
+carries `agent`/`store`/`loader` from the init task to the callback — no registry, no
+`pn.state.cache` key, same closure pattern the resolved design already chose. If init
+*failed*, the holder carries the error and the callback answers honestly ("Session init
+failed: … — fix and reload") instead of dispatching into a half-built session. The current
+skeleton's `loader.load_system_prompt()` FileNotFoundError carry-over (top of this phase)
+lands here as the first failure case: caught in `_init_session()`, surfaced as the same
+"**Setup required:** …" chat message `app.py:268-273` sends.
+
+**D3 — `create_session` moves into init and gains its missing metadata.** The current
+skeleton calls `store.create_session(session_id)` with no `context_hash`/`doc_version`
+(`panel_app.py:86`) — a parity gap vs `app.py:322`. It moves into `_init_session()` after
+doc-version registration, carrying both fields. Doc registration + hash-change WARNING
+message + `_write_version_snapshot` port with it (`app.py:302-320`, `197-212`).
+
+**D4 — thread→session delivery needs one verified Panel idiom, used twice.** Two Chainlit
+context bridges must be replaced: the watchdog hot-reload alert (`app.py:280-294`,
+fires from an OS thread) and — later, Phase 6 — connectivity chat alerts (fire from the
+checker's poll task, not the session's context). Bokeh documents require updates under the
+document lock; the correct Panel-native idiom (candidates: `doc.add_next_tick_callback`,
+`pn.state.execute`, or `chat.send` thread-safety if Panel handles locking internally) must
+be **verified empirically before writing the task code** — same discipline as the
+`on_session_created` verification above, and per CLAUDE.md's API-Docs-First rule. Whatever
+is proven becomes the single documented pattern for both call sites.
+
+**D5 — TradingView sidecar stays out of Phase 5** (per the phase goal above: buttons in
+Phase 9). The agent runs without `extra_tools`/`tv_bridge` — both already default to
+empty/None in `ClaudIAAgent`. The welcome line notes TradingView as "not connected in the
+Panel preview" honestly rather than pretending.
+
+**D6 — backend singletons start in Phase 5; their UI stays in Phase 6/7.**
+`ConnectivityChecker.start()` matters beyond status dots: its 60s `/tickle` poll is the
+IBKR **session keepalive** (`status.py:92-93`), which Panel sessions currently don't get —
+a live-session-protection gap, not cosmetics. `ExecutionListener` likewise
+(`app.py:366-377`). Both are process singletons, constructed+started in `_init_session()`
+under the same `is None` guards as `app.py:348-377`. **No** per-session
+`checker.subscribe(...)` yet — chat-alert delivery needs D4's verified idiom and is
+exactly Phase 6's remaining work.
+
+**D7 — session-end cleanup via `pn.state.on_session_destroyed`, verified first.** The
+`_run_session_cleanup` equivalent (close session w/ metadata, `generate_session_report`,
+GDrive `upload_db`, `loader.stop_watching()` — `app.py:670-700`) hooks Panel's session
+destroy. The callback's exact contract (sync vs async, what session context is still
+alive, whether blocking work is acceptable or needs a thread) must be verified empirically
+before the task is written — same rule as D4. The "skip if End Session button already
+cleaned up" guard ports as a flag in the D2 holder.
+
+**D8 — action buttons reuse Phase 3's proven pattern.** "End Session" (always) and "Start
+IBKR Gateway" (only when IBKR offline) render as `pn.widgets.Button`s in a chat message
+(same `on_click` + disable-on-click pattern as `panel_order_flow.py`). "End Session" runs
+D7's cleanup then confirms; "Start IBKR Gateway" ports `on_start_gateway`'s core
+(`app.py:815-874`) — read it during task detailing, it wasn't part of this grounding pass.
+
+**Task decomposition** (each to be detailed with real code before dispatch, per the
+living-document protocol — outline only here):
+
+- **Task 5.1** — `_init_session` scaffolding: shrink `_build_chat_app()` per D1, add the
+  D2 event+holder gating, Setup-required failure path, GDrive singleton + DB download +
+  store/loader/agent construction in background order. (The largest task; everything else
+  hangs off it.)
+- **Task 5.2** — Drive context/principles read + doc-version registration + hash-change
+  WARNING + version snapshot + `create_session` with metadata (D3).
+- **Task 5.3** — opening status block: IBKR reachability pre-check + `asyncio.gather` of
+  the 4 status calls (`asyncio.to_thread` replacing `cl.make_async`), trade-data status
+  line + market-calendar context → `agent._trade_context` (`app.py:399-514`).
+- **Task 5.4** — verify D4's thread→session idiom empirically; then watchdog hot-reload
+  wiring with it.
+- **Task 5.5** — ConnectivityChecker + ExecutionListener singletons (D6).
+- **Task 5.6** — verify D7's `on_session_destroyed` contract empirically; then session-end
+  cleanup + End Session / Start Gateway buttons (D7+D8).
+- **Task 5.7** — background Flex sync decision logic + sync + store.db Drive backup
+  (`app.py:550-617`).
+
 ## Phase 6: Connectivity status — designed Panel-native, not ported
 
 **This phase was fully redesigned 2026-07-22 per the "no Chainlit-shape mimicry" principle
