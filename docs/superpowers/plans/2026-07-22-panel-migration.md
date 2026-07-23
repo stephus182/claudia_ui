@@ -2643,6 +2643,341 @@ living-document protocol — outline only here):
 - **Task 5.7** — background Flex sync decision logic + sync + store.db Drive backup
   (`app.py:550-617`).
 
+### Task 5.1: `_init_session` scaffolding — immediate render, background init, gated input
+
+**Files:**
+
+- Modify: `claudia/panel_app.py` (`_build_chat_app` shrinks; new `_init_session`; new
+  module global `_gdrive_sync`; new import `GDriveSync`)
+- Modify: `tests/test_panel_app.py` (3 existing tests rework to async; new failure-path +
+  gating tests)
+
+- [ ] **Step 0: Empirically verify background-task `chat.send` reaches the rendered page**
+
+The resolved design asserts "the task pushes the real status block into the same chat once
+ready" — never actually verified. Build a throwaway probe (scratch file, not committed):
+minimal `FastAPI` + `add_application` app whose build function returns a `ChatInterface`
+and spawns `asyncio.create_task` of a coroutine that `await asyncio.sleep(3)` then
+`chat.send("late message", user="System", respond=False)`. Serve with uvicorn, open the
+page in a browser (or Playwright), confirm "late message" appears ~3s after render with no
+console/server errors (Bokeh doc-lock violations raise loudly server-side). **If it does
+NOT appear or errors: STOP — report BLOCKED**; the init task must then route its sends
+through the D4 idiom, which changes this task's design and must go back to plan detailing.
+If it works (expected — the task runs on the session's own event loop and Panel's `send`
+triggers param updates that Panel schedules correctly), note the result in this step and
+proceed.
+
+- [ ] **Step 1: Write the failing tests**
+
+Rework `tests/test_panel_app.py`. The existing 3 tests assume everything happens
+synchronously inside `_build_chat_app()`; after this task, only chat construction +
+callback wiring + welcome message are synchronous — store/loader/agent land via
+`_init_session` on the running loop, so **every test that touches init effects becomes
+`@pytest.mark.asyncio`** (a running loop is now *required* even to call
+`_build_chat_app()`, since it calls `asyncio.create_task`). The chat callback `await`s
+init internally, so `await chat.callback(...)` is the natural synchronization point — no
+need to expose the event or the task.
+
+Full new content for the reworked/new tests (keep the module docstring; existing helper
+patches stay the same shape):
+
+```python
+def _patch_happy_path(mock_toolkit, mock_store, mock_loader_cls):
+    """The standard patch set for a successful init — shared by most tests."""
+    return (
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader", mock_loader_cls),
+        patch("claudia.agent.AsyncAnthropic"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_chat_app_returns_a_chat_interface_with_callback_wired():
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = MagicMock()
+    mock_store.list_doc_versions.return_value = []
+    mock_store.get_doc_version.return_value = None
+    mock_loader_cls = MagicMock()
+    mock_loader_cls.return_value.load_system_prompt.return_value = "# Role\nStub."
+    mock_loader_cls.return_value.reload_count = 0
+
+    with contextlib.ExitStack() as stack:
+        for p in _patch_happy_path(mock_toolkit, mock_store, mock_loader_cls):
+            stack.enter_context(p)
+        chat = _build_chat_app()
+
+    assert chat.callback is not None
+
+
+@pytest.mark.asyncio
+async def test_build_chat_app_callback_waits_for_init_then_dispatches_to_agent():
+    """The gating contract (design D2): a message sent immediately after render must
+    wait for _init_session to finish, then reach the real agent — not error out and
+    not dispatch into a half-built session."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = MagicMock()
+    mock_store.list_doc_versions.return_value = []
+    mock_store.get_doc_version.return_value = None
+    mock_loader_cls = MagicMock()
+    mock_loader_cls.return_value.load_system_prompt.return_value = "# Role\nStub."
+    mock_loader_cls.return_value.reload_count = 0
+
+    with (
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader", mock_loader_cls),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+    ):
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        # Callback awaits _init_done internally; awaiting it lets the init task run.
+        await chat.callback("hello world", "User", chat)
+
+    mock_agent_cls.return_value.handle_message.assert_called_once_with("hello world")
+
+
+@pytest.mark.asyncio
+async def test_build_chat_app_constructs_sink_with_the_real_store():
+    """Unchanged intent from Task 3.3's review (silent audit-trail gap if store= is
+    forgotten) — now asserted after init completes."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = MagicMock()
+    mock_store.list_doc_versions.return_value = []
+    mock_store.get_doc_version.return_value = None
+    mock_loader_cls = MagicMock()
+    mock_loader_cls.return_value.load_system_prompt.return_value = "# Role\nStub."
+    mock_loader_cls.return_value.reload_count = 0
+
+    with (
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader", mock_loader_cls),
+        patch("claudia.agent.AsyncAnthropic"),
+        patch("claudia.panel_app.PanelMessageSink") as mock_sink_cls,
+    ):
+        chat = _build_chat_app()
+        await chat.callback("ping", "User", chat)  # sync point: init has finished after this
+
+    mock_sink_cls.assert_called_once()
+    assert mock_sink_cls.call_args.kwargs["store"] is mock_store
+
+
+@pytest.mark.asyncio
+async def test_init_failure_missing_docs_sends_setup_required_and_callback_answers_honestly():
+    """Design D2 failure path + the Phase 5 carry-over: a missing context.md must
+    surface as the 'Setup required' message (parity with app.py:268-273), and a
+    subsequent user message must get an honest failure reply — never a dispatch into
+    a half-built session, never a raw exception."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = MagicMock()
+    mock_loader_cls = MagicMock()
+    mock_loader_cls.return_value.load_system_prompt.side_effect = FileNotFoundError(
+        "docs/context.md not found"
+    )
+
+    with (
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader", mock_loader_cls),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+    ):
+        chat = _build_chat_app()
+        await chat.callback("hello", "User", chat)
+
+        texts = [
+            (m.object if hasattr(m, "object") else str(m))
+            for m in chat.objects
+        ]
+        assert any("Setup required" in str(t) for t in texts)
+        assert any("Session init failed" in str(t) for t in texts)
+    mock_agent_cls.return_value.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_init_unexpected_failure_reports_error_not_crash():
+    """Any non-FileNotFoundError init failure must also land in the holder and produce
+    an honest chat message — _init_session must never let an exception vanish into an
+    unawaited task (asyncio would only log it at process exit)."""
+    mock_loader_cls = MagicMock()
+    mock_loader_cls.return_value.load_system_prompt.return_value = "# Role\nStub."
+    mock_loader_cls.return_value.reload_count = 0
+
+    with (
+        patch("claudia.panel_app._get_toolkit", side_effect=RuntimeError("boom")),
+        patch("claudia.panel_app._get_store"),
+        patch("claudia.panel_app.ContextLoader", mock_loader_cls),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+    ):
+        chat = _build_chat_app()
+        await chat.callback("hello", "User", chat)
+
+        texts = [
+            (m.object if hasattr(m, "object") else str(m))
+            for m in chat.objects
+        ]
+        assert any("Session init failed" in str(t) for t in texts)
+    mock_agent_cls.return_value.handle_message.assert_not_called()
+```
+
+Note `import contextlib` joins the test module's imports for the ExitStack variant, or
+drop `_patch_happy_path` and inline the four patches everywhere — implementer's choice,
+match whichever reads cleaner; the shown code compiles either way.
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `pytest tests/test_panel_app.py -v`
+Expected: the reworked tests fail against the current synchronous `_build_chat_app`
+(e.g. `create_session` called at build time, no gating, no Setup-required path; the two
+new failure-path tests fail outright). The wired-callback test may still pass — fine.
+
+- [ ] **Step 3: Implement in `claudia/panel_app.py`**
+
+New module-level pieces (imports join the existing block; global joins
+`_toolkit`/`_conv_store`):
+
+```python
+import asyncio
+
+from claudia.gdrive_sync import GDriveSync
+
+_gdrive_sync: GDriveSync | None = None
+```
+
+Replace `_build_chat_app` in full:
+
+```python
+def _build_chat_app() -> pn.chat.ChatInterface:
+    """Per-session factory: called fresh for each new browser session by Bokeh's
+    _eval_panel (confirmed live against Panel 1.9.3 — see Phase 2 header note).
+
+    Phase 5 design (see 'Phase 5 design decisions' in the migration plan): only the
+    chat surface is built synchronously — everything else (GDrive download, store,
+    loader, agent) runs in a background _init_session task on the session's own event
+    loop, with user input gated on an asyncio.Event so an early message waits for
+    init instead of racing it or erroring.
+    """
+    session_id = str(uuid.uuid4())
+    chat = pn.chat.ChatInterface()
+
+    _session: dict = {"agent": None, "error": None, "store": None, "loader": None}
+    _init_done = asyncio.Event()
+
+    async def _on_user_input(contents: str, user: str, instance: pn.chat.ChatInterface) -> None:
+        await _init_done.wait()
+        agent = _session["agent"]
+        if agent is None:
+            chat.send(
+                f"**Session init failed:** {_session['error']} — fix the issue and "
+                f"reload the page.",
+                user="System",
+                respond=False,
+            )
+            return
+        try:
+            await agent.handle_message(contents)
+        except Exception:
+            log.exception("Error handling message (session %s)", session_id)
+            raise  # Panel's callback_exception="summary" still renders the friendly message
+
+    chat.callback = _on_user_input
+    chat.send(
+        "**ClaudIA is ready** — gathering your account status…",
+        user="ClaudIA",
+        respond=False,
+    )
+
+    async def _init_session() -> None:
+        global _gdrive_sync
+        try:
+            # GDrive DB download — MUST run before ConversationStore first opens the
+            # DB file (design D1; parity with app.py:246-254's if-store-is-None guard).
+            if _gdrive_sync is None and os.environ.get("GOOGLE_DRIVE_FOLDER_ID"):
+                cfg = Config.from_env()
+                try:
+                    _gdrive_sync = GDriveSync(cfg)
+                    if _conv_store is None:
+                        await asyncio.to_thread(_gdrive_sync.download_db, _DB_PATH)
+                except Exception as exc:
+                    log.warning("GDriveSync setup failed: %s — continuing without Drive sync", exc)
+
+            toolkit = _get_toolkit()
+            store = _get_store()
+
+            loader = ContextLoader(_DOCS_PATH)
+            try:
+                loader.load_system_prompt()  # validate docs exist before proceeding
+            except FileNotFoundError as exc:
+                _session["error"] = f"Setup required: {exc}"
+                chat.send(
+                    f"**Setup required:** {exc}\n\nCreate the missing file and reload.",
+                    user="System",
+                    respond=False,
+                )
+                return
+
+            store.create_session(session_id)  # Task 5.2 adds context_hash/doc_version
+
+            sink = PanelMessageSink(chat=chat, session_id=session_id, store=store)
+            _session["store"] = store
+            _session["loader"] = loader
+            _session["agent"] = ClaudIAAgent(
+                toolkit=toolkit,
+                store=store,
+                context_loader=loader,
+                session_id=session_id,
+                sink=sink,
+                model=_MODEL,
+            )
+        except Exception as exc:
+            log.exception("Session init failed (session %s)", session_id)
+            _session["error"] = str(exc)
+            chat.send(
+                f"**Session init failed:** {exc} — check the server logs and reload.",
+                user="System",
+                respond=False,
+            )
+        finally:
+            _init_done.set()
+
+    # Safe here: _build_chat_app runs synchronously ON the session's live event loop
+    # (verified empirically — see the Phase 5 'Resolved' note), so create_task schedules
+    # onto the correct loop with no thread-crossing bridge.
+    asyncio.create_task(_init_session())
+    return chat
+```
+
+Delete nothing else — `_get_toolkit`/`_get_store`/`_serve_chat_app` stay as-is.
+
+- [ ] **Step 4: Run to verify pass**
+
+Run: `pytest tests/test_panel_app.py -v` — all pass. Count before/after
+(`grep -cE "^(async )?def test_" tests/test_panel_app.py`): 3 before, 5 after.
+
+- [ ] **Step 5: Full unit suite**
+
+Run: `pytest -m "not integration" -q`
+Expected: 371 baseline + 2 net new = 373, 0 failures. `ruff check` + `mypy` on both
+touched files: clean.
+
+- [ ] **Step 6: Manual smoke (no gateway needed)**
+
+`uvicorn claudia.panel_app:app --port 8001` → page renders the welcome line immediately;
+a message typed instantly still gets processed (after a beat) rather than erroring —
+confirms the gate. With `docs/context.md` temporarily renamed, reload → "Setup required"
+message appears and a typed message gets the honest failure reply (rename back after).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add claudia/panel_app.py tests/test_panel_app.py
+git commit -m "feat: Panel session init — immediate render, background init task, gated input"
+```
+
 ## Phase 6: Connectivity status — designed Panel-native, not ported
 
 **This phase was fully redesigned 2026-07-22 per the "no Chainlit-shape mimicry" principle
