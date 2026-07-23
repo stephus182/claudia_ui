@@ -2535,6 +2535,357 @@ Phase 7's styling/template work, coordinate rather than guess a layout now). New
 without Panel at all) and a new `tests/test_panel_app.py` or similar for the Panel-side
 wiring.
 
+### Task 6.1: Subscriber registry in `ConnectivityChecker`
+
+Framework-agnostic — no template/layout dependency, safe to do ahead of Phase 7.
+
+**Why this piece first:** the `BooleanStatus`-widget wiring depends on Phase 7's template
+decision (where in the page layout do 3 status dots + a logo live?) — genuinely blocked on
+work not yet done. The subscriber registry itself has no such dependency: it's a pure
+`status.py` refactor, fully testable without Panel *or* Chainlit involved, and unblocks
+Phase 7 by having the notification mechanism ready before there's a widget to notify.
+
+**Necessary, minimal touch to `claudia/app.py` — flagged explicitly, not silent scope
+creep:** `_send_alert` is `ConnectivityChecker`'s *only* remaining Chainlit dependency, and
+each entry point (`app.py`, `panel_app.py`) runs its own separate `ConnectivityChecker`
+singleton instance (separate processes, not shared) — so removing the hardcoded `import
+chainlit as cl` from `_send_alert` means `app.py` must explicitly subscribe its own
+`cl.Message`-sending callback to keep its *existing* alert behavior working, since nothing
+does that implicitly anymore. This is a preservation of current behavior via one new line,
+not a redesign of `app.py`.
+
+**Files:**
+
+- Modify: `claudia/status.py` (`ConnectivityChecker.__init__`, new `subscribe()` method,
+  `_send_alert`)
+- Modify: `claudia/app.py` (one new line: subscribe a small Chainlit-alert callback after
+  constructing `_connectivity_checker`)
+- Modify: `tests/test_status.py`
+
+**Grounded, 2026-07-23, against the real `tests/test_status.py`** (read in full before
+writing the tests below — not a sketch): the file uses a `checker` pytest fixture
+(`ConnectivityChecker(gateway_url=..., gdrive_token_file=tmp_path / "token.json")`, no
+custom constructor helper function) and `@pytest.mark.asyncio` throughout. Two *existing*
+tests currently patch Chainlit directly and must be updated as part of this task, not left
+behind: `test_run_checks_unknown_to_ok_no_alert` (`patch("chainlit.Message")`, asserts
+`mock_msg.assert_not_called()`) and `test_stop_cancels_task` (`patch("chainlit.Message.send",
+AsyncMock())`, incidental — that test isn't really about alerting, the patch is just
+defensive). Both patches becomes unnecessary once `_send_alert` no longer imports
+`chainlit` at all — remove them; `test_run_checks_unknown_to_ok_no_alert`'s assertion needs
+rewriting to check the subscriber list was never notified instead of `mock_msg`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `tests/test_status.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_subscribe_returns_unsubscribe_callable(checker):
+    async def _subscriber(msg: str) -> None:
+        pass
+    unsubscribe = checker.subscribe(_subscriber)
+    assert callable(unsubscribe)
+    assert _subscriber in checker._subscribers
+
+
+@pytest.mark.asyncio
+async def test_send_alert_notifies_all_subscribers_with_formatted_message(checker):
+    received_a, received_b = [], []
+    async def _sub_a(msg: str) -> None:
+        received_a.append(msg)
+    async def _sub_b(msg: str) -> None:
+        received_b.append(msg)
+    checker.subscribe(_sub_a)
+    checker.subscribe(_sub_b)
+
+    await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
+
+    assert received_a == received_b
+    assert "disconnected" in received_a[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_send_alert_unknown_to_ok_notifies_no_subscribers(checker):
+    """Mirrors the pre-existing test_run_checks_unknown_to_ok_no_alert's intent —
+    startup settling into a good state is silent, not an alert-worthy transition."""
+    received = []
+    async def _subscriber(msg: str) -> None:
+        received.append(msg)
+    checker.subscribe(_subscriber)
+
+    await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.OK)
+
+    assert received == []
+
+
+@pytest.mark.asyncio
+async def test_send_alert_unsubscribed_callback_stops_receiving(checker):
+    received = []
+    async def _subscriber(msg: str) -> None:
+        received.append(msg)
+    unsubscribe = checker.subscribe(_subscriber)
+    unsubscribe()
+
+    await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
+
+    assert received == []
+    assert _subscriber not in checker._subscribers
+
+
+@pytest.mark.asyncio
+async def test_send_alert_one_subscriber_exception_does_not_block_others(checker):
+    """Mirrors the existing try/except-per-send pattern _send_alert already has for its
+    single Chainlit call site today — a failing subscriber must not prevent other
+    subscribers (or the status update itself) from proceeding."""
+    received = []
+    async def _broken_subscriber(msg: str) -> None:
+        raise RuntimeError("subscriber blew up")
+    async def _good_subscriber(msg: str) -> None:
+        received.append(msg)
+    checker.subscribe(_broken_subscriber)
+    checker.subscribe(_good_subscriber)
+
+    await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
+
+    assert len(received) == 1
+```
+
+Also **modify** the two existing tests identified above (exact current text, verified
+2026-07-23 at `tests/test_status.py:188-199` and `:499-514`):
+
+`test_run_checks_unknown_to_ok_no_alert` — before:
+
+```python
+@pytest.mark.asyncio
+async def test_run_checks_unknown_to_ok_no_alert(checker_with_token):
+    """UNKNOWN → OK at startup: _send_alert is called but no Chainlit message sent."""
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()), \
+         patch("chainlit.Message") as mock_msg:
+        mock_msg.return_value.send = AsyncMock()
+        await checker_with_token._run_checks()
+
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.OK
+    assert checker_with_token.get_status()["gdrive"] == ServiceStatus.OK
+    # UNKNOWN→OK: no Chainlit message instantiated
+    mock_msg.assert_not_called()
+```
+
+after:
+
+```python
+@pytest.mark.asyncio
+async def test_run_checks_unknown_to_ok_no_alert(checker_with_token):
+    """UNKNOWN → OK at startup: _send_alert runs but notifies no subscribers."""
+    received = []
+    async def _subscriber(msg: str) -> None:
+        received.append(msg)
+    checker_with_token.subscribe(_subscriber)
+
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()):
+        await checker_with_token._run_checks()
+
+    assert checker_with_token.get_status()["ibkr"] == ServiceStatus.OK
+    assert checker_with_token.get_status()["gdrive"] == ServiceStatus.OK
+    # UNKNOWN→OK: no alert dispatched to subscribers
+    assert received == []
+```
+
+`test_stop_cancels_task` — before:
+
+```python
+@pytest.mark.asyncio
+async def test_stop_cancels_task(checker):
+    """stop() cancels the poll loop; start() can restart it."""
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()), \
+         patch("chainlit.Message.send", AsyncMock()):
+        checker.start()
+        assert checker._task is not None
+        assert not checker._task.done()
+        checker.stop()
+        import asyncio
+        await asyncio.sleep(0)   # let cancellation propagate
+        assert checker._task.done()
+        # restart works after cancellation
+        checker.start()
+        assert not checker._task.done()
+        checker.stop()
+```
+
+after (only the `with` block's patch target changes — `chainlit.Message.send` was always
+incidental defensive patching here, nothing in this test's own assertions touches alerting):
+
+```python
+@pytest.mark.asyncio
+async def test_stop_cancels_task(checker):
+    """stop() cancels the poll loop; start() can restart it."""
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()):
+        checker.start()
+        assert checker._task is not None
+        assert not checker._task.done()
+        checker.stop()
+        import asyncio
+        await asyncio.sleep(0)   # let cancellation propagate
+        assert checker._task.done()
+        # restart works after cancellation
+        checker.start()
+        assert not checker._task.done()
+        checker.stop()
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `pytest tests/test_status.py -v -k "subscribe or alert"`
+Expected: failures — `subscribe`/`_subscribers` don't exist yet on `ConnectivityChecker`.
+
+- [ ] **Step 3: Implement** (see the code block below — already complete, grounded code,
+  not a sketch)
+
+- [ ] **Step 4: Run to verify pass**
+
+Run: `pytest tests/test_status.py -v`
+Expected: all pass — compute the exact total once you've confirmed `tests/test_status.py`'s
+real current test count (don't assume a number here; this file wasn't fully inventoried
+before this note was written, unlike every other file this plan has touched so far — count
+it directly, e.g. `grep -cE "^(async )?def test_" tests/test_status.py`, both before and
+after, the same discipline Task 3.2 established after its own test-count miscount).
+
+- [ ] **Step 5: Run the full unit suite**
+
+Run: `pytest -m "not integration" -q`
+Expected: 350 baseline + (Step 4's real delta), 0 failures.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add claudia/status.py claudia/app.py tests/test_status.py
+git commit -m "refactor: subscriber registry in ConnectivityChecker, remove hardcoded chainlit dependency"
+```
+
+**Implementation sketch for `claudia/status.py`** (real code, unlike the tests above — this
+part doesn't depend on reading anything else first):
+
+```python
+    def __init__(self, ...) -> None:  # existing params unchanged
+        ...  # existing body unchanged
+        self._subscribers: list[Callable[[str], Awaitable[None]]] = []
+
+    def subscribe(self, callback: Callable[[str], Awaitable[None]]) -> Callable[[], None]:
+        """Register a callback to receive future alert text (e.g. the same strings
+        _DISCONNECT_MESSAGES/_RECONNECT_MESSAGES already produce today). Returns an
+        unsubscribe function."""
+        self._subscribers.append(callback)
+        def _unsubscribe() -> None:
+            with suppress(ValueError):
+                self._subscribers.remove(callback)
+        return _unsubscribe
+
+    async def _send_alert(self, service: str, prev: ServiceStatus, new: ServiceStatus) -> None:
+        if new == ServiceStatus.ERROR:
+            msg = _DISCONNECT_MESSAGES.get(service, f"⚠️ {service} disconnected.")
+        elif new == ServiceStatus.OK and prev == ServiceStatus.ERROR:
+            msg = _RECONNECT_MESSAGES.get(service, f"✅ {service} reconnected.")
+        else:
+            return  # UNKNOWN → OK at startup: silent
+        for subscriber in list(self._subscribers):  # copy: a subscriber unsubscribing
+                                                       # itself mid-notify must not skip
+                                                       # or corrupt the remaining iteration
+            try:
+                await subscriber(msg)
+            except Exception as exc:
+                log.warning("Could not push connectivity alert to a subscriber: %s", exc)
+```
+
+Needs `from collections.abc import Awaitable, Callable` and `from contextlib import
+suppress` added to imports if not already present — check the real file. **Verified
+2026-07-23:** `contextlib.suppress` is already this project's established idiom for
+"ignore one specific exception type," used the same way in `context_loader.py:124`,
+`execution_listener.py:150,201,270`, and `conversation_store.py:126` — match it rather than
+a bare `try/except ValueError: pass`.
+
+**Also fix two now-stale docstrings while in this file** (verified stale against the real
+current file, not hypothetical — leaving Chainlit-specific claims in place after removing
+the actual Chainlit dependency would be exactly the kind of doc/code accuracy gap this
+project's own recent history (`git log`: "docs: fix accuracy gaps in CLAUDE.md and
+SECURITY.md") treats as worth fixing on sight, not deferring):
+
+1. Module docstring (`status.py:1-7`), the line `Pushes cl.Message alerts to chat on state
+   transitions.` → `Notifies registered subscribers on state transitions; alert delivery
+   (e.g. Chainlit chat messages) is wired externally via subscribe().`
+2. `ConnectivityChecker`'s class docstring (`status.py:49-56`): the line `Emits Chainlit
+   chat alerts on state transitions (UNKNOWN/OK → ERROR, ERROR → OK).` → `Notifies
+   registered subscribers on state transitions (UNKNOWN/OK → ERROR, ERROR → OK) — see
+   subscribe().` Also **remove** the trailing `Source: https://docs.chainlit.io/api-reference/lifecycle-hooks/on-chat-start`
+   line from this docstring — it was citing Chainlit's `on_chat_start` hook (CLAUDE.md's
+   "API Docs First" convention requires a citation for external-API behavior claims made
+   in the code; this class makes none anymore once decoupled). Do **not** invent a
+   replacement citation here since `ConnectivityChecker` itself now makes no Chainlit
+   claims to cite. If a citation still belongs anywhere, it belongs on
+   `_chainlit_connectivity_alert` in `app.py` (the one remaining piece of code that calls
+   `cl.Message(...).send()`) — optional, the existing `app.py` module docstring already
+   lists `cl.Message` under its "Chainlit API references used in this file" table
+   (`app.py:11`), so a second inline citation there is not required to satisfy the
+   convention, just permitted if it reads better to the implementer.
+
+**`claudia/app.py` — the one required line.** `import chainlit as cl` is already at module
+level (`app.py:33`), so no new import is needed for the alert function itself.
+
+**Verified 2026-07-23 — placement is inside the singleton guard, not a sibling of
+`.start()`:** `on_chat_start` (`app.py:215`) runs on *every* new chat session, but the
+`ConnectivityChecker` singleton is only constructed once, guarded by
+`if _connectivity_checker is None:` (`app.py:341-349`). `.start()` at `app.py:351` is
+deliberately called unconditionally every session (it's idempotent — a no-op once the poll
+task is already running). `.subscribe()` is **not** idempotent the same way — calling it
+every session would register a new subscriber closure per session, so by the Nth session
+each alert would fire N times. It must go as the **last line inside the `if` block**
+(`app.py:341-349`), immediately after the `ConnectivityChecker(...)` constructor call, so it
+runs exactly once — the same one-time cardinality as the singleton construction itself, not
+`.start()`'s every-session cardinality:
+
+```python
+    global _connectivity_checker
+    if _connectivity_checker is None:
+        cfg = _config or Config.from_env()
+        _config = cfg  # cache for future sessions; may already be set by GDriveSync block above
+        _connectivity_checker = ConnectivityChecker(
+            gateway_url=cfg.gateway_url,
+            gdrive_token_file=cfg.gdrive_token_file,
+            tv_bridge=_tv_bridge,
+            gdrive_sync=_gdrive_sync,
+        )
+        _connectivity_checker.subscribe(_chainlit_connectivity_alert)
+    # Call unconditionally — start() is idempotent and restarts a cancelled task
+    _connectivity_checker.start()
+```
+
+Only the added `_connectivity_checker.subscribe(_chainlit_connectivity_alert)` line is new;
+everything else shown above is unchanged existing code, included only to make the exact
+insertion point unambiguous.
+
+New module-level function, placed alongside `on_chat_start` (either just above it or just
+below — implementer's call, no existing convention in this file pins helper-function
+placement relative to the hook they support):
+
+```python
+async def _chainlit_connectivity_alert(msg: str) -> None:
+    await cl.Message(content=msg, author="System").send()
+```
+
+This is the *only* Chainlit-specific code left touching connectivity alerts — exactly
+mirroring how `ChainlitMessageSink` is the only place `claudia/agent.py` used to import
+`chainlit` directly, before Phase 1's decoupling. Same pattern, same reasoning, applied to
+a second subsystem.
+
+**Note on pre-existing multi-session behavior (out of scope for this task):** the poll
+loop's `asyncio.Task` (created inside `.start()`) inherits whatever Chainlit session context
+was active on the first session that ever called `.start()`, since `asyncio.create_task`
+snapshots the current `contextvars.Context`. This means `cl.Message(...).send()` inside
+`_chainlit_connectivity_alert` targets that first session specifically, not "whichever
+session is currently active" — a pre-existing property of the current shipped code
+(`_send_alert` already calls `cl.Message(...).send()` from the same poll-loop task today),
+unchanged by this task. Multi-session-correct alert delivery is exactly what Phase 6's
+later Panel-native tasks (per-session `BooleanStatus` widgets driven by the same subscriber
+registry this task adds) are designed to fix — do not attempt to fix it here.
+
 ## Phase 7: Styling — outline
 
 **Goal:** Apply the two confirmed-working mechanisms from **[shadow-dom-test]** — inline
