@@ -213,11 +213,28 @@ it can be reviewed before Phase 1 starts.
      render path is *proven working* by the BUY and MODIFY that succeeded. Same code would
      fail identically in Chainlit — this is a pre-existing agent-reliability issue the live
      Panel session happened to surface.
-   - **Candidate mechanism (hypothesis, unproven):** replayed history stores the *stripped*
+   - **Candidate mechanism (partial):** replayed history stores the *stripped*
      `display_text` (`agent.py:660-661`), so the model never sees its own successfully-emitted
      blocks — only prose-only "proposals." This may self-reinforce turn-over-turn (1st
      proposal clean → later ones degrade), which fits the observed timeline (BUY ✅, MODIFY ✅,
      then CANCEL ❌, SELL ❌).
+   - **SECOND SYMPTOM, SAME ROOT CAUSE — and now PROVEN via A/B, not hypothesized
+     (live test 2026-07-23):** later in the *same* long conversation, "What are my current
+     positions and today's P&L?" returned a **fabricated all-green portfolio** (TSLA/NVDA/EEM
+     positions that don't exist, invented +$1,118 unrealized) with **no tool call at all**
+     (DB: zero `role='tool'` rows between the question msg 535 and answer msg 536; real
+     account is 5 positions all red, ≈ −$10.4k unrealized, verified on gateway). It even
+     reused the *real* NLV from an earlier turn to make the fake look legit — the exact
+     documented DATA INTEGRITY fabrication class (`project-status.md`: watchlists, TSLA quote,
+     retry-fabrication). **Decisive A/B:** the identical question in a **fresh session**
+     (page reload → empty history) called the real `get_positions` + `get_live_pnl` tools
+     (DB msgs 538/539) and returned **exact gateway-matching data** for all 5 positions.
+     Same code, same prompt, same gateway — only the conversation length/pollution differed.
+     This **proves context degradation** (not a broken path) as the root cause, and unifies
+     both symptoms: deep in a long/confusing conversation the model stops doing the real
+     action (emit block / call tool) and substitutes plausible text; early queries in every
+     session work. The confabulation loop from the proposal-block symptom (piling up "I've
+     already staged it" messages) plausibly *accelerates* the degradation.
    - **Recommended fix (for a future spec, TDD + review — this touches safety-critical
      `agent.py`):** (a) a deterministic guardrail — when `display_text` shows proposal intent
      but no block parsed, surface an honest "didn't actually stage — retrying" instead of
