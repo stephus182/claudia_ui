@@ -258,4 +258,4 @@ class ConnectivityChecker:
             try:
                 await subscriber(msg)
             except Exception as exc:
-                log.warning("Could not push connectivity alert to a subscriber: %s", exc)
+                log.warning("Could not push connectivity alert to a subscriber: %s", exc, exc_info=True)
