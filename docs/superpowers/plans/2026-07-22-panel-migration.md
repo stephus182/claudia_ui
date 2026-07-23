@@ -1613,17 +1613,23 @@ to avoid). Do this mechanically:
       ```
       (same pattern for `execute_cancel_order`/`execute_modify_order`, matching each
       one's own existing top-of-function payload-parse-failure branch exactly as it is
-      today. **Correction to this step, 2026-07-22:** the missing-`order_id`/missing-`conid`
-      early-return branches in `execute_cancel_order`/`execute_modify_order` DO move into
-      the `_core` functions per step (a)'s line-boundary rule — but they originally called
-      `await action.remove()` inline, and the `_core` functions have no `action` parameter
-      to call it on. Drop those two inline `action.remove()` calls when moving those
-      branches — the wrapper's own `try: ... finally: await action.remove()` already covers
-      those paths once control returns from the core function, so keeping the inline call
-      too would double-call `.remove()`. This is a mechanical necessity of the new
-      signature, not a behavior change — verify by confirming the existing
-      `test_execute_cancel_order_missing_order_id_sends_error`-style tests still pass with
-      `action.remove.assert_called_once()`, i.e. exactly once, not twice.)
+      today. **Correction to this step, 2026-07-22 (twice-corrected — the first correction
+      itself undercounted, caught by the spec-compliance review, not just the
+      implementer):** the missing-`order_id`/missing-`conid` early-return branches in
+      `execute_cancel_order`/`execute_modify_order` DO move into the `_core` functions per
+      step (a)'s line-boundary rule — but they originally called `await action.remove()`
+      inline, and the `_core` functions have no `action` parameter to call it on. There are
+      **three** such branches, not two: `execute_cancel_order`'s missing-`order_id` guard,
+      and `execute_modify_order`'s missing-`order_id` guard *and* its separate
+      missing-`conid` guard (cancel has no conid guard — cancellation never uses `conid` at
+      all). Drop all three inline `action.remove()` calls when moving those branches — the
+      wrapper's own `try: ... finally: await action.remove()` already covers those paths
+      once control returns from the core function, so keeping the inline calls too would
+      double-call `.remove()`. This is a mechanical necessity of the new signature, not a
+      behavior change — verify by confirming the existing
+      `test_execute_cancel_order_missing_order_id_sends_error`-style tests (all three
+      branches have one) still pass with `action.remove.assert_called_once()`, i.e. exactly
+      once, not twice.)
 
 3. Add one shared helper, used by all three thin wrappers:
    ```python
