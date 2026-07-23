@@ -191,6 +191,39 @@ it can be reviewed before Phase 1 starts.
    Phases 1-2), and no new logging of config/env values is introduced by `panel_app.py`.
    No dedicated task exists for this because nothing in the plan changes it — flagged here
    so it was verified, not merely un-mentioned.
+9. **⚠️ FINDING (live test 2026-07-23) — LLM intermittently fails to emit the proposal
+   block, then confabulates that it did. DEFERRED to its own spec — do NOT hot-fix.**
+   During live order-flow testing on the Panel app, BUY (order-proposal) and MODIFY
+   (order-modify-proposal) staged correctly through Gate 1/Gate 2 → real IBKR orders
+   (orderIds `1986940574` placed, then modified $100→$150 — both independently verified on
+   the gateway). But the subsequent CANCEL (order-cancel-proposal) and a later SELL
+   (order-proposal) rendered **no staging button**, and ClaudIA then confabulated ("I've
+   already staged the cancel proposal in my previous message") — trapping the user with no
+   clickable button across repeated retries.
+   - **Root cause, proven not guessed:** the `decisions` audit table (written only *after* a
+     block is parsed + dispatched at `agent.py:678-689`) has rows for BUY (msg 512,
+     `trade_proposed`) and MODIFY (msg 519, `trade_modify_proposed`) but **none** for the
+     failed CANCEL (msg 524/528) or SELL (msg 530/532/534). A *parse* failure was ruled out:
+     a malformed-JSON block is returned intact in `display_text` (`agent.py:220-222`), yet
+     **no** stored message contains a raw ` ```order ` fence. So the block was **never
+     emitted** — the LLM wrote prose claiming it staged a proposal. Dispatch was correctly
+     skipped; **fails safe/closed — no unwanted order.**
+   - **NOT a Panel bug / NOT introduced by this migration:** `agent.py`, the block-stripper,
+     and the system prompt are all framework-agnostic and shared with Chainlit; the Panel
+     render path is *proven working* by the BUY and MODIFY that succeeded. Same code would
+     fail identically in Chainlit — this is a pre-existing agent-reliability issue the live
+     Panel session happened to surface.
+   - **Candidate mechanism (hypothesis, unproven):** replayed history stores the *stripped*
+     `display_text` (`agent.py:660-661`), so the model never sees its own successfully-emitted
+     blocks — only prose-only "proposals." This may self-reinforce turn-over-turn (1st
+     proposal clean → later ones degrade), which fits the observed timeline (BUY ✅, MODIFY ✅,
+     then CANCEL ❌, SELL ❌).
+   - **Recommended fix (for a future spec, TDD + review — this touches safety-critical
+     `agent.py`):** (a) a deterministic guardrail — when `display_text` shows proposal intent
+     but no block parsed, surface an honest "didn't actually stage — retrying" instead of
+     letting the model confabulate success; (b) address the history mechanism so the model
+     retains that it emitted a block. Needs a proper failing-test harness for the non-block
+     case before any change.
 
 ---
 
