@@ -2645,6 +2645,17 @@ living-document protocol — outline only here):
 
 ### Task 5.1: `_init_session` scaffolding — immediate render, background init, gated input
 
+**✅ Completed 2026-07-23.** Commits `b3e814a` (implementation) + `1a646fd` (review
+hardening). Full cycle: implement → spec review (COMPLIANT) → quality review (Approve, 3
+Important + 5 Minor, all applied). Step 0's assumption proven at the strongest evidence
+level (real Playwright browser confirmed the background task's `chat.send` renders in the
+live page). Key hardening beyond the plan's own code: a module-level `_init_lock`
+serializing GDrive-download→first-store-open across concurrent sessions — the review
+caught that `asyncio.to_thread` opens an interleaving window `app.py`'s synchronous
+download never had (the plan's "parity" framing was factually wrong); plus a D1
+call-order regression test, Drive-failure-nonfatal test, and hang-proofed tests
+(`wait_for` timeouts). Tests 3 → 7 in `test_panel_app.py`; full suite 371 → 375.
+
 **Files:**
 
 - Modify: `claudia/panel_app.py` (`_build_chat_app` shrinks; new `_init_session`; new
@@ -2652,7 +2663,7 @@ living-document protocol — outline only here):
 - Modify: `tests/test_panel_app.py` (3 existing tests rework to async; new failure-path +
   gating tests)
 
-- [ ] **Step 0: Empirically verify background-task `chat.send` reaches the rendered page**
+- [x] **Step 0: Empirically verify background-task `chat.send` reaches the rendered page**
 
 The resolved design asserts "the task pushes the real status block into the same chat once
 ready" — never actually verified. Build a throwaway probe (scratch file, not committed):
@@ -2667,7 +2678,7 @@ If it works (expected — the task runs on the session's own event loop and Pane
 triggers param updates that Panel schedules correctly), note the result in this step and
 proceed.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Rework `tests/test_panel_app.py`. The existing 3 tests assume everything happens
 synchronously inside `_build_chat_app()`; after this task, only chat construction +
@@ -2828,14 +2839,14 @@ Note `import contextlib` joins the test module's imports for the ExitStack varia
 drop `_patch_happy_path` and inline the four patches everywhere — implementer's choice,
 match whichever reads cleaner; the shown code compiles either way.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `pytest tests/test_panel_app.py -v`
 Expected: the reworked tests fail against the current synchronous `_build_chat_app`
 (e.g. `create_session` called at build time, no gating, no Setup-required path; the two
 new failure-path tests fail outright). The wired-callback test may still pass — fine.
 
-- [ ] **Step 3: Implement in `claudia/panel_app.py`**
+- [x] **Step 3: Implement in `claudia/panel_app.py`**
 
 New module-level pieces (imports join the existing block; global joins
 `_toolkit`/`_conv_store`):
@@ -2953,25 +2964,25 @@ def _build_chat_app() -> pn.chat.ChatInterface:
 
 Delete nothing else — `_get_toolkit`/`_get_store`/`_serve_chat_app` stay as-is.
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `pytest tests/test_panel_app.py -v` — all pass. Count before/after
 (`grep -cE "^(async )?def test_" tests/test_panel_app.py`): 3 before, 5 after.
 
-- [ ] **Step 5: Full unit suite**
+- [x] **Step 5: Full unit suite**
 
 Run: `pytest -m "not integration" -q`
 Expected: 371 baseline + 2 net new = 373, 0 failures. `ruff check` + `mypy` on both
 touched files: clean.
 
-- [ ] **Step 6: Manual smoke (no gateway needed)**
+- [x] **Step 6: Manual smoke (no gateway needed)**
 
 `uvicorn claudia.panel_app:app --port 8001` → page renders the welcome line immediately;
 a message typed instantly still gets processed (after a beat) rather than erroring —
 confirms the gate. With `docs/context.md` temporarily renamed, reload → "Setup required"
 message appears and a typed message gets the honest failure reply (rename back after).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add claudia/panel_app.py tests/test_panel_app.py
