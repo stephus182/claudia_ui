@@ -47,7 +47,8 @@ log = logging.getLogger(__name__)
 load_dotenv(override=False)
 
 _MODEL = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
-_DOCS_PATH = os.environ.get("CLAUDIA_DOCS_PATH", "docs")
+_DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))
+_VERSIONS_PATH = _DOCS_PATH / "versions"
 _DB_PATH = Path(os.environ.get("CLAUDIA_DB_PATH", "data/claudia.db"))
 _PANEL_PORT = int(os.environ.get("CLAUDIA_PANEL_PORT", "8001"))
 
@@ -83,6 +84,26 @@ def _get_store() -> ConversationStore:
     if _conv_store is None:
         _conv_store = ConversationStore(_DB_PATH)
     return _conv_store
+
+
+# Duplicated VERBATIM from claudia/app.py's _write_version_snapshot (using this
+# module's own _VERSIONS_PATH) — deliberate duplication-for-independence, same
+# rationale as _get_toolkit's docstring: panel_app must never import claudia.app,
+# which imports chainlit.
+def _write_version_snapshot(version: str, context_text: str, principles_text: str) -> None:
+    """Write human-readable snapshot to docs/versions/{version}/. No-op if already exists."""
+    try:
+        version_dir = _VERSIONS_PATH / version
+        ctx_file = version_dir / "context.md"
+        pri_file = version_dir / "principles.md"
+        if ctx_file.exists() and pri_file.exists():
+            return
+        version_dir.mkdir(parents=True, exist_ok=True)
+        ctx_file.write_text(context_text, encoding="utf-8")
+        pri_file.write_text(principles_text, encoding="utf-8")
+        log.info("Written version snapshot: docs/versions/%s/", version)
+    except Exception as exc:
+        log.warning("Could not write version snapshot for %s: %s", version, exc)
 
 
 def _build_chat_app() -> pn.chat.ChatInterface:
@@ -169,7 +190,22 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 toolkit = _get_toolkit()
                 store = _get_store()
 
-            loader = ContextLoader(_DOCS_PATH)
+            # Read context/principles from Drive every session so each session picks up
+            # the latest version (app.py:256-262 parity; read_text falls back to the
+            # local file itself when Drive is unreachable or the file is absent).
+            drive_context: str | None = None
+            drive_principles: str | None = None
+            if _gdrive_sync is not None:
+                drive_context = await asyncio.to_thread(
+                    _gdrive_sync.read_text, "context.md", _DOCS_PATH / "context.md"
+                )
+                drive_principles = await asyncio.to_thread(
+                    _gdrive_sync.read_text, "principles.md", _DOCS_PATH / "principles.md"
+                )
+
+            loader = ContextLoader(
+                _DOCS_PATH, context_text=drive_context, principles_text=drive_principles
+            )
             try:
                 loader.load_system_prompt()  # validate docs exist before proceeding
             except FileNotFoundError as exc:
@@ -181,7 +217,29 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 )
                 return
 
-            store.create_session(session_id)  # Task 5.2 adds context_hash/doc_version
+            # Register document version (idempotent) + snapshot + hash-change alert
+            context_text, principles_text = loader.get_effective_texts()
+            current_hash = loader.compute_hash()
+            version_label = store.register_doc_version_if_new(
+                current_hash, context_text, principles_text
+            )
+            log.info("Active document version: %s", version_label)
+            _write_version_snapshot(version_label, context_text, principles_text)
+
+            prev_hash = store.get_last_context_hash()
+            if prev_hash is not None and prev_hash != current_hash:
+                prev_version = store.get_version_label(prev_hash) or f"unknown ({prev_hash[:8]})"
+                chat.send(
+                    f"**WARNING: context.md / principles.md changed: "
+                    f"{prev_version} → {version_label}.**\n"
+                    "Please verify the content before continuing.",
+                    user="System",
+                    respond=False,
+                )
+
+            store.create_session(
+                session_id, context_hash=current_hash, doc_version=version_label
+            )
 
             sink = PanelMessageSink(chat=chat, session_id=session_id, store=store)
             _session["store"] = store
@@ -193,6 +251,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 session_id=session_id,
                 sink=sink,
                 model=_MODEL,
+                doc_version=version_label,
             )
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
