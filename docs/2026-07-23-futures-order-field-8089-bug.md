@@ -1,5 +1,13 @@
 # Futures order path — two bugs found in first-ever live FUT test (2026-07-23)
 
+> **STATUS (2026-07-23 EOD): both fixes IMPLEMENTED** — commits `a16599f` (fix) +
+> `89a14bb` (review hardening) on `panel-migration`, full subagent cycle (implement → spec
+> review → code-quality review → hardening), 371 unit tests green (81→91 in
+> test_order_flow.py incl. a 10-case classifier contract test). **Remaining: live FUT
+> re-test through the full gate chain** — gateway was shut down before it could run;
+> re-test on next gateway session (expect a real order id for `BUY 1 ES SEP2026 LMT 6000
+> GTC`, or an honest REJECTED message — no false success either way).
+
 **Context:** First live test of the futures order-staging path (STK BUY/MODIFY had been
 validated; FUT/FOP never had been). Done on the Panel app against the live IBKR gateway.
 Both bugs are in `claudia/order_flow.py`, which is **shared code** (Chainlit + Panel) — not
