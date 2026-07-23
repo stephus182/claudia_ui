@@ -1051,6 +1051,17 @@ async def test_execute_cancel_order_core_calls_client_with_account_and_order_id(
     client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
 
 
+def test_execute_cancel_order_core_never_touches_action_or_removes_anything():
+    """Mirrors the staged-order core's contract test — same no-action-param guarantee."""
+    import inspect
+
+    from claudia.order_flow import _execute_cancel_order_core
+    sig = inspect.signature(_execute_cancel_order_core)
+    assert "action" not in sig.parameters
+    assert "proposal" in sig.parameters
+    assert "send_status" in sig.parameters
+
+
 @pytest.mark.asyncio
 async def test_execute_modify_order_core_builds_fresh_body_not_raw_proposal():
     from claudia.order_flow import _execute_modify_order_core
@@ -1067,3 +1078,14 @@ async def test_execute_modify_order_core_builds_fresh_body_not_raw_proposal():
     _, _, order_body = client.modify_order_and_confirm.call_args.args
     assert "_changed_fields" not in order_body
     assert "_previous_values" not in order_body
+
+
+def test_execute_modify_order_core_never_touches_action_or_removes_anything():
+    """Mirrors the staged-order core's contract test — same no-action-param guarantee."""
+    import inspect
+
+    from claudia.order_flow import _execute_modify_order_core
+    sig = inspect.signature(_execute_modify_order_core)
+    assert "action" not in sig.parameters
+    assert "proposal" in sig.parameters
+    assert "send_status" in sig.parameters
