@@ -213,9 +213,9 @@ def _write_version_snapshot(version: str, context_text: str, principles_text: st
 async def _chainlit_connectivity_alert(msg: str) -> None:
     """ConnectivityChecker subscriber: renders a connectivity state-transition alert as
     a Chainlit chat message. The only Chainlit-specific code touching connectivity
-    alerts — mirrors ChainlitMessageSink (claudia/message_sink.py) being the only place
-    that imports chainlit directly, which is what keeps claudia/agent.py itself
-    chainlit-agnostic."""
+    alerts — mirrors how ChainlitMessageSink (claudia/message_sink.py) is the sole
+    Chainlit dependency of the core agent loop, keeping claudia/agent.py itself
+    chainlit-agnostic (it imports zero chainlit)."""
     await cl.Message(content=msg, author="System").send()
 
 

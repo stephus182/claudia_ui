@@ -229,6 +229,30 @@ async def test_send_alert_unsubscribed_callback_stops_receiving(checker):
 
 
 @pytest.mark.asyncio
+async def test_send_alert_subscriber_unsubscribing_itself_midloop_does_not_skip_others(checker):
+    """A subscriber that unsubscribes itself *during* its own notify callback must not
+    corrupt the in-progress iteration — the copy in `for subscriber in list(...)` is what
+    guarantees a second subscriber, registered after it, still gets notified in the same
+    _send_alert call. (Fails if _send_alert iterates the live list instead of a copy.)"""
+    received = []
+    async def _self_unsubscribing(msg: str) -> None:
+        received.append(("first", msg))
+        unsubscribe_first()  # mutate the subscriber list mid-notify
+    unsubscribe_first = checker.subscribe(_self_unsubscribing)
+
+    async def _second(msg: str) -> None:
+        received.append(("second", msg))
+    checker.subscribe(_second)
+
+    await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
+
+    # Both notified this call; the mid-loop removal didn't skip the second subscriber.
+    assert [tag for tag, _ in received] == ["first", "second"]
+    # And the self-unsubscribe did take effect for future calls.
+    assert _self_unsubscribing not in checker._subscribers
+
+
+@pytest.mark.asyncio
 async def test_send_alert_one_subscriber_exception_does_not_block_others(checker):
     """Mirrors the existing try/except-per-send pattern _send_alert already has for its
     single external call site today — a failing subscriber must not prevent other
