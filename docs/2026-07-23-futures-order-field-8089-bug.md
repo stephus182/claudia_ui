@@ -40,34 +40,50 @@ Reproduced twice (initial stage + "proceed" re-stage). `order_id: "0"` = not pla
   *do* only add the fields for FUT/FOP, yet IBKR still rejected them as if the order were
   non-futures. **IBKR is not classifying our ES order as a future during validation.**
 
-### Leading hypothesis (NOT yet confirmed — must verify before fixing)
-The order body we send (`order_flow.py:266-284`) contains a bare `conid` and **no `secType`
-and no `conidex`**:
-```
-conid, orderType, side, tif, quantity, ticker, acctId, cOID, manualIndicator, extOperator, price
-```
-The official docs' order example includes **both** `"conidex": "<conid>@<exchange>"` and
-`"secType"`. Our STK orders work without them (bare conid is enough for equities), but a FUT
-order may need `secType: "FUT"` and/or `conidex: "<conid>@CME"` for IBKR to apply the 536-B
-futures validation path and accept the compliance fields. **This is a hypothesis** — confirm
-before changing safety-critical order code.
+### ROOT CAUSE PROVEN (2026-07-23, empirical `whatif` isolation — hypothesis testing below)
+Verified with IBKR's `whatif` preview endpoint
+(`POST /iserver/account/{acctId}/orders/whatif` — validates the order body, places nothing),
+run against the live gateway on the exact ES body, one variable at a time:
 
-### Verification plan (do FIRST, before any code change)
-1. Re-scrape the place-order endpoint doc for the `secType` and `conidex` field definitions
-   and any FUT-specific order-body requirements (via `ibkr_core_mcp.web_scraper`, key in
-   `.env`). Confirm the exact required format (`"FUT"` vs `"<conid>@FUT"`, exchange in
-   `conidex`).
-2. Optionally confirm empirically with the IBKR **whatif/preview** endpoint
-   (`POST /iserver/account/{acctId}/orders/whatif`) — validates an order body WITHOUT placing
-   it. Preview the ES body with vs without `secType`/`conidex` and see which clears the 8089
-   rejection. Safe (no order placed), and turns the hypothesis into a certainty.
+| Variant | Result |
+|---|---|
+| Current body (bare conid, manualIndicator + extOperator) | ❌ 8089 |
+| + `secType: "FUT"` | ❌ 8089 |
+| + `conidex: "<conid>@CME"` | ❌ 8089 |
+| + both | ❌ 8089 |
+| **No compliance fields at all** | ✅ accepted (full margin preview) |
+| **`manualIndicator: True` only** | ✅ **accepted** |
+| `extOperator: "ClaudIA"` only | ❌ 8089 |
+| `extOperator: "person1234"` (IBKR docs' own example value) | ❌ 8089 |
+| `extOperator: "1"` | ❌ 8089 |
+| `extOperator: ""` (empty) | ✅ accepted (treated as absent) |
 
-### Fix (after verification) — `claudia/order_flow.py`
-Add the correct futures classification field(s) to the FUT/FOP branch at
-`order_flow.py:277-284` (and mirror in the modify body at `:641-644`). Exact field per step-1
-verification. TDD: add a test asserting the FUT order body includes the classification field;
-this path currently has no such test (which is why it shipped un-caught — "we never
-live-checked futures").
+**Conclusion: field #8089 is `extOperator`.** This account's gateway rejects the field with
+*any non-empty value* — including IBKR's own documentation example — regardless of
+`secType`/`conidex`. `manualIndicator` alone is accepted. The initial hypothesis (missing
+`secType`/`conidex` causing a non-futures classification) is **disproven** — adding them
+changes nothing in either direction.
+
+Docs reconciliation: the official place-order doc marks `extOperator` "Required\*" for
+FUT/FOP under CME Rule 536-B, yet the same gateway rejects it here. The probable reading is
+that the asterisk scopes it to institutional/multi-operator account setups (the field
+"identifies the submitting user in charge" — meaningful only where distinct operators exist);
+for an individual account the gateway forbids it. Whatever the docs' intent, the live
+gateway's behavior is unambiguous and empirically pinned above.
+
+Bonus validation: the accepted variants returned a real margin preview for the ES order
+(1 ES @ 6000 = $300k notional; initial margin $50,663 → $84,193) — confirming the *rest* of
+the FUT order body (bare conid, int quantity, LMT/GTC, ticker, cOID) is correct as-is.
+
+### Fix (proven, ready for TDD) — `claudia/order_flow.py`
+In the FUT/FOP branch at `order_flow.py:277-284` (and its mirror in the modify body at
+`:641-644`): **keep `manualIndicator = True`, remove `extOperator`.** TDD: add tests
+asserting the FUT order body contains `manualIndicator` and does NOT contain `extOperator`
+(this path had no body-shape test, which is why it shipped un-caught — "we never
+live-checked futures"). Also update `client.py`'s `place_order` docstring (it currently
+says callers must include both fields for FUT/FOP) and the field-spec comment table at
+`order_flow.py:245-264`. Final confirmation is a live FUT re-test through the full gate
+chain once implemented.
 
 ---
 

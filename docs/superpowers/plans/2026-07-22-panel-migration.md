@@ -246,14 +246,17 @@ it can be reviewed before Phase 1 starts.
     [`docs/2026-07-23-futures-order-field-8089-bug.md`](../../2026-07-23-futures-order-field-8089-bug.md).**
     Test order `BUY 1 ES SEP2026 LMT 6000 GTC` — staging/gates/`place_order` all worked;
     IBKR rejected the order (`order_id: "0"`, not placed, verified on gateway).
-    - **Bug A (FUT-specific):** IBKR rejects with `"Can not contain field # 8089"`. Confirmed
-      via authoritative source (SO 79659438) that #8089 = IBKR rejecting
-      `manualIndicator`/`extOperator` when it classifies the order as **non-futures**. Our
-      code already adds those only for FUT/FOP (`order_flow.py:277-282`) and the fields are
-      docs-correct for 536-B — so the deeper issue is IBKR **not classifying our ES order as
-      a future** during validation. Leading hypothesis (unconfirmed): the order body sends a
-      bare `conid` with **no `secType`/`conidex`** (`order_flow.py:266-284`), which the docs'
-      order example includes. Verify (docs re-scrape + a safe `whatif` preview) before fixing.
+    - **Bug A (FUT-specific) — ROOT CAUSE PROVEN via `whatif` isolation (2026-07-23, user
+      approved):** IBKR rejects with `"Can not contain field # 8089"`. Field #8089 is
+      **`extOperator`** — the gateway rejects it with *any non-empty value* (including IBKR's
+      own docs example `person1234`), while `manualIndicator` alone is **accepted** (full
+      margin preview returned, also validating the rest of the FUT body as-is). The initial
+      missing-`secType`/`conidex` hypothesis was **disproven** (adding them changes nothing).
+      Probable docs reconciliation: `extOperator`'s "Required\*" scopes to
+      institutional/multi-operator accounts; individual accounts reject it. **Proven fix:
+      keep `manualIndicator: True`, drop `extOperator`** (`order_flow.py:277-284` and modify
+      mirror `:641-644`; update `client.py` docstring + field-spec comment). Ten-variant
+      isolation table in the bug doc.
     - **Bug B (all instruments, higher priority):** a **rejected order is reported as "Order
       staged successfully"** (`order_flow.py:302-306`) — the success message is built
       unconditionally after `place_order` returns, and IBKR returns rejections as a
