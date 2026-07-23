@@ -7,40 +7,68 @@ pattern to Panel on top of the framework-agnostic _execute_*_core functions.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+import panel as pn
 
 if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
 
 
 class _PanelToolStepHandle:
-    """Posts a message when a tool call starts, updates it in place when it ends —
-    the same message.object-reassignment technique Panel's own docs use for the
-    order-staging button pattern (research doc, point 4), applied here to a status
-    message instead of a button. Phase 4 replaces this with the dedicated Status
-    component once issue #6291's chrome-level gap is resolved or hand-built.
+    """Wraps a real pn.chat.ChatStep — Panel's built-in equivalent of Chainlit's
+    cl.Step, shipped in panel==1.9.3 (confirmed live, 2026-07-22 — see Phase 4's
+    header note for the verification). Translates the ToolStepHandle protocol's
+    plain .input/.output attribute-setting into ChatStep's own .stream() calls, and
+    delegates to ChatStep's own (synchronous) __enter__/__exit__ for status
+    transitions and exception formatting.
+
+    Deliberately does NOT set a custom failed_title on the underlying ChatStep —
+    verified live that doing so suppresses ChatStep's own automatic
+    exception-message streaming (the self.stream(exc_msg) call in its __exit__ is
+    gated on failed_title being None). Leaving it unset gets a correct
+    auto-generated title *and* the real error text in the body, for free.
     """
 
-    def __init__(self, chat, name: str) -> None:
-        self._chat = chat
-        self._name = name
-        self.input: str = ""
-        self.output: str = ""
-        self._message: Any = None
+    def __init__(self, chat_step: pn.chat.ChatStep) -> None:
+        self._chat_step = chat_step
+        self._input = ""
+        self._output = ""
+        self._input_set = False
+
+    @property
+    def input(self) -> str:
+        return self._input
+
+    @input.setter
+    def input(self, value: str) -> None:
+        self._input = value
+        self._chat_step.stream(f"Input: `{value}`")
+        self._input_set = True
+
+    @property
+    def output(self) -> str:
+        return self._output
+
+    @output.setter
+    def output(self, value: str) -> None:
+        self._output = value
+        # Consecutive string .stream() calls concatenate into one Markdown pane with
+        # no separator (verified live) — supply our own blank-line break.
+        sep = "\n\n" if self._input_set else ""
+        self._chat_step.stream(f"{sep}Output: {value}")
 
     async def __aenter__(self) -> _PanelToolStepHandle:
-        self._message = self._chat.send(
-            f"**Running:** `{self._name}`…", user="System", respond=False
-        )
+        self._chat_step.__enter__()
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
-        self._message.object = (
-            f"**Tool:** `{self._name}`\n\n"
-            f"Input: `{self.input}`\n\n"
-            f"Output: {self.output}"
-        )
-        return False
+        # ChatStep.__exit__ is unannotated upstream (panel/chat/step.py) so mypy sees
+        # its return as Any regardless of how chat_step above is typed — confirmed by
+        # isolated probe, 2026-07-22. Its source always returns an actual bool on every
+        # path (explicit `return False`, or falls through to `return True`), so this
+        # cast is a correctness statement, not a suppression.
+        return bool(self._chat_step.__exit__(exc_type, exc, tb))
 
 
 class PanelMessageSink:
@@ -55,7 +83,14 @@ class PanelMessageSink:
         self._chat.send(text, user="ClaudIA", respond=False)
 
     def tool_step(self, name: str) -> _PanelToolStepHandle:
-        return _PanelToolStepHandle(self._chat, name)
+        chat_step = pn.chat.ChatStep(
+            default_title=f"`{name}`",
+            running_title=f"Running `{name}`…",
+            success_title=f"`{name}`",
+            # failed_title deliberately left unset — see _PanelToolStepHandle's docstring.
+        )
+        self._chat.send(chat_step, user="System", respond=False)
+        return _PanelToolStepHandle(chat_step)
 
     async def send_max_tokens_warning(self) -> None:
         self._chat.send(
