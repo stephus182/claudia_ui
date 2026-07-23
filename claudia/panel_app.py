@@ -190,18 +190,29 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 toolkit = _get_toolkit()
                 store = _get_store()
 
-            # Read context/principles from Drive every session so each session picks up
-            # the latest version (app.py:256-262 parity; read_text falls back to the
-            # local file itself when Drive is unreachable or the file is absent).
-            drive_context: str | None = None
-            drive_principles: str | None = None
-            if _gdrive_sync is not None:
-                drive_context = await asyncio.to_thread(
-                    _gdrive_sync.read_text, "context.md", _DOCS_PATH / "context.md"
-                )
-                drive_principles = await asyncio.to_thread(
-                    _gdrive_sync.read_text, "principles.md", _DOCS_PATH / "principles.md"
-                )
+                # Read context/principles from Drive every session so each session picks
+                # up the latest version (app.py:256-262 parity; read_text falls back to
+                # the local file itself when Drive is unreachable or the file is absent).
+                # Deliberately INSIDE _init_lock: googleapiclient binds a single
+                # AuthorizedHttp/httplib2.Http to the built Drive service, shared by
+                # every .execute(), and httplib2.Http is not thread-safe — concurrent
+                # session inits would run read_text on that one connection from two
+                # worker threads (worst case: interleaved socket reads that still parse,
+                # handing a session the wrong document content silently). Serializing
+                # the per-session reads costs ~nothing for a single-user app.
+                drive_context: str | None = None
+                drive_principles: str | None = None
+                if _gdrive_sync is not None:
+                    drive_context = await asyncio.to_thread(
+                        _gdrive_sync.read_text,
+                        "context.md",
+                        local_path=_DOCS_PATH / "context.md",
+                    )
+                    drive_principles = await asyncio.to_thread(
+                        _gdrive_sync.read_text,
+                        "principles.md",
+                        local_path=_DOCS_PATH / "principles.md",
+                    )
 
             loader = ContextLoader(
                 _DOCS_PATH, context_text=drive_context, principles_text=drive_principles
@@ -226,6 +237,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             log.info("Active document version: %s", version_label)
             _write_version_snapshot(version_label, context_text, principles_text)
 
+            # Must run BEFORE this session's create_session below — get_last_context_hash
+            # reads the newest session row, so inserting ours first would make it see its
+            # own hash and the hash-change warning would never fire again.
             prev_hash = store.get_last_context_hash()
             if prev_hash is not None and prev_hash != current_hash:
                 prev_version = store.get_version_label(prev_hash) or f"unknown ({prev_hash[:8]})"
