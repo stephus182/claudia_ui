@@ -241,6 +241,28 @@ it can be reviewed before Phase 1 starts.
      letting the model confabulate success; (b) address the history mechanism so the model
      retains that it emitted a block. Needs a proper failing-test harness for the non-block
      case before any change.
+10. **⚠️ FINDING (live test 2026-07-23) — first-ever live FUT test surfaced TWO order-path
+    bugs in `order_flow.py` (shared code, not Panel-specific). Full spec:
+    [`docs/2026-07-23-futures-order-field-8089-bug.md`](../../2026-07-23-futures-order-field-8089-bug.md).**
+    Test order `BUY 1 ES SEP2026 LMT 6000 GTC` — staging/gates/`place_order` all worked;
+    IBKR rejected the order (`order_id: "0"`, not placed, verified on gateway).
+    - **Bug A (FUT-specific):** IBKR rejects with `"Can not contain field # 8089"`. Confirmed
+      via authoritative source (SO 79659438) that #8089 = IBKR rejecting
+      `manualIndicator`/`extOperator` when it classifies the order as **non-futures**. Our
+      code already adds those only for FUT/FOP (`order_flow.py:277-282`) and the fields are
+      docs-correct for 536-B — so the deeper issue is IBKR **not classifying our ES order as
+      a future** during validation. Leading hypothesis (unconfirmed): the order body sends a
+      bare `conid` with **no `secType`/`conidex`** (`order_flow.py:266-284`), which the docs'
+      order example includes. Verify (docs re-scrape + a safe `whatif` preview) before fixing.
+    - **Bug B (all instruments, higher priority):** a **rejected order is reported as "Order
+      staged successfully"** (`order_flow.py:302-306`) — the success message is built
+      unconditionally after `place_order` returns, and IBKR returns rejections as a
+      200-with-error-payload (`action: order_submit_issue`, `order_id: "0"`), not an
+      exception, so it's never detected. Mislabels any rejection as success. Fix: inspect
+      `result` for rejection markers before declaring success (cancel/modify too).
+    - **Disposition:** both fail safe on the account (nothing placed), touch the
+      safety-critical order path → proper TDD + review, not a live hot-patch. Live gateway
+      available now for `whatif` verification + final FUT re-test.
 
 ---
 
