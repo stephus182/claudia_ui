@@ -110,6 +110,45 @@ def _resolve_account_id(accounts: list[dict]) -> str:
     return str(account.get("accountId", account.get("acctId", account.get("id", ""))))
 
 
+def _is_ibkr_rejection(result: object) -> bool:
+    """True when an order-endpoint response is an IBKR rejection payload.
+
+    IBKR returns order rejections as an HTTP 200 payload — no exception raised —
+    proven live 2026-07-23 on a FUT order (see
+    docs/2026-07-23-futures-order-field-8089-bug.md). The rejection entry carries
+    ``"action": "order_submit_issue"``, an ``"error"`` string, and
+    ``order_id: "0"`` inside ``cqe.post_payload``. Without classification, the
+    callers below would label any such rejection "staged successfully".
+
+    Accepts both response shapes: place_order_and_confirm() returns a list of
+    dicts; modify_order_and_confirm() and cancel_order() return a single dict.
+
+    Rejection markers (any one ⇒ rejected):
+      - an entry with ``action == "order_submit_issue"``
+      - an entry with a non-empty ``error`` value
+      - no entry carries ``order_status`` AND no non-zero order id is present
+    Success shapes (live-verified): a non-zero ``order_id``/``orderId`` (both key
+    spellings occur across IBKR responses), or an ``order_status`` (e.g.
+    ``"Submitted"``) on a terminal reply-chain entry.
+    """
+    entries = result if isinstance(result, list) else [result]
+    has_order_status = False
+    order_id: object = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("action") == "order_submit_issue":
+            return True
+        if entry.get("error"):
+            return True
+        if entry.get("order_status") is not None:
+            has_order_status = True
+        for key in ("order_id", "orderId"):
+            if entry.get(key) is not None:
+                order_id = entry[key]
+    return not has_order_status and order_id in ("0", 0, None)
+
+
 async def _cl_send_status(text: str, author: str) -> None:
     await cl.Message(content=text, author=author).send()
 
@@ -260,7 +299,12 @@ async def _execute_staged_order_core(
         # listingExchange str     no         default: SMART routing
         # outsideRTH     bool     no         allow execution outside regular trading hours
         # manualIndicator bool    FUT/FOP*   CME Rule 536-B compliance (required since May 1 2025)
-        # extOperator    str      FUT/FOP*   CME Rule 536-B compliance (required since May 1 2025)
+        # extOperator    str      FUT/FOP*   NOT sent — docs mark it "Required*" for 536-B, but
+        #                                    IBKR rejects any non-empty value as undocumented
+        #                                    field 8089 on individual accounts (the "Required*"
+        #                                    evidently scopes to institutional/multi-operator
+        #                                    setups). Proven via whatif isolation 2026-07-23:
+        #                                    docs/2026-07-23-futures-order-field-8089-bug.md
         # Source (536-B): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
         # ----------------------------------------------------------------
         order_body: dict = {
@@ -275,11 +319,13 @@ async def _execute_staged_order_core(
             "_companyName": company_name,             # display only — underscore prefix → stripped
         }
         if sec_type in ("FUT", "FOP"):
-            # Required for US Futures and Futures Options — CME Group Rule 536-B
-            # manualIndicator=True: order submitted through a manual UI (not automated)
-            # extOperator: identifies the submitting user/system
+            # CME Group Rule 536-B — manualIndicator=True: order submitted through a
+            # manual UI (not automated). extOperator is deliberately NOT sent: IBKR
+            # rejects it with any non-empty value as undocumented field 8089 on
+            # non-institutional accounts — proven via whatif isolation 2026-07-23
+            # (manualIndicator alone is accepted); see
+            # docs/2026-07-23-futures-order-field-8089-bug.md
             order_body["manualIndicator"] = True
-            order_body["extOperator"] = "ClaudIA"
             if multiplier is not None:
                 order_body["_multiplier"] = multiplier   # display only — stripped by client.py
         if otype == "LMT" and limit_price is not None:
@@ -298,6 +344,21 @@ async def _execute_staged_order_core(
         order_body["acctId"] = account_id
         log.info("Placing order: %s", {k: v for k, v in order_body.items() if not k.startswith("_")})
         result = ibkr.place_order_and_confirm(account_id, order_body)
+
+        # IBKR returns rejections as HTTP 200 payloads — no exception — so the
+        # result must be classified before claiming success (proven live 2026-07-23;
+        # see _is_ibkr_rejection and docs/2026-07-23-futures-order-field-8089-bug.md).
+        if _is_ibkr_rejection(result):
+            log.warning("IBKR rejected order for %s: %s", symbol, result)
+            await send_status(
+                (
+                    f"**Order REJECTED by IBKR (not placed):** {action_str} {qty} {symbol} ({otype})\n"
+                    f"IBKR response: {json.dumps(result, indent=2)}"
+                ),
+                "System",
+            )
+            # No decision logged — matches the other failure paths in this module.
+            return
 
         success_text = (
             f"**Order staged successfully:** {action_str} {qty} {symbol} ({otype})\n"
@@ -460,6 +521,20 @@ async def _execute_cancel_order_core(
 
         log.info("Cancelling order %s (%s)", order_id, symbol)
         result = ibkr.cancel_order(account_id, order_id, order_details=proposal)
+
+        # Same 200-with-rejection classification as the place path — cancel_order
+        # returns the parsed JSON unconditionally, no exception on a rejection.
+        if _is_ibkr_rejection(result):
+            log.warning("IBKR rejected cancel for order %s: %s", order_id, result)
+            await send_status(
+                (
+                    f"**Cancel FAILED (order may still be working):** order {order_id} ({symbol})\n"
+                    f"IBKR response: {json.dumps(result, indent=2)}"
+                ),
+                "System",
+            )
+            # No decision logged — matches the other failure paths in this module.
+            return
 
         success_text = (
             f"**Order cancelled:** order {order_id} ({symbol})\n"
@@ -639,9 +714,11 @@ async def _execute_modify_order_core(
             "ticker":    symbol,
         }
         if sec_type in ("FUT", "FOP"):
-            # CME Rule 536-B — required since May 1, 2025 (same as place_order).
+            # CME Rule 536-B — manualIndicator only, same as the place path above.
+            # extOperator deliberately NOT sent (IBKR rejects it as undocumented
+            # field 8089 on non-institutional accounts — proven 2026-07-23; see
+            # docs/2026-07-23-futures-order-field-8089-bug.md).
             order_body["manualIndicator"] = True
-            order_body["extOperator"] = "ClaudIA"
         if otype == "LMT" and limit_price is not None:
             order_body["price"] = float(limit_price)
         elif otype == "STP" and stop_price is not None:
@@ -657,6 +734,20 @@ async def _execute_modify_order_core(
 
         log.info("Modifying order %s: %s", order_id, order_body)
         result = ibkr.modify_order_and_confirm(account_id, order_id, order_body)
+
+        # Same 200-with-rejection classification as the place path — modify hits the
+        # same order-submission machinery and can return the same rejection shape.
+        if _is_ibkr_rejection(result):
+            log.warning("IBKR rejected modify for order %s: %s", order_id, result)
+            await send_status(
+                (
+                    f"**Modify REJECTED by IBKR (not applied):** order {order_id} ({symbol})\n"
+                    f"IBKR response: {json.dumps(result, indent=2)}"
+                ),
+                "System",
+            )
+            # No decision logged — matches the other failure paths in this module.
+            return
 
         success_text = (
             f"**Order modified:** order {order_id} ({symbol})\n"
