@@ -995,3 +995,75 @@ async def test_execute_modify_order_remove_called_on_exception():
     action = _make_modify_action()
     await _run_modify(action, ibkr_mod)
     action.remove.assert_called_once()
+
+
+# ── Extracted core functions (Task 3.2) — framework-agnostic, dict + callback in ────
+
+def _make_send_status_recorder():
+    """A send_status callback that records every (text, author) call, for assertions —
+    the framework-agnostic equivalent of this file's existing _sent_contents(mock_cl)
+    helper, which only works against the cl.Message-based wrapper."""
+    calls = []
+
+    async def _send_status(text: str, author: str) -> None:
+        calls.append((text, author))
+
+    return _send_status, calls
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_core_success_calls_send_status():
+    """The extracted core, called directly with a plain dict (no cl.Action, no JSON
+    parsing) and a plain callback (no chainlit), produces the same success behavior."""
+    from claudia.order_flow import _execute_staged_order_core
+    ibkr_mod, _client = _make_ibkr_mock()
+    proposal = {
+        "symbol": "AAPL", "action": "BUY", "quantity": 50,
+        "order_type": "MKT", "limit_price": None, "stop_price": None, "reason": "Test",
+    }
+    send_status, calls = _make_send_status_recorder()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _execute_staged_order_core(proposal, send_status, session_id="s1", store=None)
+    assert any("staged successfully" in text for text, _author in calls)
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_core_never_touches_action_or_removes_anything():
+    """The core function has no cl.Action parameter at all and does not call .remove() —
+    that guarantee now lives entirely in the wrapper (Step 3 below), verified separately."""
+    import inspect
+
+    from claudia.order_flow import _execute_staged_order_core
+    sig = inspect.signature(_execute_staged_order_core)
+    assert "action" not in sig.parameters
+    assert "proposal" in sig.parameters
+    assert "send_status" in sig.parameters
+
+
+@pytest.mark.asyncio
+async def test_execute_cancel_order_core_calls_client_with_account_and_order_id():
+    from claudia.order_flow import _execute_cancel_order_core
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    send_status, _calls = _make_send_status_recorder()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _execute_cancel_order_core(proposal, send_status, session_id="s1", store=None)
+    client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
+
+
+@pytest.mark.asyncio
+async def test_execute_modify_order_core_builds_fresh_body_not_raw_proposal():
+    from claudia.order_flow import _execute_modify_order_core
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    proposal = {
+        "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
+        "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
+        "tif": "GTC", "sec_type": "STK",
+        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+    }
+    send_status, _calls = _make_send_status_recorder()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _execute_modify_order_core(proposal, send_status, session_id="s1", store=None)
+    _, _, order_body = client.modify_order_and_confirm.call_args.args
+    assert "_changed_fields" not in order_body
+    assert "_previous_values" not in order_body
