@@ -1435,11 +1435,18 @@ behavior.
 **Files:**
 - Modify: `claudia/order_flow.py`
 - Modify: `tests/test_order_flow.py` (only to add new tests for the extracted core
-  functions — every one of the 36 existing tests must keep passing completely unmodified,
+  functions — every one of the existing tests must keep passing completely unmodified,
   since they test the public `execute_*` functions' observable behavior, which does not
   change)
 
-- [ ] **Step 1: Write the new tests first (TDD for the new surface; the existing 36 are
+**Verified finding, 2026-07-22 (Task 3.2 execution):** this section originally said "36
+existing tests" / "40 passed" below — wrong, and never actually run before being written;
+the real count is **70** existing tests (`grep -cE "^(async )?def test_" tests/test_order_flow.py`
+at the pre-task commit), becoming **74** after this task's 4 new ones. Corrected throughout
+below. Lesson for future phases: run the actual count, don't estimate one from reading
+source — exactly the discipline this plan otherwise held itself to for Panel API claims.
+
+- [ ] **Step 1: Write the new tests first (TDD for the new surface; the existing tests are
   the regression guard for the surface that must not change)**
 
 Add to `tests/test_order_flow.py`:
@@ -1567,11 +1574,16 @@ to avoid). Do this mechanically:
       (same pattern for `_execute_cancel_order_core`/`_execute_modify_order_core` —
       identical signature shape, just the body differs per the original function.)
 
-   c. Within the moved block, replace every `await cl.Message(content=X, author=Y).send()`
+   c. Within the moved block, replace **every** `await cl.Message(content=X, author=Y).send()`
       call with `await send_status(X, Y)` — same two positional values, same order,
-      nothing else about those lines changes. (There are 2 such calls in each of the
-      three original functions: one "Initiating..."/progress message before the IBKR
-      call, one success-or-error message after.) Do **not** touch anything else in the
+      nothing else about those lines changes. **Verified finding, 2026-07-22:** an earlier
+      draft of this step said "there are 2 such calls in each function" — wrong, never
+      actually counted; the real count is 6 in `execute_staged_order`, 4 in
+      `execute_cancel_order`, 5 in `execute_modify_order` (progress/success/error messages
+      plus every early-return branch's message — FOP-guard, futures-not-found,
+      contract-not-found, missing-order_id, missing-conid, etc.). The governing instruction
+      ("every" call) was always correct; only the illustrative parenthetical was wrong —
+      convert all of them, per function, not just two. Do **not** touch anything else in the
       moved block — the conid resolution branches, the `order_body` dict construction,
       the CME 536-B field logic, the `_resolve_account_id`/`_classify_execution_error`
       calls, the `store.add_decision(...)` calls: all byte-identical to before, just
@@ -1601,10 +1613,17 @@ to avoid). Do this mechanically:
       ```
       (same pattern for `execute_cancel_order`/`execute_modify_order`, matching each
       one's own existing top-of-function payload-parse-failure branch exactly as it is
-      today — do not change those error messages or the missing-`order_id`/missing-`conid`
-      early-return branches; those already correctly live inside the `_core` functions
-      per step (a)'s line-boundary rule, since they run only after successful JSON
-      parsing.)
+      today. **Correction to this step, 2026-07-22:** the missing-`order_id`/missing-`conid`
+      early-return branches in `execute_cancel_order`/`execute_modify_order` DO move into
+      the `_core` functions per step (a)'s line-boundary rule — but they originally called
+      `await action.remove()` inline, and the `_core` functions have no `action` parameter
+      to call it on. Drop those two inline `action.remove()` calls when moving those
+      branches — the wrapper's own `try: ... finally: await action.remove()` already covers
+      those paths once control returns from the core function, so keeping the inline call
+      too would double-call `.remove()`. This is a mechanical necessity of the new
+      signature, not a behavior change — verify by confirming the existing
+      `test_execute_cancel_order_missing_order_id_sends_error`-style tests still pass with
+      `action.remove.assert_called_once()`, i.e. exactly once, not twice.)
 
 3. Add one shared helper, used by all three thin wrappers:
    ```python
@@ -1620,11 +1639,12 @@ Expected: `4 passed`
 - [ ] **Step 5: Run the full existing suite — this is the real verification**
 
 Run: `pytest tests/test_order_flow.py -v`
-Expected: **all 36 original tests plus the 4 new ones = 40 passed, 0 failed.** Every
-single original test must pass with **zero modification to the test file's existing
-code** — if any original test needs to change to pass, the extraction was not
-behavior-preserving and something is wrong; stop and report rather than editing a test
-to match a changed behavior.
+Expected: **all 70 original tests plus the 4 new ones = 74 passed, 0 failed** (corrected
+count, see the Verified finding above this task's Files section). Every single original
+test must pass with **zero modification to the test file's existing code** — if any
+original test needs to change to pass, the extraction was not behavior-preserving and
+something is wrong; stop and report rather than editing a test to match a changed
+behavior.
 
 - [ ] **Step 6: Run the full unit suite**
 
