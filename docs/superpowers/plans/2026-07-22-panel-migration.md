@@ -1664,17 +1664,492 @@ git add claudia/order_flow.py tests/test_order_flow.py
 git commit -m "refactor: extract order_flow.py's execution core from its Chainlit wrapper"
 ```
 
-### Task 3.3 and beyond: outline only — detail once Task 3.2 lands
+### Task 3.3: Real order-staging buttons in Panel, wired to the extracted core
 
-The remaining Phase 3 work — `claudia/panel_sink.py`'s three placeholder methods replaced
-with real `pn.Row(Button, Button)` rendering wired to the now-extracted `_execute_*_core`
-functions, a new `claudia/panel_order_flow.py` (or the wiring may fit directly in
-`panel_sink.py` — decide during detailing, informed by how Task 3.2's extraction actually
-shapes the shared functions' call surface), and `tests/test_panel_order_flow.py` — gets
-detailed next, after Task 3.2 is reviewed and landed. Not written speculatively now, per
-this plan's living-document protocol: the exact shape of the `_core` functions' call
-signature (confirmed only once Task 3.2 actually exists) determines exactly what the
-Panel-side button callbacks need to close over and pass in.
+**Design decision, made explicit per Task 3.2's code-quality review request** (rather than
+letting it happen implicitly): `SendStatus` (`order_flow.py`) and `MessageSink`
+(`message_sink.py`) stay two separate abstractions. They serve genuinely different call
+sites — post-button-click order execution vs. per-turn agent streaming — and forcing the
+safety-critical `_execute_*_core` functions to depend on `MessageSink`'s full surface
+(`tool_step`, `send_order_proposal`, ...) would add irrelevant coupling to the most
+sensitive code path in the app. `claudia/panel_order_flow.py` (new, below) uses a small
+named factory (`_make_send_status`, mirroring `order_flow.py`'s `_cl_send_status`) rather
+than an inline lambda, per the same review's suggestion.
+
+**Why `PanelMessageSink` needs a `store` reference it didn't need before:** Chainlit's
+`execute_staged_order` re-fetches `store` fresh from `cl.user_session.get("store")` at
+button-click time (`app.py`'s `@cl.action_callback` handlers) — there is no equivalent
+"look up session state again at click time" mechanism in Panel; a Panel button's `on_click`
+callback is a plain Python closure created once, at render time. So `store` must be
+captured in that closure *when the proposal is rendered*, not fetched later — which means
+`PanelMessageSink` itself now needs a `store` reference (it didn't in Phase 2, since the
+placeholder methods never touched the database), threaded in from `panel_app.py`'s
+`_build_chat_app()`, which already has a local `store` variable.
+
+**Files:**
+- Create: `claudia/panel_order_flow.py`
+- Modify: `claudia/panel_sink.py` (add `store` param to `__init__`; replace the 3
+  placeholder methods)
+- Modify: `claudia/panel_app.py` (pass `store=store` when constructing `PanelMessageSink`)
+- Create: `tests/test_panel_order_flow.py`
+- Modify: `tests/test_panel_sink.py` (the 3 placeholder-behavior tests for
+  `send_order_proposal`/`send_cancel_proposal`/`send_modify_proposal` now test different,
+  real behavior — delegation to `panel_order_flow`'s render functions — not the old "not
+  yet available" text)
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `tests/test_panel_order_flow.py` (new file):
+
+```python
+"""Tests for panel_order_flow.py — Panel-side order-staging button rendering.
+
+Mirrors tests/test_order_flow.py's mocking conventions (_make_ibkr_mock-style patch.dict
+on sys.modules) since render_*_proposal here calls straight through to order_flow.py's
+already-tested _execute_*_core functions — these tests verify the Panel-specific wiring
+(buttons constructed, on_click bound, message sent, buttons disabled after click), not the
+order-placement logic itself (that's test_order_flow.py's job, already covered).
+"""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from claudia.panel_order_flow import (
+    render_cancel_proposal,
+    render_modify_proposal,
+    render_order_proposal,
+)
+
+
+def _make_chat():
+    chat = MagicMock()
+    chat.send = MagicMock()
+    return chat
+
+
+def _make_ibkr_mock():
+    """Same shape as test_order_flow.py's helper of the same name — a successful,
+    minimal STK order path, since these tests only need the *call* to succeed, not
+    every branch (that's already covered in test_order_flow.py)."""
+    mod = MagicMock()
+    client = MagicMock()
+    mod.IBKRClient.return_value = client
+    mod.BrowserCookieAuth = MagicMock()
+    mod.Config.from_env.return_value = MagicMock()
+    client.search_contract.return_value = [{"conid": 265598, "companyName": "APPLE INC"}]
+    client.get_accounts.return_value = [{"accountId": "U12345"}]
+    client.place_order_and_confirm.return_value = [{"orderId": "999"}]
+    client.cancel_order.return_value = {"order_id": "242538143", "msg": "Cancelled"}
+    client.modify_order_and_confirm.return_value = {"order_id": "242538143", "order_status": "Submitted"}
+    return mod, client
+
+
+def _get_click_callback(button):
+    """Extract the real on_click callback from a live pn.widgets.Button, for direct
+    invocation in a unit test (no browser, no running Panel server).
+
+    Verified live, 2026-07-22, against the installed panel==1.9.3: Button.on_click(cb)
+    is implemented as `self.param.watch(cb, 'clicks', onlychanged=False)` (confirmed via
+    `inspect.getsource(pn.widgets.Button.on_click)`) — there is no `_on_click` attribute
+    on the button itself. The registered callback lives in
+    `button.param.watchers['clicks']['value']`, a list of param Watcher namedtuples;
+    Panel's own internal sync watchers (name/label/value mirroring etc.) are always
+    registered with `onlychanged=True`, while on_click's own watcher is always
+    `onlychanged=False` — confirmed by direct inspection of that list — so filtering on
+    that flag reliably isolates the one watcher this file's own render_* functions
+    registered, regardless of how many internal watchers Panel itself adds. Calling
+    `.fn` directly and awaiting it (async callbacks are supported natively, confirmed via
+    `param.parameterized`'s `iscoroutinefunction(watcher.fn)` branch) exercises the exact
+    function a real click would invoke, without needing Panel's async_executor/event-loop
+    plumbing that a bare pytest run doesn't have.
+    """
+    watchers = button.param.watchers["clicks"]["value"]
+    matches = [w.fn for w in watchers if not w.onlychanged]
+    assert len(matches) == 1, f"expected exactly 1 on_click watcher, found {len(matches)}"
+    return matches[0]
+
+
+@pytest.mark.asyncio
+async def test_render_order_proposal_sends_message_with_two_buttons():
+    chat = _make_chat()
+    proposal = {"symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "MKT"}
+    await render_order_proposal(chat, proposal, session_id="s1", store=None)
+    chat.send.assert_called_once()
+    args, kwargs = chat.send.call_args
+    assert kwargs["user"] == "ClaudIA — Order Proposal"
+    # sent content is a pn.Column containing a pn.Row of 2 buttons — inspect structurally
+    column = args[0]
+    button_row = column[1]
+    assert len(button_row) == 2
+    assert button_row[0].name == "Stage this order"
+    assert button_row[1].name == "Cancel"
+
+
+@pytest.mark.asyncio
+async def test_render_order_proposal_stage_click_executes_and_disables_buttons():
+    chat = _make_chat()
+    proposal = {
+        "symbol": "AAPL", "action": "BUY", "quantity": 10,
+        "order_type": "MKT", "limit_price": None, "stop_price": None,
+    }
+    ibkr_mod, client = _make_ibkr_mock()
+    await render_order_proposal(chat, proposal, session_id="s1", store=None)
+    column = chat.send.call_args.args[0]
+    stage_btn, cancel_btn = column[1][0], column[1][1]
+
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _get_click_callback(stage_btn)(None)  # simulate a real click
+
+    client.place_order_and_confirm.assert_called_once()
+    assert stage_btn.disabled is True
+    assert cancel_btn.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_render_order_proposal_cancel_click_disables_without_executing():
+    chat = _make_chat()
+    proposal = {"symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "MKT"}
+    await render_order_proposal(chat, proposal, session_id="s1", store=None)
+    column = chat.send.call_args.args[0]
+    stage_btn, cancel_btn = column[1][0], column[1][1]
+
+    await _get_click_callback(cancel_btn)(None)
+
+    assert stage_btn.disabled is True
+    assert cancel_btn.disabled is True
+    # 2 chat.send calls total: the original proposal render + the cancellation notice
+    assert chat.send.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_render_cancel_proposal_sends_message_with_two_buttons():
+    chat = _make_chat()
+    proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
+    column = chat.send.call_args.args[0]
+    button_row = column[1]
+    assert button_row[0].name == "Cancel this order"
+    assert button_row[1].name == "Keep order"
+
+
+@pytest.mark.asyncio
+async def test_render_cancel_proposal_confirm_click_calls_cancel_core():
+    chat = _make_chat()
+    proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    ibkr_mod, client = _make_ibkr_mock()
+    await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
+    column = chat.send.call_args.args[0]
+    cancel_btn = column[1][0]
+
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _get_click_callback(cancel_btn)(None)
+
+    client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
+
+
+@pytest.mark.asyncio
+async def test_render_modify_proposal_sends_message_with_two_buttons():
+    chat = _make_chat()
+    proposal = {
+        "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
+        "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
+        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+    }
+    await render_modify_proposal(chat, proposal, session_id="s1", store=None)
+    column = chat.send.call_args.args[0]
+    button_row = column[1]
+    assert button_row[0].name == "Modify this order"
+    assert button_row[1].name == "Discard"
+
+
+@pytest.mark.asyncio
+async def test_render_modify_proposal_confirm_click_calls_modify_core():
+    chat = _make_chat()
+    proposal = {
+        "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
+        "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
+        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+    }
+    ibkr_mod, client = _make_ibkr_mock()
+    await render_modify_proposal(chat, proposal, session_id="s1", store=None)
+    column = chat.send.call_args.args[0]
+    modify_btn = column[1][0]
+
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _get_click_callback(modify_btn)(None)
+
+    client.modify_order_and_confirm.assert_called_once()
+```
+
+**Resolved, 2026-07-22, before dispatch (not left for the implementer to discover):** the
+click-simulation approach above was verified directly against the installed
+`panel==1.9.3` in this worktree's `.venv` — a throwaway script constructed a real
+`pn.widgets.Button`, registered an async `on_click` callback, extracted it via
+`button.param.watchers['clicks']['value']` filtered by `onlychanged=False` (exactly the
+`_get_click_callback` helper above), and confirmed calling `await callback_fn(None)`
+directly and correctly invokes the exact function a real click would — verified output:
+`"after direct call, clicked count: 1"`. An earlier draft of this task guessed a
+`button._on_click.callback` attribute that does not exist; corrected before dispatch.
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `pytest tests/test_panel_order_flow.py -v`
+Expected: `ModuleNotFoundError: No module named 'claudia.panel_order_flow'`
+
+- [ ] **Step 3: Implement `claudia/panel_order_flow.py`**
+
+```python
+"""Panel counterpart to order_flow.py's Chainlit-native render_*_proposal functions.
+
+Reuses order_flow.py's framework-agnostic pieces directly: _format_*_summary (pure
+formatting, already tested) and _execute_*_order_core (the actual safety-critical
+order-placement logic, extracted in a prior task specifically so this file never
+re-derives it — see that task's rationale). Only the rendering (buttons embedded in a
+chat message) and the send_status wiring are Panel-specific.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import panel as pn
+
+from claudia.order_flow import (
+    SendStatus,
+    _execute_cancel_order_core,
+    _execute_modify_order_core,
+    _execute_staged_order_core,
+    _format_cancel_summary,
+    _format_modify_summary,
+    _format_order_summary,
+)
+
+if TYPE_CHECKING:
+    from claudia.conversation_store import ConversationStore
+
+
+def _make_send_status(chat) -> SendStatus:
+    """Bind a send_status callback to one specific chat session — the Panel
+    counterpart to order_flow.py's module-level _cl_send_status, which doesn't need
+    binding since Chainlit's cl.Message is already session-scoped via contextvars."""
+    async def _send_status(text: str, author: str) -> None:
+        chat.send(text, user=author, respond=False)
+    return _send_status
+
+
+async def render_order_proposal(
+    chat,
+    proposal: dict,
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """Render an order proposal as a Panel chat message with staging/cancel buttons."""
+    summary_pane = pn.pane.Markdown(_format_order_summary(proposal))
+    stage_btn = pn.widgets.Button(name="Stage this order", button_type="success")
+    cancel_btn = pn.widgets.Button(name="Cancel", button_type="light")
+    send_status = _make_send_status(chat)
+
+    async def _on_stage(event) -> None:
+        try:
+            await _execute_staged_order_core(proposal, send_status, session_id, store)
+        finally:
+            stage_btn.disabled = True
+            cancel_btn.disabled = True
+
+    async def _on_cancel(event) -> None:
+        chat.send("Order proposal cancelled.", user="ClaudIA", respond=False)
+        stage_btn.disabled = True
+        cancel_btn.disabled = True
+
+    stage_btn.on_click(_on_stage)
+    cancel_btn.on_click(_on_cancel)
+
+    chat.send(
+        pn.Column(summary_pane, pn.Row(stage_btn, cancel_btn)),
+        user="ClaudIA — Order Proposal",
+        respond=False,
+    )
+
+
+async def render_cancel_proposal(
+    chat,
+    proposal: dict,
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """Render a cancel proposal as a Panel chat message with cancel/keep buttons."""
+    summary_pane = pn.pane.Markdown(_format_cancel_summary(proposal))
+    cancel_btn = pn.widgets.Button(name="Cancel this order", button_type="danger")
+    keep_btn = pn.widgets.Button(name="Keep order", button_type="light")
+    send_status = _make_send_status(chat)
+
+    async def _on_cancel_click(event) -> None:
+        try:
+            await _execute_cancel_order_core(proposal, send_status, session_id, store)
+        finally:
+            cancel_btn.disabled = True
+            keep_btn.disabled = True
+
+    async def _on_keep_click(event) -> None:
+        chat.send("Cancel proposal dismissed — order left unchanged.", user="ClaudIA", respond=False)
+        cancel_btn.disabled = True
+        keep_btn.disabled = True
+
+    cancel_btn.on_click(_on_cancel_click)
+    keep_btn.on_click(_on_keep_click)
+
+    chat.send(
+        pn.Column(summary_pane, pn.Row(cancel_btn, keep_btn)),
+        user="ClaudIA — Cancel Proposal",
+        respond=False,
+    )
+
+
+async def render_modify_proposal(
+    chat,
+    proposal: dict,
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """Render a modify proposal as a Panel chat message with modify/discard buttons."""
+    summary_pane = pn.pane.Markdown(_format_modify_summary(proposal))
+    modify_btn = pn.widgets.Button(name="Modify this order", button_type="success")
+    discard_btn = pn.widgets.Button(name="Discard", button_type="light")
+    send_status = _make_send_status(chat)
+
+    async def _on_modify_click(event) -> None:
+        try:
+            await _execute_modify_order_core(proposal, send_status, session_id, store)
+        finally:
+            modify_btn.disabled = True
+            discard_btn.disabled = True
+
+    async def _on_discard_click(event) -> None:
+        chat.send("Modify proposal discarded — order left unchanged.", user="ClaudIA", respond=False)
+        modify_btn.disabled = True
+        discard_btn.disabled = True
+
+    modify_btn.on_click(_on_modify_click)
+    discard_btn.on_click(_on_discard_click)
+
+    chat.send(
+        pn.Column(summary_pane, pn.Row(modify_btn, discard_btn)),
+        user="ClaudIA — Modify Proposal",
+        respond=False,
+    )
+```
+
+**Note:** `order_flow.py` must export `SendStatus` (the type alias) for this import to
+work — confirm it's not already prefixed as module-private in a way that blocks importing
+it (it isn't a `_`-prefixed name per Task 3.2's implementation, but verify against the
+actual file rather than assuming).
+
+- [ ] **Step 4: Update `claudia/panel_sink.py`**
+
+Add `store` to the constructor, replace the 3 placeholder methods:
+
+```python
+    def __init__(self, chat, session_id: str, store: ConversationStore | None = None) -> None:
+        self._chat = chat
+        self._session_id = session_id
+        self._store = store
+```
+
+```python
+    async def send_order_proposal(self, proposal: dict) -> None:
+        from claudia.panel_order_flow import render_order_proposal
+        await render_order_proposal(self._chat, proposal, session_id=self._session_id, store=self._store)
+
+    async def send_cancel_proposal(self, proposal: dict) -> None:
+        from claudia.panel_order_flow import render_cancel_proposal
+        await render_cancel_proposal(self._chat, proposal, session_id=self._session_id, store=self._store)
+
+    async def send_modify_proposal(self, proposal: dict) -> None:
+        from claudia.panel_order_flow import render_modify_proposal
+        await render_modify_proposal(self._chat, proposal, session_id=self._session_id, store=self._store)
+```
+
+Add the matching `ConversationStore` `TYPE_CHECKING` import at the top of `panel_sink.py`
+(mirroring how `message_sink.py`/`order_flow.py` already do this — check the existing
+pattern rather than inventing a new one).
+
+Update `tests/test_panel_sink.py`'s 3 placeholder tests
+(`test_send_order_proposal_sends_placeholder_not_available_message` and its
+cancel/modify siblings, added in Task 2.1) — they now test different, real behavior.
+Replace them with delegation tests matching this file's existing style (mock
+`claudia.panel_order_flow.render_order_proposal` etc. and assert it's awaited with the
+right args), the same pattern `tests/test_message_sink.py` already uses for
+`ChainlitMessageSink`'s equivalent methods:
+
+```python
+@pytest.mark.asyncio
+async def test_send_order_proposal_delegates_to_panel_order_flow():
+    chat = _make_chat()
+    sink = PanelMessageSink(chat=chat, session_id="s1", store=None)
+    proposal = {"symbol": "AAPL", "action": "BUY", "quantity": 10}
+    with patch("claudia.panel_order_flow.render_order_proposal", new=AsyncMock()) as mock_render:
+        await sink.send_order_proposal(proposal)
+        mock_render.assert_awaited_once_with(chat, proposal, session_id="s1", store=None)
+```
+(same pattern for cancel/modify — 3 tests total replacing the 3 old placeholder tests).
+
+- [ ] **Step 5: Update `claudia/panel_app.py`**
+
+In `_build_chat_app()`, change:
+```python
+    sink = PanelMessageSink(chat=chat, session_id=session_id)
+```
+to:
+```python
+    sink = PanelMessageSink(chat=chat, session_id=session_id, store=store)
+```
+(`store` is already a local variable in this function from `store = _get_store()` a few
+lines above — no new lookup needed.)
+
+- [ ] **Step 6: Run to verify pass**
+
+Run: `pytest tests/test_panel_order_flow.py -v tests/test_panel_sink.py -v tests/test_panel_app.py -v`
+Expected: `tests/test_panel_order_flow.py` → **7 passed** (new file: 3 order-proposal tests,
+2 cancel-proposal, 2 modify-proposal). `tests/test_panel_sink.py` → **6 passed**, same
+count as before this task (3 placeholder tests replaced in place with 3 delegation tests,
+net zero change — not 9; don't add without removing the old ones). `tests/test_panel_app.py`
+→ **2 passed**, unchanged (this task doesn't add a test there — see the code-quality
+review's likely question about whether `_build_chat_app()`'s `PanelMessageSink(..., store=store)`
+wiring needs its own dedicated test; worth raising there rather than deciding it here).
+
+- [ ] **Step 7: Run the full unit suite**
+
+Run: `pytest -m "not integration" -q`
+Expected: **347 passed** (340 baseline + 7 new in `test_panel_order_flow.py`; `test_panel_sink.py`'s
+3-for-3 test replacement is a net-zero change to the total count), 0 failures.
+
+- [ ] **Step 8: Manual verification — HIGH STAKES, human-only, real Touch ID / real IBKR**
+
+**This is not like Phase 1/2's manual-verification steps.** Clicking "Stage this order" in
+a live, uvicorn-served `panel_app.py` now calls the real, unmocked
+`_execute_staged_order_core` — which calls real `IBKRClient` methods, which trigger real
+Gate 1 (Touch ID prompt) and real Gate 2 (AppKit confirmation dialog), exactly as the
+existing Chainlit app already does today. This is not new risk introduced by the
+migration — it's the same risk the current production Chainlit order-staging flow already
+carries — but it means an agent must not attempt this step, and a human doing it should:
+- Use a deliberately unrealistic limit price (matching this project's own established
+  practice for live write-tests — e.g. a BUY limit far below market, so even a fully
+  confirmed order rests unfilled and does nothing), the same pattern already used earlier
+  in this same live-testing session.
+- Feel free to stop at Gate 1 or Gate 2 without completing them — confirming the prompt
+  *appears* is sufficient proof the trigger fires correctly; you do not need to complete
+  Touch ID or click "SEND TO IBKR" to validate this task's actual scope (the button →
+  callback → gate-invocation wiring), unless you specifically want to test the full path.
+- Also verify the "Cancel"/"Keep order"/"Discard" buttons (no IBKR call, no gates) — these
+  are safe to click fully in any test.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add claudia/panel_order_flow.py claudia/panel_sink.py claudia/panel_app.py tests/test_panel_order_flow.py tests/test_panel_sink.py
+git commit -m "feat: real order-staging buttons in Panel, wired to order_flow.py's extracted core"
+```
 
 ## Phase 4: Tool-call Status indicator — outline
 
