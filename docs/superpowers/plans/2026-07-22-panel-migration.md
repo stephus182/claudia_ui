@@ -2184,20 +2184,211 @@ core (not this task's Panel-only file scope), and it would benefit the existing 
 surface too, not just Panel. Two human gates (Touch ID + a physical "SEND TO IBKR" click)
 remain a real backstop in the meantime.
 
-## Phase 4: Tool-call Status indicator — outline
+## Phase 4: Tool-call Status indicator
 
 **Goal:** Replace `_PanelToolStepHandle`'s Phase-2 placeholder (plain message,
-before/after) with something closer to Chainlit's collapsible `cl.Step` UX — the `cl.Step`
-equivalent issue #6291 **[research]** flags as still-in-progress in Panel core.
+before/after) with something closer to Chainlit's collapsible `cl.Step` UX.
 
-**Carry over from Task 2.1's code review (2026-07-22):** the Phase-2 placeholder's
-`__aexit__` ignores `exc_type`/`exc`/`tb` entirely — if a tool call ever raised inside
-`async with self._sink.tool_step(...)`, the user would see a blank "Output:" with no error
-indication, unlike `cl.Step.__aexit__` which sets `self.output = str(exc_val)` and an error
-flag before re-raising. Currently dormant (every actual tool-execution path —
-`ClaudeToolkit.execute`, `TradingViewBridge.execute`, `_handle_local_tool` — is documented
-to never raise), but the real replacement built in this phase should handle the exception
-case properly rather than carry the gap forward a second time.
+**Resolved, 2026-07-22 — the "first action of this phase" check, done before any code:**
+re-checked [holoviz/panel#6291](https://github.com/holoviz/panel/issues/6291) via `gh issue
+view 6291 --repo holoviz/panel`: still **open**, but only for *other* roadmap items (a
+combined file-upload+textarea input, chat styling). Item 3 on that issue's own list — a
+`Status` component for streaming agents' intermediate steps — **has shipped**, as
+`pn.chat.ChatStep`, confirmed three ways, not just imported and assumed to work:
+1. `python3 -c "import panel as pn; print(pn.chat.ChatStep)"` — exists in the installed
+   `panel==1.9.3`.
+2. Fetched the official reference docs
+   (`https://panel.holoviz.org/reference/chat/ChatStep.html`, via keyless Firecrawl scrape)
+   — a fully-documented component with `status` (`pending`/`running`/`success`/`failed`),
+   `stream()`/`stream_title()` methods, and sync `with chat_step:` context-manager support
+   that auto-transitions `pending→running` on enter and `running→success`/`failed` on exit.
+3. **Live-tested the exact mechanics this task depends on** (`inspect.getsource` on
+   `__enter__`/`__exit__`, then a real throwaway script exercising both the success and
+   exception paths) — this surfaced two real, non-obvious findings neither the docs nor the
+   source comments state explicitly:
+   - Consecutive `.stream(str)` calls **concatenate into the same Markdown pane with no
+     separator** (confirmed: `"Input: {...}Output: 100 AAPL"` with nothing between them on
+     first attempt) — the docs' "concatenates to the last available pane" line undersells
+     how literal this is. Fix: the `output` setter must add its own `"\n\n"` prefix.
+   - **Passing a custom `failed_title` suppresses `ChatStep`'s own automatic
+     exception-message streaming** — read directly in `__exit__`'s source: the
+     `self.stream(exc_msg)` call for the failure body sits *inside* the
+     `if self.failed_title is None:` branch. Confirmed by testing both ways: with a custom
+     `failed_title` set, `chat_step.objects` stayed empty after an exception (the error
+     silently disappeared from the UI — an even worse version of the exact gap this phase
+     exists to close); *without* setting it, `ChatStep` auto-generates
+     `f"Error: {exc_type.__name__!r}"` as the title **and** streams the real exception
+     message into the body, then `__exit__` returns `False` (exception still propagates
+     normally, matching `cl.Step`'s existing re-raise behavior). **Design consequence: do
+     not set `failed_title` on the constructed `ChatStep` — let it handle failure display
+     natively.** This closes Task 2.1's carried-over gap with less code than the Phase 2
+     placeholder had, not more, because the built-in component already does the right
+     thing once you don't fight it.
+
+This means Phase 4 is materially smaller than originally scoped — no hand-building, no
+need to clone the `panel-source-reference` fork (the kickoff prompt's contingency for "if
+not shipped" doesn't apply here).
+
+### Task 4.1: Replace `_PanelToolStepHandle` with a real `ChatStep` wrapper
+
+**Files:**
+- Modify: `claudia/panel_sink.py` (`_PanelToolStepHandle`, `PanelMessageSink.tool_step`)
+- Modify: `tests/test_panel_sink.py` (replace the Phase-2
+  `test_tool_step_posts_then_updates_message_object` test — the whole mechanism it tested,
+  "post a message then reassign `.object`", is gone, replaced by `ChatStep`'s own
+  `stream()`/status API)
+
+- [ ] **Step 1: Write the failing tests**
+
+Replace the existing `test_tool_step_posts_then_updates_message_object` test in
+`tests/test_panel_sink.py` with:
+
+```python
+@pytest.mark.asyncio
+async def test_tool_step_success_streams_input_then_output_with_separator():
+    chat = _make_chat()
+    sink = PanelMessageSink(chat=chat, session_id="s1")
+    async with sink.tool_step("get_positions") as step:
+        step.input = '{"foo": "bar"}'
+        step.output = "100 AAPL"
+    sent_step = chat.send.call_args.args[0]
+    assert sent_step.status == "success"
+    assert sent_step.serialize() == 'ChatStep(Markdown=\'Input: `{"foo": "bar"}`\n\nOutput: 100 AAPL\')'
+
+
+@pytest.mark.asyncio
+async def test_tool_step_exception_sets_failed_status_and_reraises():
+    chat = _make_chat()
+    sink = PanelMessageSink(chat=chat, session_id="s1")
+    with pytest.raises(RuntimeError, match="boom"):
+        async with sink.tool_step("get_positions") as step:
+            step.input = "{}"
+            raise RuntimeError("boom")
+    sent_step = chat.send.call_args.args[0]
+    assert sent_step.status == "failed"
+    assert "boom" in sent_step.serialize()
+
+
+@pytest.mark.asyncio
+async def test_tool_step_sends_a_real_chatstep_not_a_plain_message():
+    import panel as pn
+    chat = _make_chat()
+    sink = PanelMessageSink(chat=chat, session_id="s1")
+    async with sink.tool_step("get_positions"):
+        pass
+    sent_step = chat.send.call_args.args[0]
+    assert isinstance(sent_step, pn.chat.ChatStep)
+    call_kwargs = chat.send.call_args.kwargs
+    assert call_kwargs["user"] == "System"
+    assert call_kwargs["respond"] is False
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `pytest tests/test_panel_sink.py -v -k tool_step`
+Expected: `AttributeError`/assertion failures against the current Phase-2 implementation
+(which sends a plain string message, not a `ChatStep`).
+
+- [ ] **Step 3: Implement in `claudia/panel_sink.py`**
+
+Replace the entire `_PanelToolStepHandle` class and `PanelMessageSink.tool_step` method:
+
+```python
+class _PanelToolStepHandle:
+    """Wraps a real pn.chat.ChatStep — Panel's built-in equivalent of Chainlit's
+    cl.Step, shipped in panel==1.9.3 (confirmed live, 2026-07-22 — see Phase 4's
+    header note for the verification). Translates the ToolStepHandle protocol's
+    plain .input/.output attribute-setting into ChatStep's own .stream() calls, and
+    delegates to ChatStep's own (synchronous) __enter__/__exit__ for status
+    transitions and exception formatting.
+
+    Deliberately does NOT set a custom failed_title on the underlying ChatStep —
+    verified live that doing so suppresses ChatStep's own automatic
+    exception-message streaming (the self.stream(exc_msg) call in its __exit__ is
+    gated on failed_title being None). Leaving it unset gets a correct
+    auto-generated title *and* the real error text in the body, for free.
+    """
+
+    def __init__(self, chat_step) -> None:
+        self._chat_step = chat_step
+        self._input = ""
+        self._output = ""
+        self._input_set = False
+
+    @property
+    def input(self) -> str:
+        return self._input
+
+    @input.setter
+    def input(self, value: str) -> None:
+        self._input = value
+        self._chat_step.stream(f"Input: `{value}`")
+        self._input_set = True
+
+    @property
+    def output(self) -> str:
+        return self._output
+
+    @output.setter
+    def output(self, value: str) -> None:
+        self._output = value
+        # Consecutive string .stream() calls concatenate into one Markdown pane with
+        # no separator (verified live) — supply our own blank-line break.
+        sep = "\n\n" if self._input_set else ""
+        self._chat_step.stream(f"{sep}Output: {value}")
+
+    async def __aenter__(self) -> _PanelToolStepHandle:
+        self._chat_step.__enter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return self._chat_step.__exit__(exc_type, exc, tb)
+```
+
+```python
+    def tool_step(self, name: str) -> _PanelToolStepHandle:
+        chat_step = pn.chat.ChatStep(
+            default_title=f"`{name}`",
+            running_title=f"Running `{name}`…",
+            success_title=f"`{name}`",
+            # failed_title deliberately left unset — see _PanelToolStepHandle's docstring.
+        )
+        self._chat.send(chat_step, user="System", respond=False)
+        return _PanelToolStepHandle(chat_step)
+```
+
+Add `import panel as pn` at module level if not already present (it should already be
+imported for `PanelMessageSink`'s other methods — confirm rather than assume, and don't
+add a duplicate import).
+
+- [ ] **Step 4: Run to verify pass**
+
+Run: `pytest tests/test_panel_sink.py -v -k tool_step`
+Expected: `3 passed`
+
+- [ ] **Step 5: Run the full unit suite**
+
+Run: `pytest -m "not integration" -q`
+Expected: `350 passed` (348 baseline + 2 net new — 3 new tests replacing 1 old one), 0
+failures.
+
+- [ ] **Step 6: Manual verification — safe (no live IBKR gateway required)**
+
+Same pattern as Phase 2's Task 2.2 Step 6: `uvicorn claudia.panel_app:app --port 8001`,
+send a message that triggers at least one tool call, confirm the tool-step card now shows
+a collapsible `ChatStep` (title changes from "Running `tool_name`…" to "`tool_name`" on
+success, content collapses per `collapsed_on_success` default) rather than the old
+plain-message before/after pattern. If IBKR gateway is offline, the tool call will error —
+also worth confirming the failure path renders correctly (title becomes
+"Error: 'ExceptionType'", body shows the real error text), since this is exactly the path
+Task 2.1's original review flagged as silently broken and this phase exists to fix.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add claudia/panel_sink.py tests/test_panel_sink.py
+git commit -m "feat: replace hand-built tool-step placeholder with real pn.chat.ChatStep"
+```
 
 **First action of this phase, before any code:** re-check
 [holoviz/panel#6291](https://github.com/holoviz/panel/issues/6291)'s current state — it was
