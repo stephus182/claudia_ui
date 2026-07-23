@@ -1233,6 +1233,23 @@ existing external/read-only origin detection (mobile/TWS/web-placed orders corre
 flagged as non-modifiable via API) surviving unchanged through the new frontend. (Real
 account figures deliberately not recorded here — this file is git-tracked.)
 
+Also exercised, same live session: `sync_flex_trades` (a write path — refreshes the local
+trade-history store, distinct from the read-only account-check tools above) — green. Then
+two order-proposal-adjacent tests, unscripted, both directly relevant to Phase 3:
+1. An ambiguous two-order, garbled-symbol ("APPL"), unrealistic-price message
+   (BUY 1 @ $100 / SELL 1 @ $1000 against a live $325.69 quote) — the model correctly
+   fetched a live quote via `get_market_snapshot`, refused to propose either as fat-finger
+   prices, enforced the one-proposal-per-message rule, and asked for clarification instead
+   of guessing or silently rounding — the order-parameter-immutability and
+   one-proposal-per-message rules firing correctly, unprompted.
+2. A deliberate follow-up test proposal (BUY 1 AAPL @ $100 limit, explicitly labeled by the
+   model as a non-filling test price) — this one **did** emit a real `order-proposal` block,
+   which correctly triggered `PanelMessageSink.send_order_proposal()`'s Phase 2 placeholder:
+   the "not yet available" message with the full parsed proposal JSON echoed back, exact
+   values preserved. This is the first live confirmation that the placeholder path (not just
+   the plain-message path) fires correctly end-to-end — closes out Phase 2's verification
+   surface entirely; Phase 3 replaces this exact call site with real buttons.
+
 ```bash
 uvicorn claudia.panel_app:app --port 8001 --reload
 ```
@@ -1294,12 +1311,30 @@ rather than duplicating them — decide during detailing). Modify `claudia/panel
   — the Panel port's equivalent (`button.disabled = True` after click, per **[research]**
   point 4) must have the same never-skipped guarantee.
 
-**Risks to resolve during detailing:** confirm live (Playwright, same method as
-**[shadow-dom-test]**) that a `ChatMessage` containing a `pn.Row` of buttons, once
-`button.disabled = True` is set inside the click callback, actually reflects that state in
-the browser without a manual re-render call — this is asserted by the research doc's
-`get_option_chain`-style API description but not yet independently live-tested the way the
-Shadow-DOM claim was.
+**Resolved, 2026-07-22 (live-tested, not assumed — before writing this phase's bite-sized
+tasks, the same way the Shadow-DOM constraint was resolved before relying on it):** built a
+throwaway `pn.chat.ChatInterface` sending a `pn.Column(Markdown, pn.Row(Button, Button))` as
+one message's content (mirroring the order-proposal shape: a summary + Stage/Cancel), served
+via `panel serve` + Playwright, real click. Confirmed via the browser's accessibility tree
+and a screenshot, not inference:
+- The button row renders as genuine clickable buttons inside the chat message (not flattened
+  to text).
+- Clicking correctly fires the `on_click` callback.
+- Setting `button.disabled = True` on both buttons *inside* the callback reflects in the
+  browser immediately — both buttons show as visually greyed-out/disabled with **zero**
+  manual re-render call needed.
+- Reassigning the summary pane's `.object` in the same callback (the "update the message
+  after click" half of the pattern) also took effect in place, same message bubble.
+
+One dev-server-only wrinkle hit and resolved, irrelevant to the real app: `panel serve`'s
+default WebSocket origin check rejected Playwright's connection (403) until served with
+`--allow-websocket-origin`; `claudia/panel_app.py`'s actual FastAPI-mounted deployment
+doesn't go through `panel serve` at all, so this doesn't apply there — noted only so a future
+throwaway test doesn't waste time rediscovering it.
+
+**Net: the core mechanic this entire phase depends on is now confirmed working exactly as
+the research doc described, not just plausible.** Nothing left to de-risk before writing
+Task 3.x's bite-sized steps.
 
 ## Phase 4: Tool-call Status indicator — outline
 
