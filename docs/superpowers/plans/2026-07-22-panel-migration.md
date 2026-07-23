@@ -2989,6 +2989,168 @@ git add claudia/panel_app.py tests/test_panel_app.py
 git commit -m "feat: Panel session init — immediate render, background init task, gated input"
 ```
 
+### Task 5.2: Drive context/principles read + doc versioning + session metadata
+
+Grounded 2026-07-23 against verified signatures: `ContextLoader(__init__: docs_path,
+context_text=None, principles_text=None)` with `get_effective_texts() -> tuple[str, str]`
+and `compute_hash() -> str` (`context_loader.py:59-94`); `GDriveSync.read_text(filename,
+local_path: Path | None) -> str | None` (`gdrive_sync.py:310`);
+`store.register_doc_version_if_new / get_last_context_hash / get_version_label`
+(`conversation_store.py:177-207`); `create_session(session_id, context_hash="",
+doc_version=None)` (`conversation_store.py:158`); `ClaudIAAgent(..., doc_version=None)`
+(`agent.py:465`). Parity source: `app.py:256-322` + `_write_version_snapshot`
+(`app.py:197-212`).
+
+**Files:**
+
+- Modify: `claudia/panel_app.py` (`_DOCS_PATH` → `Path`, new `_VERSIONS_PATH`, duplicated
+  `_write_version_snapshot` helper, `_init_session` gains Drive read + versioning block)
+- Modify: `tests/test_panel_app.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+The happy-path store/loader mocks in ALL existing tests need two additions or the new
+init code breaks them (TDD red will show this): `mock_loader_cls.return_value.
+get_effective_texts.return_value = ("ctx text", "pri text")` (a real 2-tuple — the code
+unpacks it) and `.compute_hash.return_value = "hash123"`; plus
+`mock_store.get_last_context_hash.return_value = None` and
+`mock_store.register_doc_version_if_new.return_value = "v7"` (prevents spurious
+hash-change warnings and MagicMock-as-label leakage). Patch
+`claudia.panel_app._write_version_snapshot` in happy-path tests (it writes real files).
+
+New tests:
+
+```python
+@pytest.mark.asyncio
+async def test_init_registers_doc_version_and_creates_session_with_metadata():
+    """Parity with app.py:302-322 (D3): doc version registered from the loader's
+    effective texts, snapshot written, session row carries hash + version, agent
+    constructed with doc_version."""
+    # happy-path patches incl. ClaudIAAgent mocked; loader/store configured per above
+    ...
+    # after: await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=5)
+    mock_store.register_doc_version_if_new.assert_called_once_with(
+        "hash123", "ctx text", "pri text"
+    )
+    mock_snapshot.assert_called_once_with("v7", "ctx text", "pri text")
+    _, cs_kwargs = mock_store.create_session.call_args
+    assert cs_kwargs["context_hash"] == "hash123"
+    assert cs_kwargs["doc_version"] == "v7"
+    assert mock_agent_cls.call_args.kwargs["doc_version"] == "v7"
+
+
+@pytest.mark.asyncio
+async def test_init_hash_change_sends_warning():
+    """Parity with app.py:310-320: a changed doc hash produces the WARNING message
+    with prev → new version labels."""
+    # as above but mock_store.get_last_context_hash.return_value = "oldhash"
+    # and mock_store.get_version_label.return_value = "v6"
+    ...
+    texts = _message_texts(chat)
+    assert any("WARNING" in t and "v6" in t and "v7" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_init_no_warning_when_hash_unchanged_or_first_run():
+    """get_last_context_hash None (first run) → no WARNING."""
+    ...
+    assert not any("WARNING" in t for t in _message_texts(chat))
+
+
+@pytest.mark.asyncio
+async def test_init_reads_context_docs_from_drive_when_sync_available():
+    """The user-confirmed requirement: context.md/principles.md live in Google Drive —
+    every session reads them via GDriveSync.read_text (local fallback inside read_text),
+    and the loader is constructed with the Drive texts (app.py:256-265 parity)."""
+    # monkeypatch claudia.panel_app._gdrive_sync to a MagicMock whose read_text
+    # side-effects: "context.md" -> "drive ctx", "principles.md" -> "drive pri"
+    ...
+    assert mock_loader_cls.call_args.kwargs["context_text"] == "drive ctx"
+    assert mock_loader_cls.call_args.kwargs["principles_text"] == "drive pri"
+```
+
+(The `...` bodies above are the standard build+patch+callback-sync scaffold every existing
+test already uses — implementer fills them mechanically from the surrounding file; the
+assertions shown are the complete contract. This is scaffold-reuse, not a placeholder.)
+
+- [ ] **Step 2: Run to verify failure** — `pytest tests/test_panel_app.py -v`: new tests
+  fail; pre-existing happy tests may also fail red until Step 3 (unpacking
+  `get_effective_texts`).
+
+- [ ] **Step 3: Implement in `claudia/panel_app.py`**
+
+Module level: `_DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))` (matches
+`app.py:61` and the `_DB_PATH` precedent from Task 5.1); `_VERSIONS_PATH = _DOCS_PATH /
+"versions"`. Duplicate `_write_version_snapshot` verbatim from `app.py:197-212` with a
+comment noting the deliberate duplication-for-independence (same rationale as
+`_get_toolkit`'s existing docstring — panel_app must not import claudia.app, which pulls
+in chainlit).
+
+In `_init_session`, AFTER the `_init_lock` block (race-free: any session reaching here has
+passed through the lock, so `_gdrive_sync` setup is complete) and BEFORE the existing
+`ContextLoader` construction — replace the plain `loader = ContextLoader(_DOCS_PATH)` with:
+
+```python
+            # Read context/principles from Drive every session so each session picks up
+            # the latest version (app.py:256-262 parity; read_text falls back to the
+            # local file itself when Drive is unreachable or the file is absent).
+            drive_context: str | None = None
+            drive_principles: str | None = None
+            if _gdrive_sync is not None:
+                drive_context = await asyncio.to_thread(
+                    _gdrive_sync.read_text, "context.md", _DOCS_PATH / "context.md"
+                )
+                drive_principles = await asyncio.to_thread(
+                    _gdrive_sync.read_text, "principles.md", _DOCS_PATH / "principles.md"
+                )
+
+            loader = ContextLoader(
+                _DOCS_PATH, context_text=drive_context, principles_text=drive_principles
+            )
+```
+
+Then AFTER the FileNotFoundError guard, REPLACE the bare
+`store.create_session(session_id)  # Task 5.2 ...` line with (order matters —
+`get_last_context_hash` must run BEFORE this session's row is inserted, else it sees its
+own hash; same order as `app.py:302-322`):
+
+```python
+            # Register document version (idempotent) + snapshot + hash-change alert
+            context_text, principles_text = loader.get_effective_texts()
+            current_hash = loader.compute_hash()
+            version_label = store.register_doc_version_if_new(
+                current_hash, context_text, principles_text
+            )
+            log.info("Active document version: %s", version_label)
+            _write_version_snapshot(version_label, context_text, principles_text)
+
+            prev_hash = store.get_last_context_hash()
+            if prev_hash is not None and prev_hash != current_hash:
+                prev_version = store.get_version_label(prev_hash) or f"unknown ({prev_hash[:8]})"
+                chat.send(
+                    f"**WARNING: context.md / principles.md changed: "
+                    f"{prev_version} → {version_label}.**\n"
+                    "Please verify the content before continuing.",
+                    user="System",
+                    respond=False,
+                )
+
+            store.create_session(
+                session_id, context_hash=current_hash, doc_version=version_label
+            )
+```
+
+And add `doc_version=version_label` to the `ClaudIAAgent(...)` construction.
+
+- [ ] **Step 4: Run to verify pass** — `pytest tests/test_panel_app.py -v`; count 7 → 11.
+- [ ] **Step 5: Full suite** — `pytest -m "not integration" -q`: 375 + 4 = 379, 0
+  failures; `ruff` + `mypy` clean.
+- [ ] **Step 6: Commit** — exactly the two files:
+
+```bash
+git commit -m "feat: Panel sessions read context docs from Drive + register doc versions"
+```
+
 ## Phase 6: Connectivity status — designed Panel-native, not ported
 
 **This phase was fully redesigned 2026-07-22 per the "no Chainlit-shape mimicry" principle
