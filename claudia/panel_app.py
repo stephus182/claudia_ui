@@ -9,9 +9,11 @@ entry point.
 Run with:  uvicorn claudia.panel_app:app --port 8001 --reload
 """
 
+import asyncio
 import logging
 import os
 import uuid
+from pathlib import Path
 
 import panel as pn
 from dotenv import load_dotenv
@@ -35,6 +37,7 @@ from panel.io.fastapi import add_application
 from claudia.agent import ClaudIAAgent
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
+from claudia.gdrive_sync import GDriveSync
 from claudia.panel_sink import PanelMessageSink
 
 log = logging.getLogger(__name__)
@@ -43,11 +46,12 @@ load_dotenv(override=False)
 
 _MODEL = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
 _DOCS_PATH = os.environ.get("CLAUDIA_DOCS_PATH", "docs")
-_DB_PATH = os.environ.get("CLAUDIA_DB_PATH", "data/claudia.db")
+_DB_PATH = Path(os.environ.get("CLAUDIA_DB_PATH", "data/claudia.db"))
 _PANEL_PORT = int(os.environ.get("CLAUDIA_PANEL_PORT", "8001"))
 
 _toolkit: ClaudeToolkit | None = None
 _conv_store: ConversationStore | None = None
+_gdrive_sync: GDriveSync | None = None
 
 
 def _get_toolkit() -> ClaudeToolkit:
@@ -77,29 +81,31 @@ def _get_store() -> ConversationStore:
 
 def _build_chat_app() -> pn.chat.ChatInterface:
     """Per-session factory: called fresh for each new browser session by Bokeh's
-    _eval_panel (confirmed live against Panel 1.9.3 — see Phase 2 header note),
-    so a plain local ClaudIAAgent + PanelMessageSink here already gives correct
-    per-session isolation with no extra session registry needed."""
+    _eval_panel (confirmed live against Panel 1.9.3 — see Phase 2 header note).
+
+    Phase 5 design (see 'Phase 5 design decisions' in the migration plan): only the
+    chat surface is built synchronously — everything else (GDrive download, store,
+    loader, agent) runs in a background _init_session task on the session's own event
+    loop, with user input gated on an asyncio.Event so an early message waits for
+    init instead of racing it or erroring.
+    """
     session_id = str(uuid.uuid4())
-    toolkit = _get_toolkit()
-    store = _get_store()
-    store.create_session(session_id)
-
-    loader = ContextLoader(_DOCS_PATH)
-    loader.load_system_prompt()  # validates docs exist before proceeding
-
     chat = pn.chat.ChatInterface()
-    sink = PanelMessageSink(chat=chat, session_id=session_id, store=store)
-    agent = ClaudIAAgent(
-        toolkit=toolkit,
-        store=store,
-        context_loader=loader,
-        session_id=session_id,
-        sink=sink,
-        model=_MODEL,
-    )
+
+    _session: dict = {"agent": None, "error": None, "store": None, "loader": None}
+    _init_done = asyncio.Event()
 
     async def _on_user_input(contents: str, user: str, instance: pn.chat.ChatInterface) -> None:
+        await _init_done.wait()
+        agent = _session["agent"]
+        if agent is None:
+            chat.send(
+                f"**Session init failed:** {_session['error']} — fix the issue and "
+                f"reload the page.",
+                user="System",
+                respond=False,
+            )
+            return
         try:
             await agent.handle_message(contents)
         except Exception:
@@ -108,11 +114,70 @@ def _build_chat_app() -> pn.chat.ChatInterface:
 
     chat.callback = _on_user_input
     chat.send(
-        "**ClaudIA (Panel preview) is ready.** Ask me anything about your portfolio, "
-        "markets, or strategy.",
+        "**ClaudIA is ready** — gathering your account status…",
         user="ClaudIA",
         respond=False,
     )
+
+    async def _init_session() -> None:
+        global _gdrive_sync
+        try:
+            # GDrive DB download — MUST run before ConversationStore first opens the
+            # DB file (design D1; parity with app.py:246-254's if-store-is-None guard).
+            if _gdrive_sync is None and os.environ.get("GOOGLE_DRIVE_FOLDER_ID"):
+                cfg = Config.from_env()
+                try:
+                    _gdrive_sync = GDriveSync(cfg)
+                    if _conv_store is None:
+                        await asyncio.to_thread(_gdrive_sync.download_db, _DB_PATH)
+                except Exception as exc:
+                    log.warning("GDriveSync setup failed: %s — continuing without Drive sync", exc)
+
+            toolkit = _get_toolkit()
+            store = _get_store()
+
+            loader = ContextLoader(_DOCS_PATH)
+            try:
+                loader.load_system_prompt()  # validate docs exist before proceeding
+            except FileNotFoundError as exc:
+                _session["error"] = f"Setup required: {exc}"
+                chat.send(
+                    f"**Setup required:** {exc}\n\nCreate the missing file and reload.",
+                    user="System",
+                    respond=False,
+                )
+                return
+
+            store.create_session(session_id)  # Task 5.2 adds context_hash/doc_version
+
+            sink = PanelMessageSink(chat=chat, session_id=session_id, store=store)
+            _session["store"] = store
+            _session["loader"] = loader
+            _session["agent"] = ClaudIAAgent(
+                toolkit=toolkit,
+                store=store,
+                context_loader=loader,
+                session_id=session_id,
+                sink=sink,
+                model=_MODEL,
+            )
+        except Exception as exc:
+            log.exception("Session init failed (session %s)", session_id)
+            _session["error"] = str(exc)
+            chat.send(
+                f"**Session init failed:** {exc} — check the server logs and reload.",
+                user="System",
+                respond=False,
+            )
+        finally:
+            _init_done.set()
+
+    # Safe here: _build_chat_app runs synchronously ON the session's live event loop
+    # (verified empirically — see the Phase 5 'Resolved' note), so create_task schedules
+    # onto the correct loop with no thread-crossing bridge. The task reference is kept
+    # in _session (alive as long as chat holds the callback closure) — the loop itself
+    # only weak-refs tasks, so a bare create_task could be GC'd mid-init (ruff RUF006).
+    _session["init_task"] = asyncio.create_task(_init_session())
     return chat
 
 
