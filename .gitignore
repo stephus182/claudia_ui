@@ -56,3 +56,4 @@ vendor/tradingview-mcp/package-lock.json
 # Personal research notes — kept local + Google Drive only, not for git history
 docs/plans/2026-07-19-ui-framework-research.md
 docs/plans/2026-07-19-ui-framework-research.html
+docs/plans/2026-07-22-panel-shadow-dom-live-test.md
