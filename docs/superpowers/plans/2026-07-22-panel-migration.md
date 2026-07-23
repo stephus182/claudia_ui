@@ -1339,7 +1339,7 @@ migration and it's currently only indirectly covered. Close it before touching
 **Files:**
 - Modify: `tests/test_agent.py`
 
-- [ ] **Step 1: Write the 3 missing tests**
+- [x] **Step 1: Write the 3 missing tests**
 
 Add alongside Task 1.3's `handle_message()` tests (same file, same `_FakeStream`/
 `_text_response_events`/`_make_agent_with_sink` helpers — no new fixtures needed):
@@ -1396,7 +1396,7 @@ async def test_handle_message_modify_proposal_dispatches_to_sink():
     sink.send_modify_proposal.assert_awaited_once_with(proposal)
 ```
 
-- [ ] **Step 2: Run to verify pass** (no implementation change needed — this only adds
+- [x] **Step 2: Run to verify pass** (no implementation change needed — this only adds
   coverage for existing, already-correct `agent.py` behavior)
 
 Run: `pytest tests/test_agent.py -v`
@@ -1404,12 +1404,12 @@ Expected: `69 passed` (66 existing + 3 new). If any of the 3 new tests fail, tha
 `handle_message()`'s proposal-dispatch wiring has a real bug — stop and report, do not
 proceed to Task 3.2 with a known-broken dispatch path underneath the button work.
 
-- [ ] **Step 3: Run the full unit suite**
+- [x] **Step 3: Run the full unit suite**
 
 Run: `pytest -m "not integration" -q`
 Expected: `334 passed` (331 baseline + 3 new), 0 failures.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/test_agent.py
@@ -1446,7 +1446,7 @@ at the pre-task commit), becoming **74** after this task's 4 new ones. Corrected
 below. Lesson for future phases: run the actual count, don't estimate one from reading
 source — exactly the discipline this plan otherwise held itself to for Panel API claims.
 
-- [ ] **Step 1: Write the new tests first (TDD for the new surface; the existing tests are
+- [x] **Step 1: Write the new tests first (TDD for the new surface; the existing tests are
   the regression guard for the surface that must not change)**
 
 Add to `tests/test_order_flow.py`:
@@ -1524,13 +1524,13 @@ async def test_execute_modify_order_core_builds_fresh_body_not_raw_proposal():
     assert "_previous_values" not in order_body
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `pytest tests/test_order_flow.py -v -k core`
 Expected: `ImportError` / `ModuleNotFoundError`-style failures — `_execute_staged_order_core`
 etc. don't exist yet.
 
-- [ ] **Step 3: Perform the extraction in `claudia/order_flow.py`**
+- [x] **Step 3: Perform the extraction in `claudia/order_flow.py`**
 
 This is a **structural move, not a rewrite** — the actual order-placement logic must be
 relocated verbatim, not retyped from memory (the risk of a transcription slip in CME
@@ -1637,12 +1637,12 @@ to avoid). Do this mechanically:
        await cl.Message(content=text, author=author).send()
    ```
 
-- [ ] **Step 4: Run to verify the new tests pass**
+- [x] **Step 4: Run to verify the new tests pass**
 
 Run: `pytest tests/test_order_flow.py -v -k core`
 Expected: `4 passed`
 
-- [ ] **Step 5: Run the full existing suite — this is the real verification**
+- [x] **Step 5: Run the full existing suite — this is the real verification**
 
 Run: `pytest tests/test_order_flow.py -v`
 Expected: **all 70 original tests plus the 4 new ones = 74 passed, 0 failed** (corrected
@@ -1652,12 +1652,12 @@ original test needs to change to pass, the extraction was not behavior-preservin
 something is wrong; stop and report rather than editing a test to match a changed
 behavior.
 
-- [ ] **Step 6: Run the full unit suite**
+- [x] **Step 6: Run the full unit suite**
 
 Run: `pytest -m "not integration" -q`
 Expected: `338 passed` (334 baseline + 4 new), 0 failures.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add claudia/order_flow.py tests/test_order_flow.py
