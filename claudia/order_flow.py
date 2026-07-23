@@ -126,7 +126,9 @@ def _is_ibkr_rejection(result: object) -> bool:
     Rejection markers (any one ⇒ rejected):
       - an entry with ``action == "order_submit_issue"``
       - an entry with a non-empty ``error`` value
-      - no entry carries ``order_status`` AND no non-zero order id is present
+      - no entry carries ``order_status`` AND the last-seen order id across
+        entries is "0"/0/missing (last-write-wins — the reply-chain terminal
+        entry is last, so it is the authoritative one)
     Success shapes (live-verified): a non-zero ``order_id``/``orderId`` (both key
     spellings occur across IBKR responses), or an ``order_status`` (e.g.
     ``"Submitted"``) on a terminal reply-chain entry.
@@ -301,7 +303,7 @@ async def _execute_staged_order_core(
         # manualIndicator bool    FUT/FOP*   CME Rule 536-B compliance (required since May 1 2025)
         # extOperator    str      FUT/FOP*   NOT sent — docs mark it "Required*" for 536-B, but
         #                                    IBKR rejects any non-empty value as undocumented
-        #                                    field 8089 on individual accounts (the "Required*"
+        #                                    field 8089 on this account class (the "Required*"
         #                                    evidently scopes to institutional/multi-operator
         #                                    setups). Proven via whatif isolation 2026-07-23:
         #                                    docs/2026-07-23-futures-order-field-8089-bug.md
@@ -322,7 +324,7 @@ async def _execute_staged_order_core(
             # CME Group Rule 536-B — manualIndicator=True: order submitted through a
             # manual UI (not automated). extOperator is deliberately NOT sent: IBKR
             # rejects it with any non-empty value as undocumented field 8089 on
-            # non-institutional accounts — proven via whatif isolation 2026-07-23
+            # this account class — proven via whatif isolation 2026-07-23
             # (manualIndicator alone is accepted); see
             # docs/2026-07-23-futures-order-field-8089-bug.md
             order_body["manualIndicator"] = True
@@ -372,7 +374,9 @@ async def _execute_staged_order_core(
             # normalizes to a list internally (_as_reply_list) — never a bare dict.
             ibkr_order_id = None
             if result:
-                ibkr_order_id = result[0].get("orderId")
+                # Both key spellings occur across IBKR responses — the live-verified
+                # success shape uses snake_case order_id (see _is_ibkr_rejection).
+                ibkr_order_id = result[0].get("order_id", result[0].get("orderId"))
             store.add_decision(
                 session_id=session_id,
                 decision_type="trade_staged",
@@ -577,6 +581,10 @@ async def execute_cancel_order(
     extOperator query params for FUT/FOP (CME Rule 536-B), but ibkr_core_mcp's
     cancel_order(account_id, order_id) does not yet accept them — FUT/FOP cancellation
     may be rejected by IBKR until that's added upstream. STK cancellation is unaffected.
+    NOTE (2026-07-23): the gap may still exist for manualIndicator, but per
+    docs/2026-07-23-futures-order-field-8089-bug.md extOperator is rejected by IBKR
+    as undocumented field 8089 on this account class — if implemented upstream,
+    send manualIndicator only.
     Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#cancel-order
 
     This function is only called from a physical button click action callback.
@@ -716,7 +724,7 @@ async def _execute_modify_order_core(
         if sec_type in ("FUT", "FOP"):
             # CME Rule 536-B — manualIndicator only, same as the place path above.
             # extOperator deliberately NOT sent (IBKR rejects it as undocumented
-            # field 8089 on non-institutional accounts — proven 2026-07-23; see
+            # field 8089 on this account class — proven 2026-07-23; see
             # docs/2026-07-23-futures-order-field-8089-bug.md).
             order_body["manualIndicator"] = True
         if otype == "LMT" and limit_price is not None:
