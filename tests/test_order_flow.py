@@ -10,6 +10,7 @@ from claudia.order_flow import (
     _format_cancel_summary,
     _format_modify_summary,
     _format_order_summary,
+    _is_ibkr_rejection,
     _resolve_account_id,
     execute_cancel_order,
     execute_modify_order,
@@ -702,6 +703,41 @@ _SUCCESS_PAYLOAD = [{"order_id": "1986940574", "order_status": "Submitted",
                      "encrypt_message": "1"}]
 
 
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        # The real live rejection payload (verbatim shape) → rejected.
+        pytest.param(_REJECTION_PAYLOAD, True, id="live-rejection-payload"),
+        # Live-verified success list (order_id + order_status) → success.
+        pytest.param(_SUCCESS_PAYLOAD, False, id="live-success-list"),
+        # Success dict shape (modify/cancel return a single dict) → success.
+        pytest.param({"order_id": "242538143", "order_status": "Submitted"}, False,
+                     id="success-dict"),
+        # Zero order id with no action/error and no order_status → rejected
+        # (third marker's direct coverage, both string and int spellings).
+        pytest.param([{"order_id": "0"}], True, id="zero-order-id-str"),
+        pytest.param([{"order_id": 0}], True, id="zero-order-id-int"),
+        # Non-zero order id alone is success — both key spellings occur across
+        # IBKR responses.
+        pytest.param([{"orderId": "123"}], False, id="nonzero-orderId-camel"),
+        pytest.param([{"order_id": "123"}], False, id="nonzero-order_id-snake"),
+        # Degenerate inputs fail safe (claim rejection, never false success).
+        pytest.param([], True, id="empty-list"),
+        pytest.param(["nonsense"], True, id="non-dict-entries"),
+        # Multi-entry: order id resolution is last-write-wins — the reply-chain
+        # terminal entry is last, so it is the authoritative one.
+        pytest.param([{"order_id": "123"}, {"order_id": "0"}], True,
+                     id="multi-entry-last-wins"),
+    ],
+)
+def test_is_ibkr_rejection_contract(result, expected):
+    """Pin _is_ibkr_rejection's classification contract directly — including the
+    no-status/zero-id fallback marker and degenerate-input fail-safe polarity,
+    which the end-to-end tests above never reach (their fixtures trip the
+    action/error markers first)."""
+    assert _is_ibkr_rejection(result) is expected
+
+
 @pytest.mark.asyncio
 async def test_execute_staged_order_rejection_payload_reports_failure():
     """IBKR 200-with-rejection payload → REJECTED message, never 'staged successfully'."""
@@ -746,7 +782,11 @@ async def test_execute_staged_order_real_success_payload_still_reports_success()
     mock_cl = await _run(action, ibkr_mod, store=store, session_id="s42")
     assert any("staged successfully" in c for c in _sent_contents(mock_cl))
     store.add_decision.assert_called_once()
-    assert store.add_decision.call_args.kwargs["decision_type"] == "trade_staged"
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_staged"
+    # snake_case order_id (the live-verified spelling) must reach the decision
+    # metadata — was previously read via camelCase orderId only, landing as None.
+    assert kwargs["metadata"]["ibkr_order_id"] == "1986940574"
 
 
 @pytest.mark.asyncio
