@@ -2991,6 +2991,18 @@ git commit -m "feat: Panel session init — immediate render, background init ta
 
 ### Task 5.2: Drive context/principles read + doc versioning + session metadata
 
+**✅ Completed 2026-07-23.** Commits `c35d5a4` (implementation) + `c52452e` (review
+hardening). Full cycle: implement → spec review (COMPLIANT, incl. adversarial pass
+confirming `read_text` returns None-not-raise on Drive errors) → quality review (Approve,
+2 Important + 2 Minor applied: Drive reads moved under `_init_lock` — googleapiclient
+binds one non-thread-safe `httplib2.Http` per service, so concurrent session inits from
+two `to_thread` workers were a real hazard; the `get_last_context_hash`-before-
+`create_session` ordering invariant now has a load-bearing comment + an order assertion
+whose teeth were verified by actually swapping the calls). Tests 7 → 11; suite 375 → 379.
+Deferred by review recommendation to Task 5.3's start: extracting `_read_context_docs` /
+`_register_doc_version` helpers before the status block lands (`_init_session` is at its
+readable size limit).
+
 Grounded 2026-07-23 against verified signatures: `ContextLoader(__init__: docs_path,
 context_text=None, principles_text=None)` with `get_effective_texts() -> tuple[str, str]`
 and `compute_hash() -> str` (`context_loader.py:59-94`); `GDriveSync.read_text(filename,
@@ -3007,7 +3019,7 @@ doc_version=None)` (`conversation_store.py:158`); `ClaudIAAgent(..., doc_version
   `_write_version_snapshot` helper, `_init_session` gains Drive read + versioning block)
 - Modify: `tests/test_panel_app.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 The happy-path store/loader mocks in ALL existing tests need two additions or the new
 init code breaks them (TDD red will show this): `mock_loader_cls.return_value.
@@ -3073,11 +3085,11 @@ async def test_init_reads_context_docs_from_drive_when_sync_available():
 test already uses — implementer fills them mechanically from the surrounding file; the
 assertions shown are the complete contract. This is scaffold-reuse, not a placeholder.)
 
-- [ ] **Step 2: Run to verify failure** — `pytest tests/test_panel_app.py -v`: new tests
+- [x] **Step 2: Run to verify failure** — `pytest tests/test_panel_app.py -v`: new tests
   fail; pre-existing happy tests may also fail red until Step 3 (unpacking
   `get_effective_texts`).
 
-- [ ] **Step 3: Implement in `claudia/panel_app.py`**
+- [x] **Step 3: Implement in `claudia/panel_app.py`**
 
 Module level: `_DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))` (matches
 `app.py:61` and the `_DB_PATH` precedent from Task 5.1); `_VERSIONS_PATH = _DOCS_PATH /
@@ -3142,10 +3154,10 @@ own hash; same order as `app.py:302-322`):
 
 And add `doc_version=version_label` to the `ClaudIAAgent(...)` construction.
 
-- [ ] **Step 4: Run to verify pass** — `pytest tests/test_panel_app.py -v`; count 7 → 11.
-- [ ] **Step 5: Full suite** — `pytest -m "not integration" -q`: 375 + 4 = 379, 0
+- [x] **Step 4: Run to verify pass** — `pytest tests/test_panel_app.py -v`; count 7 → 11.
+- [x] **Step 5: Full suite** — `pytest -m "not integration" -q`: 375 + 4 = 379, 0
   failures; `ruff` + `mypy` clean.
-- [ ] **Step 6: Commit** — exactly the two files:
+- [x] **Step 6: Commit** — exactly the two files:
 
 ```bash
 git commit -m "feat: Panel sessions read context docs from Drive + register doc versions"
