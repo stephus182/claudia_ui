@@ -264,8 +264,12 @@ it can be reviewed before Phase 1 starts.
       exception, so it's never detected. Mislabels any rejection as success. Fix: inspect
       `result` for rejection markers before declaring success (cancel/modify too).
     - **Disposition:** both fail safe on the account (nothing placed), touch the
-      safety-critical order path → proper TDD + review, not a live hot-patch. Live gateway
-      available now for `whatif` verification + final FUT re-test.
+      safety-critical order path → proper TDD + review, not a live hot-patch.
+    - **✅ FIXED 2026-07-23** — commits `a16599f` (both bugs, TDD) + `89a14bb` (review
+      hardening: cancel-docstring cross-ref, 10-case classifier contract test, order_id
+      spelling in decision metadata), full subagent cycle, 371 unit tests green.
+      **Pending: live FUT re-test through the gate chain** on the next gateway session
+      (gateway was shut down before it could run).
 
 ---
 
