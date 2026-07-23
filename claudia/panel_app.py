@@ -1,4 +1,5 @@
-"""Panel entry point for ClaudIA (Phase 2: walking skeleton).
+"""Panel entry point for ClaudIA (Phase 5: session lifecycle — immediate render,
+background per-session init, input gated on init completion).
 
 Standalone FastAPI app, mounted via panel.io.fastapi.add_application — deliberately
 its own process (a distinct dev port), not importing claudia/app.py's Chainlit
@@ -14,6 +15,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
+from typing import Any
 
 import panel as pn
 from dotenv import load_dotenv
@@ -52,6 +54,10 @@ _PANEL_PORT = int(os.environ.get("CLAUDIA_PANEL_PORT", "8001"))
 _toolkit: ClaudeToolkit | None = None
 _conv_store: ConversationStore | None = None
 _gdrive_sync: GDriveSync | None = None
+
+# Serializes the check-download-first-store-open section of _init_session across
+# concurrently-initializing sessions — see the comment at its acquire site.
+_init_lock = asyncio.Lock()
 
 
 def _get_toolkit() -> ClaudeToolkit:
@@ -92,16 +98,27 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     session_id = str(uuid.uuid4())
     chat = pn.chat.ChatInterface()
 
-    _session: dict = {"agent": None, "error": None, "store": None, "loader": None}
+    # store/loader are written (not yet read here) for Tasks 5.6/5.7's session-end
+    # cleanup consumers; init_task keeps a strong reference to the background task.
+    _session: dict[str, Any] = {
+        "agent": None,
+        "error": None,
+        "store": None,
+        "loader": None,
+        "init_task": None,
+    }
     _init_done = asyncio.Event()
 
     async def _on_user_input(contents: str, user: str, instance: pn.chat.ChatInterface) -> None:
         await _init_done.wait()
         agent = _session["agent"]
         if agent is None:
+            error = _session["error"]
+            # "Setup required" errors already carry their own label — re-prefixing
+            # "Session init failed:" would double-label the same problem.
+            label = "" if str(error).startswith("Setup required") else "**Session init failed:** "
             chat.send(
-                f"**Session init failed:** {_session['error']} — fix the issue and "
-                f"reload the page.",
+                f"{label}{error} — check the server logs and reload the page.",
                 user="System",
                 respond=False,
             )
@@ -114,7 +131,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
 
     chat.callback = _on_user_input
     chat.send(
-        "**ClaudIA is ready** — gathering your account status…",
+        "**ClaudIA is ready** — gathering your account status…",  # status block lands in Task 5.3
         user="ClaudIA",
         respond=False,
     )
@@ -122,19 +139,35 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     async def _init_session() -> None:
         global _gdrive_sync
         try:
-            # GDrive DB download — MUST run before ConversationStore first opens the
-            # DB file (design D1; parity with app.py:246-254's if-store-is-None guard).
-            if _gdrive_sync is None and os.environ.get("GOOGLE_DRIVE_FOLDER_ID"):
-                cfg = Config.from_env()
-                try:
-                    _gdrive_sync = GDriveSync(cfg)
-                    if _conv_store is None:
-                        await asyncio.to_thread(_gdrive_sync.download_db, _DB_PATH)
-                except Exception as exc:
-                    log.warning("GDriveSync setup failed: %s — continuing without Drive sync", exc)
+            # GDrive DB download — MUST complete before ConversationStore first opens
+            # the DB file (design D1). Unlike app.py, whose download is synchronous and
+            # therefore accidentally atomic (no await, no interleaving possible), the
+            # asyncio.to_thread below opens a yield window: without the lock, session A
+            # could set _gdrive_sync and await the download while session B's init sees
+            # _gdrive_sync already set, skips the branch WITHOUT waiting, and opens
+            # ConversationStore on the old DB file the download thread is about to
+            # atomically replace — B's sqlite connection would hold the unlinked inode
+            # and its writes would be silently lost. The lock serializes
+            # check + download + first-store-open, so B blocks until A's download
+            # finishes and then opens the fresh file.
+            async with _init_lock:
+                if _gdrive_sync is None and os.environ.get("GOOGLE_DRIVE_FOLDER_ID"):
+                    # Deliberately OUTSIDE the Drive try below: a Config failure is
+                    # env-wide (toolkit construction needs the same Config later), so
+                    # swallowing it as "continuing without Drive sync" would mislead —
+                    # and init would then fail identically on the toolkit anyway.
+                    cfg = Config.from_env()
+                    try:
+                        _gdrive_sync = GDriveSync(cfg)
+                        if _conv_store is None:
+                            await asyncio.to_thread(_gdrive_sync.download_db, _DB_PATH)
+                    except Exception as exc:
+                        log.warning(
+                            "GDriveSync setup failed: %s — continuing without Drive sync", exc
+                        )
 
-            toolkit = _get_toolkit()
-            store = _get_store()
+                toolkit = _get_toolkit()
+                store = _get_store()
 
             loader = ContextLoader(_DOCS_PATH)
             try:
@@ -165,7 +198,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             log.exception("Session init failed (session %s)", session_id)
             _session["error"] = str(exc)
             chat.send(
-                f"**Session init failed:** {exc} — check the server logs and reload.",
+                f"**Session init failed:** {exc} — check the server logs and reload the page.",
                 user="System",
                 respond=False,
             )
