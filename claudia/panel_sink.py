@@ -1,14 +1,16 @@
 """Panel-side MessageSink implementation.
 
-Phase 2 scope: send_message and tool_step are real; order/cancel/modify proposal
-rendering is a plain, honest placeholder until Phase 3 ports order_flow.py's
-message-with-buttons pattern to Panel (claudia/panel_order_flow.py).
+send_message and tool_step are real; order/cancel/modify proposal rendering delegates
+to claudia/panel_order_flow.py, which ports order_flow.py's message-with-buttons
+pattern to Panel on top of the framework-agnostic _execute_*_core functions.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from claudia.conversation_store import ConversationStore
 
 
 class _PanelToolStepHandle:
@@ -44,9 +46,10 @@ class _PanelToolStepHandle:
 class PanelMessageSink:
     """MessageSink backed by a live pn.chat.ChatInterface instance for one session."""
 
-    def __init__(self, chat, session_id: str) -> None:
+    def __init__(self, chat, session_id: str, store: ConversationStore | None = None) -> None:
         self._chat = chat
         self._session_id = session_id
+        self._store = store
 
     async def send_message(self, text: str) -> None:
         self._chat.send(text, user="ClaudIA", respond=False)
@@ -63,25 +66,13 @@ class PanelMessageSink:
         )
 
     async def send_order_proposal(self, proposal: dict) -> None:
-        self._chat.send(
-            f"Order staging is not yet available in this preview build.\n\n"
-            f"Proposed: `{json.dumps(proposal)}`",
-            user="System",
-            respond=False,
-        )
+        from claudia.panel_order_flow import render_order_proposal
+        await render_order_proposal(self._chat, proposal, session_id=self._session_id, store=self._store)
 
     async def send_cancel_proposal(self, proposal: dict) -> None:
-        self._chat.send(
-            f"Order cancellation is not yet available in this preview build.\n\n"
-            f"Proposed: `{json.dumps(proposal)}`",
-            user="System",
-            respond=False,
-        )
+        from claudia.panel_order_flow import render_cancel_proposal
+        await render_cancel_proposal(self._chat, proposal, session_id=self._session_id, store=self._store)
 
     async def send_modify_proposal(self, proposal: dict) -> None:
-        self._chat.send(
-            f"Order modification is not yet available in this preview build.\n\n"
-            f"Proposed: `{json.dumps(proposal)}`",
-            user="System",
-            respond=False,
-        )
+        from claudia.panel_order_flow import render_modify_proposal
+        await render_modify_proposal(self._chat, proposal, session_id=self._session_id, store=self._store)
