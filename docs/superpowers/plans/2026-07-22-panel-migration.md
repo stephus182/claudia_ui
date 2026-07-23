@@ -2401,6 +2401,25 @@ this — clone it before hand-building anything, per the kickoff prompt's own gu
 **Files:** Modify `claudia/panel_sink.py` (`_PanelToolStepHandle`), possibly new
 `claudia/panel_status.py` if the hand-built version grows beyond a trivial wrapper.
 
+## Design principle, confirmed 2026-07-22: no more Chainlit-shape mimicry
+
+From here on, every remaining phase is designed **Panel-native first** — what's the best,
+cleanest way to do this *in Panel*, not "how do I port what Chainlit did." This is a
+deliberate correction: Phase 5's original "Key design question" below was initially framed
+around replicating Chainlit's blocking-until-ready session-start UX, which was never a
+requirement (unlike the safety-critical order-execution logic, where preserving exact
+behavior *is* mandated by CLAUDE.md's Hard Rules) — it was just habit. The connectivity-status
+redesign in Phase 6 below is the first concrete example of this: it doesn't port
+`/api/status` + browser-JS-polling at all, because that pattern only existed as a workaround
+for Chainlit's opaque frontend, and Panel doesn't have that constraint.
+
+**Long-term goal, not a near-term task:** once Panel reaches full feature parity and is
+stable, remove the Chainlit architecture entirely (`claudia/app.py`, `ChainlitMessageSink`,
+the Chainlit-specific parts of `order_flow.py`, `custom.css`/`custom.js`, the `chainlit`
+dependency). This is still Phase 11's job, not something to start now — Phases 5-10 keep
+`claudia/app.py` fully working throughout, exactly as the kickoff prompt's original
+isolation instruction required.
+
 ## Phase 5: Session lifecycle completeness — outline
 
 **Carry over from Task 2.2 (2026-07-22):** the Phase 2 skeleton's `_build_chat_app()` calls
@@ -2418,40 +2437,103 @@ alert, opening status block (account summary/positions/P&L/live orders via
 buttons (Start IBKR Gateway, End Session — Launch TradingView deferred to Phase 9), and
 session-end cleanup (`_run_session_cleanup` equivalent: `session_reporter`, GDrive upload).
 
-**Key design question to resolve during detailing:** `_build_chat_app()` (Phase 2) runs
-synchronously inside Bokeh's `_eval_panel`, before the page is servable — heavier I/O here
-(GDrive download, IBKR opening-status calls) may delay first render. `pn.state.on_session_created`
-**[verified-live]** accepts a coroutine callback and a `threaded` option — evaluate using it
-for the async, deferred parts of session start (mirroring how `app.py` today does the
-opening-status fetch and welcome message as later `await` calls within `on_chat_start`,
-not before it). Decide and record the answer here before writing bite-sized steps.
+**Resolved, 2026-07-22 (live-tested, not assumed — and the conclusion changed once "no
+Chainlit-shape mimicry" was applied to it):** `_build_chat_app()` runs synchronously inside
+Bokeh's `_eval_panel`, before the page is servable. The original framing of this question
+asked whether `pn.state.on_session_created` could prefetch GDrive/IBKR data *before*
+`_build_chat_app()` runs, so the first render already has it. Built a real FastAPI +
+`add_application` test app (matching `panel_app.py`'s actual architecture, not `panel
+serve`'s per-session script re-exec, which is a materially different execution model and
+gave misleading results on the first attempt) and confirmed two things empirically:
+- `on_session_created` **does** fire before the build function, every time — verified via
+  print-ordering across real requests.
+- But its callback is **not awaited** by Panel (`for cb in ...: cb(session_context)`, a
+  plain sync call in `panel/io/application.py`) — so any async work started from inside it
+  is still in-flight when `_build_chat_app()` runs immediately after. A `pn.state.cache`
+  round-trip test proved this directly: the build function saw `None` for data an
+  `on_session_created`-triggered task was still fetching, which only landed *after* the
+  page had already rendered.
+
+So `on_session_created` genuinely can't hand `_build_chat_app()` pre-fetched data — but
+chasing that was solving the wrong problem. The real answer, once "just make Panel behave
+like Chainlit's blocking start" stopped being the goal: **`_build_chat_app()` doesn't need
+to block on anything.** It builds the `ChatInterface` and sends a lightweight "ClaudIA is
+ready — gathering your account status…" message immediately (fast first render, user can
+start typing right away), then calls `asyncio.create_task(...)` for the GDrive/doc-version/
+opening-status work — safe and simple here because `_build_chat_app()` already runs *on*
+the session's own live event loop (confirmed: it's invoked synchronously from within
+Bokeh's own async session-creation flow, not from a separate thread), so no thread-crossing
+bridge is needed, and the task closes directly over the just-created `chat`/`sink` objects
+— no cross-session cache key, no registry. The task pushes the real status block into the
+same chat once ready. This is a genuine UX improvement over Chainlit's blocking start, not
+a compromise.
 
 **Files:** Modify `claudia/panel_app.py`. `claudia/gdrive_sync.py`, `claudia/session_reporter.py`,
 `claudia/conversation_store.py` need zero changes (per the audit) — only new call sites in
 `panel_app.py`.
 
-## Phase 6: Background services bridge — outline
+## Phase 6: Connectivity status — designed Panel-native, not ported
 
-**Goal:** Port `ConnectivityChecker._send_alert()`'s single Chainlit call site
-(`status.py:236`, `await cl.Message(content=msg, author="System").send()`) to push into a
-live Panel session, and port `/api/status` (`app.py:89-94`) onto `panel_app.py`'s FastAPI
-`app`. `ExecutionListener` needs no changes (it never touches the UI directly — its output
-is read on demand via `get_live_pnl_text`, not pushed).
+**This phase was fully redesigned 2026-07-22 per the "no Chainlit-shape mimicry" principle
+above — the original outline (port `/api/status` + `_send_alert`'s chat-message push) is
+superseded by the design below, not extended.**
 
-**The `doc.add_next_tick_callback()` bridge** **[verified-live, research]** is the
-confirmed-real replacement for `app.py`'s current thread-to-event-loop bridge pattern
-(`contextvars.copy_context()` + `loop.call_soon_threadsafe(...)`, `app.py:266-285` — recall
-from the code audit that this lives in `app.py`'s `_on_doc_change` closure, not in
-`context_loader.py` itself). `ConnectivityChecker` already runs as an `asyncio.Task`
-(`status.py:180-182`), not a separate OS thread, so confirm during detailing whether
-`add_next_tick_callback` is even necessary here (it may already be running on the correct
-loop) versus being required for the true OS-thread case (`ContextLoader`'s `watchdog`
-observer thread, `context_loader.py:37-43`, which does need a cross-thread bridge — that
-one is Phase 5's concern per the design question above, not this phase's).
+**What stays exactly as-is, unchanged:** `ConnectivityChecker` (`claudia/status.py`) —
+already 100% framework-agnostic (the poll loop, `check_ibkr`/`check_gdrive`/`check_tradingview`,
+the soft-recovery logic, the cached `_status` dict) except for `_send_alert()`'s one
+Chainlit call site. Single source of truth for connectivity state, shared across sessions,
+zero changes to its polling/caching behavior. `ExecutionListener` needs no changes at all
+(never touches the UI directly).
 
-**Files:** Modify `claudia/status.py` (`_send_alert`), `claudia/panel_app.py` (`/api/status`
-route + wiring `ConnectivityChecker`/`ExecutionListener` singletons, mirroring
-`app.py:339-367`).
+**The Panel-native design, verified live before being written down here (not assumed):**
+- Each session builds its own 3 status indicators using `pn.indicators.BooleanStatus` — a
+  real, built-in Panel component (confirmed: `value: bool`, `color: Selector` with options
+  `['primary', 'secondary', 'success', 'info', 'danger', 'warning', 'light', 'dark']`,
+  `label: str`). Maps directly onto the existing `ServiceStatus` enum: `OK` →
+  `value=True, color="success"`, `ERROR` → `value=True, color="danger"`, `UNKNOWN` →
+  `value=False, color="dark"` (matching the current "gray dot for not-configured, not an
+  error" rule already in `_run_checks()`).
+- Each session registers `pn.state.add_periodic_callback(_refresh_indicators, period=5000)`
+  (5s, matching the current JS-poll interval) inside `_build_chat_app()`. The callback reads
+  `_connectivity_checker.get_status()` — already a thread-safe shallow copy per its existing
+  implementation — and updates that session's own 3 `BooleanStatus` widgets.
+- **Verified live, source-level, that this is correctly session-scoped with automatic
+  cleanup — not something to hope works or wrap in manual teardown:**
+  `pn.state.add_periodic_callback`'s own source registers the callback against
+  `self._periodic[self.curdoc]` (the *calling* session's document, confirmed since this
+  runs while `curdoc` is set inside `_eval_panel`'s session-build context); `pn.state`'s
+  `_destroy_session` (fires automatically when a session ends) walks that exact same dict
+  and calls `cb._cleanup(session_context)` on every periodic callback registered against
+  the destroyed document, then deletes the entry. No leaked timers, no manual disconnect
+  logic needed — this is Panel's own session lifecycle doing the right thing natively.
+- **`/api/status` and the browser-JS-polling pattern are dropped entirely, not ported.**
+  That pattern existed only because Chainlit's frontend was an opaque compiled SPA with no
+  other way to get live data in — polling an HTTP endpoint from hand-written JS was the
+  only option. Panel's own WebSocket already pushes param changes (like a `BooleanStatus`
+  widget's `value`/`color`) to the browser the moment they change server-side, as a core
+  part of its architecture — no separate HTTP endpoint, no browser-side polling code, no
+  custom JS to write or maintain. The `/api/status` route from `app.py:89-94` has no reason
+  to exist in the Panel app at all.
+- **Chat alerts on state transitions** (`_send_alert`'s current job — a "GDrive
+  disconnected" message appearing in the chat feed when a service goes down) stay in
+  scope for this phase too, but need a live per-session subscriber list, not a port of the
+  Chainlit call site: `ConnectivityChecker` doesn't currently know which sessions exist. Add
+  a small subscriber registry (`_subscribers: list[Callable]`, `subscribe()`/`unsubscribe()`
+  methods) that `_run_checks()` notifies on a transition, alongside the existing cached-dict
+  update it already does — each session's periodic-callback setup subscribes a closure over
+  its own `chat` object, and unsubscribes via the same `add_periodic_callback`-style
+  automatic session cleanup (register the unsubscribe as that callback's own teardown, or
+  via `pn.state.on_session_destroyed` — verify the exact mechanism during implementation,
+  don't assume the pattern from `add_periodic_callback` transfers unchanged).
+
+**Files:** Modify `claudia/status.py` (`ConnectivityChecker`: subscriber registry,
+`_send_alert` becomes framework-agnostic — notifies subscribers, no more direct `cl`
+import), `claudia/panel_app.py` (`_build_chat_app()`: 3 `BooleanStatus` widgets + periodic
+callback + alert subscription, wired into the template/layout — exact placement depends on
+Phase 7's styling/template work, coordinate rather than guess a layout now). New:
+`tests/test_status.py` additions for the subscriber registry (framework-agnostic, testable
+without Panel at all) and a new `tests/test_panel_app.py` or similar for the Panel-side
+wiring.
 
 ## Phase 7: Styling — outline
 
