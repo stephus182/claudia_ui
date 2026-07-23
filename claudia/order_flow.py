@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 import chainlit as cl
@@ -31,6 +32,10 @@ if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
 
 log = logging.getLogger(__name__)
+
+SendStatus = Callable[[str, str], Awaitable[None]]
+"""(text, author) -> None — the framework-agnostic equivalent of cl.Message(content=text,
+author=author).send(), so the extracted *_core functions below don't import chainlit."""
 
 
 def _format_order_summary(proposal: dict) -> str:
@@ -105,6 +110,10 @@ def _resolve_account_id(accounts: list[dict]) -> str:
     return str(account.get("accountId", account.get("acctId", account.get("id", ""))))
 
 
+async def _cl_send_status(text: str, author: str) -> None:
+    await cl.Message(content=text, author=author).send()
+
+
 async def render_order_proposal(proposal: dict, session_id: str | None = None) -> None:
     """Render an order proposal as a Chainlit message with staging action buttons."""
     summary = _format_order_summary(proposal)
@@ -132,30 +141,14 @@ async def render_order_proposal(proposal: dict, session_id: str | None = None) -
     ).send()
 
 
-async def execute_staged_order(
-    action: cl.Action,
+async def _execute_staged_order_core(
+    proposal: dict,
+    send_status: SendStatus,
     session_id: str | None = None,
     store: ConversationStore | None = None,
 ) -> None:
-    """
-    Execute the staged order by calling IBKRClient.place_order_and_confirm(), which
-    resolves any chained IBKR reply prompts before returning.
-
-    Gate 1 — Touch ID (require_touch_id in ibkr_core_mcp.human_auth)
-    Gate 2 — AppKit colored dialog: green for BUY, red for SELL (ibkr_core_mcp.order_confirm).
-              Falls back to osascript plain dialog if the AppKit subprocess fails.
-
-    This function is only called from a physical button click action callback.
-    ClaudIA's ORDER PARAMETER IMMUTABILITY rule prohibits changing any user-specified
-    field (price, quantity, symbol, order type, TIF) without explicit user approval.
-    """
-    try:
-        proposal = json.loads(action.payload["order"])
-    except (json.JSONDecodeError, TypeError, KeyError):
-        await cl.Message(content="Invalid order proposal data.", author="System").send()
-        await action.remove()
-        return
-
+    """Framework-agnostic core of execute_staged_order — see that function's docstring
+    for the full Gate 1/Gate 2 spec. Called only after proposal has been parsed."""
     symbol = proposal.get("symbol", "?")
     action_str = proposal.get("action", "?")
     qty = proposal.get("quantity", 0)
@@ -163,8 +156,8 @@ async def execute_staged_order(
     limit_price = proposal.get("limit_price")
     sec_type = proposal.get("sec_type", "STK").upper()
 
-    await cl.Message(
-        content=(
+    await send_status(
+        (
             f"Initiating staging for **{action_str} {qty} {symbol}** ({sec_type})…\n\n"
             f"**Gate 1 — Touch ID:** A macOS authentication prompt will appear. "
             f"Use Touch ID or your system password if prompted.\n\n"
@@ -172,8 +165,8 @@ async def execute_staged_order(
             f"with full order details and a **SEND TO IBKR** button. "
             f"You have 60 seconds to confirm or it auto-cancels."
         ),
-        author="System",
-    ).send()
+        "System",
+    )
 
     try:
         from dotenv import load_dotenv
@@ -198,23 +191,23 @@ async def execute_staged_order(
             # FOP conid resolution requires expiry + strike + put/call — cannot derive
             # from symbol alone. ClaudIA must call get_option_chain first and re-issue
             # the order proposal with the conid field set.
-            await cl.Message(
-                content=(
+            await send_status(
+                (
                     f"Futures Options (FOP) orders require a pre-resolved contract ID. "
                     f"Ask ClaudIA to look up the specific contract "
                     f"(expiry, strike, call/put) for **{symbol}** via `get_option_chain`, "
                     f"then re-issue the order proposal with the `conid` field set."
                 ),
-                author="System",
-            ).send()
+                "System",
+            )
             return
         elif sec_type == "FUT":
             futures = ibkr.get_futures([symbol])
             if not futures:
-                await cl.Message(
-                    content=f"Could not find futures contracts for {symbol}. Order not placed.",
-                    author="System",
-                ).send()
+                await send_status(
+                    f"Could not find futures contracts for {symbol}. Order not placed.",
+                    "System",
+                )
                 return
             try:
                 contract = min(futures, key=lambda f: int(f.get("expirationDate") or 0))
@@ -234,10 +227,10 @@ async def execute_staged_order(
         else:
             contracts = ibkr.search_contract(symbol)
             if not contracts:
-                await cl.Message(
-                    content=f"Could not find contract for {symbol}. Order not placed.",
-                    author="System",
-                ).send()
+                await send_status(
+                    f"Could not find contract for {symbol}. Order not placed.",
+                    "System",
+                )
                 return
             # conid is IBKR's mandatory contract identifier — always present on a successful
             # search_contract() lookup (the `if not contracts` guard above already handles
@@ -310,7 +303,7 @@ async def execute_staged_order(
             f"**Order staged successfully:** {action_str} {qty} {symbol} ({otype})\n"
             f"IBKR response: {json.dumps(result, indent=2)}"
         )
-        await cl.Message(content=success_text, author="ClaudIA").send()
+        await send_status(success_text, "ClaudIA")
 
         if store and session_id:
             # Extract IBKR orderId from response for future cross-referencing.
@@ -335,7 +328,34 @@ async def execute_staged_order(
     except Exception as exc:
         log.exception("Order staging failed for %s", symbol)
         display_error = _classify_execution_error(exc)
-        await cl.Message(content=f"**Order not placed:** {display_error}", author="System").send()
+        await send_status(f"**Order not placed:** {display_error}", "System")
+
+
+async def execute_staged_order(
+    action: cl.Action,
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """
+    Execute the staged order by calling IBKRClient.place_order_and_confirm(), which
+    resolves any chained IBKR reply prompts before returning.
+
+    Gate 1 — Touch ID (require_touch_id in ibkr_core_mcp.human_auth)
+    Gate 2 — AppKit colored dialog: green for BUY, red for SELL (ibkr_core_mcp.order_confirm).
+              Falls back to osascript plain dialog if the AppKit subprocess fails.
+
+    This function is only called from a physical button click action callback.
+    ClaudIA's ORDER PARAMETER IMMUTABILITY rule prohibits changing any user-specified
+    field (price, quantity, symbol, order type, TIF) without explicit user approval.
+    """
+    try:
+        proposal = json.loads(action.payload["order"])
+    except (json.JSONDecodeError, TypeError, KeyError):
+        await cl.Message(content="Invalid order proposal data.", author="System").send()
+        await action.remove()
+        return
+    try:
+        await _execute_staged_order_core(proposal, _cl_send_status, session_id, store)
     finally:
         await action.remove()
 
@@ -398,6 +418,74 @@ async def render_cancel_proposal(proposal: dict, session_id: str | None = None) 
     ).send()
 
 
+async def _execute_cancel_order_core(
+    proposal: dict,
+    send_status: SendStatus,
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """Framework-agnostic core of execute_cancel_order — see that function's docstring
+    for the full Gate 1/Gate 2 spec. Called only after proposal has been parsed."""
+    order_id = proposal.get("order_id")
+    symbol = proposal.get("symbol", "?")
+
+    if not order_id:
+        await send_status(
+            "Cancel proposal is missing order_id — order not cancelled.",
+            "System",
+        )
+        return
+
+    await send_status(
+        (
+            f"Initiating cancellation for order **{order_id}** ({symbol})…\n\n"
+            f"**Gate 1 — Touch ID:** A macOS authentication prompt will appear. "
+            f"Use Touch ID or your system password if prompted.\n\n"
+            f"**Gate 2 — Confirmation dialog:** A separate window will appear on your desktop "
+            f"with full order details and a **SEND TO IBKR** button. "
+            f"You have 60 seconds to confirm or it auto-cancels."
+        ),
+        "System",
+    )
+
+    try:
+        from dotenv import load_dotenv
+        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+        load_dotenv(override=False)
+        config = Config.from_env()
+        ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))
+
+        accounts = ibkr.get_accounts()
+        account_id = _resolve_account_id(accounts)
+
+        log.info("Cancelling order %s (%s)", order_id, symbol)
+        result = ibkr.cancel_order(account_id, order_id, order_details=proposal)
+
+        success_text = (
+            f"**Order cancelled:** order {order_id} ({symbol})\n"
+            f"IBKR response: {json.dumps(result, indent=2)}"
+        )
+        await send_status(success_text, "ClaudIA")
+
+        if store and session_id:
+            store.add_decision(
+                session_id=session_id,
+                decision_type="trade_cancelled",
+                summary_text=f"CANCELLED: order {order_id} ({symbol})",
+                symbol=symbol,
+                metadata={
+                    "proposal": proposal,
+                    "ibkr_response": result,
+                    "ibkr_order_id": order_id,
+                },
+            )
+
+    except Exception as exc:
+        log.exception("Order cancellation failed for order %s", order_id)
+        display_error = _classify_execution_error(exc)
+        await send_status(f"**Order not cancelled:** {display_error}", "System")
+
+
 async def execute_cancel_order(
     action: cl.Action,
     session_id: str | None = None,
@@ -424,66 +512,8 @@ async def execute_cancel_order(
         await cl.Message(content="Invalid cancel proposal data.", author="System").send()
         await action.remove()
         return
-
-    order_id = proposal.get("order_id")
-    symbol = proposal.get("symbol", "?")
-
-    if not order_id:
-        await cl.Message(
-            content="Cancel proposal is missing order_id — order not cancelled.",
-            author="System",
-        ).send()
-        await action.remove()
-        return
-
-    await cl.Message(
-        content=(
-            f"Initiating cancellation for order **{order_id}** ({symbol})…\n\n"
-            f"**Gate 1 — Touch ID:** A macOS authentication prompt will appear. "
-            f"Use Touch ID or your system password if prompted.\n\n"
-            f"**Gate 2 — Confirmation dialog:** A separate window will appear on your desktop "
-            f"with full order details and a **SEND TO IBKR** button. "
-            f"You have 60 seconds to confirm or it auto-cancels."
-        ),
-        author="System",
-    ).send()
-
     try:
-        from dotenv import load_dotenv
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
-        load_dotenv(override=False)
-        config = Config.from_env()
-        ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))
-
-        accounts = ibkr.get_accounts()
-        account_id = _resolve_account_id(accounts)
-
-        log.info("Cancelling order %s (%s)", order_id, symbol)
-        result = ibkr.cancel_order(account_id, order_id, order_details=proposal)
-
-        success_text = (
-            f"**Order cancelled:** order {order_id} ({symbol})\n"
-            f"IBKR response: {json.dumps(result, indent=2)}"
-        )
-        await cl.Message(content=success_text, author="ClaudIA").send()
-
-        if store and session_id:
-            store.add_decision(
-                session_id=session_id,
-                decision_type="trade_cancelled",
-                summary_text=f"CANCELLED: order {order_id} ({symbol})",
-                symbol=symbol,
-                metadata={
-                    "proposal": proposal,
-                    "ibkr_response": result,
-                    "ibkr_order_id": order_id,
-                },
-            )
-
-    except Exception as exc:
-        log.exception("Order cancellation failed for order %s", order_id)
-        display_error = _classify_execution_error(exc)
-        await cl.Message(content=f"**Order not cancelled:** {display_error}", author="System").send()
+        await _execute_cancel_order_core(proposal, _cl_send_status, session_id, store)
     finally:
         await action.remove()
 
@@ -541,64 +571,38 @@ async def render_modify_proposal(proposal: dict, session_id: str | None = None) 
     ).send()
 
 
-async def execute_modify_order(
-    action: cl.Action,
+async def _execute_modify_order_core(
+    proposal: dict,
+    send_status: SendStatus,
     session_id: str | None = None,
     store: ConversationStore | None = None,
 ) -> None:
-    """
-    Execute a staged modify by calling IBKRClient.modify_order_and_confirm(), which
-    resolves any chained IBKR reply prompts before returning — same reply-chain pattern
-    as place_order_and_confirm(), first live-exercised for modify_order (see CLAUDE.md).
-
-    Gate 1 — Touch ID, Gate 2 — AppKit dialog fire inside modify_order() itself.
-
-    Builds a FRESH order body from the proposal's typed fields — never forwards the raw
-    proposal dict. modify_order() in ibkr_core_mcp's client.py does no `_`-prefix
-    stripping (unlike place_order()), so display-only fields (_changed_fields,
-    _previous_values) and the proposal's own order_id/reason must never reach the
-    IBKR request body. Per IBKR's docs, the modify body must mirror the full original
-    order, not a partial diff:
-    Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#modify-order
-    ("The content should mirror the content of the original order.")
-
-    This function is only called from a physical button click action callback.
-    ClaudIA's MODIFY PARAMETER IMMUTABILITY rule prohibits changing any field the user
-    did not explicitly ask to change.
-    """
-    try:
-        proposal = json.loads(action.payload["order"])
-    except (json.JSONDecodeError, TypeError, KeyError):
-        await cl.Message(content="Invalid modify proposal data.", author="System").send()
-        await action.remove()
-        return
-
+    """Framework-agnostic core of execute_modify_order — see that function's docstring
+    for the full Gate 1/Gate 2 spec. Called only after proposal has been parsed."""
     order_id = proposal.get("order_id")
     conid = proposal.get("conid")
     symbol = proposal.get("symbol", "?")
 
     if not order_id:
-        await cl.Message(
-            content="Modify proposal is missing order_id — order not modified.",
-            author="System",
-        ).send()
-        await action.remove()
+        await send_status(
+            "Modify proposal is missing order_id — order not modified.",
+            "System",
+        )
         return
 
     if conid is None:
-        await cl.Message(
-            content=(
+        await send_status(
+            (
                 "Modify proposal is missing conid. Ask ClaudIA to call `get_order_status` "
                 f"for order {order_id} first, then re-issue the modify proposal with the "
                 "conid field set. Order not modified."
             ),
-            author="System",
-        ).send()
-        await action.remove()
+            "System",
+        )
         return
 
-    await cl.Message(
-        content=(
+    await send_status(
+        (
             f"Initiating modification for order **{order_id}** ({symbol})…\n\n"
             f"**Gate 1 — Touch ID:** A macOS authentication prompt will appear. "
             f"Use Touch ID or your system password if prompted.\n\n"
@@ -606,8 +610,8 @@ async def execute_modify_order(
             f"with full order details and a **SEND TO IBKR** button. "
             f"You have 60 seconds to confirm or it auto-cancels."
         ),
-        author="System",
-    ).send()
+        "System",
+    )
 
     try:
         from dotenv import load_dotenv
@@ -658,7 +662,7 @@ async def execute_modify_order(
             f"**Order modified:** order {order_id} ({symbol})\n"
             f"IBKR response: {json.dumps(result, indent=2)}"
         )
-        await cl.Message(content=success_text, author="ClaudIA").send()
+        await send_status(success_text, "ClaudIA")
 
         if store and session_id:
             store.add_decision(
@@ -676,6 +680,41 @@ async def execute_modify_order(
     except Exception as exc:
         log.exception("Order modification failed for order %s", order_id)
         display_error = _classify_execution_error(exc)
-        await cl.Message(content=f"**Order not modified:** {display_error}", author="System").send()
+        await send_status(f"**Order not modified:** {display_error}", "System")
+
+
+async def execute_modify_order(
+    action: cl.Action,
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """
+    Execute a staged modify by calling IBKRClient.modify_order_and_confirm(), which
+    resolves any chained IBKR reply prompts before returning — same reply-chain pattern
+    as place_order_and_confirm(), first live-exercised for modify_order (see CLAUDE.md).
+
+    Gate 1 — Touch ID, Gate 2 — AppKit dialog fire inside modify_order() itself.
+
+    Builds a FRESH order body from the proposal's typed fields — never forwards the raw
+    proposal dict. modify_order() in ibkr_core_mcp's client.py does no `_`-prefix
+    stripping (unlike place_order()), so display-only fields (_changed_fields,
+    _previous_values) and the proposal's own order_id/reason must never reach the
+    IBKR request body. Per IBKR's docs, the modify body must mirror the full original
+    order, not a partial diff:
+    Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#modify-order
+    ("The content should mirror the content of the original order.")
+
+    This function is only called from a physical button click action callback.
+    ClaudIA's MODIFY PARAMETER IMMUTABILITY rule prohibits changing any field the user
+    did not explicitly ask to change.
+    """
+    try:
+        proposal = json.loads(action.payload["order"])
+    except (json.JSONDecodeError, TypeError, KeyError):
+        await cl.Message(content="Invalid modify proposal data.", author="System").send()
+        await action.remove()
+        return
+    try:
+        await _execute_modify_order_core(proposal, _cl_send_status, session_id, store)
     finally:
         await action.remove()
