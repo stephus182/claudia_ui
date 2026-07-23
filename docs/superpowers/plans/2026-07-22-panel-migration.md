@@ -1697,7 +1697,7 @@ placeholder methods never touched the database), threaded in from `panel_app.py`
   real behavior — delegation to `panel_order_flow`'s render functions — not the old "not
   yet available" text)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `tests/test_panel_order_flow.py` (new file):
 
@@ -1892,12 +1892,12 @@ directly and correctly invokes the exact function a real click would — verifie
 `"after direct call, clicked count: 1"`. An earlier draft of this task guessed a
 `button._on_click.callback` attribute that does not exist; corrected before dispatch.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `pytest tests/test_panel_order_flow.py -v`
 Expected: `ModuleNotFoundError: No module named 'claudia.panel_order_flow'`
 
-- [ ] **Step 3: Implement `claudia/panel_order_flow.py`**
+- [x] **Step 3: Implement `claudia/panel_order_flow.py`**
 
 ```python
 """Panel counterpart to order_flow.py's Chainlit-native render_*_proposal functions.
@@ -2045,7 +2045,7 @@ work — confirm it's not already prefixed as module-private in a way that block
 it (it isn't a `_`-prefixed name per Task 3.2's implementation, but verify against the
 actual file rather than assuming).
 
-- [ ] **Step 4: Update `claudia/panel_sink.py`**
+- [x] **Step 4: Update `claudia/panel_sink.py`**
 
 Add `store` to the constructor, replace the 3 placeholder methods:
 
@@ -2094,7 +2094,7 @@ async def test_send_order_proposal_delegates_to_panel_order_flow():
 ```
 (same pattern for cancel/modify — 3 tests total replacing the 3 old placeholder tests).
 
-- [ ] **Step 5: Update `claudia/panel_app.py`**
+- [x] **Step 5: Update `claudia/panel_app.py`**
 
 In `_build_chat_app()`, change:
 ```python
@@ -2107,7 +2107,7 @@ to:
 (`store` is already a local variable in this function from `store = _get_store()` a few
 lines above — no new lookup needed.)
 
-- [ ] **Step 6: Run to verify pass**
+- [x] **Step 6: Run to verify pass**
 
 Run: `pytest tests/test_panel_order_flow.py -v tests/test_panel_sink.py -v tests/test_panel_app.py -v`
 Expected: `tests/test_panel_order_flow.py` → **7 passed** (new file: 3 order-proposal tests,
@@ -2118,7 +2118,7 @@ net zero change — not 9; don't add without removing the old ones). `tests/test
 review's likely question about whether `_build_chat_app()`'s `PanelMessageSink(..., store=store)`
 wiring needs its own dedicated test; worth raising there rather than deciding it here).
 
-- [ ] **Step 7: Run the full unit suite**
+- [x] **Step 7: Run the full unit suite**
 
 Run: `pytest -m "not integration" -q`
 Expected: **347 passed** (340 baseline + 7 new in `test_panel_order_flow.py`; `test_panel_sink.py`'s
@@ -2144,12 +2144,45 @@ carries — but it means an agent must not attempt this step, and a human doing 
 - Also verify the "Cancel"/"Keep order"/"Discard" buttons (no IBKR call, no gates) — these
   are safe to click fully in any test.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add claudia/panel_order_flow.py claudia/panel_sink.py claudia/panel_app.py tests/test_panel_order_flow.py tests/test_panel_sink.py
 git commit -m "feat: real order-staging buttons in Panel, wired to order_flow.py's extracted core"
 ```
+
+**Code-quality review findings, 2026-07-22 (all closed same day, in a follow-up commit):**
+1. Buttons now disable at the *start* of each click handler, not only in `finally` — cheap,
+   no downside, applied to all three "confirm" handlers.
+2. All six callbacks (`_on_stage`/`_on_cancel`/`_on_cancel_click`/`_on_keep_click`/
+   `_on_modify_click`/`_on_discard_click`) now log via `log.exception(...)` before
+   re-raising, matching the convention `panel_app.py`'s `_on_user_input` already
+   established (`2ac5769`) — previously only the agent-turn callback had this, not the
+   order-staging ones, which are the higher-stakes surface.
+3. Added a test asserting `_build_chat_app()` constructs `PanelMessageSink(..., store=store)`
+   with the real store object — the review noted the one-line wiring wasn't covered, and
+   a regression there would silently drop staged-order audit logging with zero test failures.
+4. Switched `Button(name=..., button_type=...)` → `Button(label=..., color=...)` across all
+   six buttons — the former pair emits `PendingDeprecationWarning` against the installed
+   `panel==1.9.3`; confirmed `label=`/`color=` populate the same `.name`/`.button_type`
+   attributes the tests already assert on, so no test changes were needed.
+5. Typed the `chat` parameter as `pn.chat.ChatInterface` across all functions in this file.
+
+**Deferred, not fixed here (flagged for a future task, not part of Task 3.3's file
+scope):** the review's deeper finding — `_execute_*_order_core`'s Gate 1 (Touch ID) and
+Gate 2 (AppKit dialog) chain is fully synchronous/blocking (confirmed by reading
+`ibkr_core_mcp/human_auth.py`'s `threading.Event.wait` and `order_confirm.py`'s
+`subprocess.run`), unlike every other blocking call in this codebase, which is documented
+to go through `cl.make_async`/`asyncio.to_thread`. This means the event loop can't flush
+a "disabled" button state to the browser until the *entire* gate chain finishes — up to
+60s+ — so the button-disable reordering above closes the *server-state* staleness but
+likely not the *client-visible* re-click window, by the reviewer's own asyncio-semantics
+reasoning (not independently re-verified against Panel/Bokeh's session-dispatch internals).
+The actual fix — wrapping the three `_execute_*_order_core` calls in `asyncio.to_thread`
+inside `order_flow.py` — belongs to a dedicated future task: it touches the safety-critical
+core (not this task's Panel-only file scope), and it would benefit the existing Chainlit
+surface too, not just Panel. Two human gates (Touch ID + a physical "SEND TO IBKR" click)
+remain a real backstop in the meantime.
 
 ## Phase 4: Tool-call Status indicator — outline
 
