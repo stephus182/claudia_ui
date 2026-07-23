@@ -834,3 +834,54 @@ async def test_handle_message_tool_call_uses_sink_tool_step():
     assert step_handle.input == json.dumps({}, indent=2)
     assert step_handle.output == "100 AAPL"
     sink.send_message.assert_awaited_once_with("You hold 100 AAPL.")
+
+
+# ── handle_message() → proposal dispatch (Task 3.1) ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_handle_message_order_proposal_dispatches_to_sink():
+    agent, sink = _make_agent_with_sink()
+    proposal = {
+        "symbol": "AAPL", "action": "BUY", "quantity": 10,
+        "order_type": "MKT", "limit_price": None, "stop_price": None,
+        "tif": "DAY", "sec_type": "STK", "conid": None, "reason": "Test",
+    }
+    text = f"Here's my proposal.\n```order-proposal\n{json.dumps(proposal)}\n```"
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(text))
+    )
+    await agent.handle_message("Propose a trade")
+    sink.send_order_proposal.assert_awaited_once_with(proposal)
+
+
+@pytest.mark.asyncio
+async def test_handle_message_cancel_proposal_dispatches_to_sink():
+    agent, sink = _make_agent_with_sink()
+    proposal = {
+        "order_id": "242538143", "symbol": "AAPL", "action": "BUY",
+        "quantity": 1, "order_type": "LMT", "limit_price": 100.0,
+        "tif": "GTC", "reason": "Test",
+    }
+    text = f"Cancelling.\n```order-cancel-proposal\n{json.dumps(proposal)}\n```"
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(text))
+    )
+    await agent.handle_message("Cancel it")
+    sink.send_cancel_proposal.assert_awaited_once_with(proposal)
+
+
+@pytest.mark.asyncio
+async def test_handle_message_modify_proposal_dispatches_to_sink():
+    agent, sink = _make_agent_with_sink()
+    proposal = {
+        "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
+        "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
+        "tif": "GTC", "sec_type": "STK",
+        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+    }
+    text = f"Modifying.\n```order-modify-proposal\n{json.dumps(proposal)}\n```"
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(text))
+    )
+    await agent.handle_message("Modify it")
+    sink.send_modify_proposal.assert_awaited_once_with(proposal)
