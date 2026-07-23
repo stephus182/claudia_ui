@@ -173,6 +173,79 @@ def test_check_tradingview_no_bridge_returns_false(checker):
     assert checker._tv_bridge is None
 
 
+# ── Subscriber registry ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_subscribe_returns_unsubscribe_callable(checker):
+    async def _subscriber(msg: str) -> None:
+        pass
+    unsubscribe = checker.subscribe(_subscriber)
+    assert callable(unsubscribe)
+    assert _subscriber in checker._subscribers
+
+
+@pytest.mark.asyncio
+async def test_send_alert_notifies_all_subscribers_with_formatted_message(checker):
+    received_a, received_b = [], []
+    async def _sub_a(msg: str) -> None:
+        received_a.append(msg)
+    async def _sub_b(msg: str) -> None:
+        received_b.append(msg)
+    checker.subscribe(_sub_a)
+    checker.subscribe(_sub_b)
+
+    await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
+
+    assert received_a == received_b
+    assert "disconnected" in received_a[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_send_alert_unknown_to_ok_notifies_no_subscribers(checker):
+    """Mirrors the pre-existing test_run_checks_unknown_to_ok_no_alert's intent —
+    startup settling into a good state is silent, not an alert-worthy transition."""
+    received = []
+    async def _subscriber(msg: str) -> None:
+        received.append(msg)
+    checker.subscribe(_subscriber)
+
+    await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.OK)
+
+    assert received == []
+
+
+@pytest.mark.asyncio
+async def test_send_alert_unsubscribed_callback_stops_receiving(checker):
+    received = []
+    async def _subscriber(msg: str) -> None:
+        received.append(msg)
+    unsubscribe = checker.subscribe(_subscriber)
+    unsubscribe()
+
+    await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
+
+    assert received == []
+    assert _subscriber not in checker._subscribers
+
+
+@pytest.mark.asyncio
+async def test_send_alert_one_subscriber_exception_does_not_block_others(checker):
+    """Mirrors the existing try/except-per-send pattern _send_alert already has for its
+    single external call site today — a failing subscriber must not prevent other
+    subscribers (or the status update itself) from proceeding."""
+    received = []
+    async def _broken_subscriber(msg: str) -> None:
+        raise RuntimeError("subscriber blew up")
+    async def _good_subscriber(msg: str) -> None:
+        received.append(msg)
+    checker.subscribe(_broken_subscriber)
+    checker.subscribe(_good_subscriber)
+
+    await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
+
+    assert len(received) == 1
+
+
 # ── State transition tests (async) ────────────────────────────────────────
 
 @pytest.fixture
@@ -187,16 +260,19 @@ def checker_with_token(tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_checks_unknown_to_ok_no_alert(checker_with_token):
-    """UNKNOWN → OK at startup: _send_alert is called but no Chainlit message sent."""
-    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()), \
-         patch("chainlit.Message") as mock_msg:
-        mock_msg.return_value.send = AsyncMock()
+    """UNKNOWN → OK at startup: _send_alert runs but notifies no subscribers."""
+    received = []
+    async def _subscriber(msg: str) -> None:
+        received.append(msg)
+    checker_with_token.subscribe(_subscriber)
+
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()):
         await checker_with_token._run_checks()
 
     assert checker_with_token.get_status()["ibkr"] == ServiceStatus.OK
     assert checker_with_token.get_status()["gdrive"] == ServiceStatus.OK
-    # UNKNOWN→OK: no Chainlit message instantiated
-    mock_msg.assert_not_called()
+    # UNKNOWN→OK: no alert dispatched to subscribers
+    assert received == []
 
 
 @pytest.mark.asyncio
@@ -499,8 +575,7 @@ def test_attempt_soft_recovery_never_sets_compete_true(checker):
 @pytest.mark.asyncio
 async def test_stop_cancels_task(checker):
     """stop() cancels the poll loop; start() can restart it."""
-    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()), \
-         patch("chainlit.Message.send", AsyncMock()):
+    with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()):
         checker.start()
         assert checker._task is not None
         assert not checker._task.done()
