@@ -89,7 +89,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     loader.load_system_prompt()  # validates docs exist before proceeding
 
     chat = pn.chat.ChatInterface()
-    sink = PanelMessageSink(chat=chat, session_id=session_id)
+    sink = PanelMessageSink(chat=chat, session_id=session_id, store=store)
     agent = ClaudIAAgent(
         toolkit=toolkit,
         store=store,
