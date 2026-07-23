@@ -1272,17 +1272,7 @@ git commit -m "feat: Panel walking skeleton — FastAPI mount, per-session agent
 
 ---
 
-## Phase 3: Order-staging button pattern (safety-critical) — outline
-
-**Prerequisite, flagged by Task 1.3's code-quality review (2026-07-22):** no test anywhere
-currently exercises `handle_message()`'s `order_proposal`/`cancel_proposal`/`modify_proposal`
-→ `self._sink.send_*_proposal(...)` wiring end-to-end (`agent.py:675-680`) — only the JSON
-strip-parsing and the sink's own delegation are tested in isolation, not the connection
-between them. Add that test (a 4th `handle_message()`-level test, same `_FakeStream` pattern
-as Task 1.3's tests, asserting `sink.send_order_proposal` is awaited with the parsed dict
-when the model's response contains an `order-proposal` block) as this phase's first step,
-before building the real button-rendering — this is the single most safety-critical
-integration point in the whole migration and it's currently only indirectly covered.
+## Phase 3: Order-staging button pattern (safety-critical)
 
 **Goal:** Port `order_flow.py`'s three proposal flows (order/cancel/modify) to Panel,
 replacing `PanelMessageSink`'s Phase-2 placeholder methods with real
@@ -1335,6 +1325,330 @@ throwaway test doesn't waste time rediscovering it.
 **Net: the core mechanic this entire phase depends on is now confirmed working exactly as
 the research doc described, not just plausible.** Nothing left to de-risk before writing
 Task 3.x's bite-sized steps.
+
+### Task 3.1: Close the `handle_message()` → proposal-dispatch coverage gap
+
+Flagged by Task 1.3's code-quality review (2026-07-22): no test anywhere currently
+exercises `handle_message()`'s `order_proposal`/`cancel_proposal`/`modify_proposal` →
+`self._sink.send_*_proposal(...)` wiring end-to-end (`agent.py:675-680`) — only the JSON
+strip-parsing and the sink's own delegation are tested in isolation, not the connection
+between them. This is the single most safety-critical integration point in the whole
+migration and it's currently only indirectly covered. Close it before touching
+`order_flow.py` at all.
+
+**Files:**
+- Modify: `tests/test_agent.py`
+
+- [ ] **Step 1: Write the 3 missing tests**
+
+Add alongside Task 1.3's `handle_message()` tests (same file, same `_FakeStream`/
+`_text_response_events`/`_make_agent_with_sink` helpers — no new fixtures needed):
+
+```python
+# ── handle_message() → proposal dispatch (Task 3.1) ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_handle_message_order_proposal_dispatches_to_sink():
+    agent, sink = _make_agent_with_sink()
+    proposal = {
+        "symbol": "AAPL", "action": "BUY", "quantity": 10,
+        "order_type": "MKT", "limit_price": None, "stop_price": None,
+        "tif": "DAY", "sec_type": "STK", "conid": None, "reason": "Test",
+    }
+    text = f"Here's my proposal.\n```order-proposal\n{json.dumps(proposal)}\n```"
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(text))
+    )
+    await agent.handle_message("Propose a trade")
+    sink.send_order_proposal.assert_awaited_once_with(proposal)
+
+
+@pytest.mark.asyncio
+async def test_handle_message_cancel_proposal_dispatches_to_sink():
+    agent, sink = _make_agent_with_sink()
+    proposal = {
+        "order_id": "242538143", "symbol": "AAPL", "action": "BUY",
+        "quantity": 1, "order_type": "LMT", "limit_price": 100.0,
+        "tif": "GTC", "reason": "Test",
+    }
+    text = f"Cancelling.\n```order-cancel-proposal\n{json.dumps(proposal)}\n```"
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(text))
+    )
+    await agent.handle_message("Cancel it")
+    sink.send_cancel_proposal.assert_awaited_once_with(proposal)
+
+
+@pytest.mark.asyncio
+async def test_handle_message_modify_proposal_dispatches_to_sink():
+    agent, sink = _make_agent_with_sink()
+    proposal = {
+        "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
+        "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
+        "tif": "GTC", "sec_type": "STK",
+        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+    }
+    text = f"Modifying.\n```order-modify-proposal\n{json.dumps(proposal)}\n```"
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(text))
+    )
+    await agent.handle_message("Modify it")
+    sink.send_modify_proposal.assert_awaited_once_with(proposal)
+```
+
+- [ ] **Step 2: Run to verify pass** (no implementation change needed — this only adds
+  coverage for existing, already-correct `agent.py` behavior)
+
+Run: `pytest tests/test_agent.py -v`
+Expected: `69 passed` (66 existing + 3 new). If any of the 3 new tests fail, that means
+`handle_message()`'s proposal-dispatch wiring has a real bug — stop and report, do not
+proceed to Task 3.2 with a known-broken dispatch path underneath the button work.
+
+- [ ] **Step 3: Run the full unit suite**
+
+Run: `pytest -m "not integration" -q`
+Expected: `334 passed` (331 baseline + 3 new), 0 failures.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/test_agent.py
+git commit -m "test: cover handle_message() proposal-dispatch wiring (order/cancel/modify)"
+```
+
+### Task 3.2: Extract `order_flow.py`'s execution core from its Chainlit-specific wrapper
+
+**This is the safety-critical task of this phase — read the whole task before starting.**
+
+**Why:** `execute_staged_order`/`execute_cancel_order`/`execute_modify_order`
+(`order_flow.py`) each mix two genuinely different things in one function body: (a) the
+actual order-placement logic — conid resolution across STK/FUT/FOP, CME 536-B field
+injection, the exact IBKR request-body shape, Gate 1/2 invocation via `IBKRClient`, error
+classification, decision logging — and (b) Chainlit-specific glue — parsing
+`action.payload["order"]`, sending `cl.Message(...)` progress/result updates, calling
+`action.remove()`. Only (b) is Chainlit-specific; (a) is the safety-critical part every
+future frontend (Panel, and whatever comes after) must reuse byte-for-byte, never
+re-derive — exactly the same reasoning `[Target architecture]`'s `MessageSink` decision
+was built on. This task separates them; it does **not** change any order-placement
+behavior.
+
+**Files:**
+- Modify: `claudia/order_flow.py`
+- Modify: `tests/test_order_flow.py` (only to add new tests for the extracted core
+  functions — every one of the 36 existing tests must keep passing completely unmodified,
+  since they test the public `execute_*` functions' observable behavior, which does not
+  change)
+
+- [ ] **Step 1: Write the new tests first (TDD for the new surface; the existing 36 are
+  the regression guard for the surface that must not change)**
+
+Add to `tests/test_order_flow.py`:
+
+```python
+# ── Extracted core functions (Task 3.2) — framework-agnostic, dict + callback in ────
+
+def _make_send_status_recorder():
+    """A send_status callback that records every (text, author) call, for assertions —
+    the framework-agnostic equivalent of this file's existing _sent_contents(mock_cl)
+    helper, which only works against the cl.Message-based wrapper."""
+    calls = []
+
+    async def _send_status(text: str, author: str) -> None:
+        calls.append((text, author))
+
+    return _send_status, calls
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_core_success_calls_send_status():
+    """The extracted core, called directly with a plain dict (no cl.Action, no JSON
+    parsing) and a plain callback (no chainlit), produces the same success behavior."""
+    from claudia.order_flow import _execute_staged_order_core
+    ibkr_mod, _client = _make_ibkr_mock()
+    proposal = {
+        "symbol": "AAPL", "action": "BUY", "quantity": 50,
+        "order_type": "MKT", "limit_price": None, "stop_price": None, "reason": "Test",
+    }
+    send_status, calls = _make_send_status_recorder()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _execute_staged_order_core(proposal, send_status, session_id="s1", store=None)
+    assert any("staged successfully" in text for text, _author in calls)
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_core_never_touches_action_or_removes_anything():
+    """The core function has no cl.Action parameter at all and does not call .remove() —
+    that guarantee now lives entirely in the wrapper (Step 3 below), verified separately."""
+    import inspect
+
+    from claudia.order_flow import _execute_staged_order_core
+    sig = inspect.signature(_execute_staged_order_core)
+    assert "action" not in sig.parameters
+    assert "proposal" in sig.parameters
+    assert "send_status" in sig.parameters
+
+
+@pytest.mark.asyncio
+async def test_execute_cancel_order_core_calls_client_with_account_and_order_id():
+    from claudia.order_flow import _execute_cancel_order_core
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    send_status, _calls = _make_send_status_recorder()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _execute_cancel_order_core(proposal, send_status, session_id="s1", store=None)
+    client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
+
+
+@pytest.mark.asyncio
+async def test_execute_modify_order_core_builds_fresh_body_not_raw_proposal():
+    from claudia.order_flow import _execute_modify_order_core
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    proposal = {
+        "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
+        "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
+        "tif": "GTC", "sec_type": "STK",
+        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+    }
+    send_status, _calls = _make_send_status_recorder()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _execute_modify_order_core(proposal, send_status, session_id="s1", store=None)
+    _, _, order_body = client.modify_order_and_confirm.call_args.args
+    assert "_changed_fields" not in order_body
+    assert "_previous_values" not in order_body
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `pytest tests/test_order_flow.py -v -k core`
+Expected: `ImportError` / `ModuleNotFoundError`-style failures — `_execute_staged_order_core`
+etc. don't exist yet.
+
+- [ ] **Step 3: Perform the extraction in `claudia/order_flow.py`**
+
+This is a **structural move, not a rewrite** — the actual order-placement logic must be
+relocated verbatim, not retyped from memory (the risk of a transcription slip in CME
+536-B field logic or conid resolution is exactly what this step-by-step approach exists
+to avoid). Do this mechanically:
+
+1. Add near the top of the file, with the other type-only imports:
+   ```python
+   from collections.abc import Awaitable, Callable
+
+   SendStatus = Callable[[str, str], Awaitable[None]]
+   """(text, author) -> None — the framework-agnostic equivalent of cl.Message(content=text,
+   author=author).send(), so the extracted *_core functions below don't import chainlit."""
+   ```
+
+2. For **each** of the three functions (`execute_staged_order`, `execute_cancel_order`,
+   `execute_modify_order`), in order:
+
+   a. Find the line immediately after the function's opening payload-parsing
+      `try/except` block returns (e.g. for `execute_staged_order`, that's the line
+      `symbol = proposal.get("symbol", "?")` — the first line that runs only once
+      `proposal` is a valid dict). Everything from that line through the end of the
+      function's outer `try: ... except Exception as exc: ...` block (i.e. **everything
+      except** the top JSON-parsing block and the bottom `finally: await action.remove()`)
+      is the part that moves.
+
+   b. Cut that block out and paste it into a **new function** directly above the
+      original, named with a `_core` suffix (`_execute_staged_order_core`,
+      `_execute_cancel_order_core`, `_execute_modify_order_core`), with this signature
+      (adjust per-function per what each one's proposal shape needs, matching the
+      original function's existing local variable extraction — do not change what
+      fields each function reads from `proposal`):
+      ```python
+      async def _execute_staged_order_core(
+          proposal: dict,
+          send_status: SendStatus,
+          session_id: str | None = None,
+          store: ConversationStore | None = None,
+      ) -> None:
+      ```
+      (same pattern for `_execute_cancel_order_core`/`_execute_modify_order_core` —
+      identical signature shape, just the body differs per the original function.)
+
+   c. Within the moved block, replace every `await cl.Message(content=X, author=Y).send()`
+      call with `await send_status(X, Y)` — same two positional values, same order,
+      nothing else about those lines changes. (There are 2 such calls in each of the
+      three original functions: one "Initiating..."/progress message before the IBKR
+      call, one success-or-error message after.) Do **not** touch anything else in the
+      moved block — the conid resolution branches, the `order_body` dict construction,
+      the CME 536-B field logic, the `_resolve_account_id`/`_classify_execution_error`
+      calls, the `store.add_decision(...)` calls: all byte-identical to before, just
+      inside the new function.
+
+   d. The original function (now much shorter) keeps its exact existing signature
+      (`action: cl.Action`, `session_id`, `store`) and becomes a thin wrapper:
+      ```python
+      async def execute_staged_order(
+          action: cl.Action,
+          session_id: str | None = None,
+          store: ConversationStore | None = None,
+      ) -> None:
+          """
+          [keep the existing docstring unchanged]
+          """
+          try:
+              proposal = json.loads(action.payload["order"])
+          except (json.JSONDecodeError, TypeError, KeyError):
+              await cl.Message(content="Invalid order proposal data.", author="System").send()
+              await action.remove()
+              return
+          try:
+              await _execute_staged_order_core(proposal, _cl_send_status, session_id, store)
+          finally:
+              await action.remove()
+      ```
+      (same pattern for `execute_cancel_order`/`execute_modify_order`, matching each
+      one's own existing top-of-function payload-parse-failure branch exactly as it is
+      today — do not change those error messages or the missing-`order_id`/missing-`conid`
+      early-return branches; those already correctly live inside the `_core` functions
+      per step (a)'s line-boundary rule, since they run only after successful JSON
+      parsing.)
+
+3. Add one shared helper, used by all three thin wrappers:
+   ```python
+   async def _cl_send_status(text: str, author: str) -> None:
+       await cl.Message(content=text, author=author).send()
+   ```
+
+- [ ] **Step 4: Run to verify the new tests pass**
+
+Run: `pytest tests/test_order_flow.py -v -k core`
+Expected: `4 passed`
+
+- [ ] **Step 5: Run the full existing suite — this is the real verification**
+
+Run: `pytest tests/test_order_flow.py -v`
+Expected: **all 36 original tests plus the 4 new ones = 40 passed, 0 failed.** Every
+single original test must pass with **zero modification to the test file's existing
+code** — if any original test needs to change to pass, the extraction was not
+behavior-preserving and something is wrong; stop and report rather than editing a test
+to match a changed behavior.
+
+- [ ] **Step 6: Run the full unit suite**
+
+Run: `pytest -m "not integration" -q`
+Expected: `338 passed` (334 baseline + 4 new), 0 failures.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add claudia/order_flow.py tests/test_order_flow.py
+git commit -m "refactor: extract order_flow.py's execution core from its Chainlit wrapper"
+```
+
+### Task 3.3 and beyond: outline only — detail once Task 3.2 lands
+
+The remaining Phase 3 work — `claudia/panel_sink.py`'s three placeholder methods replaced
+with real `pn.Row(Button, Button)` rendering wired to the now-extracted `_execute_*_core`
+functions, a new `claudia/panel_order_flow.py` (or the wiring may fit directly in
+`panel_sink.py` — decide during detailing, informed by how Task 3.2's extraction actually
+shapes the shared functions' call surface), and `tests/test_panel_order_flow.py` — gets
+detailed next, after Task 3.2 is reviewed and landed. Not written speculatively now, per
+this plan's living-document protocol: the exact shape of the `_core` functions' call
+signature (confirmed only once Task 3.2 actually exists) determines exactly what the
+Panel-side button callbacks need to close over and pass in.
 
 ## Phase 4: Tool-call Status indicator — outline
 
