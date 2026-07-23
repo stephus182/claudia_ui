@@ -2539,6 +2539,18 @@ wiring.
 
 Framework-agnostic — no template/layout dependency, safe to do ahead of Phase 7.
 
+**✅ Completed 2026-07-23.** Landed across two commits: `a329ea4` (implementation +
+spec-review doc fixes) and `6683018` (code-quality-review fixes: docstring-accuracy
+correction, a self-unsubscribe-mid-notify test proven to fail against a live-list
+iteration, and `exc_info=True` on the per-subscriber failure log). Full subagent-driven
+cycle applied (implement → independent spec review → code-quality review → fixes, each
+independently re-verified, not taken on report). Final: `tests/test_status.py` 37 → 43
+tests (5 new registry tests + 1 mid-notify guard test; 2 pre-existing tests de-Chainlited),
+full unit suite 350 → 356, `ruff`/`mypy` clean. Two known-and-intentional deferrals recorded
+below survive this task unchanged: the Panel-side `BooleanStatus` widget wiring (blocked on
+Phase 7's layout decision) and multi-session alert-routing correctness (a pre-existing
+property of the shipped poll loop, to be fixed by the later Panel-native per-session tasks).
+
 **Why this piece first:** the `BooleanStatus`-widget wiring depends on Phase 7's template
 decision (where in the page layout do 3 status dots + a logo live?) — genuinely blocked on
 work not yet done. The subscriber registry itself has no such dependency: it's a pure
@@ -2574,7 +2586,7 @@ defensive). Both patches becomes unnecessary once `_send_alert` no longer import
 `chainlit` at all — remove them; `test_run_checks_unknown_to_ok_no_alert`'s assertion needs
 rewriting to check the subscriber list was never notified instead of `mock_msg`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `tests/test_status.py`:
 
@@ -2732,15 +2744,15 @@ async def test_stop_cancels_task(checker):
         checker.stop()
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `pytest tests/test_status.py -v -k "subscribe or alert"`
 Expected: failures — `subscribe`/`_subscribers` don't exist yet on `ConnectivityChecker`.
 
-- [ ] **Step 3: Implement** (see the code block below — already complete, grounded code,
+- [x] **Step 3: Implement** (see the code block below — already complete, grounded code,
   not a sketch)
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `pytest tests/test_status.py -v`
 Expected: all pass — compute the exact total once you've confirmed `tests/test_status.py`'s
@@ -2749,12 +2761,12 @@ before this note was written, unlike every other file this plan has touched so f
 it directly, e.g. `grep -cE "^(async )?def test_" tests/test_status.py`, both before and
 after, the same discipline Task 3.2 established after its own test-count miscount).
 
-- [ ] **Step 5: Run the full unit suite**
+- [x] **Step 5: Run the full unit suite**
 
 Run: `pytest -m "not integration" -q`
 Expected: 350 baseline + (Step 4's real delta), 0 failures.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add claudia/status.py claudia/app.py tests/test_status.py
