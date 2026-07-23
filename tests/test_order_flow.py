@@ -534,7 +534,10 @@ async def test_execute_staged_order_fut_uses_get_futures_not_search():
 
 @pytest.mark.asyncio
 async def test_execute_staged_order_fut_cme_536b_fields():
-    """FUT order body includes manualIndicator=True and extOperator (CME Rule 536-B)."""
+    """FUT order body includes manualIndicator=True but NOT extOperator — IBKR rejects
+    extOperator with any non-empty value as undocumented field 8089 on this account
+    class (proven via whatif isolation 2026-07-23; see
+    docs/2026-07-23-futures-order-field-8089-bug.md)."""
     ibkr_mod, client = _make_ibkr_mock()
     action = _make_action({
         "symbol": "ES", "action": "BUY", "quantity": 1,
@@ -543,7 +546,7 @@ async def test_execute_staged_order_fut_cme_536b_fields():
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("manualIndicator") is True
-    assert order_body.get("extOperator") == "ClaudIA"
+    assert "extOperator" not in order_body
 
 
 @pytest.mark.asyncio
@@ -666,7 +669,8 @@ async def test_execute_staged_order_fop_without_conid_sends_error():
 
 @pytest.mark.asyncio
 async def test_execute_staged_order_fop_with_conid_proceeds():
-    """FOP with pre-resolved conid → order submitted with 536-B fields."""
+    """FOP with pre-resolved conid → order submitted with manualIndicator but NOT
+    extOperator (rejected by IBKR as field 8089 — see FUT test above)."""
     ibkr_mod, client = _make_ibkr_mock()
     action = _make_action({
         "symbol": "ES", "action": "BUY", "quantity": 1,
@@ -677,7 +681,109 @@ async def test_execute_staged_order_fop_with_conid_proceeds():
     _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("conid") == 999888
     assert order_body.get("manualIndicator") is True
-    assert order_body.get("extOperator") == "ClaudIA"
+    assert "extOperator" not in order_body
+
+
+# ── IBKR 200-with-rejection payloads (2026-07-23 live FUT test) ──────────────
+# IBKR returns order rejections as an HTTP 200 payload — no exception raised —
+# so the result must be classified, not assumed successful.
+# Shape copied verbatim from docs/2026-07-23-futures-order-field-8089-bug.md.
+
+_REJECTION_PAYLOAD = [{
+    "error": "\"BUY 1 ES SEP'26 @ 6000.00\"\nCan not contain field # 8089",
+    "cqe": {"post_payload": {"rejections": ["Can not contain field # 8089"],
+                             "sec_type": "FUT", "conid": "649180671", "exchange": "CME",
+                             "order_id": "0"}},
+    "action": "order_submit_issue",
+}]
+
+# Live-verified success shape (AAPL order, earlier live test).
+_SUCCESS_PAYLOAD = [{"order_id": "1986940574", "order_status": "Submitted",
+                     "encrypt_message": "1"}]
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_rejection_payload_reports_failure():
+    """IBKR 200-with-rejection payload → REJECTED message, never 'staged successfully'."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.return_value = _REJECTION_PAYLOAD
+    action = _make_action({
+        "symbol": "ES", "action": "BUY", "quantity": 1,
+        "order_type": "LMT", "limit_price": 6000.0, "sec_type": "FUT", "tif": "GTC",
+    })
+    mock_cl = await _run(action, ibkr_mod)
+    contents = _sent_contents(mock_cl)
+    assert any("REJECTED" in c for c in contents)
+    assert not any("staged successfully" in c for c in contents)
+    # Raw IBKR response stays visible (broker-response transparency convention).
+    assert any("Can not contain field # 8089" in c for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_rejection_payload_logs_no_success_decision():
+    """A rejected order must not be recorded as a 'trade_staged' decision — matches
+    the other failure paths in this module, which log no decision at all."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.return_value = _REJECTION_PAYLOAD
+    store = MagicMock()
+    action = _make_action({
+        "symbol": "ES", "action": "BUY", "quantity": 1,
+        "order_type": "LMT", "limit_price": 6000.0, "sec_type": "FUT", "tif": "GTC",
+    })
+    await _run(action, ibkr_mod, store=store, session_id="s42")
+    store.add_decision.assert_not_called()
+    action.remove.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_real_success_payload_still_reports_success():
+    """Regression guard: the live-verified success shape (order_id + order_status:
+    Submitted) still produces the success message and decision log."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.return_value = _SUCCESS_PAYLOAD
+    store = MagicMock()
+    action = _make_action()
+    mock_cl = await _run(action, ibkr_mod, store=store, session_id="s42")
+    assert any("staged successfully" in c for c in _sent_contents(mock_cl))
+    store.add_decision.assert_called_once()
+    assert store.add_decision.call_args.kwargs["decision_type"] == "trade_staged"
+
+
+@pytest.mark.asyncio
+async def test_execute_cancel_order_rejection_payload_reports_failure():
+    """cancel_order returning an error payload (200, no exception) → FAILED message,
+    no 'cancelled' success message, no decision logged."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.cancel_order.return_value = {
+        "error": "Order not found", "action": "order_submit_issue", "order_id": "0",
+    }
+    store = MagicMock()
+    action = _make_cancel_action()
+    mock_cl = await _run_cancel(action, ibkr_mod, store=store, session_id="s42")
+    contents = _sent_contents(mock_cl)
+    assert any("Cancel FAILED" in c for c in contents)
+    assert not any("**Order cancelled:**" in c for c in contents)
+    store.add_decision.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_modify_order_rejection_payload_reports_failure():
+    """modify_order_and_confirm returning a rejection payload (200, no exception) →
+    REJECTED message, no 'modified' success message, no decision logged."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.modify_order_and_confirm.return_value = {
+        "error": "\"BUY 1 ES SEP'26 @ 6000.00\"\nCan not contain field # 8089",
+        "cqe": {"post_payload": {"rejections": ["Can not contain field # 8089"],
+                                 "order_id": "0"}},
+        "action": "order_submit_issue",
+    }
+    store = MagicMock()
+    action = _make_modify_action()
+    mock_cl = await _run_modify(action, ibkr_mod, store=store, session_id="s42")
+    contents = _sent_contents(mock_cl)
+    assert any("Modify REJECTED" in c for c in contents)
+    assert not any("**Order modified:**" in c for c in contents)
+    store.add_decision.assert_not_called()
 
 
 # ── execute_cancel_order ──────────────────────────────────────────────────────
@@ -919,6 +1025,8 @@ async def test_execute_modify_order_stk_no_cme_fields():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_fut_cme_536b_fields():
+    """FUT modify body includes manualIndicator=True but NOT extOperator — same
+    field-8089 rejection as the place path (docs/2026-07-23-futures-order-field-8089-bug.md)."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({
         "order_id": "1", "conid": 495512557, "symbol": "ES", "action": "BUY",
@@ -927,7 +1035,7 @@ async def test_execute_modify_order_fut_cme_536b_fields():
     await _run_modify(action, ibkr_mod)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
     assert order_body.get("manualIndicator") is True
-    assert order_body.get("extOperator") == "ClaudIA"
+    assert "extOperator" not in order_body
 
 
 @pytest.mark.asyncio
