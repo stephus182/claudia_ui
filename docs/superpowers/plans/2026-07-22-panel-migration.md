@@ -1220,6 +1220,19 @@ data-integrity rules I won't guess or show remembered figures") when all 4 tool 
 failed — concrete, live proof the safety-critical constraints survive unchanged through the
 new Panel frontend. Console: 0 real errors (one benign missing-favicon 404, unrelated).
 
+**Follow-up, same day, against a genuinely live IBKR session:** with the gateway
+authenticated (`authStatus.authenticated: true`, confirmed via `/tickle`) and US equity
+markets closed but CME ES futures open, re-ran the same skeleton against real account/tool
+data (not the error-path case above) — user-confirmed first live test green. This is the
+first time any part of the Panel migration has been exercised against genuine live IBKR
+data end to end, not mocked or offline-erroring. Specifically exercised: a 4-tool-call
+account-check sequence (`get_account_summary`/`get_positions`/`get_live_pnl`/`get_live_orders`)
+in one turn, each rendering as its own correct tool-step card; real position/P&L data
+flowing through into a well-formatted markdown-table response; and `get_live_orders`'
+existing external/read-only origin detection (mobile/TWS/web-placed orders correctly
+flagged as non-modifiable via API) surviving unchanged through the new frontend. (Real
+account figures deliberately not recorded here — this file is git-tracked.)
+
 ```bash
 uvicorn claudia.panel_app:app --port 8001 --reload
 ```
