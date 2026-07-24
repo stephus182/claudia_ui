@@ -18,6 +18,7 @@ import logging
 import os
 import signal
 import uuid
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,10 @@ _execution_listener: ExecutionListener | None = None
 # Task[str]: _run_session_cleanup returns the status string, logged on the
 # destroy path by the done callback.
 _cleanup_tasks: set[asyncio.Task[str]] = set()
+
+# Strong references to fire-and-forget background Flex-sync tasks — same
+# GC-protection rationale as _cleanup_tasks (ruff RUF006).
+_background_tasks: set[asyncio.Task[None]] = set()
 
 # Serializes the check-download-first-store-open section of _init_session across
 # concurrently-initializing sessions — see the comment at its acquire site.
@@ -301,6 +306,89 @@ def _send_action_buttons(
     chat.send(pn.Row(*buttons), user="System", respond=False)
 
 
+async def _maybe_background_flex_sync(
+    chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, ibkr_offline: bool
+) -> None:
+    """Startup Flex sync decision + background sync (app.py:550-617 parity).
+
+    Decision (fast sqlite, threaded) runs inline; only the actual sync — Flex
+    API call + store.db Drive backup — is spawned as a background task. Logic:
+    1. Data integrity check first (SQLite, no API): if data is current, skip.
+    2. Only if stale: check logs for a recent attempt (<4h) — avoid hammering
+       the rate-limited Flex API on restarts.
+    3. Only if stale AND no recent attempt: call the Flex API.
+    """
+    cfg = toolkit._config
+    if not (cfg and cfg.flex_token and cfg.flex_query_id) or ibkr_offline:
+        return
+
+    should_sync = False
+    skip_reason = ""
+    try:
+        cov = await asyncio.to_thread(toolkit._store.get_trade_date_coverage)
+        if not cov.get("stale"):
+            skip_reason = (
+                f"data current (newest: {cov['newest']}, "
+                f"last trading day: {cov.get('last_trading_day')})"
+            )
+        else:
+            last_attempts = await asyncio.to_thread(
+                toolkit._store.get_log, 1, "flex_sync"
+            )
+            if last_attempts:
+                last_ts = datetime.fromisoformat(last_attempts[0]["ts"]).replace(tzinfo=UTC)
+                hours_since = (datetime.now(UTC) - last_ts).total_seconds() / 3600
+                if hours_since < 4:
+                    skip_reason = (
+                        f"already attempted {hours_since:.1f}h ago (newest: {cov['newest']})"
+                    )
+                else:
+                    should_sync = True
+            else:
+                should_sync = True  # never synced
+    except Exception:
+        should_sync = True  # on any check failure, attempt sync
+
+    if skip_reason:
+        log.info("Startup Flex sync skipped — %s", skip_reason)
+        return
+    if not should_sync:
+        return
+
+    async def _background_flex_sync() -> None:
+        try:
+            result, _ = await asyncio.to_thread(toolkit.execute, "sync_flex_trades", {})
+            chat.send(f"✅ {result}", user="System", respond=False)
+            # Back up the updated store.db to Drive account_data/
+            try:
+                await asyncio.to_thread(
+                    toolkit._cache.upload_account_file, cfg.sqlite_path, "store.db"
+                )
+                log.info("store.db backed up to Drive account_data/")
+            except Exception as backup_exc:
+                log.warning("store.db Drive backup failed: %s", backup_exc)
+        except Exception as exc:
+            log.warning("Background Flex sync failed: %s", exc)
+            # Sync failed — still run integrity check so data status is known
+            try:
+                cov_result, _ = await asyncio.to_thread(
+                    toolkit.execute, "check_flex_coverage", {}
+                )
+                chat.send(
+                    f"⚠ Sync failed: {exc}. Run `sync_flex_trades` manually.\n\n{cov_result}",
+                    user="System", respond=False,
+                )
+            except Exception:
+                chat.send(
+                    f"⚠ Trade data sync failed: {exc}. Run `sync_flex_trades` manually.",
+                    user="System", respond=False,
+                )
+
+    task = asyncio.get_running_loop().create_task(_background_flex_sync())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 def _build_chat_app() -> pn.chat.ChatInterface:
     """Per-session factory: called fresh for each new browser session by Bokeh's
     _eval_panel (confirmed live against Panel 1.9.3 — see Phase 2 header note).
@@ -503,6 +591,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             agent._trade_context, ibkr_offline = await _send_opening_status(chat, toolkit)
             _session["agent"] = agent
             _send_action_buttons(chat, _session, session_id, ibkr_offline)
+            await _maybe_background_flex_sync(chat, toolkit, ibkr_offline)
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
             _session["error"] = str(exc)

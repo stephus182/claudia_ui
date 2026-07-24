@@ -40,6 +40,7 @@ otherwise activate the branch).
 """
 
 import asyncio
+import logging
 import os
 import signal
 import threading
@@ -101,6 +102,20 @@ def backend_singletons():
         yield SimpleNamespace(checker_cls=checker_cls, listener_cls=listener_cls)
     pa._connectivity_checker = None
     pa._execution_listener = None
+
+
+@pytest.fixture(autouse=True)
+def flex_sync(request):
+    """Autouse seam for the Flex-sync decision call in _init_session. Tests
+    marked @pytest.mark.real_flex_sync get the REAL function (the decision/sync
+    unit tests); everything else gets an AsyncMock so init-driving tests stay
+    isolated."""
+    if request.node.get_closest_marker("real_flex_sync"):
+        yield None
+        return
+    with patch("claudia.panel_app._maybe_background_flex_sync",
+               new_callable=AsyncMock) as mock_seam:
+        yield mock_seam
 
 
 @pytest.mark.asyncio
@@ -967,3 +982,121 @@ def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
     assert any(o.startswith("localhost") for o in kwargs["websocket_origin"])
     mock_signal.assert_called_once_with(signal.SIGTERM, ANY)
     mock_sync.upload_db.assert_called_once()
+
+
+# ── Task 5.7: background Flex sync decision + sync + store.db backup ──────────
+
+
+def _flex_toolkit(stale: bool, attempts: list[dict] | None = None) -> MagicMock:
+    toolkit = MagicMock()
+    toolkit._config.flex_token = "tok"
+    toolkit._config.flex_query_id = "qid"
+    toolkit._config.sqlite_path = "/tmp/store.db"
+    toolkit._store.get_trade_date_coverage.return_value = {
+        "stale": stale, "newest": "2026-07-22", "last_trading_day": "2026-07-23",
+    }
+    toolkit._store.get_log.return_value = attempts or []
+    toolkit.execute.return_value = ("synced 3 trades", None)
+    return toolkit
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_flex_sync_skips_when_data_current(caplog):
+    from claudia.panel_app import _maybe_background_flex_sync
+    toolkit = _flex_toolkit(stale=False)
+    chat = MagicMock()
+    with caplog.at_level(logging.INFO):
+        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+    toolkit.execute.assert_not_called()
+    assert any("Flex sync skipped" in r.message for r in caplog.records)
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_flex_sync_skips_on_recent_attempt():
+    from datetime import UTC, datetime
+
+    from claudia.panel_app import _maybe_background_flex_sync
+    toolkit = _flex_toolkit(
+        stale=True,
+        attempts=[{"ts": datetime.now(UTC).isoformat()}],
+    )
+    await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+    toolkit.execute.assert_not_called()
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
+    from claudia.panel_app import _maybe_background_flex_sync
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    chat = MagicMock()
+    await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+    for _ in range(10):          # drain the spawned sync task
+        await asyncio.sleep(0)
+    toolkit.execute.assert_called_once_with("sync_flex_trades", {})
+    toolkit._cache.upload_account_file.assert_called_once_with(
+        toolkit._config.sqlite_path, "store.db"
+    )
+    sent = [c.args[0] for c in chat.send.call_args_list]
+    assert any(str(s).startswith("✅") for s in sent)
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_flex_sync_failure_sends_coverage_fallback():
+    from claudia.panel_app import _maybe_background_flex_sync
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit.execute.side_effect = [
+        RuntimeError("flex api down"),
+        ("coverage: 1129 trades", None),
+    ]
+    chat = MagicMock()
+    await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert toolkit.execute.call_args_list[1].args[0] == "check_flex_coverage"
+    sent = [str(c.args[0]) for c in chat.send.call_args_list]
+    assert any(s.startswith("⚠ Sync failed") and "coverage: 1129 trades" in s for s in sent)
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_flex_sync_noop_when_offline_or_unconfigured():
+    from claudia.panel_app import _maybe_background_flex_sync
+    toolkit = _flex_toolkit(stale=True)
+    await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=True)
+    toolkit._store.get_trade_date_coverage.assert_not_called()
+    toolkit2 = _flex_toolkit(stale=True)
+    toolkit2._config.flex_token = ""
+    await _maybe_background_flex_sync(MagicMock(), toolkit2, ibkr_offline=False)
+    toolkit2._store.get_trade_date_coverage.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_init_awaits_flex_sync_seam_with_gather_offline_flag(flex_sync):
+    """Wiring: _init_session must await the decision function with the
+    gather-derived ibkr_offline (True here)."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, True))),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hi", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    flex_sync.assert_awaited_once()
+    assert flex_sync.await_args.args[2] is True or \
+        flex_sync.await_args.kwargs.get("ibkr_offline") is True

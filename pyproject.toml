@@ -39,7 +39,10 @@ where = ["."]
 include = ["claudia*"]
 
 [tool.pytest.ini_options]
-markers = ["integration: requires live IBKR gateway and credentials"]
+markers = [
+    "integration: requires live IBKR gateway and credentials",
+    "real_flex_sync: test exercises the real Flex-sync decision function (autouse seam disabled)",
+]
 asyncio_mode = "auto"
 
 [tool.ruff]
