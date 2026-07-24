@@ -44,11 +44,17 @@ from claudia.execution_listener import ExecutionListener
 from claudia.gdrive_sync import GDriveSync
 from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_sink import PanelMessageSink
+from claudia.panel_ws_fix import apply_ws_disconnect_fix
 from claudia.status import ConnectivityChecker
 
 log = logging.getLogger(__name__)
 
 load_dotenv(override=False)
+
+# bokeh-fastapi 0.1.8 never detects Starlette's returned websocket.disconnect
+# message, so Panel session-destroy hooks would never fire — must run before
+# add_application registers the WSHandler route (see claudia/panel_ws_fix.py).
+apply_ws_disconnect_fix()
 
 _MODEL = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
 _DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))
