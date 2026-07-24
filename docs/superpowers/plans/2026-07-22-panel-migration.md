@@ -6535,6 +6535,35 @@ crash), and TV-offline is the normal expected state, not an error.
 
 ### Task 9.1: TV singleton + opening-status detection + Launch button + tool merge
 
+**✅ Completed 2026-07-24.** Commits `6d67d72` (implementation) + `7bf0902`
+(`launch-tradingview-debug.sh` + message wiring) + `84b032a` (review fixes). Full cycle:
+implement → spec review (COMPLIANT — singleton/ordering/wiring parity verified verbatim,
+bash `set -euo pipefail` traced clean) → quality review (Approve-with-fixes, all Minor).
+The TV singleton trio + `_connect_tradingview` (wires agent+checker `set_tv_bridge`,
+never blocks init) + Launch-TradingView button (ports `app.py:907-951`: launch →
+rebuild-bridge-under-lock → re-wire) + binary TV status line all landed. **Bonus
+deliverable (user request):** `scripts/launch-tradingview-debug.sh` — the debug port can
+only be set at launch, so an already-running TradingView can't be fixed in place; the
+script does quit(graceful→force)+relaunch+wait-for-CDP in one command, referenced by
+both the Panel launch-fail message and `launch_tradingview()`'s RuntimeError. Review
+fixes: stop-before-rebuild teardown now has test teeth (removing `stop()` fails a test);
+the sidecar-up-no-tools offline branch tested; parity citation broadened; the script's
+`open -a` guarded. Live smoke (port 8002): the real `_connect_tradingview` ran, sidecar
+started, CDP-down branch logged, status line + Launch button rendered, init completed,
+no crash. Tests +7 (46 → 52 in test_panel_app.py incl. the seam); suite 425 → 432.
+
+**Intentional divergence (spec-sanctioned):** in the sidecar-up/CDP-down state the TV dot
+shows gray/UNKNOWN (not app.py's red) — correct here since TV-offline is the normal
+expected state, and it self-heals to green on a successful Launch.
+
+**⚠ Follow-up recorded (reviewer, NOT done here — separate task):** `TradingViewBridge.start()`'s
+MCP handshake (`await self._session.initialize()` / `list_tools()`, `tradingview.py:296,301`)
+is UNBOUNDED — a sidecar that spawns but never responds would hang init forever,
+contradicting the "never block init" contract. This is pre-existing parity with app.py
+(not introduced by Phase 9). The 80/20 fix that keeps the inline shape AND fixes app.py:
+wrap the handshake in `asyncio.wait_for(..., timeout≈10s)` inside `start()`. Its own
+small task when scheduled.
+
 Grounded 2026-07-24: `TradingViewBridge()` + `await bridge.start()`,
 `.get_tools() -> list[dict]` (`tradingview.py:325`), `.stop()` (`:361`),
 `.execute(name, input)`; `check_cdp_running() -> bool` (`:142`),
@@ -6576,7 +6605,7 @@ core `app.py:907-951`.
 - Modify: `tests/test_panel_app.py` (~5 new tests, all with the bridge/launch patched —
   no real sidecar in unit tests)
 
-- [ ] **Step 1: Failing tests** (detail with the real patch stacks at dispatch — assert:
+- [x] **Step 1: Failing tests** (detail with the real patch stacks at dispatch — assert:
   TV button present only when `tv_offline`; `_connect_tradingview` success wires
   `set_tv_bridge` on both agent and checker; TV failure returns `tv_offline=True` and
   does NOT block init (agent still built, chat usable); launch handler calls
@@ -6584,16 +6613,16 @@ core `app.py:907-951`.
   success message; launch-fail sends the manual-launch message and does NOT set the
   bridge).
 
-- [ ] **Step 2: Implement** (per the design above — verbatim-mirror the app.py cores).
+- [x] **Step 2: Implement** (per the design above — verbatim-mirror the app.py cores).
 
-- [ ] **Step 3: Gates** (suite +5; ruff + mypy clean; 1 warning).
+- [x] **Step 3: Gates** (suite +5; ruff + mypy clean; 1 warning).
 
-- [ ] **Step 4: Manual smoke** — two-tier: (a) always: TV offline (no Desktop) → status
+- [x] **Step 4: Manual smoke** — two-tier: (a) always: TV offline (no Desktop) → status
   line says not-connected, "Launch TradingView" button present, init completes and chat
   works, no crash; (b) if TV Desktop available: click Launch → CDP comes up → tools
   merge → agent can call a TV tool. Report which tier ran.
 
-- [ ] **Step 5: Commit** — `feat: Panel TradingView launch button + sidecar tool merge`.
+- [x] **Step 5: Commit** — `feat: Panel TradingView launch button + sidecar tool merge`.
 
 ### Task 9.2: PineScript copy/inject — auto-detect ```pine, real clipboard, Panel-native
 
