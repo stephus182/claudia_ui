@@ -1114,15 +1114,29 @@ def test_apply_status_maps_enum_to_value_and_color():
     from claudia.status import ServiceStatus
 
     ind = _make_status_indicators()
-    assert set(ind) == {"ibkr", "gdrive", "tradingview"}
+    assert set(ind) == {"ibkr", "gdrive", "tv"}
     _apply_status(ind, {
         "ibkr": ServiceStatus.OK,
         "gdrive": ServiceStatus.ERROR,
-        "tradingview": ServiceStatus.UNKNOWN,
+        "tv": ServiceStatus.UNKNOWN,
     })
     assert (ind["ibkr"].value, ind["ibkr"].color) == (True, "success")
     assert (ind["gdrive"].value, ind["gdrive"].color) == (True, "danger")
-    assert (ind["tradingview"].value, ind["tradingview"].color) == (False, "dark")
+    assert (ind["tv"].value, ind["tv"].color) == (False, "dark")
+
+
+def test_indicator_keys_match_real_checker_status_keys():
+    """The dots are keyed like ConnectivityChecker.get_status() — pinned against
+    the REAL checker (constructor only, no network), not a hand-written dict:
+    the spec-review found impl+test sharing the same wrong 'tradingview' key
+    while the checker uses 'tv'."""
+    from pathlib import Path
+
+    from claudia.panel_app import _INDICATOR_LABELS
+    from claudia.status import ConnectivityChecker
+
+    checker = ConnectivityChecker(gateway_url="http://x", gdrive_token_file=Path("/nonexistent"))
+    assert set(_INDICATOR_LABELS) == set(checker.get_status())
 
 
 @pytest.mark.asyncio
@@ -1180,6 +1194,10 @@ async def test_build_session_root_registers_5s_periodic_refresh():
         chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
         await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
     assert mock_cb.call_args.kwargs.get("period") == 5000 or mock_cb.call_args.args[1] == 5000
+    # start=False pins the held-event double-delivery fix: starting at build
+    # time double-registers the callback on the ServerSession (bokeh ValueError
+    # per session); the start is deferred to pn.state.onload instead.
+    assert mock_cb.call_args.kwargs.get("start") is False
 
 
 @pytest.mark.asyncio
@@ -1240,6 +1258,52 @@ async def test_destroy_hook_unsubscribes_before_cleanup(backend_singletons):
         hook = mock_register.call_args.args[0]
         hook(MagicMock())
         await asyncio.sleep(0.05)
+    unsub_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_destroy_during_init_undoes_fresh_subscription(backend_singletons):
+    """Init-race hardening: the destroy hook can fire while _init_session is
+    still running (init blocked 15-32s), i.e. BEFORE the subscription exists —
+    the hook's own unsubscribe then sees None and does nothing. Init must
+    therefore re-check the closed flag right after subscribing and undo its
+    fresh subscription, or a process-lifetime subscriber closure over a dead
+    chat leaks. Deterministic shape: _build_chat_app only schedules the init
+    task (it cannot have run yet — no await between create_task and return),
+    so invoking the destroy hook before the first callback await guarantees
+    closed=True is seen by init's guard, not by the hook's unsub path."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    unsub_mock = MagicMock()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "on_session_destroyed") as mock_register,
+        patch("claudia.panel_app._run_session_cleanup",
+              new=AsyncMock(return_value="ok")),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        backend_singletons.checker_cls.return_value.subscribe.return_value = unsub_mock
+        chat = _build_chat_app()
+
+        # Destroy the session BEFORE init has run: unsubscribe is still None,
+        # so the hook itself cannot be the caller of unsub_mock below.
+        hook = mock_register.call_args.args[0]
+        hook(MagicMock())
+        unsub_mock.assert_not_called()
+
+        # Drain init: it subscribes, sees closed=True, and must undo it.
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+    backend_singletons.checker_cls.return_value.subscribe.assert_called_once()
     unsub_mock.assert_called_once()
 
 

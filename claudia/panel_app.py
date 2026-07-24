@@ -209,7 +209,7 @@ async def _send_opening_status(
     return trade_context, ibkr_offline
 
 
-_INDICATOR_LABELS = {"ibkr": "IBKR", "gdrive": "GDrive", "tradingview": "TradingView"}
+_INDICATOR_LABELS = {"ibkr": "IBKR", "gdrive": "GDrive", "tv": "TradingView"}
 
 
 def _make_status_indicators() -> dict[str, pn.indicators.BooleanStatus]:
@@ -647,6 +647,11 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             _session["unsubscribe"] = _connectivity_checker.subscribe(
                 _make_alert_subscriber(chat)
             )
+            if _session["closed"]:
+                # Session was destroyed while init was still running — undo the
+                # subscription we just made into a dead session.
+                _session["unsubscribe"]()
+                _session["unsubscribe"] = None
             if _execution_listener is None:
                 _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
             _execution_listener.start()
@@ -703,7 +708,15 @@ def _build_session_root() -> pn.Column:
         if _connectivity_checker is not None:
             _apply_status(indicators, _connectivity_checker.get_status())
 
-    pn.state.add_periodic_callback(_refresh, period=5000)
+    # start=False + onload: starting at build time registers the callback
+    # doc-side before the ServerSession exists, and the held SessionCallbackAdded
+    # event is then replayed at unhold on top of the session-init sweep — a
+    # double delivery that raises a per-session bokeh ValueError ("A callback of
+    # the same type has already been added with this ID"); deferring the start
+    # to onload (post-session) delivers it exactly once. The cb still registers
+    # in pn.state._periodic[curdoc], so session auto-cleanup is preserved.
+    cb = pn.state.add_periodic_callback(_refresh, period=5000, start=False)
+    pn.state.onload(cb.start)
     return pn.Column(
         pn.Row(*indicators.values()),
         chat,
