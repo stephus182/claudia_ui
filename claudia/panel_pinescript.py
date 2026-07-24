@@ -56,6 +56,20 @@ def _pine_inject_succeeded(result: str) -> bool:
     return isinstance(payload, dict) and payload.get("success") is True
 
 
+def _pine_error_detail(result: str) -> str:
+    """Human-facing error text from a failed pine_set_source result: the sidecar's
+    `error` field when the result is JSON with one, else the raw result string
+    (covers the literal status-string paths). Keeps the failure message honest
+    without dumping raw JSON braces at the user."""
+    try:
+        payload = json.loads(result)
+    except (ValueError, TypeError):
+        return result
+    if isinstance(payload, dict) and payload.get("error"):
+        return str(payload["error"])
+    return result
+
+
 def extract_pine_blocks(text: str) -> list[str]:
     """Return the code of every ```pine fenced block in text, each stripped.
 
@@ -95,9 +109,11 @@ def _render_pine_block(
     inject_btn = pn.widgets.Button(label="Inject into TradingView", color="primary")
 
     async def _on_inject(event) -> None:
-        # disable-first (mirrors panel_order_flow's handlers): close the double-click
-        # window before the await and leave it disabled — a retry after launching TV
-        # is a fresh message's button.
+        # disable-first closes the double-click window during the await, but — unlike
+        # panel_order_flow (safety-critical, one live order) — PineScript inject is
+        # idempotent (it just sets the editor source), so every FAILURE path re-enables
+        # the button: the commonest failure is "TV not launched yet", which is
+        # recoverable on the same button once the user runs the debug-launch helper.
         inject_btn.disabled = True
         try:
             bridge = tv_bridge_getter() if tv_bridge_getter is not None else None
@@ -107,6 +123,7 @@ def _render_pine_block(
                     user="System",
                     respond=False,
                 )
+                inject_btn.disabled = False  # recoverable: launch TV, then retry this button
                 return
             result = await bridge.execute("pine_set_source", {"source": code})
             # Classify — execute() returns the sidecar's own {"success": ...} JSON (or a
@@ -117,15 +134,18 @@ def _render_pine_block(
                 chat.send("✅ Injected into the TradingView Pine Editor.", user="ClaudIA", respond=False)
             else:
                 chat.send(
-                    f"✕ Injection did not complete — copy the script manually.\n\n{result}",
+                    f"✕ Injection did not complete — copy the script manually.\n\n"
+                    f"{_pine_error_detail(result)}",
                     user="System",
                     respond=False,
                 )
+                inject_btn.disabled = False  # recoverable (e.g. CDP dropped) — allow retry
         except Exception:
             # No raise — mirror panel_order_flow's honest-degradation handlers. execute()
             # itself never raises (tradingview.py:339), but the getter / chat.send could.
             log.exception("PineScript injection failed")
             chat.send("Injection failed — copy the script manually.", user="System", respond=False)
+            inject_btn.disabled = False
 
     inject_btn.on_click(_on_inject)
 

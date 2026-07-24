@@ -120,8 +120,10 @@ async def test_render_copy_button_carries_code_in_js_on_click_args():
 
 @pytest.mark.asyncio
 async def test_render_multiple_blocks_each_copy_button_has_its_own_code():
-    """Guards the loop-closure correctness: each Inject/Copy pair must bind its own
-    block, not the last block's source."""
+    """Guards each COPY button's arg binding only. NOTE: Copy is closure-IMMUNE —
+    js_on_click serializes `code` eagerly at registration, so these args are
+    correct even if the loop-closure bug is present. The inject-path guard (the
+    thing _render_pine_block actually protects) is the separate test below."""
     chat = _make_chat()
     text = "```pine\nstudy(\"A\")\n```\n```pine\nstudy(\"B\")\n```"
     await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: None)
@@ -130,6 +132,28 @@ async def test_render_multiple_blocks_each_copy_button_has_its_own_code():
     copy_b = chat.send.call_args_list[1].args[0][0]
     assert Link.registry[copy_a][0].args == {"code": 'study("A")'}
     assert Link.registry[copy_b][0].args == {"code": 'study("B")'}
+
+
+@pytest.mark.asyncio
+async def test_render_multiple_blocks_each_inject_button_sends_its_own_source():
+    """Real teeth for the loop-closure fix _render_pine_block exists to provide:
+    firing BOTH inject handlers must call execute with each block's OWN source. An
+    inlined loop would bind every handler to the last block ('study("B")' twice).
+    The copy-args test above can't catch this — only the async inject handler
+    closes over the per-block variable."""
+    chat = _make_chat()
+    text = "```pine\nstudy(\"A\")\n```\n```pine\nstudy(\"B\")\n```"
+    bridge = MagicMock()
+    bridge.execute = AsyncMock(return_value='{"success": true}')
+    await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: bridge)
+
+    inject_a = chat.send.call_args_list[0].args[0][1]
+    inject_b = chat.send.call_args_list[1].args[0][1]
+    await _get_click_callback(inject_a)(None)
+    await _get_click_callback(inject_b)(None)
+
+    sources = [c.args[1]["source"] for c in bridge.execute.await_args_list]
+    assert sources == ['study("A")', 'study("B")']
 
 
 @pytest.mark.asyncio
@@ -144,7 +168,9 @@ async def test_inject_when_bridge_none_sends_not_connected_and_never_calls_execu
     last = chat.send.call_args
     assert "not connected" in last.args[0].lower()
     assert last.kwargs["user"] == "System"
-    assert inject_btn.disabled is True
+    # Recoverable (TV not launched yet) → button re-enabled for retry (idempotent
+    # inject, unlike order flow's one-shot).
+    assert inject_btn.disabled is False
 
 
 @pytest.mark.asyncio
@@ -212,9 +238,10 @@ async def test_inject_sidecar_reports_failure_is_not_reported_as_success():
     last = chat.send.call_args
     assert "✅" not in last.args[0]
     assert "did not complete" in last.args[0]
-    assert "CDP connection failed after 5 attempts" in last.args[0]  # raw error surfaced
+    assert "CDP connection failed after 5 attempts" in last.args[0]  # error surfaced
+    assert '{"success"' not in last.args[0]  # M2: clean error text, not raw JSON braces
     assert last.kwargs["user"] == "System"
-    assert inject_btn.disabled is True
+    assert inject_btn.disabled is False  # recoverable (e.g. CDP dropped) → retryable
 
 
 @pytest.mark.asyncio
@@ -251,4 +278,4 @@ async def test_inject_failure_sends_honest_message_and_does_not_raise():
     last = chat.send.call_args
     assert "Injection failed" in last.args[0]
     assert last.kwargs["user"] == "System"
-    assert inject_btn.disabled is True
+    assert inject_btn.disabled is False  # recoverable → retryable
