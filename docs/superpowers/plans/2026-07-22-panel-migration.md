@@ -2561,6 +2561,18 @@ Panel; the native Tornado websocket path is mature and needs no patch. Consequen
 
 ### Task 5.6b-pre: Topology switch — native `pn.serve`, delete panel_ws_fix
 
+**✅ Completed 2026-07-24.** Commits `59f256e` (switch) + `737c564` (review fixes). Full
+cycle: implement → spec review (COMPLIANT — `main()` verified character-identical to the
+plan, live `python -m` run + SIGINT exit re-verified, zero stale references) → quality
+review (Approve-with-fixes: 1 Important — the surgery had removed the module-docstring
+isolation rationale `_get_toolkit` still pointed at, restored — + probe-evidence
+hygiene: `pnserve_probe.py` now committed to `docs/probes/`, D4 probe README/docstring
+corrected to past tense). Smoke was end-to-end: real agent reply over the live
+Anthropic path under native `pn.serve`, destroy chain firing UNPATCHED ~28s after tab
+close, SIGINT clean. Orphaned `bokeh_fastapi` pip-uninstalled from the venv (suite
+re-verified green without it). Suite 403 → 397 (6 ws-fix tests deleted with their
+module). Deferred into 5.6b: the `main()` kwargs test (M2).
+
 **Files:**
 
 - Modify: `claudia/panel_app.py` (module docstring, imports, drop FastAPI mount +
@@ -2572,7 +2584,7 @@ Panel; the native Tornado websocket path is mature and needs no patch. Consequen
   `pip install panel[fastapi]` to run — they remain as evidence of the abandoned
   topology)
 
-- [ ] **Step 1: panel_app.py surgery**
+- [x] **Step 1: panel_app.py surgery**
 
 Remove: the `from fastapi import FastAPI` import, the panel.io.fastapi comment block +
 `from panel.io.fastapi import add_application` import, the `from claudia.panel_ws_fix
@@ -2609,7 +2621,7 @@ if __name__ == "__main__":
 Module docstring: replace the FastAPI/uvicorn run instructions with
 `python -m claudia.panel_app` and one sentence on the native-serving principle.
 
-- [ ] **Step 2: delete the ws-fix pair + pyproject**
+- [x] **Step 2: delete the ws-fix pair + pyproject**
 
 `git rm claudia/panel_ws_fix.py tests/test_panel_ws_fix.py`. pyproject:
 `"panel[fastapi]>=1.9"` → `"panel>=1.9"` (keep the ruff `extend-exclude` for
@@ -2617,20 +2629,20 @@ docs/probes). Check whether `fastapi`/`uvicorn` appear anywhere else in pyprojec
 claudia/ (they should not after the surgery; uvicorn was invoked ad hoc, never a
 declared dep — verify and report). README note for the two probe files.
 
-- [ ] **Step 3: gates**
+- [x] **Step 3: gates**
 
 `pytest -m "not integration" -q` → 403 − 6 = **397** expected. `ruff check .` clean.
 `mypy claudia` clean (panel_ws_fix gone from the module set). Grep: zero references to
 `panel_ws_fix`, `add_application`, `FastAPI` under `claudia/` and `tests/`.
 
-- [ ] **Step 4: manual smoke (native serve)**
+- [x] **Step 4: manual smoke (native serve)**
 
 `.venv/bin/python -m claudia.panel_app` → Playwright to `http://localhost:8001/`:
 welcome renders, offline status block arrives, a typed message gets the agent flow (or
 honest offline behavior). Close the browser → within ~35s the server log shows the
 session discard (destroy chain alive, unpatched). Ctrl-C → clean exit, port freed.
 
-- [ ] **Step 5: commit**
+- [x] **Step 5: commit**
 
 ```bash
 git add -A claudia/panel_app.py claudia/panel_ws_fix.py tests/test_panel_ws_fix.py pyproject.toml docs/probes/README.md
@@ -4765,6 +4777,446 @@ pattern from Task 5.5 if bare uvicorn drops the lines). Kill the server.
 ```bash
 git add claudia/panel_ws_fix.py tests/test_panel_ws_fix.py claudia/panel_app.py
 git commit -m "fix: bokeh-fastapi 0.1.8 dead disconnect detection — restore Panel session destroy chain (D7)"
+```
+
+### Task 5.6b: Session-end cleanup + End Session / Start Gateway buttons + shutdown upload
+
+Grounded 2026-07-23/24 against verified signatures: `store.close_session(session_id,
+metadata=None)` (`conversation_store.py:169`), `store.get_session` (`:234`),
+`store.count_messages` (`:299`); `generate_session_report(session_id, store,
+connectivity=None, doc_version=None) -> Path | None` (`session_reporter.py:151` —
+module verified chainlit-free, safe to import at panel_app top level);
+`GDriveSync.upload_db(local_path)` (`gdrive_sync.py:249` — logs+preserves on error);
+`ConnectivityChecker.get_status() -> dict[str, ServiceStatus]` (`status.py:85`);
+`GatewayManager` (`ibkr_core_mcp/gateway/manager.py:46`): `ensure_docker_running()`,
+`start()`, `wait_for_gateway(timeout=120) -> bool`, `open_login_page()` — the
+button ports app.py:838-874's `_run()` core, NOT `GatewayManager.startup()` (interactive
+EOFError trap). `pn.state.on_session_destroyed` (panel `state.py:828-838`): with curdoc
+set (i.e. called inside the factory) it registers on the session Document — so
+registration lives in `_build_chat_app`, not `_init_session`… both run with curdoc set;
+keep it in `_build_chat_app` right after the holder is created, so even a failed init
+gets cleanup. Parity sources: `_run_session_cleanup` app.py:670-700; End Session
+app.py:800-819; Start Gateway app.py:824-881. Destroy/shutdown contract: the
+"Re-verification COMPLETE 2026-07-24" note (V4/V5).
+
+**Design (locked at detailing):**
+
+- **Destroy hook**: sync callback (V4 contract), registered per session in
+  `_build_chat_app`; checks/sets a `closed` flag in the `_session` holder (End Session
+  button parity guard — app.py's `session_closed`); schedules
+  `_run_session_cleanup(...)` via `loop.create_task` (running loop available in the
+  hook, V4), strong-ref'd in a module-level `_cleanup_tasks` set (RUF006). NO UI calls
+  in the hook or the destroy-path cleanup (chat is dead — V4).
+- **`_run_session_cleanup`** is async, offloads every blocking call via
+  `asyncio.to_thread` (report generation, Drive upload) — the destroy hook runs its
+  task on the shared loop where blocking would freeze all sessions (V4 probe).
+  Returns the status string (End Session displays it; destroy path logs it).
+- **`_send_opening_status` returns `(trade_context, ibkr_offline)`** so `_init_session`
+  can decide the Start-Gateway button. ALL 11 existing tests patching it as a bare
+  AsyncMock must gain `return_value=(None, False)` — an unpacking `a, b = MagicMock()`
+  raises TypeError and would fail init in every patched test.
+- **Buttons** (Phase 3 pattern — `pn.widgets.Button` + async on_click + disable-first):
+  one chat message after the status block with "End Session" (always) + "Start IBKR
+  Gateway" (only when `ibkr_offline`). Gateway handler awaits inline (awaits yield —
+  session stays responsive; no task juggling), streams progress via `chat.send`, and
+  triggers `_connectivity_checker._run_checks()` on success (app.py:863-864 parity).
+- **Shutdown upload (V5 contract)**: `main()` wraps `pn.serve` in try/finally; the
+  finally does a synchronous `_gdrive_sync.upload_db(_DB_PATH)` (loop already stopped —
+  blocking is fine) with try/except log. A SIGTERM handler re-raises SIGINT
+  (`signal.raise_signal(signal.SIGINT)`) so launchd/scripts reach the same path —
+  **must be empirically verified in the smoke step** (kill -TERM → clean exit + finally
+  runs; V5 proved only the SIGINT path).
+- Reviewer-deferred item lands here (5.6b-pre M2): a test locking `main()`'s pn.serve
+  kwargs (port, show=False, both websocket origins) + the finally-upload.
+
+**Files:**
+
+- Modify: `claudia/panel_app.py` (imports: `signal`, `GatewayManager`,
+  `generate_session_report`; `_cleanup_tasks` set; `_run_session_cleanup`;
+  `_send_opening_status` return change; `_build_chat_app`: `closed` flag + destroy-hook
+  registration; `_init_session`: buttons block; `main()`: SIGTERM + try/finally upload)
+- Modify: `tests/test_panel_app.py` (11 patch-site updates + ~8 new tests)
+
+- [ ] **Step 1: Failing tests — cleanup core + destroy hook**
+
+```python
+@pytest.mark.asyncio
+async def test_run_session_cleanup_closes_reports_uploads(monkeypatch):
+    """app.py:670-700 parity: stop watching, close session with model metadata,
+    generate report (threaded), count messages, upload DB to Drive."""
+    from claudia.panel_app import _run_session_cleanup
+
+    mock_sync = MagicMock()
+    monkeypatch.setattr("claudia.panel_app._gdrive_sync", mock_sync)
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
+    store = MagicMock()
+    store.get_session.return_value = {"doc_version": "v7"}
+    store.count_messages.return_value = 42
+    loader = MagicMock()
+
+    with patch("claudia.panel_app.generate_session_report") as mock_report:
+        status = await _run_session_cleanup("sid-1", store, loader)
+
+    loader.stop_watching.assert_called_once()
+    store.close_session.assert_called_once_with("sid-1", metadata={"model": ANY})
+    mock_report.assert_called_once_with("sid-1", store, {}, "v7")
+    mock_sync.upload_db.assert_called_once()
+    assert status == "42 messages saved · claudia.db → Drive ✅"
+
+
+@pytest.mark.asyncio
+async def test_run_session_cleanup_drive_failure_is_nonfatal(monkeypatch):
+    from claudia.panel_app import _run_session_cleanup
+
+    mock_sync = MagicMock()
+    mock_sync.upload_db.side_effect = RuntimeError("drive down")
+    monkeypatch.setattr("claudia.panel_app._gdrive_sync", mock_sync)
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
+    store = MagicMock()
+    store.get_session.return_value = {}
+    store.count_messages.return_value = 5
+    with patch("claudia.panel_app.generate_session_report"):
+        status = await _run_session_cleanup("sid-1", store, MagicMock())
+    assert "Drive upload failed ⚠️" in status
+
+
+@pytest.mark.asyncio
+async def test_session_destroy_hook_registered_and_runs_cleanup_once():
+    """V4 contract: a sync per-session destroy hook is registered at build time;
+    invoking it schedules cleanup exactly once (the closed flag suppresses the
+    second invocation — End Session button parity, app.py session_closed)."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "on_session_destroyed") as mock_register,
+        patch("claudia.panel_app._run_session_cleanup",
+              new=AsyncMock(return_value="ok")) as mock_cleanup,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        mock_register.assert_called_once()
+        hook = mock_register.call_args.args[0]
+        hook(MagicMock())          # first destroy → schedules cleanup
+        hook(MagicMock())          # second → suppressed by closed flag
+        await asyncio.sleep(0.05)  # let the created task run
+
+    mock_cleanup.assert_awaited_once()
+```
+
+(`pn` is already imported in the test module? If not, add `import panel as pn`.)
+Run → all three FAIL (`_run_session_cleanup` doesn't exist / no registration).
+
+- [ ] **Step 2: Failing tests — buttons + status-return change + main() kwargs**
+
+```python
+def _find_buttons(chat):
+    """All pn.widgets.Button objects across chat messages (Phase 3 pattern:
+    buttons live in a pn.Column/Row inside a message)."""
+    found = []
+    for m in chat.objects:
+        obj = getattr(m, "object", None)
+        if obj is None:
+            continue
+        stack = [obj]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, pn.widgets.Button):
+                found.append(node)
+            stack.extend(getattr(node, "objects", []))
+    return found
+
+
+@pytest.mark.asyncio
+async def test_end_session_button_always_present_and_runs_cleanup():
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch("claudia.panel_app._run_session_cleanup",
+              new=AsyncMock(return_value="7 messages saved")) as mock_cleanup,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        buttons = _find_buttons(chat)
+        end_btns = [b for b in buttons if b.name == "End Session"]
+        assert len(end_btns) == 1
+        assert not [b for b in buttons if "Gateway" in b.name]  # online → no gateway btn
+
+        await end_btns[0]._button_click(None) if hasattr(end_btns[0], "_button_click") else None
+        # ^ replace with the Phase 3 click idiom actually used in
+        # tests/test_panel_order_flow.py — read that file and reuse its exact
+        # click-simulation helper; the assertion below is the contract.
+    mock_cleanup.assert_awaited_once()
+    texts = _message_texts(chat)
+    assert any("Session ended." in t and "7 messages saved" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_button_present_only_when_ibkr_offline():
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, True))),   # offline
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    gateway_btns = [b for b in _find_buttons(chat) if b.name == "Start IBKR Gateway"]
+    assert len(gateway_btns) == 1
+
+
+def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
+    """5.6b-pre review deferral (M2) + V5 shutdown contract: pn.serve kwargs are
+    behavior-bearing (websocket_origin: 403 without 127.0.0.1 — probe-verified),
+    and the final Drive upload must run in the finally even if serve raises."""
+    from claudia.panel_app import main
+
+    mock_sync = MagicMock()
+    monkeypatch.setattr("claudia.panel_app._gdrive_sync", mock_sync)
+    with patch("claudia.panel_app.pn.serve", side_effect=KeyboardInterrupt) as mock_serve, \
+         patch("claudia.panel_app.signal.signal"):
+        with pytest.raises(KeyboardInterrupt):
+            main()
+    kwargs = mock_serve.call_args.kwargs
+    assert kwargs["show"] is False
+    assert any("127.0.0.1" in o for o in kwargs["websocket_origin"])
+    assert any(o.startswith("localhost") for o in kwargs["websocket_origin"])
+    mock_sync.upload_db.assert_called_once()
+```
+
+Also update ALL existing tests patching `_send_opening_status` (11 sites incl. Task
+5.4/5.5 tests) to `new=AsyncMock(return_value=(None, False))` — the tuple-unpack in
+`_init_session` TypeErrors on a bare MagicMock return. Run → new tests FAIL.
+
+- [ ] **Step 3: Implement**
+
+`claudia/panel_app.py` — new imports: `import signal`, `from ibkr_core_mcp.gateway
+import GatewayManager`, `from claudia.session_reporter import generate_session_report`.
+Module-level `_cleanup_tasks: set[asyncio.Task[None]] = set()` next to the singletons.
+
+`_run_session_cleanup` (module level, after `_send_opening_status`):
+
+```python
+async def _run_session_cleanup(
+    session_id: str | None,
+    store: ConversationStore | None,
+    loader: ContextLoader | None,
+) -> str:
+    """Close session, generate report, upload DB (app.py:670-700 parity).
+    Returns a one-line status string. Every blocking call is offloaded via
+    asyncio.to_thread — the destroy-hook path runs this on the shared loop,
+    where blocking would freeze every live session (V4 probe). NO UI calls:
+    on the destroy path the chat's Document is already gutted."""
+    if loader:
+        loader.stop_watching()
+
+    if store and session_id:
+        store.close_session(session_id, metadata={"model": _MODEL})
+        connectivity = (
+            {k: v.value for k, v in _connectivity_checker.get_status().items()}
+            if _connectivity_checker else {}
+        )
+        session_meta = store.get_session(session_id) or {}
+        await asyncio.to_thread(
+            generate_session_report,
+            session_id, store, connectivity, session_meta.get("doc_version"),
+        )
+        msg_count = store.count_messages(session_id)
+    else:
+        msg_count = 0
+
+    drive_note = ""
+    if _gdrive_sync is not None:
+        try:
+            await asyncio.to_thread(_gdrive_sync.upload_db, _DB_PATH)
+            drive_note = " · claudia.db → Drive ✅"
+        except Exception as exc:
+            log.warning("End-session Drive upload failed: %s", exc)
+            drive_note = " · Drive upload failed ⚠️"
+
+    return f"{msg_count} messages saved{drive_note}"
+```
+
+`_build_chat_app`: holder gains `"closed": False`. After the holder + `_init_done`
+definitions, register the destroy hook (sync, V4 contract):
+
+```python
+    def _on_session_destroyed(session_context: Any) -> None:
+        """V4 contract: sync, fires 15-32s after disconnect on the shared loop
+        with pn.state.curdoc None — no UI calls; schedule async cleanup and
+        return immediately (blocking here freezes every live session)."""
+        if _session["closed"]:
+            return
+        _session["closed"] = True
+        task = asyncio.get_running_loop().create_task(
+            _run_session_cleanup(session_id, _session["store"], _session["loader"])
+        )
+        _cleanup_tasks.add(task)
+        task.add_done_callback(_cleanup_tasks.discard)
+
+    pn.state.on_session_destroyed(_on_session_destroyed)
+```
+
+`_send_opening_status` → returns `tuple[str | None, bool]`: same body, final line
+`return trade_context, ibkr_offline` (docstring updated). `_init_session`:
+
+```python
+            agent._trade_context, ibkr_offline = await _send_opening_status(chat, toolkit)
+            _session["agent"] = agent
+            _send_action_buttons(chat, _session, session_id, ibkr_offline)
+```
+
+`_send_action_buttons` (module level; Phase 3 button pattern):
+
+```python
+def _send_action_buttons(
+    chat: pn.chat.ChatInterface,
+    _session: dict[str, Any],
+    session_id: str,
+    ibkr_offline: bool,
+) -> None:
+    """End Session (always) + Start IBKR Gateway (only when offline) — app.py
+    action-button parity, Phase 3 widget pattern (disable-first async handlers)."""
+    end_btn = pn.widgets.Button(name="End Session", button_type="light")
+    buttons: list[pn.widgets.Button] = [end_btn]
+
+    async def _on_end(event: Any) -> None:
+        for b in buttons:
+            b.disabled = True
+        if _session["closed"]:
+            return
+        _session["closed"] = True
+        chat.send("Saving session…", user="System", respond=False)
+        status = await _run_session_cleanup(session_id, _session["store"], _session["loader"])
+        chat.send(
+            f"**Session ended.** {status}\n\nSafe to close this tab.",
+            user="System", respond=False,
+        )
+
+    end_btn.on_click(_on_end)
+
+    if ibkr_offline:
+        gw_btn = pn.widgets.Button(name="Start IBKR Gateway", button_type="primary")
+        buttons.append(gw_btn)
+
+        async def _on_start_gateway(event: Any) -> None:
+            gw_btn.disabled = True
+            gm = GatewayManager()
+            try:
+                chat.send("▶ Ensuring Docker is running…", user="System", respond=False)
+                await asyncio.to_thread(gm.ensure_docker_running)
+                chat.send("▶ Starting IBKR gateway container…", user="System", respond=False)
+                await asyncio.to_thread(gm.start)
+                chat.send("▶ Waiting for gateway to be reachable (up to 120s)…",
+                          user="System", respond=False)
+                reachable = await asyncio.to_thread(gm.wait_for_gateway)
+                if not reachable:
+                    chat.send("✕ Gateway did not start within timeout. Check Docker logs.",
+                              user="System", respond=False)
+                    return
+                await asyncio.to_thread(gm.open_login_page)
+                if _connectivity_checker is not None:
+                    await _connectivity_checker._run_checks()
+                chat.send(
+                    "✅ IBKR Gateway is reachable. **https://localhost:5055** opened in "
+                    "your browser.\n\nComplete the IBKR login and 2FA. ClaudIA will "
+                    "notify you here once the session is authenticated.",
+                    user="System", respond=False,
+                )
+            except Exception as exc:
+                log.error("Gateway startup failed: %s", exc)
+                chat.send(f"✕ Gateway startup failed: {exc}", user="System", respond=False)
+
+        gw_btn.on_click(_on_start_gateway)
+
+    chat.send(pn.Row(*buttons), user="System", respond=False)
+```
+
+`main()` — SIGTERM translation + finally upload:
+
+```python
+def main() -> None:
+    """(existing docstring, updated: SIGTERM is now translated to SIGINT so
+    launchd/scripts reach the same clean-stop path; the final claudia.db upload
+    runs after pn.serve returns — V5 contract.)"""
+    # Panel installs its SIGINT handler inside pn.serve; translating SIGTERM to
+    # SIGINT routes both through the same io_loop.stop() → serve-returns path.
+    # Empirically verified in this task's smoke step (V5 proved only SIGINT).
+    signal.signal(signal.SIGTERM, lambda *_: signal.raise_signal(signal.SIGINT))
+    try:
+        pn.serve(
+            _build_chat_app,
+            port=_PANEL_PORT,
+            show=False,
+            title="ClaudIA",
+            websocket_origin=[f"localhost:{_PANEL_PORT}", f"127.0.0.1:{_PANEL_PORT}"],
+        )
+    finally:
+        # Loop is stopped here — synchronous blocking upload is fine (V5).
+        if _gdrive_sync is not None:
+            try:
+                _gdrive_sync.upload_db(_DB_PATH)
+                log.info("Final claudia.db upload complete")
+            except Exception as exc:
+                log.warning("Final Drive upload failed: %s — local DB preserved", exc)
+```
+
+- [ ] **Step 4: Gates**
+
+`pytest tests/test_panel_app.py -v` → 18 existing (patched) + 6 new = expect all green;
+full suite `pytest -m "not integration" -q` → 397 + 6 = **403**. ruff + mypy clean.
+
+- [ ] **Step 5: Manual smoke (native serve, no gateway)**
+
+`python -m claudia.panel_app` + Playwright: buttons message renders with BOTH buttons
+(gateway offline); click **End Session** → "Saving session…" then "**Session ended.**
+N messages saved…" renders; server log shows report + upload attempt. Reload page (new
+session), close browser → ~15-35s later destroy-hook cleanup logs run ONCE (and not
+again — closed-flag path when End Session already used: verify by ending a session via
+button then closing the tab: no second cleanup). `kill -TERM <pid>` → clean exit AND
+the finally-upload log line (SIGTERM translation empirically proven). Report timeline.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add claudia/panel_app.py tests/test_panel_app.py
+git commit -m "feat: Panel session-end cleanup + End Session/Start Gateway buttons + shutdown upload (D7/V5)"
 ```
 
 ## Phase 6: Connectivity status — designed Panel-native, not ported
