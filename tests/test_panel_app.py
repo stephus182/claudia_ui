@@ -44,13 +44,14 @@ import logging
 import os
 import signal
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
 import panel as pn
 import pytest
 
-from claudia.panel_app import _DOCS_PATH, _build_chat_app
+from claudia.panel_app import _DOCS_PATH, _build_chat_app, _screenshot_file_input
 from tests.conftest import _find_buttons, _get_click_callback
 
 _NO_GDRIVE = {"GOOGLE_DRIVE_FOLDER_ID": ""}
@@ -1387,3 +1388,137 @@ async def test_init_awaits_flex_sync_seam_with_gather_offline_flag(flex_sync):
     a = flex_sync.await_args
     offline = a.args[2] if len(a.args) > 2 else a.kwargs.get("ibkr_offline")
     assert offline is True
+
+
+# ── Task 8.1: screenshot upload via standalone FileInput watcher ──────────────
+# (ChatInterface's native file tab unpacks its upload wrapper before the chat
+# callback sees it — mime/filename lost, bare BytesIO delivered. See the
+# "⚠ CORRECTION 2026-07-24" block in the migration plan's Task 8.1 section.)
+
+
+async def _wait_until(predicate, timeout=_CALLBACK_TIMEOUT):
+    """Drain the loop until an async-watcher-driven condition holds. param
+    schedules async watchers as tasks rather than running them inline
+    (probe-verified, param 2.4.1), so tests poll instead of awaiting a handle."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise TimeoutError("watcher condition not met within timeout")
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_image_upload_reaches_agent_as_vision_block():
+    """Driving the FileInput's public params (mime_type/filename first, value
+    last — the watcher keys on value) must deliver the fixed caption plus an
+    Anthropic base64 vision block whose data round-trips to the raw bytes, echo
+    the image into the feed, and reset the widget for the next upload."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+    ):
+        _configure_loader(mock_loader_cls)
+        handle = mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        fi = _screenshot_file_input(chat)
+        fi.mime_type = "image/png"
+        fi.filename = "shot.png"
+        fi.value = b"\x89PNG fake"
+        # call 1 = "hello"; call 2 = the upload; value None = post-upload reset ran.
+        await _wait_until(lambda: handle.call_count >= 2 and fi.value is None)
+
+    call = handle.call_args_list[-1]
+    assert "shot.png" in call.args[0]
+    img = call.kwargs["images"][0]
+    assert img["type"] == "image"
+    assert img["source"]["type"] == "base64"
+    assert img["source"]["media_type"] == "image/png"
+    import base64 as b64
+    assert b64.b64decode(img["source"]["data"]) == b"\x89PNG fake"
+    # The screenshot is echoed into the feed (the standalone widget renders no
+    # message of its own), and the server-side reset also cleared the metadata
+    # so re-uploading the same file re-fires the watcher.
+    assert any(isinstance(m.object, pn.pane.Image) for m in chat.objects)
+    assert fi.mime_type is None and fi.filename is None
+
+
+@pytest.mark.asyncio
+async def test_non_image_upload_gets_honest_refusal_no_agent_call():
+    """FileInput.accept is a client-side hint only — a non-image can still
+    arrive. It must get an honest System refusal and never reach the agent —
+    no silent drop, no pretend-processing."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        fi = _screenshot_file_input(chat)
+        fi.mime_type = "application/pdf"
+        fi.filename = "doc.pdf"
+        fi.value = b"%PDF"
+        # _message_texts includes non-str objects (action-button Row, Image
+        # panes) — the predicate filters to strings.
+        await _wait_until(lambda: any(
+            isinstance(t, str) and "image" in t.lower() for t in _message_texts(chat)
+        ))
+
+    # handle_message called only for the earlier text message, not the PDF
+    assert mock_agent_cls.return_value.handle_message.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_file_widget_configured_and_composed_in_session_root():
+    """The upload widget must be an image/*-restricted FileInput, reachable via
+    the chat handoff attribute AND actually composed into the session root's
+    top row — a built-but-unplaced widget would pass the other two tests."""
+    from claudia.panel_app import _build_session_root
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        # Same discipline as the Task 6.2 composition test: the timer is not
+        # this test's subject.
+        patch.object(pn.state, "add_periodic_callback"),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = _build_session_root()
+        chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    from panel.widgets import FileInput
+    fi = _screenshot_file_input(chat)
+    assert isinstance(fi, FileInput)
+    assert fi.accept == "image/*"
+    assert fi in root.objects[0].objects  # placed in the top (indicator) row

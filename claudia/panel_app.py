@@ -16,6 +16,8 @@ Run with:  python -m claudia.panel_app
 """
 
 import asyncio
+import base64
+import io
 import logging
 import os
 import signal
@@ -543,6 +545,79 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         respond=False,
     )
 
+    # Task 8.1: standalone screenshot upload. ChatInterface's native file tab
+    # unpacks its upload wrapper before the callback sees it (mime/filename
+    # lost, bare BytesIO delivered — see the ⚠ CORRECTION 2026-07-24 block in
+    # the migration plan's Task 8.1 section), so screenshots arrive via this
+    # widget instead: FileInput's own public value/mime_type/filename params
+    # carry full metadata. accept= is a client-side hint only — the watcher
+    # re-checks the mime type server-side.
+    file_input = pn.widgets.FileInput(accept="image/*")
+
+    async def _on_file_upload(event: Any) -> None:
+        if not event.new:
+            return  # our own post-processing reset re-fires the watcher with None
+        await _init_done.wait()
+        try:
+            agent = _session["agent"]
+            if agent is None:
+                # Mirrors _on_user_input's init-failure branch.
+                error = _session["error"]
+                label = (
+                    "" if str(error).startswith("Setup required") else "**Session init failed:** "
+                )
+                chat.send(
+                    f"{label}{error} — check the server logs and reload the page.",
+                    user="System",
+                    respond=False,
+                )
+                return
+            mime = file_input.mime_type or ""
+            if not (isinstance(mime, str) and mime.startswith("image/")):
+                chat.send(
+                    "Only image attachments are supported (TradingView screenshots).",
+                    user="System", respond=False,
+                )
+                return
+            # Echo the screenshot into the feed (the standalone widget renders
+            # no message of its own), then hand the agent the Anthropic vision
+            # block — app.py:637-656 parity.
+            chat.send(pn.pane.Image(io.BytesIO(event.new), width=400), user="User", respond=False)
+            block = {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": base64.b64encode(event.new).decode(),
+                },
+            }
+            await agent.handle_message(
+                f"(screenshot attached: {file_input.filename})", images=[block]
+            )
+        except Exception as exc:
+            # Unlike the chat callback, no Panel exception renderer sits above a
+            # param watcher — raising would vanish into the async executor, so
+            # log AND tell the user honestly.
+            log.exception("Screenshot upload failed (session %s)", session_id)
+            chat.send(f"**Screenshot upload failed:** {exc}", user="System", respond=False)
+        finally:
+            # Reset both sides so re-uploading the same file re-fires the
+            # watcher (param drops equal-value events): clear() only clears the
+            # CLIENT widget (sends ClearInput; no server param change —
+            # source-verified, panel/widgets/input.py FileInput.clear), and
+            # value/mime_type never sync server→client, so the param update is
+            # the server-side reset (its value=None re-fire is caught by the
+            # falsy guard above).
+            file_input.clear()
+            file_input.param.update(value=None, mime_type=None, filename=None)
+
+    file_input.param.watch(_on_file_upload, "value")
+    # Handoff for _build_session_root's composition: a plain Python attribute
+    # on our own object (not a Panel private). Read back via
+    # _screenshot_file_input — the typed accessor keeps mypy's attr checking
+    # everywhere else.
+    chat._claudia_file_input = file_input  # type: ignore[attr-defined]
+
     async def _init_session() -> None:
         global _gdrive_sync, _connectivity_checker, _execution_listener
         try:
@@ -695,12 +770,20 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     return chat
 
 
+def _screenshot_file_input(chat: pn.chat.ChatInterface) -> pn.widgets.FileInput:
+    """Typed accessor for the plain-attribute handoff from _build_chat_app.
+    mypy can't see ad-hoc attributes on ChatInterface (panel ships py.typed)
+    and ruff B009 bans the literal-getattr spelling, so the single ignore
+    lives here instead of at every read site."""
+    return chat._claudia_file_input  # type: ignore[attr-defined, no-any-return]
+
+
 def _build_session_root() -> pn.Column:
-    """pn.serve target: status indicators (functional placement — deep styling
-    is the post-migration restyle plan) above the chat. Periodic refresh is
-    session-scoped with automatic cleanup (pn.state.add_periodic_callback
-    registers against this session's Document — source-verified, see the Phase
-    6 design note in the migration plan)."""
+    """pn.serve target: status indicators + screenshot FileInput (functional
+    placement — deep styling is the post-migration restyle plan) above the
+    chat. Periodic refresh is session-scoped with automatic cleanup
+    (pn.state.add_periodic_callback registers against this session's Document —
+    source-verified, see the Phase 6 design note in the migration plan)."""
     chat = _build_chat_app()
     indicators = _make_status_indicators()
 
@@ -718,7 +801,7 @@ def _build_session_root() -> pn.Column:
     cb = pn.state.add_periodic_callback(_refresh, period=5000, start=False)
     pn.state.onload(cb.start)
     return pn.Column(
-        pn.Row(*indicators.values()),
+        pn.Row(*indicators.values(), _screenshot_file_input(chat)),
         chat,
         sizing_mode="stretch_both",
     )
