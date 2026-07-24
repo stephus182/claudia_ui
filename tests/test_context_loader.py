@@ -2,6 +2,7 @@
 
 import re
 import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -145,6 +146,36 @@ def test_file_change_clears_context_override(docs_dir):
     assert fired_prompts
     assert "Local Context" in fired_prompts[-1]
     assert "Drive Context" not in fired_prompts[-1]
+
+
+def test_stop_watching_removes_only_this_loaders_handler(tmp_path):
+    """watchdog's unschedule() deletes ALL handlers for the (path, recursive)
+    key — one session's teardown would kill every other session's hot-reload
+    (probe-confirmed on watchdog 6.0.0, see migration plan D7 notes).
+    stop_watching must use remove_handler_for_watch instead."""
+    (tmp_path / "context.md").write_text("c")
+    (tmp_path / "principles.md").write_text("p")
+    loader = ContextLoader(tmp_path)
+    mock_obs = MagicMock()
+    with patch("claudia.context_loader._get_shared_observer", return_value=mock_obs):
+        loader.start_watching(lambda f, p: None)
+        watch = mock_obs.schedule.return_value
+        handler = mock_obs.schedule.call_args.args[0]
+        loader.stop_watching()
+    mock_obs.remove_handler_for_watch.assert_called_once_with(handler, watch)
+    mock_obs.unschedule.assert_not_called()
+
+
+def test_stop_watching_twice_is_safe(tmp_path):
+    (tmp_path / "context.md").write_text("c")
+    (tmp_path / "principles.md").write_text("p")
+    loader = ContextLoader(tmp_path)
+    mock_obs = MagicMock()
+    with patch("claudia.context_loader._get_shared_observer", return_value=mock_obs):
+        loader.start_watching(lambda f, p: None)
+        loader.stop_watching()
+        loader.stop_watching()  # second call: _watch/_handler already None — no-op
+    assert mock_obs.remove_handler_for_watch.call_count == 1
 
 
 def test_reload_count_increments_on_change(tmp_path):
