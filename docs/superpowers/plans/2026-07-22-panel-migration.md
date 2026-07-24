@@ -2641,6 +2641,50 @@ alive, whether blocking work is acceptable or needs a thread) must be verified e
 before the task is written — same rule as D4. The "skip if End Session button already
 cleaned up" guard ports as a flag in the D2 holder.
 
+**D7 RESOLVED 2026-07-23 (empirical probe + source verification) — TWO design-changing
+findings:**
+
+1. **`pn.state.on_session_destroyed` NEVER fires under our stock topology** (Panel 1.9.3
++ bokeh-fastapi 0.1.8 + Starlette 1.3.1 + uvicorn): not on tab close, not after minutes,
+not on SIGINT. Root cause source-verified: Starlette's raw `WebSocket.receive()` RETURNS
+the `websocket.disconnect` message dict (only `receive_text/bytes/json` raise
+`WebSocketDisconnect` — `starlette/websockets.py:35-57`); bokeh_fastapi's
+`WSHandler._receive_loop` only catches the exception (`bokeh_fastapi/handler.py:271-280`),
+so the disconnect dict falls through, the second `receive()` raises RuntimeError,
+swallowed by `except Exception: pass` (`handler.py:236-239`) → `client_lost()` /
+`detach_session()` never run → `connection_count` never hits 0 → Bokeh's
+`_cleanup_sessions` never destroys the session. bokeh-fastapi 0.1.8 is the LATEST
+release — no upgrade path. **Probe-verified fix:** monkeypatch `WSHandler._receive_loop`
+to handle the disconnect dict (call `client_lost()`, break) — with only that change the
+full destroy chain works (disconnect detected the same second the tab closed). Scratchpad
+`probe_d7_server_fixed.py`.
+2. **Verified destroy-hook contract (with the bridge fix in place):** callback MUST be
+sync (async registers but never runs — `panel/io/application.py:85-99` invokes it bare
+and swallows exceptions into a log warning); receives one `BokehSessionContext` with
+valid `.id`; fires exactly once per session, **15-32s after websocket disconnect**
+(bokeh-fastapi replicates Bokeh's 15000ms unused-session lifetime / 17000ms check —
+`application.py:34,38,245-285`); runs ON the event-loop thread — **blocking work freezes
+every live session** (probe: a 15s sleep in A's callback stalled B's chat for the full
+15s), so Drive upload/report generation must offload via `run_in_executor`/thread;
+`pn.state.curdoc` is None and UI calls are dead (the Document is already gutted —
+`chat.send` no-ops or raises AttributeError); closure-captured Python objects remain
+fully usable. **Server shutdown does NOT run destroy hooks** — the upload-on-stop path
+additionally needs a FastAPI lifespan shutdown hook.
+
+**`stop_watching` multi-session trap CONFIRMED (watchdog 6.0.0, empirical) — worse than
+suspected:** `ObservedWatch.__eq__/__hash__` compare (path, recursive, event_filter);
+`schedule()` merges all sessions' handlers under one key; `unschedule()` does
+`del self._handlers[watch]` — killing every sibling's handlers AND the emitter. Probe:
+two loaders watching, `l1.stop_watching()` → l2's callback dead; and because
+`start_watching` calls `stop_watching` first (`context_loader.py:111`), even ONE
+session's watcher RESTART kills all siblings. This bug exists in Chainlit today
+(`on_chat_end` → `stop_watching`). **Probe-verified fix in shared code
+(`claudia/context_loader.py`):** store the handler, and in `stop_watching` replace
+`unschedule(self._watch)` with
+`remove_handler_for_watch(self._handler, self._watch)` (suppress the KeyError on
+double-remove); sibling keeps firing, emitter stays alive harmlessly, re-scheduling the
+same path works. Scratchpad `probe_watchdog.py` / `probe_watchdog_fix.py`.
+
 **D8 — action buttons reuse Phase 3's proven pattern.** "End Session" (always) and "Start
 IBKR Gateway" (only when IBKR offline) render as `pn.widgets.Button`s in a chat message
 (same `on_click` + disable-on-click pattern as `panel_order_flow.py`). "End Session" runs
