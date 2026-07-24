@@ -2499,6 +2499,36 @@ dependency). This is still Phase 11's job, not something to start now — Phases
 `claudia/app.py` fully working throughout, exactly as the kickoff prompt's original
 isolation instruction required.
 
+## Design principle, confirmed 2026-07-24 (user directive): Panel-native serving, no workarounds
+
+**Every time a workaround, monkeypatch, or fix "related to Panel" appears — STOP and
+reflect: is it actually needed, or is it compensating for a non-native choice?** The
+whole point of moving to Panel is removing heavy workarounds; we seek clean, efficient
+Panel-native code. Prefer removing the cause over patching the symptom. (Saved to memory:
+`feedback-panel-native-no-workarounds`.)
+
+**First application — serving topology (decided 2026-07-24):** the FastAPI +
+`add_application` mount is replaced by **Panel's first-class Tornado server**
+(`pn.serve(_build_chat_app, ...)` — callable form: invoked per session, module
+singletons stay process-wide, unlike `panel serve script.py` script-mode re-execution).
+Rationale: the D7 bug lives in bokeh-fastapi 0.1.x (the young bridge layer), not in
+Panel; the native Tornado websocket path is mature and needs no patch. Consequences:
+
+- **`claudia/panel_ws_fix.py` + `tests/test_panel_ws_fix.py` are DELETED entirely**
+  (Task 5.6a Fix 2 retired — the code was correct for its topology, but the topology
+  itself was the workaround). The `panel[fastapi]` extra drops to plain `panel` in
+  pyproject; bokeh-fastapi leaves the environment.
+- Task 5.6a **Fix 1 (ContextLoader sibling-safe teardown) STAYS** — server-agnostic,
+  fixes a real multi-session bug that exists in Chainlit today.
+- FastAPI stays available later ONLY if a real REST/webhook need appears (Phase 6+
+  status endpoints were already redesigned away; nothing currently needs it).
+- **Everything previously proven only under uvicorn/FastAPI must be re-verified under
+  `pn.serve` before Task 5.6b builds on it** (same probe discipline as D4/D7): per-
+  session factory semantics; the Task 5.1 Step-0 background-task `chat.send` render;
+  the D4 thread→loop delivery idiom; `pn.state.on_session_destroyed` firing unpatched
+  (timing, sync-only contract, blocking behavior); and server-shutdown behavior for the
+  upload-on-stop design.
+
 ## Phase 5: Session lifecycle completeness — outline
 
 **Carry over from Task 2.2 (2026-07-22):** the Phase 2 skeleton's `_build_chat_app()` calls
@@ -4295,6 +4325,12 @@ FAILS on any bokeh-fastapi upgrade, converting the silent-revert risk into a red
 (3) suppress narrowed to KeyError; (4) all five D4/D7/watchdog probe scripts committed
 to `docs/probes/` with a README (run instructions + expected observations), ruff-excluded
 via pyproject to preserve their copied-as-run evidentiary form. Suite 402 → 403.
+
+**⚠ 2026-07-24 partial retirement (user directive — see "Panel-native serving, no
+workarounds" principle above):** Fix 2 (`panel_ws_fix.py`) is DELETED with the switch to
+native `pn.serve` Tornado serving — the patch was correct for the FastAPI topology, but
+the topology itself was the workaround. Fix 1 (sibling-safe watcher teardown) stays. The
+probes and this task's record stay as evidence of why the FastAPI bridge was abandoned.
 
 Both fixes were mandated by the D7 verification (see "D7 RESOLVED" above). Without them,
 Task 5.6b's cleanup is respectively destructive (one session's teardown kills every
