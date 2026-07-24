@@ -1,5 +1,5 @@
 #!/bin/bash
-# ClaudIA launcher — starts the IBKR gateway then Chainlit.
+# ClaudIA launcher — starts the IBKR gateway then the Panel UI.
 # Usage: ./start-claudia.sh
 
 set -e
@@ -21,4 +21,4 @@ ok = gm.startup()
 sys.exit(0)  # start ClaudIA regardless; ConnectivityChecker will show status
 "
 
-.venv/bin/chainlit run claudia/app.py
+.venv/bin/python3 -m claudia.panel_app

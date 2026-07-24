@@ -50,7 +50,6 @@ from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
 
-import chainlit as cl
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -373,71 +372,3 @@ class TradingViewBridge:
         self._session = None
         self._tools = []
         self._curated_tools = []
-
-
-# ── PineScript display helpers ────────────────────────────────────────────────
-
-async def render_pinescript(code: str, title: str = "PineScript Strategy") -> None:
-    """Render a PineScript code block with copy and inject action buttons."""
-    actions = [
-        cl.Action(
-            name="copy_pinescript",
-            payload={"code": code},
-            label="Copy to clipboard",
-            tooltip="Copy PineScript code",
-        ),
-        cl.Action(
-            name="inject_pinescript",
-            payload={"code": code},
-            label="Inject into TradingView",
-            tooltip="Paste directly into TradingView Pine Editor",
-        ),
-    ]
-
-    await cl.Message(
-        content=f"**{title}**\n\n```pine\n{code}\n```",
-        actions=actions,
-        author="ClaudIA — PineScript",
-    ).send()
-
-
-@cl.action_callback("copy_pinescript")
-async def on_copy_pinescript(action: cl.Action):
-    """Display PineScript code for manual copy.
-
-    Chainlit runs server-side — there is no clipboard API available. The code block
-    is re-sent as a message so the user can select and copy it in the browser.
-
-    Source: https://docs.chainlit.io/api-reference/action
-    """
-    # Chainlit doesn't have clipboard access server-side; display for manual copy.
-    code = action.payload["code"]
-    await cl.Message(
-        content=f"Copy this PineScript:\n\n```pine\n{code}\n```",
-        author="ClaudIA",
-    ).send()
-    await action.remove()
-
-
-@cl.action_callback("inject_pinescript")
-async def on_inject_pinescript(action: cl.Action):
-    """Inject PineScript into TradingView Pine Editor via pine_set_source."""
-    code = action.payload["code"]
-    await cl.Message(
-        content="Injecting PineScript into TradingView Pine Editor…",
-        author="System",
-    ).send()
-    try:
-        from claudia.app import _tv_bridge
-        if _tv_bridge and _tv_bridge._session:
-            result = await _tv_bridge.execute("pine_set_source", {"source": code})
-            await cl.Message(content=f"Injected. Response: {result}", author="ClaudIA").send()
-        else:
-            await cl.Message(
-                content="TradingView Desktop is not connected. Copy the script manually.",
-                author="System",
-            ).send()
-    except Exception as exc:
-        log.error("Pine injection failed: %s", exc)
-        await cl.Message(content="Injection failed. Please copy the script manually.", author="System").send()
-    await action.remove()
