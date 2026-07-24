@@ -6743,7 +6743,7 @@ STK only (tool resolves STK conids).
 **Files:** Create `claudia/panel_chart.py` + `tests/test_panel_chart.py`; modify
 `claudia/panel_app.py` (`_build_session_root` composition + its test).
 
-- [ ] **Step 1: Failing tests** — `build_candlestick_figure(df, title)`: returns a Bokeh
+- [x] **Step 1: Failing tests** — `build_candlestick_figure(df, title)`: returns a Bokeh
   `figure` with a datetime x-axis, 3 glyph renderers (segment + 2 vbars), title set;
   up/down partition by `close >= open` (feed a 2-row up + 2-row down fixture, assert the
   up-vbar data source has the up rows). `build_chart_pane()`: returns a Column containing
@@ -6754,16 +6754,36 @@ STK only (tool resolves STK conids).
   during and cleared after. `_build_session_root` composes the chart pane (assert a Bokeh
   pane exists in the root tree beside the chat).
 
-- [ ] **Step 2: Implement** per the design + the research doc's verified recipe.
+- [x] **Step 2: Implement** per the design + the research doc's verified recipe.
 
-- [ ] **Step 3: Gates** — suite +N; ruff + mypy clean; 1 warning.
+- [x] **Step 3: Gates** — 467 passed (453→462 impl, +5 quality-fix tests); ruff + mypy
+  clean; the lone warning is the pre-existing third-party `traceloop`/pydantic one.
 
-- [ ] **Step 4: Manual smoke** (gateway authenticated) — load the page, the chart pane
-  renders beside the chat; type a real STK symbol (e.g. AAPL), pick 6m/1d, click Load →
-  candlestick renders (fetch-on-miss then cache hit on repeat); a bogus symbol → honest
-  error, no crash; IBKR-offline path → honest error. Screenshot the rendered candlestick.
+- [~] **Step 4: Manual smoke** — render PROVEN on real cached OHLCV (60-bar QQQ, 32
+  green/28 red candles screenshotted). Live fetch→render screenshot **deferred**: the IBKR
+  gateway showed unauthenticated at smoke time (session dropped over this long session — did
+  NOT proactively re-auth, per `feedback-ibkr-session-safety`). Run once with a fresh
+  gateway login before the Phase 11 cutover (bogus-symbol + IBKR-offline honest-error paths
+  are unit-covered but worth an eyeball live).
 
-- [ ] **Step 5: Commit** — `feat: external candlestick chart pane (Panel/Bokeh direct, cache-backed, STK)`.
+- [x] **Step 5: Commit** — `feat: external candlestick chart pane (Panel/Bokeh direct, cache-backed, STK)` (`3e7bad4`).
+
+**✅ TASK 10.1 / PHASE 10 COMPLETE (2026-07-24)** — pending only the deferred Step-4 live
+smoke above. Implemented `3e7bad4`, quality-review fix `794d7c0`.
+- **Spec review:** COMPLIANT (all 4 approved deviations done as described; `agent.py`
+  verified untouched by `git diff -- claudia/agent.py` = empty; cache-key identity re-derived
+  from source, both sides produce `AAPL_1D_6M_{today}` — no permanent-miss bug).
+- **Code-quality review:** CHANGES-REQUESTED → fixed. Must-fix was a fixed 12h vbar body
+  width that rendered the selectable `1h`/`30m` bars as a 12x/24x-spacing smear (only the
+  `1d` default looked right). Fixed in `794d7c0`: `_body_width_ms(index)` derives the body
+  from the DataFrame's own median bar spacing (0.7x), keeping `build_candlestick_figure` a
+  pure function of the data yet legible for every bar size; median is gap-robust; <2-row
+  fallback. +5 tests (width scaling day/hour/30m strictly ordered, weekend-gap median
+  robustness, single-row fallback, glyph-width-matches-spacing) + two review-flagged
+  hardening tests (cache-key contract pinned to `"1D"`+today; symbol strip/upper coverage).
+  Deferred non-blocking minor: capture `execute`'s SUMMARY to distinguish offline vs
+  unknown-symbol in the "No data" message — needs `toolkit.execute`'s real return type
+  verified per API-Docs-First first; left for a follow-up, not this task.
 
 ## Phase 11: Cutover — outline
 

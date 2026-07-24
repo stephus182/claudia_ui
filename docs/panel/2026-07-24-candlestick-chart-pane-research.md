@@ -16,7 +16,13 @@ no-unnecessary-deps). Verified-live recipe:
 ```python
 from bokeh.plotting import figure
 inc = df["close"] >= df["open"]
-w = 12 * 60 * 60 * 1000  # bar half-width in ms (tune per bar size)
+# Bokeh vbar `width` is the FULL body width in x-axis DATA units (ms on a datetime
+# axis) — NOT a half-width, and NOT a fixed pixel width. It must therefore scale
+# with the bar spacing: a fixed 12h body is fine for 1d bars but is 12x the spacing
+# for 1h and 24x for 30m, so intraday candles overlap into an unreadable smear.
+# SHIPPED (794d7c0): derive it from the data's own median spacing so the helper
+# stays a pure function of the DataFrame yet is correct for every bar size.
+w = (df.index.to_series().diff().dropna().median() / pd.Timedelta("1ms")) * 0.7
 p = figure(x_axis_type="datetime", sizing_mode="stretch_width", height=360,
            title=f"{symbol} {bar} ({period})")
 p.segment(df.index, df["high"], df.index, df["low"], color="#666")          # wicks
@@ -25,6 +31,12 @@ p.vbar(df.index[inc],  w, df["open"][inc],  df["close"][inc],
 p.vbar(df.index[~inc], w, df["open"][~inc], df["close"][~inc],
        fill_color="#ef5350", line_color="#ef5350")                         # down bars
 ```
+
+> **Correction (2026-07-24, code-quality review):** the first cut used a fixed
+> `w = 12*60*60*1000` described as a "half-width"; both terms were wrong. Bokeh's
+> `vbar width` is the full body width in data units, and a fixed value smears the
+> selectable `1h`/`30m` options. The shipped `_body_width_ms` (median-spacing ×0.7,
+> `<2`-row fallback) is the correct recipe above.
 
 Embed in Panel via `pane = pn.pane.Bokeh(p)`; **refresh** by reassigning
 `pane.object = new_figure` (verified — no error, updates in place; this is the Load-button
