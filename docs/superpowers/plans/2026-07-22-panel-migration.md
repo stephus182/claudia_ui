@@ -3994,6 +3994,23 @@ git commit -m "feat: Panel hot-reload alert via D4 loop bridge (watchdog thread 
 
 ### Task 5.5: ConnectivityChecker + ExecutionListener singletons (D6)
 
+**✅ Completed 2026-07-23.** Commits `7bdd9b3` (implementation) + `05ac71b` (review
+hardening). Full cycle: implement → spec review (COMPLIANT; adversarial pass caught the
+suite-wide hygiene gap below) → quality review (Approve-with-fixes: 1 Important + 1
+Minor, both applied). The smoke test exceeded plan: the gateway container was up
+(unauthenticated, `/tickle` → 401), so the checker's keepalive was verified against the
+REAL gateway — `GET /v1/api/tickle` at exact 60s spacing — and ExecutionListener's
+websocket connect → unauthenticated drop → clean 5s reconnect cycle observed, zero
+tracebacks. Key hardening: the 9 pre-existing happy-path tests were constructing +
+starting REAL checker/listener objects from MagicMock config (26 real "started" log
+lines per suite run, abandoned cross-loop asyncio tasks leaked into module globals —
+and the new tests' monkeypatch teardown was RE-INSTALLING the leaked object, since
+monkeypatch restores rather than resets). Fixed with an autouse `backend_singletons`
+fixture patching both classes suite-wide and resetting (never restoring) the globals on
+both sides; A/B proven: 26 real starts before the fixture, 0 after, with a
+positive-control grep showing log capture works. Plus: `gdrive_sync` kwarg now pinned
+via sentinel. Tests 15 → 18; suite 392 → 395.
+
 Grounded 2026-07-23 against verified signatures: `ConnectivityChecker(gateway_url: str,
 gdrive_token_file: Path, tv_bridge=None, gdrive_sync=None)` (`status.py:60`), `.start()`
 idempotent — no-ops on a running task, recreates a finished/cancelled one
@@ -4026,7 +4043,7 @@ tasks survive individual sessions exactly as they do under Chainlit.
 - Modify: `claudia/panel_app.py` (imports, 2 module globals, singleton block)
 - Modify: `tests/test_panel_app.py` (3 new tests)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_panel_app.py`:
 
@@ -4145,7 +4162,7 @@ Expected: the first two FAIL on `AttributeError` (patching
 `claudia.panel_app.ConnectivityChecker`, which doesn't exist yet); the third fails the
 same way at patch time.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `claudia/panel_app.py` — new imports:
 
@@ -4192,24 +4209,24 @@ In `_init_session`, after `store.create_session(...)` and before the sink constr
 `global _gdrive_sync, _connectivity_checker, _execution_listener` — Python allows only
 one binding site; keep a single global statement.)
 
-- [ ] **Step 3: Run tests to verify pass**
+- [x] **Step 3: Run tests to verify pass**
 
 Run: `pytest tests/test_panel_app.py -v` → 18/18 pass.
 
-- [ ] **Step 4: Full suite + linters**
+- [x] **Step 4: Full suite + linters**
 
 Run: `pytest -m "not integration" -q` → 392 + 3 = 395, 0 failures.
 `ruff check claudia/panel_app.py tests/test_panel_app.py` + `mypy claudia/panel_app.py`
 → clean.
 
-- [ ] **Step 5: Manual smoke (no gateway needed)**
+- [x] **Step 5: Manual smoke (no gateway needed)**
 
 `uvicorn claudia.panel_app:app --port 8001`, load the page, watch the log ~70s: the
 ConnectivityChecker's first poll cycle runs (expect its IBKR-offline log lines — gateway
 is down — with no tracebacks); ExecutionListener's websocket retry loop logs its
 connection failure and backs off without spinning. Kill the server.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add claudia/panel_app.py tests/test_panel_app.py
