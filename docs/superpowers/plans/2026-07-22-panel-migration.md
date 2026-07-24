@@ -4781,6 +4781,27 @@ git commit -m "fix: bokeh-fastapi 0.1.8 dead disconnect detection — restore Pa
 
 ### Task 5.6b: Session-end cleanup + End Session / Start Gateway buttons + shutdown upload
 
+**✅ Completed 2026-07-24.** Commits `7475b73` (implementation) + `8d4b671` (review
+fixes). Full cycle: implement → spec review (COMPLIANT — byte-parity on every
+user-facing string vs app.py:670-881; adversarial races checked: closed-flag has no
+double-run window, End-Session-during-init impossible by construction, SIGTERM→SIGINT
+mechanism verified sound at the source level) → quality review (Approve-with-fixes: 3
+Important + 5 Minor, all applied). Live smoke proved every contract: End Session →
+real Drive upload; destroy hook fired exactly once ~31s after tab close; closed-flag
+suppression verified in BOTH directions (button-then-close and close-after-button);
+`kill -TERM` → clean exit + "Final claudia.db upload complete" (closing the V5 gap —
+SIGTERM translation empirically proven). Key hardening: buttons normalized to the
+shipped Phase 3 idiom (`label=`/`color=` — suite warnings 43 → 1, the 42 new
+PendingDeprecationWarnings eliminated; **`label=`/`color=` is the project standard**,
+not the deprecated `name=`/`button_type=` this task's own sketch used); destroy-path
+cleanup outcome now logged via done-callback (locked design point the implementation
+had dropped) with a caplog test; the Start-Gateway handler got its first-ever coverage
+(success + timeout paths through the real click callback — untested even in Chainlit);
+click-simulation helpers consolidated into `tests/conftest.py`; SIGTERM registration
+and cleanup-args wiring pinned in tests; `upload_db` swallowed-error gap recorded in
+`docs/project-status.md` (pre-existing upstream, byte-parity with app.py). Tests
+18 → 27 in test_panel_app.py; suite 397 → 406.
+
 Grounded 2026-07-23/24 against verified signatures: `store.close_session(session_id,
 metadata=None)` (`conversation_store.py:169`), `store.get_session` (`:234`),
 `store.count_messages` (`:299`); `generate_session_report(session_id, store,
@@ -4837,7 +4858,7 @@ app.py:800-819; Start Gateway app.py:824-881. Destroy/shutdown contract: the
   registration; `_init_session`: buttons block; `main()`: SIGTERM + try/finally upload)
 - Modify: `tests/test_panel_app.py` (11 patch-site updates + ~8 new tests)
 
-- [ ] **Step 1: Failing tests — cleanup core + destroy hook**
+- [x] **Step 1: Failing tests — cleanup core + destroy hook**
 
 ```python
 @pytest.mark.asyncio
@@ -4919,7 +4940,7 @@ async def test_session_destroy_hook_registered_and_runs_cleanup_once():
 (`pn` is already imported in the test module? If not, add `import panel as pn`.)
 Run → all three FAIL (`_run_session_cleanup` doesn't exist / no registration).
 
-- [ ] **Step 2: Failing tests — buttons + status-return change + main() kwargs**
+- [x] **Step 2: Failing tests — buttons + status-return change + main() kwargs**
 
 ```python
 def _find_buttons(chat):
@@ -5024,7 +5045,7 @@ Also update ALL existing tests patching `_send_opening_status` (11 sites incl. T
 5.4/5.5 tests) to `new=AsyncMock(return_value=(None, False))` — the tuple-unpack in
 `_init_session` TypeErrors on a bare MagicMock return. Run → new tests FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `claudia/panel_app.py` — new imports: `import signal`, `from ibkr_core_mcp.gateway
 import GatewayManager`, `from claudia.session_reporter import generate_session_report`.
@@ -5197,12 +5218,12 @@ def main() -> None:
                 log.warning("Final Drive upload failed: %s — local DB preserved", exc)
 ```
 
-- [ ] **Step 4: Gates**
+- [x] **Step 4: Gates**
 
 `pytest tests/test_panel_app.py -v` → 18 existing (patched) + 6 new = expect all green;
 full suite `pytest -m "not integration" -q` → 397 + 6 = **403**. ruff + mypy clean.
 
-- [ ] **Step 5: Manual smoke (native serve, no gateway)**
+- [x] **Step 5: Manual smoke (native serve, no gateway)**
 
 `python -m claudia.panel_app` + Playwright: buttons message renders with BOTH buttons
 (gateway offline); click **End Session** → "Saving session…" then "**Session ended.**
@@ -5212,7 +5233,7 @@ again — closed-flag path when End Session already used: verify by ending a ses
 button then closing the tab: no second cleanup). `kill -TERM <pid>` → clean exit AND
 the finally-upload log line (SIGTERM translation empirically proven). Report timeline.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add claudia/panel_app.py tests/test_panel_app.py
