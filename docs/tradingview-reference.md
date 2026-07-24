@@ -13,7 +13,7 @@ The sidecar is [`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontli
 
 ## Normal startup — no manual terminal commands needed
 
-1. Run `./start-claudia.sh` (or `chainlit run claudia/app.py`).
+1. Run `./start-claudia.sh` (or `python -m claudia.panel_app`).
 2. If TradingView Desktop is not running, the welcome message shows a **"Launch TradingView"** button.
 3. Click it — ClaudIA calls `launch_tradingview()` which runs
    `open -a "TradingView" --args --remote-debugging-port=9222`, polls for CDP port 9222
@@ -21,14 +21,16 @@ The sidecar is [`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontli
 4. If TV is already running **without** the debug port, the button shows an error with
    instructions to quit TV and relaunch — ClaudIA cannot inject the debug flag into a running process.
 
-## Python 3.14 compatibility note
+## Sidecar behavior when TradingView Desktop is not running
 
-The sidecar now starts successfully even when TV Desktop is not running (fixed 2026-06-30:
-`AsyncIOTaskInfo.__init__` patched in `app.py` to handle `current_task()` returning `None` —
-the 5th Python 3.14/anyio compat patch). When TV Desktop is not running: sidecar starts, tools
-are listed, but tool calls fail at the CDP layer. ClaudIA falls back to screenshot mode
-(drag/paste a chart screenshot into chat). The anyio upstream bug (`_MemoryObjectItemReceiver`
-+ `get_current_task`) is unfixed in anyio 4.14.1 and MCP 1.28.1 as of 2026-06-30.
+The sidecar starts and lists tools even when TV Desktop is not running, but tool calls fail
+at the CDP layer — ClaudIA falls back to screenshot mode (drag/paste a chart screenshot into
+chat).
+
+> **Historical note:** a Python 3.14 / anyio `AsyncIOTaskInfo.__init__` (`current_task()`
+> returning `None`) compat patch once lived in the Chainlit `app.py`. The project now targets
+> Python 3.11 (`requires-python >=3.11,<3.14`) and `app.py` was removed in the Phase 11 Panel
+> cutover, so that patch no longer applies.
 
 ## Binary discovery order (`_find_tv_mcp_bin()`)
 

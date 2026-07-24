@@ -10,7 +10,7 @@ code changes.
 
 | File | Description |
 | --- | --- |
-| [`api-reference.md`](api-reference.md) | Anthropic/IBKR/Drive/Chainlit source-of-truth URLs; scraped-evidence convention |
+| [`api-reference.md`](api-reference.md) | Anthropic/IBKR/Drive/Panel source-of-truth URLs; scraped-evidence convention |
 | [`connectivity.md`](connectivity.md) | IBKR / GDrive / TradingView check logic, reconnection flows |
 | [`context-loading-reference.md`](context-loading-reference.md) | `context.md`/`principles.md` loading, hot-reload, versioning, prompt-cache mechanics |
 | [`conversation-memory-reference.md`](conversation-memory-reference.md) | `claudia.db` schema — sessions, messages, decisions, doc_versions, FTS5 |

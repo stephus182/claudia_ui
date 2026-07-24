@@ -5,7 +5,7 @@ All interactions are stored in `data/claudia.db` (separate from ibkr_core_mcp's
 
 | Table | Contents |
 |---|---|
-| `sessions` | One row per Chainlit session, with start/end time, document hash, and `doc_version` |
+| `sessions` | One row per Panel session, with start/end time, document hash, and `doc_version` |
 | `messages` | Full message history (user, assistant, tool calls and results) — primary memory store |
 | `decisions` | User-directed trade proposals surfaced by ClaudIA — each tagged with `doc_version`. ClaudIA does not decide to trade; it surfaces a proposal when directed by the user. The user decides at the button → Touch ID → confirmation dialog. |
 | `doc_versions` | Versioned snapshots of `context.md` + `principles.md` — full text, hash, date |

@@ -1,24 +1,30 @@
 # ClaudIA UI — Developer Guide
 
-ClaudIA is a Chainlit-based trading assistant chatbot that connects to Interactive Brokers via `ibkr_core_mcp`. It provides conversational access to IBKR data, backtesting, technical analysis, TradingView integration, and human-confirmed order staging.
+ClaudIA is a Panel-based trading assistant chatbot that connects to Interactive Brokers via `ibkr_core_mcp`. It provides conversational access to IBKR data, backtesting, technical analysis, TradingView integration, an external candlestick chart pane, and human-confirmed order staging. (It was migrated from Chainlit to Panel — see `docs/superpowers/plans/2026-07-22-panel-migration.md`.)
 
 ---
 
 ## Architecture
 
 ```
-Chainlit UI (localhost:8000)
+Panel UI (localhost:8001 — native pn.serve Tornado, no FastAPI/uvicorn)
     ↓
-claudia/app.py              — session lifecycle, action callbacks, startup buttons
-claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching
+claudia/panel_app.py        — pn.serve entry: session lifecycle, status dots, startup action buttons
+claudia/panel_sink.py       — PanelMessageSink: agent output → pn.chat.ChatInterface (MessageSink protocol)
+claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_flow.py cores
+claudia/panel_pinescript.py — ```pine copy (real client-side clipboard) / inject buttons
+claudia/panel_chart.py      — external Bokeh candlestick chart pane (STK, cache-backed)
+claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching (UI-agnostic via MessageSink)
+claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
+claudia/order_flow.py       — framework-agnostic order-execution cores → ibkr_core_mcp biometric gates
+claudia/opening_status.py   — UI-free opening-status builders
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
 claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger fallback
 claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / upload at stop
-claudia/order_flow.py       — cl.Action order staging → ibkr_core_mcp biometric gates
 claudia/session_reporter.py — auto-generated Markdown session report (tool calls, decisions)
 claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health
-claudia/tradingview.py      — tradingview-mcp sidecar + CDP health + PineScript display
+claudia/tradingview.py      — tradingview-mcp sidecar + CDP health + TradingViewBridge
     ↓                               ↓
 ibkr_core_mcp               tradingview-mcp (Node.js, stdio)
 (local editable install)            ↓
@@ -70,8 +76,8 @@ cd ~/.tradingview-mcp && npm install && cd -   # pure JS — no build step
 # 7. Run ClaudIA
 ./start-claudia.sh            # recommended: IBKR gateway + ClaudIA
 # or:
-chainlit run claudia/app.py   # ClaudIA only (in-chat "Start IBKR Gateway" button available)
-# → Open http://localhost:8000
+python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" button available)
+# → Open http://localhost:8001
 ```
 
 ## Testing
@@ -104,7 +110,7 @@ These rules must never be violated when extending ClaudIA:
 
 1. **Never add a tool that calls `place_order`, `modify_order`, `cancel_order`, or `reply_order`.**
    Order staging is a UI-layer action triggered by a physical button click, not an LLM tool call.
-2. **Never log or expose `ANTHROPIC_API_KEY`** in Chainlit output, logs, or error messages.
+2. **Never log or expose `ANTHROPIC_API_KEY`** in UI output, logs, or error messages.
 3. **Never modify the hardcoded safety block** in `claudia/agent.py` to weaken constraints.
 4. **Never inject conversation history directly into the system prompt.** History must be
    added as `role: user/assistant` message objects to prevent prompt injection.
@@ -117,10 +123,13 @@ These rules must never be violated when extending ClaudIA:
 
 ClaudIA **cannot** place, modify, or cancel orders autonomously:
 1. ClaudIA embeds an `order-proposal` JSON block in its response.
-2. `agent.py` strips it, calls `order_flow.render_order_proposal()` →
-   Chainlit message with a **"Stage this order"** button.
-3. Click → `execute_staged_order()` → **Gate 1** (Touch ID) → **Gate 2** (AppKit dialog,
-   green/red banner by side, **SEND TO IBKR** button, 60s auto-cancel, Return key disabled).
+2. `agent.py` strips it and hands the parsed dict to the `MessageSink`
+   (`send_order_proposal`); `PanelMessageSink` routes it to
+   `panel_order_flow.render_order_proposal()` → a Panel message with a
+   **"Stage this order"** button.
+3. Click → `panel_order_flow`'s handler → `order_flow._execute_staged_order_core()` →
+   **Gate 1** (Touch ID) → **Gate 2** (AppKit dialog, green/red banner by side,
+   **SEND TO IBKR** button, 60s auto-cancel, Return key disabled).
 4. `IBKRClient.place_order()` fires only after both gates pass.
 
 - **Order parameters are immutable**: ClaudIA must use the user's exact values (symbol,
@@ -138,7 +147,7 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
 
 Local editable install: see Dev Setup step 3 above for the exact command (strict editable
 mode required for `mypy` to resolve it) — re-run after ibkr_core_mcp adds new tools. No
-Chainlit restart needed for tool definition changes; restart required for Python module
+Panel restart needed for tool definition changes; restart required for Python module
 changes. Full tool catalog (40 core + 2 optional web-scraper = 42 total, matching
 `self._all_tools` in `claudia/agent.py`): `ibkr_core_mcp/docs/tools-reference.md` —
 check there before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.md`.
@@ -166,6 +175,6 @@ the fix that established this (75,480 → 2,910 tokens/session).
 - TradingView integration (sidecar, curated tools, recovery): `docs/tradingview-reference.md` and `docs/tradingview-mcp-recovery.md`
 - Environment variables (full reference): `docs/env-vars-reference.md`
 - Conversation memory schema: `docs/conversation-memory-reference.md`
-- API source-of-truth URLs (IBKR, Anthropic, Drive, Chainlit, libraries): `docs/api-reference.md`
+- API source-of-truth URLs (IBKR, Anthropic, Drive, Panel, libraries): `docs/api-reference.md`
 - Known gaps, live test log, project status: `docs/project-status.md`
 - Full documentation catalog (every doc in `docs/`, categorized): `docs/README.md`

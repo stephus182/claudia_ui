@@ -216,13 +216,17 @@ Verbatim findings:
   `--remote-debugging-port=9222` — an open question this URL alone does
   not answer.
 
-## Chainlit (`claudia/app.py`)
+## Panel (`claudia/panel_app.py` + `claudia/panel_*.py`)
+
+The UI framework since the 2026-07-24 Chainlit→Panel cutover (Chainlit removed entirely).
+Project-**verified** Panel findings — the native `pn.serve` serving model, `ChatInterface`,
+widget idioms, `pn.pane.Bokeh` candlesticks, `js_on_click` clipboard — live in
+[`docs/panel/`](panel/README.md), each backed by the installed package or a scraped URL.
 
 | Topic | Official source |
 |---|---|
-| Chainlit API reference (Message, Action, Step, Audio) | https://docs.chainlit.io/api-reference/message |
-| Chainlit configuration (`.chainlit/config.toml`) | https://docs.chainlit.io/backend/config |
-| Chainlit custom CSS / JS | https://docs.chainlit.io/customisation/custom-js |
+| Panel documentation (ChatInterface, widgets, serving) | https://panel.holoviz.org |
+| Bokeh (candlestick chart glyphs) | https://docs.bokeh.org |
 
 ## Standard libraries used in claudia_ui
 

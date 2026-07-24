@@ -7,7 +7,7 @@
 
 ## Architecture in One Paragraph
 
-ClaudIA is a Chainlit chatbot running locally at `localhost:8000`. It wraps an Anthropic SDK streaming loop that routes tool calls to three sources: `ibkr_core_mcp` (IBKR positions, orders, alerts, history — direct Python import), `tradingview-mcp` (Node.js sidecar, curated 16-tool subset via stdio MCP), and local tools (`list_doc_versions`, `get_doc_version`, `search_past_conversations`). Session state lives in `data/claudia.db` (SQLite). `context.md` and `principles.md` define the persona and trading rules. GDrive syncs the DB and docs across machines. Orders require two physical gates (Touch ID + AppKit NSAlert colored dialog: green=BUY, red=SELL); the LLM has no order-execution tools. Order staging supports equities (STK via `/iserver/secdef/search`) and futures (FUT via `/trsrv/futures` front-month, CME Rule 536-B fields auto-added). ClaudIA surfaces user-directed trade proposals — it never makes trade decisions autonomously.
+ClaudIA is a Panel chatbot running locally at `localhost:8001` (migrated from Chainlit — 2026-07-24 cutover, `docs/superpowers/plans/2026-07-22-panel-migration.md`). It wraps an Anthropic SDK streaming loop that routes tool calls to three sources: `ibkr_core_mcp` (IBKR positions, orders, alerts, history — direct Python import), `tradingview-mcp` (Node.js sidecar, curated 16-tool subset via stdio MCP), and local tools (`list_doc_versions`, `get_doc_version`, `search_past_conversations`). Session state lives in `data/claudia.db` (SQLite). `context.md` and `principles.md` define the persona and trading rules. GDrive syncs the DB and docs across machines. Orders require two physical gates (Touch ID + AppKit NSAlert colored dialog: green=BUY, red=SELL); the LLM has no order-execution tools. Order staging supports equities (STK via `/iserver/secdef/search`) and futures (FUT via `/trsrv/futures` front-month, CME Rule 536-B fields auto-added). ClaudIA surfaces user-directed trade proposals — it never makes trade decisions autonomously.
 
 ---
 
@@ -104,7 +104,7 @@ entry already logged 298→313 five days before this correction; reproduced fres
 | `execution_listener.py` | 23 | ExecutionListener execution-triggered P&L capture, queue-based fan-out, shutdown drop window, retry/backoff |
 | `session_reporter.py` | 15 | Session report generation, tool call/decision aggregation |
 | Security regressions | 21 | 9 (2026-06-12) + 11 SSRF (2026-06-25) + 1 decimal/hex IP bypass (2026-06-27) — must stay green |
-| `app.py` | **0** | Chainlit session wiring — not unit-testable; covered by live tests below |
+| `panel_app.py` | see `test_panel_app.py` | Panel session wiring (`pn.serve` + `_init_session`). Replaced the Chainlit `app.py` (0 coverage, not unit-testable) in the 2026-07-24 Phase 11 cutover — panel_app was built testable |
 
 **ibkr_core_mcp** (separate repo, own venv): **769 tests total — 685 unit** (`pytest -m "not integration"`) **+ 84 integration** (`pytest -m integration`). +5 on 2026-07-10 (3 order-origin-label tests, 2 Gate-2-cancel-dialog-detail tests — see Live Test Log below); remaining drift from the previously-recorded 673 predates this session (untracked here). Test suite reorganized 2026-07-08: `claude_tools.py` tests split from a single monolith into `tests/claude_tools/` (11 files by domain, domain-specific pytest markers, `TEST_INDEX.md`). Run targeted: `pytest tests/claude_tools/ -m orders`, etc. — see `ibkr_core_mcp/CLAUDE.md`.
 
@@ -518,7 +518,7 @@ The 7 remaining "observed, not documented" items below (trades session-scope, `?
 
 | Item | File | Status |
 |---|---|---|
-| `app.py` has zero unit tests | `claudia/app.py` | Chainlit session wiring makes unit testing hard; live tests are the coverage |
+| ~~`app.py` has zero unit tests~~ | ~~`claudia/app.py`~~ | **✅ RESOLVED by the 2026-07-24 Panel cutover** — the untestable Chainlit `app.py` was removed; its replacement `claudia/panel_app.py` was built testable (see `test_panel_app.py`) |
 | `test_strip_order_proposal_malformed_json` doesn't assert `clean` is unchanged | `tests/test_agent.py` | Low priority |
 | Env allowlist tested twice (tradingview + security_regressions) | both test files | Low maintenance risk |
 | Drive archive creates duplicate files on double `on_chat_start` | `ibkr_core_mcp/cache.py` `upload_account_file_bytes` | 2026-06-30: page refresh fires `on_chat_start` twice → two uploads of same XML; `_find_file` pattern already used for `claudia.db` should be applied here — check for existing filename before uploading, update in place |

@@ -73,7 +73,7 @@ container — they are fine. The host-side scripts (`start-claudia.sh`,
 **Note:** `ibkr-keepalive.sh` is largely redundant (Docker tickler handles it), so only
 `start-claudia.sh` is truly blocking.
 
-**Fix:** Write `start-claudia.ps1`. The Docker gateway and Chainlit commands are
+**Fix:** Write `start-claudia.ps1`. The Docker gateway and Panel commands are
 cross-platform; only the shell syntax needs porting.
 
 ---
@@ -198,7 +198,7 @@ that antivirus software can interfere with `watchdog` on Windows.
 symbols (`✅`, `⚠️`, `▶`). Windows Command Prompt does not support ANSI by default;
 PowerShell and Windows Terminal do.
 
-**Status:** Not blocking. Chainlit's web UI is unaffected. Terminal output may look
+**Status:** Not blocking. Panel's web UI is unaffected. Terminal output may look
 garbled in cmd.exe. No fix needed unless cmd.exe support is a requirement.
 
 ---
@@ -207,7 +207,7 @@ garbled in cmd.exe. No fix needed unless cmd.exe support is a requirement.
 
 | Component | Reason |
 |---|---|
-| Chainlit web server | Pure Python, platform-agnostic |
+| Panel web server | Pure Python, platform-agnostic |
 | Anthropic SDK | Platform-agnostic |
 | SQLite / claudia.db | stdlib, works everywhere |
 | Docker gateway container | Linux container, identical on all hosts |

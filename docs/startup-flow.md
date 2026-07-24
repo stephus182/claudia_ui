@@ -1,8 +1,13 @@
 # ClaudIA Startup Flow
 
-Documents every phase of startup in order: `start-claudia.sh` (pre-Chainlit) then
-`on_chat_start` (in `claudia/app.py`).
+Documents every phase of startup in order: `start-claudia.sh` (pre-UI) then session init.
 Use this to diagnose startup failures: each phase is labeled with where to look.
+
+> **Post-cutover mapping (2026-07-24):** the UI moved from Chainlit to Panel. What this doc
+> calls `on_chat_start` in `claudia/app.py` is now `_init_session` inside
+> `claudia/panel_app.py` (panel_app was built as a faithful port, so the phase sequence below
+> is preserved). Any `app.py:NNN` line references point at the removed Chainlit file via git
+> history; the equivalent Panel code carries `# app.py:NNN parity` comments.
 
 ---
 

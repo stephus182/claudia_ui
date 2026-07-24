@@ -11,7 +11,7 @@ Two complementary sources — each covers what the other cannot:
 
 Flex never has today's trades. The live API fills that gap.
 
-**Startup sync decision** (in `app.py → _background_flex_sync`):
+**Startup sync decision** (in `panel_app.py → _maybe_background_flex_sync`):
 1. `stale == False` → skip (`newest >= penultimate_trading_day` — calendar-aware, not a fixed
    day count; a one-trading-day gap is normal Flex T+1 lag, not staleness — see
    `docs/market-calendar-reference.md`)
@@ -92,7 +92,7 @@ Both surfaces render via the same `format_pnl_snapshot()` helper
 Surfaced two ways:
 - **`get_live_pnl` tool** (`claudia/agent.py`, local tool) — on-demand, reads
   `SQLiteStore.get_latest_pnl()` directly.
-- **Opening status block** (`claudia/app.py::on_chat_start`) — an "Account P&L" section
+- **Opening status block** (`claudia/panel_app.py::_send_opening_status`, via `opening_status.py`) — an "Account P&L" section
   in the session-start welcome message, reflecting P&L as of the last recorded
   execution (not literally "live" — refreshed only when a trade happens).
 
@@ -143,9 +143,9 @@ the bridge exists but CDP port 9222 is unreachable.
 ## IBKR Gateway Startup
 
 `start-claudia.sh` is the recommended launcher for a fresh session — it calls
-`GatewayManager.startup()` then starts Chainlit.
+`GatewayManager.startup()` then starts the Panel UI.
 
-If you launch `chainlit run claudia/app.py` directly and the gateway is offline,
+If you launch `python -m claudia.panel_app` directly and the gateway is offline,
 the welcome message shows a **"Start IBKR Gateway"** action button. Clicking it:
 
 1. Ensures Docker Desktop is running (launches it on macOS if needed)
