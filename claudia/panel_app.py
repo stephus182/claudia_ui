@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import uuid
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -286,6 +287,28 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                     respond=False,
                 )
                 return
+
+            # Hot-reload alert (app.py:275-294 parity). The watchdog fires in a
+            # plain OS thread; the D4-verified loop bridge serializes the entire
+            # chat.send onto this session's event loop (see the D4 RESOLVED note
+            # in the migration plan — probe + official Panel docs in agreement).
+            loop = asyncio.get_running_loop()
+
+            def _on_doc_change(filename: str, new_prompt: str) -> None:
+                try:
+                    loop.call_soon_threadsafe(
+                        partial(
+                            chat.send,
+                            f"**Document updated:** `{filename}` reloaded. "
+                            "Principles apply from your next message.",
+                            user="System",
+                            respond=False,
+                        )
+                    )
+                except RuntimeError:  # loop closed — session gone, alert moot
+                    log.debug("Dropped doc-change alert for closed session %s", session_id)
+
+            loader.start_watching(_on_doc_change)
 
             # Must run BEFORE this session's create_session below (see the
             # ordering invariant in _register_doc_version's docstring).
