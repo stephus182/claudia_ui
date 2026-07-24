@@ -40,9 +40,11 @@ from panel.io.fastapi import add_application
 from claudia.agent import ClaudIAAgent
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
+from claudia.execution_listener import ExecutionListener
 from claudia.gdrive_sync import GDriveSync
 from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_sink import PanelMessageSink
+from claudia.status import ConnectivityChecker
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +59,8 @@ _PANEL_PORT = int(os.environ.get("CLAUDIA_PANEL_PORT", "8001"))
 _toolkit: ClaudeToolkit | None = None
 _conv_store: ConversationStore | None = None
 _gdrive_sync: GDriveSync | None = None
+_connectivity_checker: ConnectivityChecker | None = None
+_execution_listener: ExecutionListener | None = None
 
 # Serializes the check-download-first-store-open section of _init_session across
 # concurrently-initializing sessions — see the comment at its acquire site.
@@ -239,7 +243,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     )
 
     async def _init_session() -> None:
-        global _gdrive_sync
+        global _gdrive_sync, _connectivity_checker, _execution_listener
         try:
             # GDrive DB download — MUST complete before ConversationStore first opens
             # the DB file (design D1). Unlike app.py, whose download is synchronous and
@@ -319,6 +323,28 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             store.create_session(
                 session_id, context_hash=current_hash, doc_version=version_label
             )
+
+            # Backend singletons (design D6, app.py:348-377 parity). The
+            # checker's 60s /tickle poll is the IBKR session KEEPALIVE — live-
+            # session protection, not cosmetics. Constructed once per process,
+            # started unconditionally each session (start() is idempotent and
+            # restarts a cancelled task). No per-session subscribe in Phase 5 —
+            # chat-alert delivery is Phase 6's work. Construction is synchronous
+            # (no await between the None-check and assignment on this single-
+            # threaded loop), so no lock is needed — same reasoning as
+            # app.py:369-371. tv_bridge stays None until Phase 9 (D5).
+            cfg = toolkit._config
+            if _connectivity_checker is None:
+                _connectivity_checker = ConnectivityChecker(
+                    gateway_url=cfg.gateway_url,
+                    gdrive_token_file=cfg.gdrive_token_file,
+                    tv_bridge=None,
+                    gdrive_sync=_gdrive_sync,
+                )
+            _connectivity_checker.start()
+            if _execution_listener is None:
+                _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
+            _execution_listener.start()
 
             sink = PanelMessageSink(chat=chat, session_id=session_id, store=store)
             _session["store"] = store
