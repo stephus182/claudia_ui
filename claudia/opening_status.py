@@ -1,11 +1,9 @@
 """UI-free builders for the opening status message (Panel entry point).
 
-Faithful port of the Chainlit startup status logic (app.py:399-514) restructured
-into pure/thread-friendly functions so panel_app._init_session stays readable and
-tests can feed dict fixtures directly. app.py is deliberately left untouched — it
-is deleted wholesale at Phase 11 (cutover). Uses the toolkit._store reach-in —
-the same one app.py itself uses (app.py:433,466); for config, the port
-substitutes toolkit._config for app.py's module-global _config (app.py:427) —
+Faithful port of the Chainlit app's startup status logic, restructured into
+pure/thread-friendly functions so panel_app._init_session stays readable and tests
+can feed dict fixtures directly. Uses the toolkit._store reach-in; for config, it
+substitutes toolkit._config for the old Chainlit app's module-global _config —
 behaviorally equivalent, both are Config.from_env() products. ClaudeToolkit
 exposes no public config/store properties.
 """

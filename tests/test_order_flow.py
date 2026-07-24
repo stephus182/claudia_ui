@@ -1,20 +1,22 @@
-"""Tests for order_flow — order summary formatting and execute_staged_order."""
+"""Tests for order_flow — summary formatting and the framework-agnostic
+_execute_{staged,cancel,modify}_order_core execution paths (Gate 1/Gate 2, place_order,
+IBKR rejection handling, decision logging), driven through a send_status recorder."""
 
 # ── Imports ──────────────────────────────────────────────────────────────────
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from claudia.order_flow import (
+    _execute_cancel_order_core,
+    _execute_modify_order_core,
+    _execute_staged_order_core,
     _format_cancel_summary,
     _format_modify_summary,
     _format_order_summary,
     _is_ibkr_rejection,
     _resolve_account_id,
-    execute_cancel_order,
-    execute_modify_order,
-    execute_staged_order,
 )
 
 # ── _resolve_account_id ──────────────────────────────────────────────────────
@@ -241,7 +243,6 @@ def _make_action(order_payload=None):
             "order_type": "MKT", "limit_price": None, "stop_price": None, "reason": "Test",
         }
     action = MagicMock()
-    action.remove = AsyncMock()
     action.payload = {"order": json.dumps(order_payload)}
     return action
 
@@ -263,25 +264,22 @@ def _make_ibkr_mock():
 
 
 async def _run(action, ibkr_mod, store=None, session_id="test-session"):
-    """Run execute_staged_order with mocked cl + ibkr_core_mcp."""
-    import claudia.order_flow as _of
-    mock_cl = MagicMock()
-    mock_msg = MagicMock()
-    mock_msg.send = AsyncMock()
-    mock_cl.Message.return_value = mock_msg
-    original_cl = _of.cl
-    _of.cl = mock_cl
-    try:
-        with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
-            await execute_staged_order(action, session_id=session_id, store=store)
-    finally:
-        _of.cl = original_cl
-    return mock_cl
+    """Drive _execute_staged_order_core with a send_status recorder + mocked ibkr_core_mcp.
+
+    Accepts the same `action` object the _make_* helpers build (its payload carries the
+    proposal dict) so the existing call sites need no change: extract the proposal and call
+    the framework-agnostic core directly — the Chainlit wrapper is gone, and the core is
+    where every safety-critical Gate-1/Gate-2 / place_order / rejection path lives."""
+    proposal = json.loads(action.payload["order"])
+    send_status, calls = _make_send_status_recorder()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _execute_staged_order_core(proposal, send_status, session_id=session_id, store=store)
+    return calls
 
 
-def _sent_contents(mock_cl):
-    """Return list of all content strings sent via cl.Message."""
-    return [c.kwargs["content"] for c in mock_cl.Message.call_args_list]
+def _sent_contents(calls):
+    """Return every status text string the send_status callback recorded."""
+    return [text for text, _author in calls]
 
 
 def _make_cancel_action(payload=None):
@@ -291,7 +289,6 @@ def _make_cancel_action(payload=None):
             "quantity": 1, "order_type": "LMT", "limit_price": 100.0, "tif": "GTC", "reason": "Test",
         }
     action = MagicMock()
-    action.remove = AsyncMock()
     action.payload = {"order": json.dumps(payload)}
     return action
 
@@ -305,7 +302,6 @@ def _make_modify_action(payload=None):
             "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
         }
     action = MagicMock()
-    action.remove = AsyncMock()
     action.payload = {"order": json.dumps(payload)}
     return action
 
@@ -323,58 +319,22 @@ def _make_cancel_modify_ibkr_mock():
 
 
 async def _run_cancel(action, ibkr_mod, store=None, session_id="test-session"):
-    import claudia.order_flow as _of
-    mock_cl = MagicMock()
-    mock_msg = MagicMock()
-    mock_msg.send = AsyncMock()
-    mock_cl.Message.return_value = mock_msg
-    original_cl = _of.cl
-    _of.cl = mock_cl
-    try:
-        with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
-            await execute_cancel_order(action, session_id=session_id, store=store)
-    finally:
-        _of.cl = original_cl
-    return mock_cl
+    proposal = json.loads(action.payload["order"])
+    send_status, calls = _make_send_status_recorder()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _execute_cancel_order_core(proposal, send_status, session_id=session_id, store=store)
+    return calls
 
 
 async def _run_modify(action, ibkr_mod, store=None, session_id="test-session"):
-    import claudia.order_flow as _of
-    mock_cl = MagicMock()
-    mock_msg = MagicMock()
-    mock_msg.send = AsyncMock()
-    mock_cl.Message.return_value = mock_msg
-    original_cl = _of.cl
-    _of.cl = mock_cl
-    try:
-        with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
-            await execute_modify_order(action, session_id=session_id, store=store)
-    finally:
-        _of.cl = original_cl
-    return mock_cl
+    proposal = json.loads(action.payload["order"])
+    send_status, calls = _make_send_status_recorder()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _execute_modify_order_core(proposal, send_status, session_id=session_id, store=store)
+    return calls
 
 
 # ── execute_staged_order — basic paths ───────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_execute_staged_order_invalid_payload_sends_error():
-    """Invalid JSON payload → error message + action removed."""
-    import claudia.order_flow as _of
-    action = MagicMock()
-    action.remove = AsyncMock()
-    action.payload = {"order": "not json {{{"}
-    mock_cl = MagicMock()
-    mock_msg = MagicMock()
-    mock_msg.send = AsyncMock()
-    mock_cl.Message.return_value = mock_msg
-    original_cl = _of.cl
-    _of.cl = mock_cl
-    try:
-        await execute_staged_order(action, session_id="s1")
-    finally:
-        _of.cl = original_cl
-    assert "Invalid order proposal" in mock_cl.Message.call_args_list[0].kwargs["content"]
-    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -383,10 +343,9 @@ async def test_execute_staged_order_contract_not_found():
     ibkr_mod, client = _make_ibkr_mock()
     client.search_contract.return_value = []
     action = _make_action()
-    mock_cl = await _run(action, ibkr_mod)
-    assert any("Could not find contract" in c for c in _sent_contents(mock_cl))
+    recorded = await _run(action, ibkr_mod)
+    assert any("Could not find contract" in c for c in _sent_contents(recorded))
     client.place_order_and_confirm.assert_not_called()
-    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -394,8 +353,8 @@ async def test_execute_staged_order_success_sends_success_message():
     """Happy path → 'staged successfully' in chat."""
     ibkr_mod, _client = _make_ibkr_mock()
     action = _make_action()
-    mock_cl = await _run(action, ibkr_mod)
-    assert any("staged successfully" in c for c in _sent_contents(mock_cl))
+    recorded = await _run(action, ibkr_mod)
+    assert any("staged successfully" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -418,8 +377,8 @@ async def test_execute_staged_order_touch_id_error():
     ibkr_mod, client = _make_ibkr_mock()
     client.place_order_and_confirm.side_effect = RuntimeError("Authentication challenge failed")
     action = _make_action()
-    mock_cl = await _run(action, ibkr_mod)
-    assert any("Touch ID" in c for c in _sent_contents(mock_cl))
+    recorded = await _run(action, ibkr_mod)
+    assert any("Touch ID" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -428,8 +387,8 @@ async def test_execute_staged_order_dialog_cancel_error():
     ibkr_mod, client = _make_ibkr_mock()
     client.place_order_and_confirm.side_effect = RuntimeError("Order cancelled by user")
     action = _make_action()
-    mock_cl = await _run(action, ibkr_mod)
-    assert any("cancelled at" in c for c in _sent_contents(mock_cl))
+    recorded = await _run(action, ibkr_mod)
+    assert any("cancelled at" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -440,8 +399,8 @@ async def test_execute_staged_order_reply_chain_decline_error():
     ibkr_mod, client = _make_ibkr_mock()
     client.place_order_and_confirm.side_effect = RuntimeError("User declined IBKR order reply")
     action = _make_action()
-    mock_cl = await _run(action, ibkr_mod)
-    contents = _sent_contents(mock_cl)
+    recorded = await _run(action, ibkr_mod)
+    contents = _sent_contents(recorded)
     assert any("follow-up IBKR confirmation" in c for c in contents)
     assert not any("authentication failed or was cancelled" in c for c in contents)
 
@@ -452,28 +411,9 @@ async def test_execute_staged_order_generic_error():
     ibkr_mod, client = _make_ibkr_mock()
     client.place_order_and_confirm.side_effect = RuntimeError("Connection reset")
     action = _make_action()
-    mock_cl = await _run(action, ibkr_mod)
+    recorded = await _run(action, ibkr_mod)
     assert any("Order staging failed" in c or "Order not placed" in c
-               for c in _sent_contents(mock_cl))
-
-
-@pytest.mark.asyncio
-async def test_execute_staged_order_remove_called_on_success():
-    """action.remove() called after successful staging."""
-    ibkr_mod, _client = _make_ibkr_mock()
-    action = _make_action()
-    await _run(action, ibkr_mod)
-    action.remove.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_execute_staged_order_remove_called_on_exception():
-    """action.remove() called even when place_order raises."""
-    ibkr_mod, client = _make_ibkr_mock()
-    client.place_order_and_confirm.side_effect = RuntimeError("IBKR error")
-    action = _make_action()
-    await _run(action, ibkr_mod)
-    action.remove.assert_called_once()
+               for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -593,10 +533,9 @@ async def test_execute_staged_order_fut_not_found():
         "symbol": "ES", "action": "BUY", "quantity": 1,
         "order_type": "MKT", "sec_type": "FUT",
     })
-    mock_cl = await _run(action, ibkr_mod)
-    assert any("futures contracts" in c for c in _sent_contents(mock_cl))
+    recorded = await _run(action, ibkr_mod)
+    assert any("futures contracts" in c for c in _sent_contents(recorded))
     client.place_order_and_confirm.assert_not_called()
-    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -660,12 +599,11 @@ async def test_execute_staged_order_fop_without_conid_sends_error():
         "symbol": "ES", "action": "BUY", "quantity": 1,
         "order_type": "LMT", "limit_price": 50.0, "sec_type": "FOP",
     })
-    mock_cl = await _run(action, ibkr_mod)
-    contents = _sent_contents(mock_cl)
+    recorded = await _run(action, ibkr_mod)
+    contents = _sent_contents(recorded)
     assert any("FOP" in c or "Futures Options" in c or "conid" in c.lower()
                for c in contents)
     client.place_order_and_confirm.assert_not_called()
-    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -747,8 +685,8 @@ async def test_execute_staged_order_rejection_payload_reports_failure():
         "symbol": "ES", "action": "BUY", "quantity": 1,
         "order_type": "LMT", "limit_price": 6000.0, "sec_type": "FUT", "tif": "GTC",
     })
-    mock_cl = await _run(action, ibkr_mod)
-    contents = _sent_contents(mock_cl)
+    recorded = await _run(action, ibkr_mod)
+    contents = _sent_contents(recorded)
     assert any("REJECTED" in c for c in contents)
     assert not any("staged successfully" in c for c in contents)
     # Raw IBKR response stays visible (broker-response transparency convention).
@@ -768,7 +706,6 @@ async def test_execute_staged_order_rejection_payload_logs_no_success_decision()
     })
     await _run(action, ibkr_mod, store=store, session_id="s42")
     store.add_decision.assert_not_called()
-    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -779,8 +716,8 @@ async def test_execute_staged_order_real_success_payload_still_reports_success()
     client.place_order_and_confirm.return_value = _SUCCESS_PAYLOAD
     store = MagicMock()
     action = _make_action()
-    mock_cl = await _run(action, ibkr_mod, store=store, session_id="s42")
-    assert any("staged successfully" in c for c in _sent_contents(mock_cl))
+    recorded = await _run(action, ibkr_mod, store=store, session_id="s42")
+    assert any("staged successfully" in c for c in _sent_contents(recorded))
     store.add_decision.assert_called_once()
     kwargs = store.add_decision.call_args.kwargs
     assert kwargs["decision_type"] == "trade_staged"
@@ -799,8 +736,8 @@ async def test_execute_cancel_order_rejection_payload_reports_failure():
     }
     store = MagicMock()
     action = _make_cancel_action()
-    mock_cl = await _run_cancel(action, ibkr_mod, store=store, session_id="s42")
-    contents = _sent_contents(mock_cl)
+    recorded = await _run_cancel(action, ibkr_mod, store=store, session_id="s42")
+    contents = _sent_contents(recorded)
     assert any("Cancel FAILED" in c for c in contents)
     assert not any("**Order cancelled:**" in c for c in contents)
     store.add_decision.assert_not_called()
@@ -819,8 +756,8 @@ async def test_execute_modify_order_rejection_payload_reports_failure():
     }
     store = MagicMock()
     action = _make_modify_action()
-    mock_cl = await _run_modify(action, ibkr_mod, store=store, session_id="s42")
-    contents = _sent_contents(mock_cl)
+    recorded = await _run_modify(action, ibkr_mod, store=store, session_id="s42")
+    contents = _sent_contents(recorded)
     assert any("Modify REJECTED" in c for c in contents)
     assert not any("**Order modified:**" in c for c in contents)
     store.add_decision.assert_not_called()
@@ -828,42 +765,22 @@ async def test_execute_modify_order_rejection_payload_reports_failure():
 
 # ── execute_cancel_order ──────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
-async def test_execute_cancel_order_invalid_payload_sends_error():
-    action = MagicMock()
-    action.remove = AsyncMock()
-    action.payload = {"order": "not json {{{"}
-    import claudia.order_flow as _of
-    mock_cl = MagicMock()
-    mock_msg = MagicMock()
-    mock_msg.send = AsyncMock()
-    mock_cl.Message.return_value = mock_msg
-    original_cl = _of.cl
-    _of.cl = mock_cl
-    try:
-        await execute_cancel_order(action, session_id="s1")
-    finally:
-        _of.cl = original_cl
-    assert "Invalid cancel proposal" in mock_cl.Message.call_args_list[0].kwargs["content"]
-    action.remove.assert_called_once()
-
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_missing_order_id_sends_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_cancel_action({"symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
-    mock_cl = await _run_cancel(action, ibkr_mod)
-    assert any("order_id" in c.lower() for c in _sent_contents(mock_cl))
+    recorded = await _run_cancel(action, ibkr_mod)
+    assert any("order_id" in c.lower() for c in _sent_contents(recorded))
     client.cancel_order.assert_not_called()
-    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_success_sends_success_message():
     ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     action = _make_cancel_action()
-    mock_cl = await _run_cancel(action, ibkr_mod)
-    assert any("cancelled" in c.lower() for c in _sent_contents(mock_cl))
+    recorded = await _run_cancel(action, ibkr_mod)
+    assert any("cancelled" in c.lower() for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -893,8 +810,8 @@ async def test_execute_cancel_order_touch_id_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.cancel_order.side_effect = RuntimeError("Authentication challenge failed")
     action = _make_cancel_action()
-    mock_cl = await _run_cancel(action, ibkr_mod)
-    assert any("Touch ID" in c for c in _sent_contents(mock_cl))
+    recorded = await _run_cancel(action, ibkr_mod)
+    assert any("Touch ID" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -902,8 +819,8 @@ async def test_execute_cancel_order_dialog_cancel_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.cancel_order.side_effect = RuntimeError("Order cancelled by user")
     action = _make_cancel_action()
-    mock_cl = await _run_cancel(action, ibkr_mod)
-    assert any("cancelled at" in c for c in _sent_contents(mock_cl))
+    recorded = await _run_cancel(action, ibkr_mod)
+    assert any("cancelled at" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -911,25 +828,8 @@ async def test_execute_cancel_order_generic_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.cancel_order.side_effect = RuntimeError("Connection reset")
     action = _make_cancel_action()
-    mock_cl = await _run_cancel(action, ibkr_mod)
-    assert any("failed" in c.lower() or "not cancelled" in c.lower() for c in _sent_contents(mock_cl))
-
-
-@pytest.mark.asyncio
-async def test_execute_cancel_order_remove_called_on_success():
-    ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
-    action = _make_cancel_action()
-    await _run_cancel(action, ibkr_mod)
-    action.remove.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_execute_cancel_order_remove_called_on_exception():
-    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    client.cancel_order.side_effect = RuntimeError("IBKR error")
-    action = _make_cancel_action()
-    await _run_cancel(action, ibkr_mod)
-    action.remove.assert_called_once()
+    recorded = await _run_cancel(action, ibkr_mod)
+    assert any("failed" in c.lower() or "not cancelled" in c.lower() for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -937,59 +837,38 @@ async def test_execute_cancel_order_403_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.cancel_order.side_effect = RuntimeError("403 Forbidden")
     action = _make_cancel_action()
-    mock_cl = await _run_cancel(action, ibkr_mod)
-    assert any("403" in c for c in _sent_contents(mock_cl))
+    recorded = await _run_cancel(action, ibkr_mod)
+    assert any("403" in c for c in _sent_contents(recorded))
 
 
 # ── execute_modify_order ──────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_execute_modify_order_invalid_payload_sends_error():
-    action = MagicMock()
-    action.remove = AsyncMock()
-    action.payload = {"order": "not json {{{"}
-    import claudia.order_flow as _of
-    mock_cl = MagicMock()
-    mock_msg = MagicMock()
-    mock_msg.send = AsyncMock()
-    mock_cl.Message.return_value = mock_msg
-    original_cl = _of.cl
-    _of.cl = mock_cl
-    try:
-        await execute_modify_order(action, session_id="s1")
-    finally:
-        _of.cl = original_cl
-    assert "Invalid modify proposal" in mock_cl.Message.call_args_list[0].kwargs["content"]
-    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_missing_order_id_sends_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({"conid": 265598, "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
-    mock_cl = await _run_modify(action, ibkr_mod)
-    assert any("order_id" in c.lower() for c in _sent_contents(mock_cl))
+    recorded = await _run_modify(action, ibkr_mod)
+    assert any("order_id" in c.lower() for c in _sent_contents(recorded))
     client.modify_order_and_confirm.assert_not_called()
-    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_missing_conid_sends_error_directing_to_get_order_status():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({"order_id": "1", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
-    mock_cl = await _run_modify(action, ibkr_mod)
-    contents = _sent_contents(mock_cl)
+    recorded = await _run_modify(action, ibkr_mod)
+    contents = _sent_contents(recorded)
     assert any("get_order_status" in c or "conid" in c.lower() for c in contents)
     client.modify_order_and_confirm.assert_not_called()
-    action.remove.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_success_sends_success_message():
     ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action()
-    mock_cl = await _run_modify(action, ibkr_mod)
-    assert any("modified" in c.lower() for c in _sent_contents(mock_cl))
+    recorded = await _run_modify(action, ibkr_mod)
+    assert any("modified" in c.lower() for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -1096,8 +975,8 @@ async def test_execute_modify_order_touch_id_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.modify_order_and_confirm.side_effect = RuntimeError("Authentication challenge failed")
     action = _make_modify_action()
-    mock_cl = await _run_modify(action, ibkr_mod)
-    assert any("Touch ID" in c for c in _sent_contents(mock_cl))
+    recorded = await _run_modify(action, ibkr_mod)
+    assert any("Touch ID" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -1105,8 +984,8 @@ async def test_execute_modify_order_dialog_cancel_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.modify_order_and_confirm.side_effect = RuntimeError("Order cancelled by user")
     action = _make_modify_action()
-    mock_cl = await _run_modify(action, ibkr_mod)
-    assert any("cancelled at" in c for c in _sent_contents(mock_cl))
+    recorded = await _run_modify(action, ibkr_mod)
+    assert any("cancelled at" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -1114,8 +993,8 @@ async def test_execute_modify_order_reply_chain_decline_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.modify_order_and_confirm.side_effect = RuntimeError("User declined IBKR order reply")
     action = _make_modify_action()
-    mock_cl = await _run_modify(action, ibkr_mod)
-    contents = _sent_contents(mock_cl)
+    recorded = await _run_modify(action, ibkr_mod)
+    contents = _sent_contents(recorded)
     assert any("follow-up IBKR confirmation" in c for c in contents)
 
 
@@ -1124,32 +1003,15 @@ async def test_execute_modify_order_generic_error():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.modify_order_and_confirm.side_effect = RuntimeError("Connection reset")
     action = _make_modify_action()
-    mock_cl = await _run_modify(action, ibkr_mod)
-    assert any("failed" in c.lower() or "not modified" in c.lower() for c in _sent_contents(mock_cl))
-
-
-@pytest.mark.asyncio
-async def test_execute_modify_order_remove_called_on_success():
-    ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action()
-    await _run_modify(action, ibkr_mod)
-    action.remove.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_execute_modify_order_remove_called_on_exception():
-    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    client.modify_order_and_confirm.side_effect = RuntimeError("IBKR error")
-    action = _make_modify_action()
-    await _run_modify(action, ibkr_mod)
-    action.remove.assert_called_once()
+    recorded = await _run_modify(action, ibkr_mod)
+    assert any("failed" in c.lower() or "not modified" in c.lower() for c in _sent_contents(recorded))
 
 
 # ── Extracted core functions (Task 3.2) — framework-agnostic, dict + callback in ────
 
 def _make_send_status_recorder():
     """A send_status callback that records every (text, author) call, for assertions —
-    the framework-agnostic equivalent of this file's existing _sent_contents(mock_cl)
+    the framework-agnostic equivalent of this file's existing _sent_contents(recorded)
     helper, which only works against the cl.Message-based wrapper."""
     calls = []
 

@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "ClaudIA — AI trading assistant powered by ibkr_core_mcp"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "chainlit>=2.0",
     "panel>=1.9",
     "anthropic>=0.28",
     # ibkr_core_mcp is installed separately: pip install -e ../ibkr_core_mcp
@@ -80,7 +79,7 @@ check_untyped_defs = true
 show_error_codes = true
 
 # The genuinely unstubbed third-party imports in claudia/ or tests/ (verified against the
-# actual venv — chainlit, mcp, ibkr_core_mcp, panel, and bokeh all ship py.typed, so
+# actual venv — mcp, ibkr_core_mcp, panel, and bokeh all ship py.typed, so
 # ignore_missing_imports is not needed for them):
 #   googleapiclient — no py.typed (verified 2026-07-21).
 #   pandas          — ships no py.typed and pandas-stubs is not installed (verified

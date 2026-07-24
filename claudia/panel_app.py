@@ -8,9 +8,8 @@ native-serving principle (2026-07-24): Panel-native serving, no workarounds.
 pn.serve calls _build_session_root once per browser session; module-level
 singletons stay process-wide.
 
-Deliberately independent of the Chainlit entry point (claudia/app.py) during the
-transition — never import claudia.app, which imports chainlit. Phase 11 (cutover)
-makes this the sole entry point.
+The sole ClaudIA entry point since the Phase 11 cutover removed the Chainlit
+app (claudia/app.py) and the chainlit dependency.
 
 Run with:  python -m claudia.panel_app
 """
@@ -135,10 +134,9 @@ async def _get_tv_bridge() -> TradingViewBridge:
 # ── Init-flow helpers (in _init_session call order) ──────────────────────────
 
 
-# Duplicated VERBATIM from claudia/app.py's _write_version_snapshot (using this
-# module's own _VERSIONS_PATH) — deliberate duplication-for-independence, same
-# rationale as _get_toolkit's docstring: panel_app must never import claudia.app,
-# which imports chainlit.
+# The canonical doc-version snapshot writer (originally duplicated from the old
+# claudia/app.py during the migration to keep panel_app independent; app.py was
+# removed in the Phase 11 cutover, so this is now the only copy).
 def _write_version_snapshot(version: str, context_text: str, principles_text: str) -> None:
     """Write human-readable snapshot to docs/versions/{version}/. No-op if already exists."""
     try:

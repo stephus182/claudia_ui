@@ -1,11 +1,16 @@
 """
-Human-initiated order staging for ClaudIA.
+Human-initiated order staging for ClaudIA — the framework-agnostic execution core.
 
 The LLM never calls this code directly. Flow:
   1. ClaudIA embeds an order-proposal block in its response text.
-  2. agent.py parses it and calls render_order_proposal().
-  3. User sees a message with full order details + "Stage this order" button.
-  4. User clicks the button → execute_staged_order() fires.
+  2. agent.py parses it and hands the dict to the MessageSink
+     (send_order_proposal), which the Panel sink routes to
+     panel_order_flow.render_order_proposal() — a message with a "Stage this
+     order" button.
+  3. User sees full order details + the button.
+  4. User clicks → panel_order_flow's handler calls _execute_staged_order_core()
+     (the cores in THIS module hold all the safety-critical logic; the UI layer
+     only renders buttons and supplies a send_status callback).
   5. IBKRClient.place_order_and_confirm() fires:
        Gate 1 — Touch ID (human_auth.require_touch_id)
        Gate 2 — AppKit colored dialog, green/BUY or red/SELL (order_confirm)
@@ -26,16 +31,15 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-import chainlit as cl
-
 if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
 
 log = logging.getLogger(__name__)
 
 SendStatus = Callable[[str, str], Awaitable[None]]
-"""(text, author) -> None — the framework-agnostic equivalent of cl.Message(content=text,
-author=author).send(), so the extracted *_core functions below don't import chainlit."""
+"""(text, author) -> None — the UI status callback the *_core functions call to surface
+progress and results. Injected by the caller (panel_order_flow) so the cores stay
+framework-agnostic: they never import or know about any specific UI toolkit."""
 
 
 def _format_order_summary(proposal: dict) -> str:
@@ -71,7 +75,7 @@ def _format_order_summary(proposal: dict) -> str:
 def _classify_execution_error(exc: Exception) -> str:
     """Map an exception from a Gate 1/2-guarded IBKR call to a user-facing message.
 
-    Shared by execute_staged_order/execute_cancel_order/execute_modify_order — all three
+    Shared by the three _execute_*_order_core functions — all
     route through the same Touch ID (Gate 1) + AppKit dialog (Gate 2) gates in ibkr_core_mcp,
     so the same failure modes (dialog cancel, Touch ID failure, reply-chain decline, timeout,
     403) can occur regardless of which order action triggered them. Check most-specific
@@ -151,45 +155,15 @@ def _is_ibkr_rejection(result: object) -> bool:
     return not has_order_status and order_id in ("0", 0, None)
 
 
-async def _cl_send_status(text: str, author: str) -> None:
-    await cl.Message(content=text, author=author).send()
-
-
-async def render_order_proposal(proposal: dict, session_id: str | None = None) -> None:
-    """Render an order proposal as a Chainlit message with staging action buttons."""
-    summary = _format_order_summary(proposal)
-    proposal_json = json.dumps(proposal)
-
-    actions = [
-        cl.Action(
-            name="stage_order",
-            payload={"order": proposal_json},
-            label="Stage this order",
-            tooltip="Opens IBKR Touch ID + confirmation dialog",
-        ),
-        cl.Action(
-            name="cancel_proposal",
-            payload={},
-            label="Cancel",
-            tooltip="Dismiss this proposal",
-        ),
-    ]
-
-    await cl.Message(
-        content=summary,
-        actions=actions,
-        author="ClaudIA — Order Proposal",
-    ).send()
-
-
 async def _execute_staged_order_core(
     proposal: dict,
     send_status: SendStatus,
     session_id: str | None = None,
     store: ConversationStore | None = None,
 ) -> None:
-    """Framework-agnostic core of execute_staged_order — see that function's docstring
-    for the full Gate 1/Gate 2 spec. Called only after proposal has been parsed."""
+    """Framework-agnostic core of the staged-order flow — the full Gate 1/Gate 2 spec is
+    in this module's docstring. Called with an already-parsed proposal dict and a
+    send_status callback supplied by the UI layer."""
     symbol = proposal.get("symbol", "?")
     action_str = proposal.get("action", "?")
     qty = proposal.get("quantity", 0)
@@ -396,35 +370,6 @@ async def _execute_staged_order_core(
         await send_status(f"**Order not placed:** {display_error}", "System")
 
 
-async def execute_staged_order(
-    action: cl.Action,
-    session_id: str | None = None,
-    store: ConversationStore | None = None,
-) -> None:
-    """
-    Execute the staged order by calling IBKRClient.place_order_and_confirm(), which
-    resolves any chained IBKR reply prompts before returning.
-
-    Gate 1 — Touch ID (require_touch_id in ibkr_core_mcp.human_auth)
-    Gate 2 — AppKit colored dialog: green for BUY, red for SELL (ibkr_core_mcp.order_confirm).
-              Falls back to osascript plain dialog if the AppKit subprocess fails.
-
-    This function is only called from a physical button click action callback.
-    ClaudIA's ORDER PARAMETER IMMUTABILITY rule prohibits changing any user-specified
-    field (price, quantity, symbol, order type, TIF) without explicit user approval.
-    """
-    try:
-        proposal = json.loads(action.payload["order"])
-    except (json.JSONDecodeError, TypeError, KeyError):
-        await cl.Message(content="Invalid order proposal data.", author="System").send()
-        await action.remove()
-        return
-    try:
-        await _execute_staged_order_core(proposal, _cl_send_status, session_id, store)
-    finally:
-        await action.remove()
-
-
 # ── Order cancellation ───────────────────────────────────────────────────────
 
 def _format_cancel_summary(proposal: dict) -> str:
@@ -456,41 +401,15 @@ def _format_cancel_summary(proposal: dict) -> str:
     return "\n".join(lines)
 
 
-async def render_cancel_proposal(proposal: dict, session_id: str | None = None) -> None:
-    """Render a cancel proposal as a Chainlit message with cancel/keep action buttons."""
-    summary = _format_cancel_summary(proposal)
-    proposal_json = json.dumps(proposal)
-
-    actions = [
-        cl.Action(
-            name="cancel_order",
-            payload={"order": proposal_json},
-            label="Cancel this order",
-            tooltip="Opens IBKR Touch ID + confirmation dialog",
-        ),
-        cl.Action(
-            name="keep_order",
-            payload={},
-            label="Keep order",
-            tooltip="Dismiss this cancel proposal",
-        ),
-    ]
-
-    await cl.Message(
-        content=summary,
-        actions=actions,
-        author="ClaudIA — Cancel Proposal",
-    ).send()
-
-
 async def _execute_cancel_order_core(
     proposal: dict,
     send_status: SendStatus,
     session_id: str | None = None,
     store: ConversationStore | None = None,
 ) -> None:
-    """Framework-agnostic core of execute_cancel_order — see that function's docstring
-    for the full Gate 1/Gate 2 spec. Called only after proposal has been parsed."""
+    """Framework-agnostic core of the cancel-order flow — the full Gate 1/Gate 2 spec is
+    in this module's docstring. Called with an already-parsed proposal dict and a
+    send_status callback supplied by the UI layer."""
     order_id = proposal.get("order_id")
     symbol = proposal.get("symbol", "?")
 
@@ -565,42 +484,6 @@ async def _execute_cancel_order_core(
         await send_status(f"**Order not cancelled:** {display_error}", "System")
 
 
-async def execute_cancel_order(
-    action: cl.Action,
-    session_id: str | None = None,
-    store: ConversationStore | None = None,
-) -> None:
-    """
-    Execute a staged cancel by calling IBKRClient.cancel_order() directly — no reply
-    chain to resolve, unlike placement/modify (cancellation is a single DELETE call).
-
-    Gate 1 — Touch ID, Gate 2 — AppKit dialog fire inside cancel_order() itself
-    (ibkr_core_mcp.human_auth / order_confirm), same as place_order()/modify_order().
-
-    Known gap: IBKR's documented Cancel Order endpoint requires manualIndicator/
-    extOperator query params for FUT/FOP (CME Rule 536-B), but ibkr_core_mcp's
-    cancel_order(account_id, order_id) does not yet accept them — FUT/FOP cancellation
-    may be rejected by IBKR until that's added upstream. STK cancellation is unaffected.
-    NOTE (2026-07-23): the gap may still exist for manualIndicator, but per
-    docs/2026-07-23-futures-order-field-8089-bug.md extOperator is rejected by IBKR
-    as undocumented field 8089 on this account class — if implemented upstream,
-    send manualIndicator only.
-    Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#cancel-order
-
-    This function is only called from a physical button click action callback.
-    """
-    try:
-        proposal = json.loads(action.payload["order"])
-    except (json.JSONDecodeError, TypeError, KeyError):
-        await cl.Message(content="Invalid cancel proposal data.", author="System").send()
-        await action.remove()
-        return
-    try:
-        await _execute_cancel_order_core(proposal, _cl_send_status, session_id, store)
-    finally:
-        await action.remove()
-
-
 # ── Order modification ───────────────────────────────────────────────────────
 
 def _format_modify_summary(proposal: dict) -> str:
@@ -627,41 +510,15 @@ def _format_modify_summary(proposal: dict) -> str:
     return "\n".join(lines)
 
 
-async def render_modify_proposal(proposal: dict, session_id: str | None = None) -> None:
-    """Render a modify proposal as a Chainlit message with modify/discard action buttons."""
-    summary = _format_modify_summary(proposal)
-    proposal_json = json.dumps(proposal)
-
-    actions = [
-        cl.Action(
-            name="modify_order",
-            payload={"order": proposal_json},
-            label="Modify this order",
-            tooltip="Opens IBKR Touch ID + confirmation dialog",
-        ),
-        cl.Action(
-            name="discard_modify",
-            payload={},
-            label="Discard",
-            tooltip="Dismiss this modify proposal",
-        ),
-    ]
-
-    await cl.Message(
-        content=summary,
-        actions=actions,
-        author="ClaudIA — Modify Proposal",
-    ).send()
-
-
 async def _execute_modify_order_core(
     proposal: dict,
     send_status: SendStatus,
     session_id: str | None = None,
     store: ConversationStore | None = None,
 ) -> None:
-    """Framework-agnostic core of execute_modify_order — see that function's docstring
-    for the full Gate 1/Gate 2 spec. Called only after proposal has been parsed."""
+    """Framework-agnostic core of the modify-order flow — the full Gate 1/Gate 2 spec is
+    in this module's docstring. Called with an already-parsed proposal dict and a
+    send_status callback supplied by the UI layer."""
     order_id = proposal.get("order_id")
     conid = proposal.get("conid")
     symbol = proposal.get("symbol", "?")
@@ -780,40 +637,3 @@ async def _execute_modify_order_core(
         log.exception("Order modification failed for order %s", order_id)
         display_error = _classify_execution_error(exc)
         await send_status(f"**Order not modified:** {display_error}", "System")
-
-
-async def execute_modify_order(
-    action: cl.Action,
-    session_id: str | None = None,
-    store: ConversationStore | None = None,
-) -> None:
-    """
-    Execute a staged modify by calling IBKRClient.modify_order_and_confirm(), which
-    resolves any chained IBKR reply prompts before returning — same reply-chain pattern
-    as place_order_and_confirm(), first live-exercised for modify_order (see CLAUDE.md).
-
-    Gate 1 — Touch ID, Gate 2 — AppKit dialog fire inside modify_order() itself.
-
-    Builds a FRESH order body from the proposal's typed fields — never forwards the raw
-    proposal dict. modify_order() in ibkr_core_mcp's client.py does no `_`-prefix
-    stripping (unlike place_order()), so display-only fields (_changed_fields,
-    _previous_values) and the proposal's own order_id/reason must never reach the
-    IBKR request body. Per IBKR's docs, the modify body must mirror the full original
-    order, not a partial diff:
-    Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#modify-order
-    ("The content should mirror the content of the original order.")
-
-    This function is only called from a physical button click action callback.
-    ClaudIA's MODIFY PARAMETER IMMUTABILITY rule prohibits changing any field the user
-    did not explicitly ask to change.
-    """
-    try:
-        proposal = json.loads(action.payload["order"])
-    except (json.JSONDecodeError, TypeError, KeyError):
-        await cl.Message(content="Invalid modify proposal data.", author="System").send()
-        await action.remove()
-        return
-    try:
-        await _execute_modify_order_core(proposal, _cl_send_status, session_id, store)
-    finally:
-        await action.remove()
