@@ -6701,16 +6701,69 @@ modify `claudia/panel_sink.py` (getter param + send_message hook), `claudia/pane
 
 - [x] **Step 5: Commit** — `feat: Panel PineScript copy (real clipboard) + inject buttons — auto-detect, agent.py untouched`.
 
-## Phase 10: Dashboard + candlestick charting — outline
+## Phase 10: External candlestick chart pane — Panel/Bokeh direct
 
-**Goal:** New capability, not a port — a dashboard pane next to the chat pane using
-Panel's template system (`FastListTemplate`/`MaterialTemplate` or `panel.ui`/
-`panel-material-ui`, per **[kickoff]**'s instruction to target the modern namespace) and
-`df.hvplot.ohlc()` **[research]** for candlestick charts (Bokeh backend for any
-live-updating pane, Matplotlib for any static chart embedded in a chat message — same call,
-different `kind`/backend argument, per **[research]**). Requires `hvplot` as a new
-dependency (not yet added — add during detailing, verify signature live the same way
-Phase 1/2's Panel APIs were verified here, not from the research doc's citation alone).
+**SCOPE LOCKED 2026-07-24 (user):** NOT a dashboard-template design exercise, NOT
+inline-in-chat charts — a **functional external chart pane** using Panel/Bokeh directly.
+"The chart pane is the functional deliverable (not deferred-restyle layout polish), and it
+uses Panel/Bokeh directly — it is the goal." The original outline's `hvplot` +
+template-system framing is SUPERSEDED: `bokeh 3.9.1` is already installed, so **no new
+dependency** (candlestick via Bokeh glyphs). Fully grounded by
+[`docs/panel/2026-07-24-candlestick-chart-pane-research.md`](../../panel/2026-07-24-candlestick-chart-pane-research.md)
+(all APIs verified live). Memory: `project-phase10-external-charts`.
+
+### Task 10.1: Candlestick chart pane (symbol/period controls, Bokeh render, cache-backed)
+
+Grounded 2026-07-24 (research doc, all verified live): candlestick via Bokeh
+`segment`+`vbar` glyphs, embedded `pn.pane.Bokeh`, refreshed by `pane.object = fig`; data
+from `toolkit._cache.load(symbol, bar.upper(), period, end) -> DataFrame` (DatetimeIndex +
+lowercase `open/high/low/close/volume`, `cache.py:263`), fetched-on-miss via
+`toolkit.execute("fetch_market_data", {...})` (returns a SUMMARY, populates the parquet
+cache); `_get_toolkit()` process singleton resolved at Load-click time (not construction).
+STK only (tool resolves STK conids).
+
+**Design (locked — function-first):**
+
+- New `claudia/panel_chart.py`: `build_chart_pane() -> pn.Column` — a self-contained
+  component: `pn.Row(symbol_input, period_select, bar_select, load_btn)` + a status
+  `pn.pane.Markdown` + a `pn.pane.Bokeh` (empty placeholder until first load). Pure helper
+  `build_candlestick_figure(df, title) -> bokeh.plotting.figure` (unit-testable with a
+  fixture DataFrame, no server/IBKR). An async `_on_load` (loading-spinner first): resolve
+  toolkit → `to_thread` cache-check → `to_thread` fetch on miss → `to_thread` load → build
+  figure → `pane.object = fig`; every failure (IBKR offline, empty df, unknown symbol,
+  exception) → honest status message, `finally` clears `load_btn.loading`.
+- `claudia/panel_app.py` `_build_session_root`: compose the chart beside the chat —
+  `pn.Row(pn.Column(pn.Row(*indicators), chat), build_chart_pane(), sizing_mode=
+  "stretch_both")` (chat+indicators left, chart right). Placement ratio/tabs = restyle
+  refinement; the functional requirement is a working refreshable pane.
+- Widgets use the verified idioms: `Button(label=…, color="primary")`, `loading` spinner
+  during the multi-second IBKR wait (actionable-buttons research). NO agent.py / sink
+  changes — the chart is independent of the conversation (that's the whole point).
+
+**Files:** Create `claudia/panel_chart.py` + `tests/test_panel_chart.py`; modify
+`claudia/panel_app.py` (`_build_session_root` composition + its test).
+
+- [ ] **Step 1: Failing tests** — `build_candlestick_figure(df, title)`: returns a Bokeh
+  `figure` with a datetime x-axis, 3 glyph renderers (segment + 2 vbars), title set;
+  up/down partition by `close >= open` (feed a 2-row up + 2-row down fixture, assert the
+  up-vbar data source has the up rows). `build_chart_pane()`: returns a Column containing
+  the 4 controls + a Bokeh pane + status. `_on_load` behavior (patch `_get_toolkit`): cache
+  hit → `cache.load` called, `pane.object` becomes a figure, no fetch; cache miss →
+  `execute("fetch_market_data", …)` then `load`; IBKR-offline/empty-df/exception → status
+  shows an honest error, `load_btn.loading` False, `pane.object` unchanged; loading flag set
+  during and cleared after. `_build_session_root` composes the chart pane (assert a Bokeh
+  pane exists in the root tree beside the chat).
+
+- [ ] **Step 2: Implement** per the design + the research doc's verified recipe.
+
+- [ ] **Step 3: Gates** — suite +N; ruff + mypy clean; 1 warning.
+
+- [ ] **Step 4: Manual smoke** (gateway authenticated) — load the page, the chart pane
+  renders beside the chat; type a real STK symbol (e.g. AAPL), pick 6m/1d, click Load →
+  candlestick renders (fetch-on-miss then cache hit on repeat); a bogus symbol → honest
+  error, no crash; IBKR-offline path → honest error. Screenshot the rendered candlestick.
+
+- [ ] **Step 5: Commit** — `feat: external candlestick chart pane (Panel/Bokeh direct, cache-backed, STK)`.
 
 ## Phase 11: Cutover — outline
 

@@ -19,6 +19,11 @@ Distinct from:
 
 ## Index
 
+- [2026-07-24 — External candlestick chart pane (Phase 10)](2026-07-24-candlestick-chart-pane-research.md)
+  — Bokeh candlestick via `segment`+`vbar` glyphs (no hvplot — bokeh already installed);
+  `pn.pane.Bokeh` embed + `pane.object=` refresh; OHLCV from `toolkit._cache.load` (parquet,
+  DatetimeIndex + lowercase columns) with fetch-on-miss; symbol/period/bar controls +
+  `loading` spinner; side-by-side placement. All APIs verified live.
 - [2026-07-24 — PineScript copy/inject + actionable-button capabilities](2026-07-24-pinescript-and-actionable-buttons-research.md)
   — `pine_set_source` sidecar contract; real client-side clipboard via `js_on_click`
   (injection-safe, localhost = secure context); ```pine detection regex; and a full
