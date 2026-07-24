@@ -62,10 +62,12 @@ pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
 cp .env.example .env
 # Edit .env — minimum required: ANTHROPIC_API_KEY. Full var reference: @docs/env-vars-reference.md
 
-# 5. Create your personal documents
-cp docs/context.example.md docs/context.md
-cp docs/principles.example.md docs/principles.md
+# 5. Personal documents (git-ignored; define ClaudIA's persona + trading rules)
+# If GOOGLE_DRIVE_FOLDER_ID is set, both download from Drive automatically at session
+# start — nothing to create. Otherwise create them by hand:
+touch docs/context.md docs/principles.md   # then write persona / trading rules
 chmod 600 docs/context.md docs/principles.md
+# Loading/versioning mechanics: docs/context-loading-reference.md
 
 # 6. TradingView sidecar (optional — one-time install)
 git clone https://github.com/tradesdontlie/tradingview-mcp ~/.tradingview-mcp
@@ -83,9 +85,14 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ## Testing
 
 ```bash
-pytest -m "not integration"   # unit tests, no IBKR connection needed
-pytest                        # all tests, requires live IBKR gateway
+pytest        # full suite — all unit, no IBKR gateway needed (451 tests as of 2026-07-24)
+ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 ```
+
+No test in this repo carries the `integration` marker (it stays registered in
+`pyproject.toml` for future use) — live IBKR verification is done manually and recorded in
+`docs/project-status.md` § Live Test Log. ibkr_core_mcp's own integration suite lives in
+that repo.
 
 ---
 
@@ -169,6 +176,9 @@ a real import ("expanded and loaded into context at launch"); backtick-wrapping 
 literal path instead. See `docs/plans/2026-07-10-claude-md-delink-imports.md` for
 the fix that established this (75,480 → 2,910 tokens/session).
 
+- Connectivity (IBKR/GDrive/TV status dots, check logic, reconnection flows): `docs/connectivity.md`
+- Panel framework reference (verified pn.serve/widget/chart findings, smoke screenshots): `docs/panel/README.md`
+- Startup flow, phase by phase (diagnose startup failures): `docs/startup-flow.md`
 - Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and `docs/trading-data-reference.md`
 - Market calendar (20 exchanges, futures schedules): `docs/market-calendar-reference.md`
 - GDrive sync (folder layout, error handling): `docs/gdrive-sync-reference.md`

@@ -1,6 +1,6 @@
 # ClaudIA — AI Trading Assistant
 
-ClaudIA is a Chainlit-based trading assistant that gives you a persistent, principle-guided AI for market analysis, strategy work, and human-confirmed order staging. It connects to Interactive Brokers via `ibkr_core_mcp` and to TradingView Desktop via the `tradingview-mcp` Node.js sidecar.
+ClaudIA is a Panel-based trading assistant that gives you a persistent, principle-guided AI for market analysis, strategy work, and human-confirmed order staging. It connects to Interactive Brokers via `ibkr_core_mcp` and to TradingView Desktop via the `tradingview-mcp` Node.js sidecar. (Migrated from Chainlit to Panel 2026-07-24 — `docs/superpowers/plans/2026-07-22-panel-migration.md`.)
 
 ---
 
@@ -10,14 +10,15 @@ ClaudIA is a Chainlit-based trading assistant that gives you a persistent, princ
 - **Execution-triggered P&L** — a background listener watches for trade executions (any origin — mobile, TWS, web, API) and refreshes account P&L automatically each time a trade fills; no continuous polling
 - **Full trade history** — 7-year backfill via IBKR Flex Queries; `sync_flex_trades` keeps it current; `get_trades source='store'` queries with no date limit
 - **Human-confirmed order staging** — ClaudIA proposes trades (equities and futures); you click a button → Touch ID → AppKit colored dialog (green/BUY, red/SELL). The LLM has no order-execution tools. CME Rule 536-B fields auto-added for futures
-- **TradingView live integration** — reads your active chart, sets symbols/timeframes, compiles and injects PineScript directly into the Pine Editor
-- **Screenshot analysis** — paste any TradingView chart into chat for vision-based analysis (no Desktop required)
+- **TradingView live integration** — reads your active chart, sets symbols/timeframes; every ```pine block ClaudIA emits gets a **Copy** button (real client-side clipboard) and an **Inject into TradingView** button that sets the Pine Editor source directly
+- **External candlestick chart pane** — a Bokeh chart beside the chat (symbol/period/bar controls), OHLCV from the Drive cache with fetch-on-miss from IBKR; fully independent of the conversation
+- **Screenshot analysis** — upload any TradingView chart for vision-based analysis (no Desktop required)
 - **Principle-guided responses** — your personal `docs/principles.md` is loaded as a system prompt; ClaudIA refuses proposals that violate your rules
 - **Persistent memory** — all sessions, decisions, and symbol observations stored in SQLite with FTS5 search ("what did I decide about NVDA last month?")
 - **GDrive sync** — `claudia.db` and context/principles docs auto-sync to Google Drive; pick up any session from any machine
 - **Hot-reload documents** — edit `context.md` or `principles.md` while a session is open; changes apply from the next message
 - **In-chat startup buttons** — "Start IBKR Gateway" and "Launch TradingView" action buttons appear when services are offline at session start
-- **Connectivity status bar** — live IBKR / GDrive / TradingView lights in the UI header, polled every 60s
+- **Connectivity status dots** — live IBKR / GDrive / TradingView indicators above the chat, refreshed every 60s over Panel's websocket
 - **Session reports** — auto-generated Markdown report at session end: tools called, decisions, errors, connectivity state
 
 ---
@@ -43,16 +44,17 @@ git clone <this-repo> && cd claudia_ui
 # 2. Python env
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pip install -e "../ibkr_core_mcp"
+pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
+# strict mode required for mypy to resolve ibkr_core_mcp — see CLAUDE.md Dev Setup
 
 # 3. Environment
 cp .env.example .env
 # Edit .env — minimum: ANTHROPIC_API_KEY
 
-# 4. Personal documents
-cp docs/context.example.md docs/context.md
-cp docs/principles.example.md docs/principles.md
-# Edit both to configure ClaudIA's persona and your trading rules
+# 4. Personal documents (git-ignored persona + trading rules)
+# With GOOGLE_DRIVE_FOLDER_ID set they download from Drive automatically — skip this.
+# Otherwise create them by hand:
+touch docs/context.md docs/principles.md   # then write persona / trading rules
 chmod 600 docs/context.md docs/principles.md
 
 # 5. TradingView sidecar (optional — skip if using screenshot mode only)
@@ -63,10 +65,10 @@ cd ~/.tradingview-mcp && npm install && cd -   # pure JS — no build step
 # 6. Launch
 ./start-claudia.sh             # recommended: starts IBKR gateway + ClaudIA
 # or:
-chainlit run claudia/app.py    # ClaudIA only — use the in-chat "Start IBKR Gateway" button
+python -m claudia.panel_app    # ClaudIA only — use the in-chat "Start IBKR Gateway" button
 ```
 
-Open **http://localhost:8000**
+Open **http://localhost:8001**
 
 ---
 
@@ -79,6 +81,13 @@ ClaudIA can launch it for you via the **"Launch TradingView"** button in the wel
 open -a "Trading View" --args --remote-debugging-port=9222
 ```
 
+If TradingView is already running **without** the debug port, use the one-command fix —
+it quits TV gracefully, relaunches with the debug flag, and waits for CDP to come up:
+
+```bash
+./scripts/launch-tradingview-debug.sh
+```
+
 If the sidecar breaks after a TradingView or npm update, see
 [`docs/tradingview-mcp-recovery.md`](docs/tradingview-mcp-recovery.md) for the break pattern catalog
 and recovery steps, including a direct CDP from Python fallback.
@@ -88,16 +97,22 @@ and recovery steps, including a direct CDP from Python fallback.
 ## Architecture
 
 ```
-Chainlit UI (localhost:8000)
+Panel UI (localhost:8001 — native pn.serve Tornado)
     ↓
-claudia/app.py              — session lifecycle, action callbacks, startup buttons
+claudia/panel_app.py        — pn.serve entry: session lifecycle, status dots, startup buttons
+claudia/panel_sink.py       — PanelMessageSink: agent output → pn.chat.ChatInterface
+claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_flow cores
+claudia/panel_pinescript.py — ```pine copy (real clipboard) / inject buttons
+claudia/panel_chart.py      — external Bokeh candlestick chart pane (STK, cache-backed)
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching
+claudia/message_sink.py     — MessageSink protocol (the UI-decoupling seam)
+claudia/order_flow.py       — framework-agnostic order-execution cores → biometric gates
+claudia/opening_status.py   — UI-free opening-status builders
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
-claudia/order_flow.py       — cl.Action order staging → biometric gates
 claudia/status.py           — ConnectivityChecker: polls IBKR/GDrive/TV every 60s
 claudia/execution_listener.py — ExecutionListener: WS trade-execution listener, triggers P&L checks
-claudia/tradingview.py      — tradingview-mcp sidecar, CDP health, PineScript display
+claudia/tradingview.py      — tradingview-mcp sidecar, CDP health, TradingViewBridge
 claudia/gdrive_sync.py      — claudia.db + context/principles sync to Google Drive
 claudia/session_reporter.py — auto-generate session report at session end
     ↓                               ↓
@@ -116,9 +131,9 @@ ClaudIA proposes trades; you approve them through two physical gates. The LLM ha
 
 ```
 ClaudIA response → order-proposal block
-    ↓ agent.py strips block → render_order_proposal()
-    ↓ Chainlit button: "Stage this order"
-    ↓ User clicks
+    ↓ agent.py strips block → MessageSink.send_order_proposal()
+    ↓ panel_order_flow.render_order_proposal() → button: "Stage this order"
+    ↓ User clicks → order_flow._execute_staged_order_core()
     ↓ Gate 1 — Touch ID (macOS LocalAuthentication)
     ↓ Gate 2 — AppKit dialog: green=BUY / red=SELL, 60s auto-cancel, Enter disabled
     ↓ IBKRClient.place_order() → IBKR gateway
@@ -129,7 +144,8 @@ ClaudIA response → order-proposal block
 | `sec_type` | Conid resolution | Extra fields |
 |---|---|---|
 | `STK` (default) | `/iserver/secdef/search` | — |
-| `FUT` | `/trsrv/futures` → front month | `manualIndicator: True`, `extOperator: "ClaudIA"` (CME Rule 536-B, required since May 1 2025) |
+| `FUT` | `/trsrv/futures` → front month | `manualIndicator: True` (CME Rule 536-B). `extOperator` is deliberately **not** sent — IBKR rejects it with error 8089 despite the docs marking it "Required*"; live-proven 2026-07-24 |
+| `FOP` | pre-resolved `conid` required in the proposal (via `get_option_chain`) | same 536-B fields as FUT |
 
 The Gate 2 dialog shows correct futures notional: `price × qty × multiplier` (multiplier fetched from `/trsrv/futures`).
 
@@ -203,7 +219,8 @@ Any contribution touching API behavior, error codes, endpoint paths, or field na
 | Google Drive API v3 | `claudia/gdrive_sync.py` | https://developers.google.com/drive/api/reference/rest/v3 |
 | TradingView MCP | `claudia/tradingview.py` | https://github.com/tradesdontlie/tradingview-mcp |
 | Chrome DevTools Protocol | `claudia/tradingview.py` | https://chromedevtools.github.io/devtools-protocol/ |
-| Chainlit | `claudia/app.py` | https://docs.chainlit.io |
+| Panel | `claudia/panel_*.py` | https://panel.holoviz.org |
+| Bokeh | `claudia/panel_chart.py` | https://docs.bokeh.org |
 | `requests` (web fetch) | `claudia/agent.py` | https://docs.python-requests.org/ |
 | `html2text` (HTML → Markdown) | `claudia/agent.py` | https://github.com/Alir3z4/html2text |
 | `watchdog` (file monitoring) | `claudia/context_loader.py` | https://watchdog.readthedocs.io/ |
@@ -265,6 +282,9 @@ ClaudIA is designed to run on any machine — all persistent state lives in a si
 ## Testing
 
 ```bash
-pytest -m "not integration"   # 233 unit tests (no IBKR gateway needed)
-pytest                        # all tests (requires live IBKR gateway)
+pytest                                        # full suite — 451 unit tests, no IBKR gateway needed
+ruff check claudia/ tests/ && mypy claudia/   # lint + type gates
 ```
+
+Live IBKR verification (order staging, gateway flows) is done manually and recorded in
+[`docs/project-status.md`](docs/project-status.md) § Live Test Log.

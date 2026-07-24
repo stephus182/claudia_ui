@@ -30,6 +30,28 @@ code changes.
 `context.md`, `principles.md`, and `versions/` are personal, git-ignored, hot-reloaded files —
 not part of this catalog. See `context-loading-reference.md` for how they're loaded.
 
+## Panel framework reference (`docs/panel/`)
+
+Living reference for the Panel UI (the framework since the 2026-07-24 Chainlit→Panel
+cutover): verified `pn.serve`/widget/chart/clipboard findings — each backed by the installed
+package or a scraped URL — plus the migration's smoke screenshots. Start at
+[`panel/README.md`](panel/README.md); the post-migration restyle plan draws from here.
+
+## Probes (`docs/probes/`)
+
+Runnable verification scripts committed verbatim as they were run (D4 thread→session
+bridge, D7 session-destroy, `pn.serve` behavior, watchdog) — the executable evidence behind
+load-bearing claims in the migration plan and `docs/panel/`. See
+[`probes/README.md`](probes/README.md).
+
+## Superpowers plans (`docs/superpowers/plans/`)
+
+Plans executed via the subagent-driven-development workflow — living documents *during*
+execution (task notes, review outcomes, completion records appended in place), frozen once
+their project completes. Currently:
+[`2026-07-22-panel-migration.md`](superpowers/plans/2026-07-22-panel-migration.md) — the
+complete Chainlit→Panel migration record (COMPLETE 2026-07-24).
+
 ## Plans (`docs/plans/`)
 
 Point-in-time records of what was decided and how — a design spec (`*-design.md`) captures the
