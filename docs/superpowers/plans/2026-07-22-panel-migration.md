@@ -4277,6 +4277,335 @@ git add claudia/panel_app.py tests/test_panel_app.py
 git commit -m "feat: Panel backend singletons — ConnectivityChecker keepalive + ExecutionListener (D6)"
 ```
 
+### Task 5.6a: Prerequisite fixes — ContextLoader sibling-safe teardown + bokeh-fastapi disconnect bridge
+
+Both fixes were mandated by the D7 verification (see "D7 RESOLVED" above). Without them,
+Task 5.6b's cleanup is respectively destructive (one session's teardown kills every
+other session's hot-reload) and dead code (destroy hooks never fire). Two commits, one
+per fix — each independently reviewable.
+
+**Fix 1 — `claudia/context_loader.py` (SHARED code — fixes a live Chainlit
+multi-session bug too).** Verified against installed watchdog 6.0.0:
+`BaseObserver.unschedule(watch)` deletes ALL handlers for the (path, recursive,
+event_filter) key plus the emitter (`watchdog/observers/api.py:353-366`);
+`remove_handler_for_watch(handler, watch)` removes only the caller's handler
+(`api.py:335-351`, KeyError on double-remove — suppressed; emitter stays alive
+harmlessly on the shared long-lived observer).
+
+**Fix 2 — new `claudia/panel_ws_fix.py`.** bokeh-fastapi 0.1.8's
+`WSHandler._receive_loop` misses Starlette's returned `websocket.disconnect` message
+(only catches the `WebSocketDisconnect` exception raw `receive()` never raises), so
+`client_lost()` never runs and sessions are never destroyed. The fixed loop was
+probe-verified end-to-end (scratchpad `probe_d7_server_fixed.py`). The patch is
+version-guarded: applied only on known-broken bokeh-fastapi versions; on any other
+version it logs a WARNING telling the developer to re-verify (fail-honest — without the
+patch, session cleanup silently never runs). Note the original loop has a second latent
+bug our fix also corrects: its `except WebSocketDisconnect` path doesn't `break`, falling
+through to an unbound/stale `ws_msg`.
+
+**Files:**
+
+- Modify: `claudia/context_loader.py` (`start_watching`/`stop_watching` + `_handler`
+  attribute)
+- Modify: `tests/test_context_loader.py` (watcher-interaction tests)
+- Create: `claudia/panel_ws_fix.py`
+- Create: `tests/test_panel_ws_fix.py`
+- Modify: `claudia/panel_app.py` (apply the fix at import time, before
+  `add_application`)
+
+- [ ] **Step 1: Fix 1 failing tests**
+
+In `tests/test_context_loader.py` (READ the existing watcher tests first — if any
+existing test asserts `unschedule` is called, it is pinning the BUG and must be updated
+in the same commit with a comment citing this task):
+
+```python
+def test_stop_watching_removes_only_this_loaders_handler(tmp_path):
+    """watchdog's unschedule() deletes ALL handlers for the (path, recursive)
+    key — one session's teardown would kill every other session's hot-reload
+    (probe-confirmed on watchdog 6.0.0, see migration plan D7 notes).
+    stop_watching must use remove_handler_for_watch instead."""
+    (tmp_path / "context.md").write_text("c")
+    (tmp_path / "principles.md").write_text("p")
+    loader = ContextLoader(tmp_path)
+    mock_obs = MagicMock()
+    with patch("claudia.context_loader._get_shared_observer", return_value=mock_obs):
+        loader.start_watching(lambda f, p: None)
+        watch = mock_obs.schedule.return_value
+        handler = mock_obs.schedule.call_args.args[0]
+        loader.stop_watching()
+    mock_obs.remove_handler_for_watch.assert_called_once_with(handler, watch)
+    mock_obs.unschedule.assert_not_called()
+
+
+def test_stop_watching_twice_is_safe(tmp_path):
+    (tmp_path / "context.md").write_text("c")
+    (tmp_path / "principles.md").write_text("p")
+    loader = ContextLoader(tmp_path)
+    mock_obs = MagicMock()
+    with patch("claudia.context_loader._get_shared_observer", return_value=mock_obs):
+        loader.start_watching(lambda f, p: None)
+        loader.stop_watching()
+        loader.stop_watching()  # second call: _watch/_handler already None — no-op
+    assert mock_obs.remove_handler_for_watch.call_count == 1
+```
+
+Run → FAIL (`remove_handler_for_watch` not called; current code calls `unschedule`).
+
+- [ ] **Step 2: Fix 1 implementation**
+
+`claudia/context_loader.py`: add `self._handler: _DocChangeHandler | None = None` next
+to the existing `self._watch` init in `__init__`. In `start_watching`, after the
+`obs.schedule(...)` line: `self._handler = handler`. Replace `stop_watching` with:
+
+```python
+    def stop_watching(self) -> None:
+        """Remove THIS loader's handler from the shared Observer and clear the
+        reload callback. Deliberately remove_handler_for_watch, NOT unschedule:
+        watchdog keys watches by (path, recursive, event_filter) and unschedule
+        deletes every handler under that key — one session's teardown would
+        silently kill hot-reload for all other live sessions watching the same
+        docs dir (probe-confirmed on watchdog 6.0.0; see the Panel migration
+        plan's D7 notes). The emitter stays alive on the shared long-lived
+        observer, which is harmless."""
+        if self._watch is not None and self._handler is not None:
+            with suppress(Exception):  # KeyError if already removed
+                _get_shared_observer().remove_handler_for_watch(self._handler, self._watch)
+        self._watch = None
+        self._handler = None
+        self._reload_callback = None
+```
+
+Update `start_watching`'s docstring line "Unschedules any previous watch" →
+"Removes this instance's previous handler first (sibling-safe — see stop_watching)."
+
+- [ ] **Step 3: Fix 1 gates + commit**
+
+`pytest tests/test_context_loader.py -v` → all pass; `pytest -m "not integration" -q`
+→ 395 + 2 = 397 (adjust if Step 1 modified an existing bug-pinning test);
+ruff + mypy on context_loader.py clean.
+
+```bash
+git add claudia/context_loader.py tests/test_context_loader.py
+git commit -m "fix: sibling-safe watcher teardown — remove_handler_for_watch, not unschedule (watchdog 6.0.0 shared-key trap)"
+```
+
+- [ ] **Step 4: Fix 2 failing tests**
+
+Create `tests/test_panel_ws_fix.py`:
+
+```python
+"""Tests for claudia/panel_ws_fix.py — the bokeh-fastapi 0.1.8 disconnect bridge fix.
+Without it, Starlette's raw WebSocket.receive() RETURNS the websocket.disconnect
+message (never raises WebSocketDisconnect), bokeh_fastapi's _receive_loop drops it,
+client_lost() never runs, and Panel session-destroy hooks never fire (probe-verified;
+migration plan D7 notes)."""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from claudia.panel_ws_fix import _receive_loop_fixed, apply_ws_disconnect_fix
+
+
+def _make_handler(messages):
+    """Fake WSHandler self: _socket.receive() pops from `messages`."""
+    handler = MagicMock()
+    handler._socket.receive = AsyncMock(side_effect=list(messages))
+    handler._receive = AsyncMock(return_value=None)
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_disconnect_message_calls_client_lost_and_exits():
+    handler = _make_handler([{"type": "websocket.disconnect", "code": 1001}])
+    await _receive_loop_fixed(handler)  # must terminate — a hang fails via timeout
+    handler.application.client_lost.assert_called_once_with(handler.connection)
+
+
+@pytest.mark.asyncio
+async def test_text_frames_still_processed_before_disconnect():
+    handler = _make_handler(
+        [{"text": "frame1"}, {"type": "websocket.disconnect", "code": 1000}]
+    )
+    await _receive_loop_fixed(handler)
+    handler._receive.assert_awaited_once_with("frame1")
+    handler.application.client_lost.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_exception_also_breaks():
+    from starlette.websockets import WebSocketDisconnect
+
+    handler = MagicMock()
+    handler._socket.receive = AsyncMock(side_effect=WebSocketDisconnect(1006))
+    await _receive_loop_fixed(handler)
+    handler.application.client_lost.assert_called_once_with(handler.connection)
+
+
+def test_apply_patches_known_broken_version():
+    with (
+        patch("claudia.panel_ws_fix._KNOWN_BROKEN", frozenset({"9.9.9"})),
+        patch("claudia.panel_ws_fix._installed_version", return_value="9.9.9"),
+        patch("claudia.panel_ws_fix.WSHandler") as mock_handler_cls,
+    ):
+        applied = apply_ws_disconnect_fix()
+    assert applied is True
+    assert mock_handler_cls._receive_loop is _receive_loop_fixed
+
+
+def test_apply_skips_and_warns_on_unknown_version(caplog):
+    with (
+        patch("claudia.panel_ws_fix._installed_version", return_value="0.2.0"),
+        patch("claudia.panel_ws_fix.WSHandler") as mock_handler_cls,
+    ):
+        original = mock_handler_cls._receive_loop
+        applied = apply_ws_disconnect_fix()
+    assert applied is False
+    assert mock_handler_cls._receive_loop is original
+    assert any("re-verify" in r.message for r in caplog.records)
+```
+
+Run → FAIL (`ModuleNotFoundError: claudia.panel_ws_fix`).
+
+- [ ] **Step 5: Fix 2 implementation**
+
+Create `claudia/panel_ws_fix.py`:
+
+```python
+"""Runtime fix for bokeh-fastapi 0.1.8's dead websocket-disconnect detection.
+
+Starlette's raw WebSocket.receive() RETURNS a {"type": "websocket.disconnect"}
+message dict — it never raises WebSocketDisconnect (only receive_text/bytes/json
+do; starlette/websockets.py:35-57). bokeh_fastapi's WSHandler._receive_loop only
+catches the exception (bokeh_fastapi/handler.py:272-296), so the disconnect
+message falls through, a second receive() raises RuntimeError (swallowed
+upstream), client_lost()/detach_session() never run, the session's connection
+count never reaches zero, and Bokeh's _cleanup_sessions never destroys the
+session — pn.state.on_session_destroyed callbacks NEVER fire.
+
+Probe-verified 2026-07-23 (see the Panel migration plan's "D7 RESOLVED" note):
+with this fixed loop, disconnect is detected the second the tab closes and the
+full destroy chain (15-32s unused-session cleanup) works normally. The original
+loop also fails to break after its exception path — falling through to a stale/
+unbound ws_msg — which this version corrects.
+
+Version-guarded: patched only on known-broken releases; on any other version we
+log a WARNING and leave the (possibly fixed) upstream code alone — without a
+working disconnect path, session cleanup silently never runs, so the warning is
+the honest signal to re-verify against the new release.
+"""
+
+import logging
+from importlib.metadata import version as _pkg_version
+
+from bokeh_fastapi.handler import WSHandler
+from starlette.websockets import WebSocketDisconnect
+
+log = logging.getLogger(__name__)
+
+_KNOWN_BROKEN = frozenset({"0.1.8"})
+
+
+def _installed_version() -> str:
+    return _pkg_version("bokeh-fastapi")
+
+
+async def _receive_loop_fixed(self) -> None:
+    """Faithful copy of WSHandler._receive_loop (bokeh-fastapi 0.1.8,
+    handler.py:272-296) with two corrections: handle the returned
+    websocket.disconnect message, and break (not fall through) on the
+    WebSocketDisconnect exception path."""
+    while True:
+        try:
+            ws_msg = await self._socket.receive()
+        except WebSocketDisconnect as e:
+            log.info("WebSocket connection closed: code=%s, reason=%r", e.code, e.reason)
+            self.application.client_lost(self.connection)
+            break
+        if ws_msg.get("type") == "websocket.disconnect":
+            log.info("WebSocket disconnect message: code=%s", ws_msg.get("code"))
+            self.application.client_lost(self.connection)
+            break
+
+        if "text" in ws_msg:
+            fragment = ws_msg["text"]
+        elif "bytes" in ws_msg:
+            fragment = ws_msg["bytes"]
+        else:
+            continue
+
+        try:
+            message = await self._receive(fragment)
+        except Exception as e:
+            log.error(
+                "Unhandled exception receiving a message: %r: %r", e, fragment,
+                exc_info=True,
+            )
+            await self._internal_error("server failed to parse a message")
+            message = None
+
+        if not message:
+            continue
+
+        try:
+            work = await self._handle(message)
+        except Exception as e:
+            log.error("Handler or its work threw an exception: %r: %r", e, message,
+                      exc_info=True)
+            await self._internal_error("server failed to process a message")
+            work = None
+
+        if work:
+            await self._schedule(work)
+
+
+def apply_ws_disconnect_fix() -> bool:
+    """Patch WSHandler._receive_loop on known-broken bokeh-fastapi versions.
+    Returns True if patched. Call once at import time, before add_application."""
+    ver = _installed_version()
+    if ver not in _KNOWN_BROKEN:
+        log.warning(
+            "bokeh-fastapi %s is not a known-broken version — disconnect fix NOT "
+            "applied. Re-verify session-destroy behavior against this release "
+            "(migration plan D7 notes) and update _KNOWN_BROKEN accordingly; "
+            "without a working disconnect path, Panel session cleanup silently "
+            "never runs.",
+            ver,
+        )
+        return False
+    WSHandler._receive_loop = _receive_loop_fixed
+    log.info("Applied bokeh-fastapi %s websocket-disconnect fix", ver)
+    return True
+```
+
+IMPORTANT before finalizing: read the REAL `_receive_loop` tail (handler.py:~290-296,
+the `_handle`/`_schedule` part) in the installed package and mirror it exactly — the
+code above reconstructs it from the probe; the shipped copy must match upstream
+verbatim apart from the two corrections.
+
+In `claudia/panel_app.py`, at module level immediately after the other `claudia.`
+imports (and BEFORE the `add_application` decorator runs at the bottom):
+
+```python
+from claudia.panel_ws_fix import apply_ws_disconnect_fix
+
+apply_ws_disconnect_fix()
+```
+
+- [ ] **Step 6: Fix 2 gates + smoke + commit**
+
+`pytest tests/test_panel_ws_fix.py -v` → 5/5. Full suite → 397 + 5 = 402. ruff + mypy
+on the new module clean. Smoke: uvicorn + Playwright — open the page, close the browser,
+watch the server log: the disconnect log line appears immediately; ~15-32s later Bokeh's
+session-destroyed/cleanup logging fires (enable INFO logging via the scratchpad driver
+pattern from Task 5.5 if bare uvicorn drops the lines). Kill the server.
+
+```bash
+git add claudia/panel_ws_fix.py tests/test_panel_ws_fix.py claudia/panel_app.py
+git commit -m "fix: bokeh-fastapi 0.1.8 dead disconnect detection — restore Panel session destroy chain (D7)"
+```
+
 ## Phase 6: Connectivity status — designed Panel-native, not ported
 
 **This phase was fully redesigned 2026-07-22 per the "no Chainlit-shape mimicry" principle
