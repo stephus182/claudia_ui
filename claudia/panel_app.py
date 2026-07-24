@@ -1,13 +1,12 @@
 """Panel entry point for ClaudIA (Phase 5: session lifecycle — immediate render,
 background per-session init, input gated on init completion).
 
-Standalone FastAPI app, mounted via panel.io.fastapi.add_application — deliberately
-its own process (a distinct dev port), not importing claudia/app.py's Chainlit
-FastAPI instance, so this can be built and tested fully on the side per the kickoff
-prompt's isolation instruction. Phase 11 (cutover) is where this becomes the sole
-entry point.
+Served by Panel's own first-class Tornado server via pn.serve(callable) — the
+native-serving principle (2026-07-24): Panel-native serving, no workarounds.
+pn.serve calls _build_chat_app once per browser session; module-level singletons
+stay process-wide.
 
-Run with:  uvicorn claudia.panel_app:app --port 8001 --reload
+Run with:  python -m claudia.panel_app
 """
 
 import asyncio
@@ -20,7 +19,6 @@ from typing import Any
 
 import panel as pn
 from dotenv import load_dotenv
-from fastapi import FastAPI
 from ibkr_core_mcp import (
     BrowserCookieAuth,
     ClaudeToolkit,
@@ -30,13 +28,6 @@ from ibkr_core_mcp import (
     SQLiteStore,
 )
 
-# panel/io/__init__.py deliberately does not eagerly import its fastapi submodule (fastapi
-# is only an optional panel[fastapi] extra, so the base package stays importable without
-# it) — confirmed by inspecting the installed 1.9.3 package directly: `import panel as pn`
-# alone leaves `pn.io.fastapi` unresolved (AttributeError). Importing add_application
-# directly from its defining module is the correct fix, not an attribute-chain off `pn`.
-from panel.io.fastapi import add_application
-
 from claudia.agent import ClaudIAAgent
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
@@ -44,17 +35,11 @@ from claudia.execution_listener import ExecutionListener
 from claudia.gdrive_sync import GDriveSync
 from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_sink import PanelMessageSink
-from claudia.panel_ws_fix import apply_ws_disconnect_fix
 from claudia.status import ConnectivityChecker
 
 log = logging.getLogger(__name__)
 
 load_dotenv(override=False)
-
-# bokeh-fastapi 0.1.8 never detects Starlette's returned websocket.disconnect
-# message, so Panel session-destroy hooks would never fire — must run before
-# add_application registers the WSHandler route (see claudia/panel_ws_fix.py).
-apply_ws_disconnect_fix()
 
 _MODEL = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
 _DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))
@@ -389,9 +374,27 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     return chat
 
 
-app = FastAPI()
+def main() -> None:
+    """Serve ClaudIA on Panel's native Tornado server (design principle 2026-07-24:
+    Panel-native serving, no workarounds — pn.serve(callable) invokes _build_chat_app
+    once per browser session while module singletons stay process-wide; verified by
+    the pnserve probe, see the migration plan's re-verification note).
+
+    Blocks until SIGINT (Ctrl-C): Panel installs its own SIGINT handler that stops
+    the IO loop and returns from pn.serve — Task 5.6b puts the final claudia.db
+    Drive upload after this call returns. SIGTERM currently bypasses that path
+    (dies instantly) — 5.6b adds the handler.
+    """
+    pn.serve(
+        _build_chat_app,
+        port=_PANEL_PORT,
+        show=False,
+        title="ClaudIA",
+        # Default allowlist is localhost:<port> only; 127.0.0.1 access would get a
+        # 403 websocket refusal without this (probe-verified).
+        websocket_origin=[f"localhost:{_PANEL_PORT}", f"127.0.0.1:{_PANEL_PORT}"],
+    )
 
 
-@add_application("/", app=app, title="ClaudIA (Panel preview)")
-def _serve_chat_app() -> pn.chat.ChatInterface:
-    return _build_chat_app()
+if __name__ == "__main__":
+    main()

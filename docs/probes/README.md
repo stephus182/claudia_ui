@@ -23,3 +23,8 @@ Expected observations (one line each):
 
 Note: the watchdog probes hardcode the worktree path in `WORKTREE`; the server probes write
 `.jsonl` logs next to themselves.
+
+Note: `probe_d7_server.py` / `probe_d7_server_fixed.py` document the ABANDONED FastAPI +
+`add_application` topology (replaced by native `pn.serve` per the migration plan's
+Panel-native principle, 2026-07-24) — running them now requires
+`pip install "panel[fastapi]"` + uvicorn, no longer project dependencies.
