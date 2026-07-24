@@ -6304,6 +6304,30 @@ needed on the `agent.py` side, only how images arrive at the callback.
 
 ### Task 8.1: Screenshot upload via ChatInterface's native FileInput widget
 
+**✅ Completed 2026-07-24 — PHASE 8 COMPLETE.** Commits `a692c7b` (standalone-FileInput
+implementation, superseding design) + `f78ea2a` (quality-review hardening). The original
+ChatInterface-`widgets` design was disproven by the implementer's own live smoke BEFORE
+any commit (Panel unpacks the file wrapper before the callback — see the CORRECTION
+block below), and correctly NOT committed — a green-tests/broken-live feature stopped at
+the smoke gate. Redesigned per the Panel-native no-workarounds principle to a standalone
+`FileInput` + param watcher (rejected: magic-byte sniffing = metadata-lossy, can't
+honestly refuse text; `_click_send` hooking = the panel_ws_fix class of private
+coupling). Full cycle: implement → spec review (COMPLIANT — adversarial pass traced the
+watcher's await points and surfaced the init-window metadata cross-wire) → quality
+review (Approve-with-fixes; controller applied the fix inline as subagents were
+spend-limited). **Live smoke was decisive: the agent DESCRIBED THE ACTUAL UPLOADED
+PIXELS** (vision path proven end-to-end), and the non-image refusal branch — dead in the
+first design — is now REACHABLE and verified (no agent call, no DB row for a .txt).
+Hardening (`f78ea2a`): the watcher snapshots value/mime_type/filename at entry BEFORE the
+`_init_done` await, closing a data-integrity window where a second upload during init
+could mislabel a screenshot's media_type to the vision API — teeth-checked (reverting the
+snapshot fails the new regression test). Reset idiom source-verified: `clear()` is
+client-only, so a server-side `param.update(...=None)` is also required or re-uploading
+the same file is a silent no-op. Also cleaned the stale `data/*.upload.tmp` smoke residue
++ gitignored it. Tests 42 → 46 in test_panel_app.py; suite 421 → 425, 1 warning
+(third-party only). Note for the restyle plan: the FileInput sits functionally in the
+top indicator row — placement/labeling is a restyle concern.
+
 **⚠ CORRECTION 2026-07-24 — this task's original grounding was WRONG; design superseded
 below.** The implementer's live smoke (correctly run before committing) disproved the
 core claim: `_click_send` DOES wrap the upload as `_FileInputMessage`, but the wrapper
@@ -6362,7 +6386,7 @@ construction: `app.py:637-656`.
   `_on_user_input`)
 - Modify: `tests/test_panel_app.py` (3 new tests)
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 class _FakeFileMsg:
@@ -6409,7 +6433,7 @@ async def test_chat_has_file_widget_configured():
 
 ("(standard … stack)" = expand from the existing tests, as in Task 6.2.) Run → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `_build_chat_app`: replace `chat = pn.chat.ChatInterface()` with:
 
@@ -6452,19 +6476,19 @@ async def test_chat_has_file_widget_configured():
 (`_on_user_input`'s `contents` parameter type widens from `str` to `Any` — adjust the
 annotation and docstring.)
 
-- [ ] **Step 3: Gates**
+- [x] **Step 3: Gates**
 
 File tests 40 + 3 = 43 (adjust to post-6.2-fix-pass baseline); full suite +3; ruff +
 mypy clean.
 
-- [ ] **Step 4: Manual smoke**
+- [x] **Step 4: Manual smoke**
 
 Live server + Playwright: switch to the file tab, upload a real PNG (grab any small
 PNG; a TradingView screenshot if available), send → the "(screenshot attached: …)"
 message appears and the agent responds to the image (with ANTHROPIC_API_KEY present the
 reply should reference visible content). Non-image upload → honest System refusal.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add claudia/panel_app.py tests/test_panel_app.py
