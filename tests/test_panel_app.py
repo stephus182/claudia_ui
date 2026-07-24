@@ -1522,3 +1522,56 @@ async def test_file_widget_configured_and_composed_in_session_root():
     assert isinstance(fi, FileInput)
     assert fi.accept == "image/*"
     assert fi in root.objects[0].objects  # placed in the top (indicator) row
+
+
+@pytest.mark.asyncio
+async def test_upload_metadata_snapshotted_before_init_gate():
+    """Data-integrity guard: a second upload arriving during the init window
+    must not cross-wire the first upload's bytes with the second's mime/filename
+    (a mislabeled media_type to the vision API). The watcher snapshots all three
+    params at entry, before awaiting _init_done — proven here by firing an upload
+    while init is still blocked, overwriting the widget metadata, then releasing
+    init and asserting the first upload kept ITS snapshot."""
+    import base64 as b64
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    release_init = asyncio.Event()
+
+    async def _blocked_status(chat, toolkit):
+        await release_init.wait()
+        return (None, False)
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=_blocked_status),
+    ):
+        _configure_loader(mock_loader_cls)
+        handle = mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        fi = _screenshot_file_input(chat)
+        # Upload #1 fires the watcher while init is still blocked → it suspends
+        # at `await _init_done.wait()` after snapshotting its metadata.
+        fi.mime_type = "image/png"
+        fi.filename = "first.png"
+        fi.value = b"FIRSTBYTES"
+        await asyncio.sleep(0.05)  # let the watcher reach the init await
+        # Upload #2's metadata lands on the shared widget mid-suspension.
+        fi.mime_type = "image/jpeg"
+        fi.filename = "second.jpg"
+        # Release init; watcher #1 resumes and must use its own snapshot.
+        release_init.set()
+        await _wait_until(lambda: handle.call_count >= 1)
+
+    call = handle.call_args_list[-1]
+    assert "first.png" in call.args[0] and "second.jpg" not in call.args[0]
+    img = call.kwargs["images"][0]
+    assert img["source"]["media_type"] == "image/png"  # NOT the overwritten jpeg
+    assert b64.b64decode(img["source"]["data"]) == b"FIRSTBYTES"

@@ -557,6 +557,17 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     async def _on_file_upload(event: Any) -> None:
         if not event.new:
             return  # our own post-processing reset re-fires the watcher with None
+        # Snapshot all three params at watcher entry, BEFORE the init await.
+        # event.new already snapshots `value`; mime_type/filename must be
+        # captured now too, because a second upload arriving during the init
+        # window would overwrite them on this shared widget — cross-wiring this
+        # upload's bytes with the next one's metadata, i.e. a mislabeled
+        # media_type to the vision API. Reading them post-await is the only
+        # window (init typically completes in seconds), but a mislabeled
+        # screenshot is a data-integrity defect, so close it unconditionally.
+        data = event.new
+        mime = file_input.mime_type or ""
+        filename = file_input.filename
         await _init_done.wait()
         try:
             agent = _session["agent"]
@@ -572,7 +583,6 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                     respond=False,
                 )
                 return
-            mime = file_input.mime_type or ""
             if not (isinstance(mime, str) and mime.startswith("image/")):
                 chat.send(
                     "Only image attachments are supported (TradingView screenshots).",
@@ -582,17 +592,17 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             # Echo the screenshot into the feed (the standalone widget renders
             # no message of its own), then hand the agent the Anthropic vision
             # block — app.py:637-656 parity.
-            chat.send(pn.pane.Image(io.BytesIO(event.new), width=400), user="User", respond=False)
+            chat.send(pn.pane.Image(io.BytesIO(data), width=400), user="User", respond=False)
             block = {
                 "type": "image",
                 "source": {
                     "type": "base64",
                     "media_type": mime,
-                    "data": base64.b64encode(event.new).decode(),
+                    "data": base64.b64encode(data).decode(),
                 },
             }
             await agent.handle_message(
-                f"(screenshot attached: {file_input.filename})", images=[block]
+                f"(screenshot attached: {filename})", images=[block]
             )
         except Exception as exc:
             # Unlike the chat callback, no Panel exception renderer sits above a
