@@ -6304,6 +6304,31 @@ needed on the `agent.py` side, only how images arrive at the callback.
 
 ### Task 8.1: Screenshot upload via ChatInterface's native FileInput widget
 
+**⚠ CORRECTION 2026-07-24 — this task's original grounding was WRONG; design superseded
+below.** The implementer's live smoke (correctly run before committing) disproved the
+core claim: `_click_send` DOES wrap the upload as `_FileInputMessage`, but the wrapper
+only survives to `chat.send()` — `ChatMessage._create_panel` (`message.py:495`) unpacks
+it (`image/*` → `BytesIO` in an Image pane; `text/*` → decoded `str`) and
+`_gather_callback_args` (`feed.py:523-535`) hands the callback
+`message._object_panel.object`, i.e. the BARE BytesIO/str with mime_type and file_name
+LOST. The duck-typed branch was unreachable from the real UI (unit tests passed only by
+injecting the wrapper directly); live: a PNG upload crashed the store
+(`ProgrammingError: type '_io.BytesIO' is not supported`) and a text upload flowed to
+the agent as if typed. **Superseding design (per the Panel-native no-workarounds
+principle — rejected: magic-byte sniffing (metadata-lossy workaround; honest refusal of
+text files impossible) and `_click_send` hooking (private coupling, the panel_ws_fix
+class of mistake)):** a STANDALONE `pn.widgets.FileInput(accept="image/*")` in
+`_build_session_root`'s Column (functional placement, above the chat next to the
+indicator row), with a param watcher on `value` — FileInput's own public `value` /
+`mime_type` / `filename` params carry full metadata. On upload: non-image mime → honest
+System refusal in chat; image → echo `pn.pane.Image` + "(screenshot attached: …)" into
+the chat feed and `agent.handle_message(caption, images=[vision block])` (waits on
+`_init_done` like the chat callback; agent may be None → honest reply). ChatInterface
+keeps its DEFAULT single ChatAreaInput widget (no file tab). Tests drive the watcher by
+setting the FileInput params directly. The implementer holds the working-tree diff from
+the disproven design — revert the unreachable branch + widgets kwarg, keep the base64
+import and vision-block construction, adapt the tests to the watcher path.
+
 Grounded 2026-07-24 (venv source, panel 1.9.3): `ChatInterface` accepts `widgets=[...]`
 (param verified); its default widget is `ChatAreaInput`. `_click_send`
 (`panel/chat/interface.py`) natively handles a `FileInput` active widget: it wraps the
