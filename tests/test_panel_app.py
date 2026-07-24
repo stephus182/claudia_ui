@@ -51,7 +51,12 @@ from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 import panel as pn
 import pytest
 
-from claudia.panel_app import _DOCS_PATH, _build_chat_app, _screenshot_file_input
+from claudia.panel_app import (
+    _DOCS_PATH,
+    _build_chat_app,
+    _connect_tradingview,
+    _screenshot_file_input,
+)
 from tests.conftest import _find_buttons, _get_click_callback
 
 _NO_GDRIVE = {"GOOGLE_DRIVE_FOLDER_ID": ""}
@@ -116,6 +121,22 @@ def flex_sync(request):
         return
     with patch("claudia.panel_app._maybe_background_flex_sync",
                new_callable=AsyncMock) as mock_seam:
+        yield mock_seam
+
+
+@pytest.fixture(autouse=True)
+def tv_connect(request):
+    """Autouse seam for the TradingView connect call in _init_session (Phase 9).
+    Tests marked @pytest.mark.real_tv_connect exercise the real
+    _connect_tradingview (patching _get_tv_bridge/check_cdp_running themselves);
+    everything else gets an AsyncMock returning tv_offline=False so init-driving
+    tests stay isolated and NO real tradingview-mcp sidecar subprocess is ever
+    spawned. Mirrors the flex_sync seam."""
+    if request.node.get_closest_marker("real_tv_connect"):
+        yield None
+        return
+    with patch("claudia.panel_app._connect_tradingview",
+               new=AsyncMock(return_value=False)) as mock_seam:
         yield mock_seam
 
 
@@ -1540,7 +1561,7 @@ async def test_upload_metadata_snapshotted_before_init_gate():
 
     release_init = asyncio.Event()
 
-    async def _blocked_status(chat, toolkit):
+    async def _blocked_status(chat, toolkit, tv_offline):
         await release_init.wait()
         return (None, False)
 
@@ -1575,3 +1596,228 @@ async def test_upload_metadata_snapshotted_before_init_gate():
     img = call.kwargs["images"][0]
     assert img["source"]["media_type"] == "image/png"  # NOT the overwritten jpeg
     assert b64.b64decode(img["source"]["data"]) == b"FIRSTBYTES"
+
+
+# ── Phase 9 (Task 9.1): TradingView launch button + sidecar tool merge ─────────
+
+
+@pytest.mark.asyncio
+async def test_connect_tradingview_success_wires_agent_and_checker(monkeypatch):
+    """_connect_tradingview happy path: sidecar up AND CDP open → merge the TV
+    tools into the agent, hand the bridge to the ConnectivityChecker, and report
+    tv_offline=False (online)."""
+    agent = MagicMock()
+    bridge = MagicMock()
+    tv_tools = [{"name": "tv_get_chart_snapshot"}]
+    bridge.get_tools.return_value = tv_tools
+    checker = MagicMock()
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", checker)
+
+    with (
+        patch("claudia.panel_app._get_tv_bridge", new=AsyncMock(return_value=bridge)),
+        patch("claudia.panel_app.check_cdp_running", return_value=True),
+    ):
+        tv_offline = await _connect_tradingview(agent)
+
+    assert tv_offline is False
+    agent.set_tv_bridge.assert_called_once_with(bridge, tv_tools)
+    checker.set_tv_bridge.assert_called_once_with(bridge)
+
+
+@pytest.mark.asyncio
+async def test_connect_tradingview_offline_paths_return_true_without_wiring(monkeypatch):
+    """Every non-online outcome returns tv_offline=True and NEVER merges tools:
+    (a) sidecar up but CDP down; (b) _get_tv_bridge raises (sidecar unavailable)."""
+    checker = MagicMock()
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", checker)
+
+    # (a) sidecar up, tools present, but Desktop/CDP down.
+    agent_a = MagicMock()
+    bridge = MagicMock()
+    bridge.get_tools.return_value = [{"name": "tv_get_chart_snapshot"}]
+    with (
+        patch("claudia.panel_app._get_tv_bridge", new=AsyncMock(return_value=bridge)),
+        patch("claudia.panel_app.check_cdp_running", return_value=False),
+    ):
+        assert await _connect_tradingview(agent_a) is True
+    agent_a.set_tv_bridge.assert_not_called()
+    checker.set_tv_bridge.assert_not_called()
+
+    # (b) sidecar unavailable — _get_tv_bridge raises. Must be swallowed.
+    agent_b = MagicMock()
+    with (
+        patch("claudia.panel_app._get_tv_bridge",
+              new=AsyncMock(side_effect=RuntimeError("sidecar down"))),
+        patch("claudia.panel_app.check_cdp_running", return_value=True),
+    ):
+        assert await _connect_tradingview(agent_b) is True
+    agent_b.set_tv_bridge.assert_not_called()
+    checker.set_tv_bridge.assert_not_called()
+
+
+@pytest.mark.real_tv_connect
+@pytest.mark.asyncio
+async def test_launch_tv_button_present_only_when_tv_offline():
+    """The "Launch TradingView" button renders only when _connect_tradingview
+    reports offline (here: sidecar up, CDP down)."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    bridge = MagicMock()
+    bridge.get_tools.return_value = [{"name": "tv_get_chart_snapshot"}]
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),   # IBKR online
+        patch("claudia.panel_app._get_tv_bridge", new=AsyncMock(return_value=bridge)),
+        patch("claudia.panel_app.check_cdp_running", return_value=False),  # → tv_offline
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    tv_btns = [b for b in _find_buttons(chat) if b.name == "Launch TradingView"]
+    assert len(tv_btns) == 1
+
+
+@pytest.mark.real_tv_connect
+@pytest.mark.asyncio
+async def test_tv_failure_does_not_block_init_and_chat_still_works():
+    """A TradingView failure at init is non-fatal: the agent is still built, the
+    chat callback reaches it, and the Launch button is offered (tv_offline)."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch("claudia.panel_app._get_tv_bridge",
+              new=AsyncMock(side_effect=RuntimeError("sidecar down"))),
+    ):
+        _configure_loader(mock_loader_cls)
+        handle = mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        # Callback awaits init internally — if a TV failure blocked/aborted init,
+        # this would time out or the agent would be absent.
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    handle.assert_awaited_once()  # agent built + reachable despite TV failure
+    tv_btns = [b for b in _find_buttons(chat) if b.name == "Launch TradingView"]
+    assert len(tv_btns) == 1
+
+
+@pytest.mark.real_tv_connect
+@pytest.mark.asyncio
+async def test_launch_tv_button_click_success_wires_agent_in_order(monkeypatch):
+    """Clicking Launch drives launch_tradingview → _get_tv_bridge → agent.set_tv_bridge
+    in that order and renders the success message."""
+    monkeypatch.setattr("claudia.panel_app._tv_bridge", None)
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    init_bridge = MagicMock()
+    init_bridge.get_tools.return_value = [{"name": "tv_a"}]
+    launched_bridge = MagicMock()
+    launched_bridge.get_tools.return_value = [{"name": "tv_a"}, {"name": "tv_b"}]
+
+    order = MagicMock()
+    launch_mock = AsyncMock(return_value=True)
+    get_bridge_mock = AsyncMock()
+    order.attach_mock(launch_mock, "launch")
+    order.attach_mock(get_bridge_mock, "get_bridge")
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch("claudia.panel_app._get_tv_bridge", new=get_bridge_mock),
+        patch("claudia.panel_app.check_cdp_running", return_value=False),  # init → offline
+        patch("claudia.panel_app.launch_tradingview", new=launch_mock),
+    ):
+        _configure_loader(mock_loader_cls)
+        agent = mock_agent_cls.return_value
+        agent.handle_message = AsyncMock()
+        # Init calls _get_tv_bridge once (bridge with cdp down → button, no wiring).
+        get_bridge_mock.return_value = init_bridge
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hi", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        tv_btn = next(b for b in _find_buttons(chat) if b.name == "Launch TradingView")
+        # After init: the click rebuilds a fresh bridge. Reset order tracking so the
+        # asserted sequence is the click's, not init's.
+        order.reset_mock()
+        agent.set_tv_bridge.reset_mock()
+        get_bridge_mock.return_value = launched_bridge
+        await _get_click_callback(tv_btn)(None)
+
+    launch_mock.assert_awaited_once()
+    agent.set_tv_bridge.assert_called_once_with(launched_bridge, [{"name": "tv_a"}, {"name": "tv_b"}])
+    call_order = [name for name, _, _ in order.mock_calls if name in ("launch", "get_bridge")]
+    assert call_order == ["launch", "get_bridge"]
+    assert tv_btn.disabled is True
+    texts = _message_texts(chat)
+    assert any("✅ TradingView connected (2 tools available)." in t for t in texts)
+
+
+@pytest.mark.real_tv_connect
+@pytest.mark.asyncio
+async def test_launch_tv_button_click_failure_shows_manual_launch(monkeypatch):
+    """launch_tradingview returning False renders the manual-launch instructions
+    and NEVER rebuilds the bridge or re-wires the agent."""
+    monkeypatch.setattr("claudia.panel_app._tv_bridge", None)
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    init_bridge = MagicMock()
+    init_bridge.get_tools.return_value = [{"name": "tv_a"}]
+    get_bridge_mock = AsyncMock(return_value=init_bridge)
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch("claudia.panel_app._get_tv_bridge", new=get_bridge_mock),
+        patch("claudia.panel_app.check_cdp_running", return_value=False),  # init → offline
+        patch("claudia.panel_app.launch_tradingview", new=AsyncMock(return_value=False)),
+    ):
+        _configure_loader(mock_loader_cls)
+        agent = mock_agent_cls.return_value
+        agent.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hi", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        tv_btn = next(b for b in _find_buttons(chat) if b.name == "Launch TradingView")
+        get_bridge_mock.reset_mock()          # ignore the init-time bridge fetch
+        agent.set_tv_bridge.reset_mock()
+        await _get_click_callback(tv_btn)(None)
+
+    get_bridge_mock.assert_not_awaited()      # no rebuild on failed launch
+    agent.set_tv_bridge.assert_not_called()
+    texts = _message_texts(chat)
+    assert any("open -a 'TradingView' --args --remote-debugging-port=9222" in t for t in texts)

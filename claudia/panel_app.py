@@ -49,6 +49,7 @@ from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_sink import PanelMessageSink
 from claudia.session_reporter import generate_session_report
 from claudia.status import ConnectivityChecker, ServiceStatus
+from claudia.tradingview import TradingViewBridge, check_cdp_running, launch_tradingview
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +68,11 @@ _conv_store: ConversationStore | None = None
 _gdrive_sync: GDriveSync | None = None
 _connectivity_checker: ConnectivityChecker | None = None
 _execution_listener: ExecutionListener | None = None
+
+# Process-level TradingViewBridge singleton (Phase 9). Own trio here — panel_app
+# never imports claudia.app (module docstring); verbatim-mirrors app.py:69-70,181-194.
+_tv_bridge: TradingViewBridge | None = None
+_tv_bridge_lock = asyncio.Lock()
 
 # Strong references to destroy-hook cleanup tasks — the loop only weak-refs
 # tasks, so a bare create_task could be GC'd mid-cleanup (ruff RUF006).
@@ -106,6 +112,23 @@ def _get_store() -> ConversationStore:
     if _conv_store is None:
         _conv_store = ConversationStore(_DB_PATH)
     return _conv_store
+
+
+async def _get_tv_bridge() -> TradingViewBridge:
+    """Return the process-level TradingViewBridge singleton, starting it on first
+    call. Verbatim mirror of app.py:181-194 (panel_app keeps its own singleton —
+    it never imports claudia.app).
+
+    _tv_bridge_lock prevents a double-start race when two sessions initialise
+    concurrently. _tv_bridge is only assigned after start() succeeds, so a failed
+    start leaves it None and the next caller will retry."""
+    global _tv_bridge
+    async with _tv_bridge_lock:
+        if _tv_bridge is None:
+            bridge = TradingViewBridge()
+            await bridge.start()  # only assign if start() succeeds; keeps _tv_bridge None on failure
+            _tv_bridge = bridge
+    return _tv_bridge
 
 
 # ── Init-flow helpers (in _init_session call order) ──────────────────────────
@@ -188,23 +211,64 @@ def _register_doc_version(
     return current_hash, version_label, warning
 
 
+async def _connect_tradingview(agent: ClaudIAAgent) -> bool:
+    """Connect the tradingview-mcp sidecar and merge its tools into this session's
+    agent. Returns tv_offline (True → offer the "Launch TradingView" button).
+
+    app.py:324-346 parity, minus the status STRING (the Panel status block renders
+    its own TV line via _send_opening_status). On success — sidecar up AND
+    TradingView Desktop's CDP port (9222) open — wires the bridge into the agent
+    (tool merge) and the ConnectivityChecker. Every other outcome (sidecar up but
+    CDP down, no tools, or ANY exception) logs and returns tv_offline=True.
+
+    TV is OPTIONAL: a TV failure must NEVER block init, so the whole body is
+    wrapped — parity with app.py's try/except that degrades silently
+    (project-tradingview-robustness memory)."""
+    try:
+        bridge = await _get_tv_bridge()
+        tools = bridge.get_tools()
+        # The sidecar can start without TradingView Desktop; CDP is the separate
+        # liveness check that the Desktop app is actually reachable for live tools.
+        cdp_up = check_cdp_running()
+        if tools and cdp_up:
+            agent.set_tv_bridge(bridge, tools)
+            if _connectivity_checker is not None:
+                _connectivity_checker.set_tv_bridge(bridge)
+            return False
+        if tools and not cdp_up:
+            log.warning(
+                "tradingview-mcp sidecar up but TradingView Desktop not running "
+                "(CDP port 9222 closed)"
+            )
+            return True
+        return True
+    except Exception as exc:
+        log.warning("tradingview-mcp sidecar not available: %s", exc)
+        return True
+
+
 async def _send_opening_status(
-    chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit
+    chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, tv_offline: bool
 ) -> tuple[str | None, bool]:
     """Send the second chat message with live account status and return
     (trade_context, ibkr_offline): the trade/calendar context for the caller to
     stamp on agent._trade_context, and the offline flag so _init_session can
     decide whether to offer the Start-Gateway button (Task 5.3/5.6b —
-    app.py:399-514 parity). Effectively non-raising: both builders catch their
+    app.py:399-514 parity). tv_offline (from _connect_tradingview) drives the
+    TradingView status line. Effectively non-raising: both builders catch their
     own IBKR/store failures internally and degrade to offline/fallback text; an
     unexpected escape is caught by _init_session's generic handler."""
     status_block, ibkr_offline = await gather_status_block(toolkit)
     trade_status, trade_context = await asyncio.to_thread(
         build_trade_lines, toolkit, ibkr_offline
     )
+    tv_line = (
+        "_TradingView: not connected — click Launch below._"
+        if tv_offline
+        else "_TradingView: connected._"
+    )
     chat.send(
-        f"{status_block}\n\n_{trade_status}_\n\n"
-        "_TradingView: not connected in the Panel preview._",
+        f"{status_block}\n\n_{trade_status}_\n\n{tv_line}",
         user="ClaudIA",
         respond=False,
     )
@@ -261,9 +325,11 @@ def _send_action_buttons(
     _session: dict[str, Any],
     session_id: str,
     ibkr_offline: bool,
+    tv_offline: bool,
 ) -> None:
-    """End Session (always) + Start IBKR Gateway (only when offline) — app.py
-    action-button parity, Phase 3 widget pattern (disable-first async handlers)."""
+    """End Session (always) + Start IBKR Gateway (when IBKR offline) + Launch
+    TradingView (when TV offline) — app.py action-button parity, Phase 3 widget
+    pattern (disable-first async handlers)."""
     end_btn = pn.widgets.Button(label="End Session", color="light")
     buttons: list[pn.widgets.Button] = [end_btn]
 
@@ -319,6 +385,53 @@ def _send_action_buttons(
                 chat.send(f"✕ Gateway startup failed: {exc}", user="System", respond=False)
 
         gw_btn.on_click(_on_start_gateway)
+
+    if tv_offline:
+        tv_btn = pn.widgets.Button(label="Launch TradingView", color="warning")
+        buttons.append(tv_btn)
+
+        async def _on_launch_tv(event: Any) -> None:
+            """Launch TradingView Desktop with CDP debugging, then rebuild the
+            sidecar bridge and merge its tools into this session's agent —
+            app.py:907-951 parity. Every failure path is an honest chat message,
+            never a crash (project-tradingview-robustness memory)."""
+            global _tv_bridge
+            tv_btn.disabled = True
+            try:
+                chat.send("▶ Launching TradingView Desktop with remote debugging…",
+                          user="System", respond=False)
+                launched = await launch_tradingview()
+                if not launched:
+                    chat.send(
+                        "✕ TradingView Desktop did not open its debug port within 30s.\n\n"
+                        "Try launching it manually:\n"
+                        "```\nopen -a 'TradingView' --args --remote-debugging-port=9222\n```",
+                        user="System", respond=False,
+                    )
+                    return
+                chat.send("▶ Connecting tradingview-mcp sidecar…",
+                          user="System", respond=False)
+                async with _tv_bridge_lock:
+                    if _tv_bridge is not None:
+                        await _tv_bridge.stop()
+                        _tv_bridge = None
+                bridge = await _get_tv_bridge()  # creates a fresh bridge under its own lock
+                if _connectivity_checker is not None:
+                    _connectivity_checker.set_tv_bridge(bridge)
+                tv_tools = bridge.get_tools()
+                agent = _session.get("agent")
+                if agent is not None:
+                    agent.set_tv_bridge(bridge, tv_tools)
+                chat.send(
+                    f"✅ TradingView connected ({len(tv_tools)} tools available).",
+                    user="System", respond=False,
+                )
+            except Exception as exc:
+                log.error("TradingView launch failed: %s", exc)
+                chat.send(f"✕ TradingView launch failed: {exc}",
+                          user="System", respond=False)
+
+        tv_btn.on_click(_on_launch_tv)
 
     chat.send(pn.Row(*buttons), user="System", respond=False)
 
@@ -753,12 +866,20 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 model=_MODEL,
                 doc_version=version_label,
             )
+            # TradingView connect + tool merge (app.py:324-346 parity, deferred by
+            # D5 into Phase 9). Runs before the opening status so the TV status line
+            # reflects the real connection state, and before the buttons so tv_offline
+            # decides whether to offer "Launch TradingView". Wrapped internally so a
+            # TV failure NEVER blocks init — TV is optional.
+            tv_offline = await _connect_tradingview(agent)
             # Stamp trade context BEFORE publishing the agent: an agent visible
             # to the input gate without _trade_context would silently answer
             # without trade-history grounding.
-            agent._trade_context, ibkr_offline = await _send_opening_status(chat, toolkit)
+            agent._trade_context, ibkr_offline = await _send_opening_status(
+                chat, toolkit, tv_offline
+            )
             _session["agent"] = agent
-            _send_action_buttons(chat, _session, session_id, ibkr_offline)
+            _send_action_buttons(chat, _session, session_id, ibkr_offline, tv_offline)
             await _maybe_background_flex_sync(chat, toolkit, ibkr_offline)
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
