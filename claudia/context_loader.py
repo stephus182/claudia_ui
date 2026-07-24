@@ -68,6 +68,7 @@ class ContextLoader:
         self._context_override: str | None = context_text
         self._principles_override: str | None = principles_text
         self._watch: ObservedWatch | None = None
+        self._handler: _DocChangeHandler | None = None
         self._reload_callback: Callable[[str, str], None] | None = None
         # Incremented on every document-change event. Agents cache the built
         # system prompt keyed on this counter, so version/document checks run
@@ -104,7 +105,8 @@ class ContextLoader:
     def start_watching(self, on_reload: Callable[[str, str], None]) -> None:
         """
         Register a watchdog handler on the shared module-level Observer.
-        Unschedules any previous watch for this instance first.
+        Removes this instance's previous handler first (sibling-safe — see
+        stop_watching).
         Uses a shared Observer so macOS FSEvents never sees the same path
         added twice (which raises RuntimeError "already scheduled").
         """
@@ -116,14 +118,23 @@ class ContextLoader:
         )
         obs = _get_shared_observer()
         self._watch = obs.schedule(handler, str(self.docs_path), recursive=False)
+        self._handler = handler
         log.info("Watching %s for document changes", self.docs_path)
 
     def stop_watching(self) -> None:
-        """Unschedule the watchdog handler and clear the reload callback."""
-        if self._watch is not None:
-            with suppress(Exception):
-                _get_shared_observer().unschedule(self._watch)
-            self._watch = None
+        """Remove THIS loader's handler from the shared Observer and clear the
+        reload callback. Deliberately remove_handler_for_watch, NOT unschedule:
+        watchdog keys watches by (path, recursive, event_filter) and unschedule
+        deletes every handler under that key — one session's teardown would
+        silently kill hot-reload for all other live sessions watching the same
+        docs dir (probe-confirmed on watchdog 6.0.0; see the Panel migration
+        plan's D7 notes). The emitter stays alive on the shared long-lived
+        observer, which is harmless."""
+        if self._watch is not None and self._handler is not None:
+            with suppress(Exception):  # KeyError if already removed
+                _get_shared_observer().remove_handler_for_watch(self._handler, self._watch)
+        self._watch = None
+        self._handler = None
         self._reload_callback = None
 
     def _handle_change(self, changed_file: str) -> None:
