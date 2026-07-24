@@ -1063,6 +1063,36 @@ async def test_flex_sync_failure_sends_coverage_fallback():
 
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
+async def test_flex_sync_task_death_is_logged_by_done_callback(caplog):
+    """I1 (Task 5.7 quality review): if the background sync coroutine itself
+    dies — sync fails AND the fallback chat.send raises too — the done callback
+    must retrieve and log the exception ('Background Flex sync task died',
+    exc_info attached) instead of leaving an unretrieved task exception on the
+    shared loop."""
+    import claudia.panel_app as pa
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit.execute.side_effect = RuntimeError("flex api down")  # both execute calls fail
+    chat = MagicMock()
+    chat.send.side_effect = RuntimeError("session gone")
+    with caplog.at_level(logging.WARNING):
+        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        # Sturdier drain than the sleep(0) loop: this assertion needs the task
+        # fully completed AND its done callback run before we inspect caplog.
+        await asyncio.wait_for(
+            asyncio.gather(*pa._background_tasks, return_exceptions=True), timeout=2
+        )
+        await asyncio.sleep(0)  # done callback is scheduled via call_soon — run it
+    died = [r for r in caplog.records if "Background Flex sync task died" in r.message]
+    assert len(died) == 1
+    # exc_info present == the exception WAS retrieved (no unraisable/never-retrieved).
+    assert died[0].exc_info is not None
+    assert pa._background_tasks == set()  # discard still ran
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
 async def test_flex_sync_noop_when_offline_or_unconfigured():
     from claudia.panel_app import _maybe_background_flex_sync
     toolkit = _flex_toolkit(stale=True)
@@ -1098,5 +1128,6 @@ async def test_init_awaits_flex_sync_seam_with_gather_offline_flag(flex_sync):
         await asyncio.wait_for(chat.callback("hi", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
     flex_sync.assert_awaited_once()
-    assert flex_sync.await_args.args[2] is True or \
-        flex_sync.await_args.kwargs.get("ibkr_offline") is True
+    a = flex_sync.await_args
+    offline = a.args[2] if len(a.args) > 2 else a.kwargs.get("ibkr_offline")
+    assert offline is True

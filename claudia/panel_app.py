@@ -309,7 +309,7 @@ def _send_action_buttons(
 async def _maybe_background_flex_sync(
     chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, ibkr_offline: bool
 ) -> None:
-    """Startup Flex sync decision + background sync (app.py:550-617 parity).
+    """Startup Flex sync decision + background sync (app.py:427-429 + 550-617 parity).
 
     Decision (fast sqlite, threaded) runs inline; only the actual sync — Flex
     API call + store.db Drive backup — is spawned as a background task. Logic:
@@ -333,7 +333,7 @@ async def _maybe_background_flex_sync(
             )
         else:
             last_attempts = await asyncio.to_thread(
-                toolkit._store.get_log, 1, "flex_sync"
+                toolkit._store.get_log, n=1, event="flex_sync"
             )
             if last_attempts:
                 last_ts = datetime.fromisoformat(last_attempts[0]["ts"]).replace(tzinfo=UTC)
@@ -386,7 +386,13 @@ async def _maybe_background_flex_sync(
 
     task = asyncio.get_running_loop().create_task(_background_flex_sync())
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+
+    def _log_flex_done(t: asyncio.Task[None]) -> None:
+        _background_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            log.error("Background Flex sync task died", exc_info=t.exception())
+
+    task.add_done_callback(_log_flex_done)
 
 
 def _build_chat_app() -> pn.chat.ChatInterface:
