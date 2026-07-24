@@ -41,7 +41,11 @@ async def _receive_loop_fixed(self) -> None:
     """Faithful copy of WSHandler._receive_loop (bokeh-fastapi 0.1.8,
     handler.py:271-315) with two corrections: handle the returned
     websocket.disconnect message, and break (not fall through) on the
-    WebSocketDisconnect exception path."""
+    WebSocketDisconnect exception path.
+
+    Re-verify after any bokeh-fastapi upgrade by diffing
+    inspect.getsource(WSHandler._receive_loop) against this function — expect
+    exactly the two corrections (see docs/probes/README.md)."""
     while True:
         try:
             ws_msg = await self._socket.receive()
