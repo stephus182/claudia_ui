@@ -28,6 +28,11 @@ MagicMock behavior — patching keeps them focused and deterministic. The two
 failure-path tests don't patch it (their init never reaches the status code);
 test_opening_status.py covers the builders themselves.
 
+Task 5.5: the autouse backend_singletons fixture guarantees no test in this module
+ever constructs or starts a real ConnectivityChecker/ExecutionListener, with the
+module globals reset to None (not restored — a restore would re-install a
+previously leaked object) on teardown.
+
 Unless a test targets the GDrive branch, GOOGLE_DRIVE_FOLDER_ID is blanked via
 patch.dict so that branch of _init_session is skipped — unit tests must never touch
 the real Drive (the developer .env sets that var, and panel_app's load_dotenv would
@@ -37,6 +42,7 @@ otherwise activate the branch).
 import asyncio
 import os
 import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -72,6 +78,26 @@ def _configure_loader(mock_loader_cls: MagicMock) -> None:
     loader.reload_count = 0
     loader.get_effective_texts.return_value = ("ctx text", "pri text")
     loader.compute_hash.return_value = "hash123"
+
+
+@pytest.fixture(autouse=True)
+def backend_singletons():
+    """No test in this module may construct or start a real ConnectivityChecker/
+    ExecutionListener (module docstring discipline — they are network-facing and
+    their .start() binds an asyncio task to whatever loop is running). Globals
+    are reset to None on BOTH sides — deliberately NOT restored — because a
+    monkeypatch-style restore would re-install any previously leaked object."""
+    import claudia.panel_app as pa
+
+    pa._connectivity_checker = None
+    pa._execution_listener = None
+    with (
+        patch("claudia.panel_app.ConnectivityChecker") as checker_cls,
+        patch("claudia.panel_app.ExecutionListener") as listener_cls,
+    ):
+        yield SimpleNamespace(checker_cls=checker_cls, listener_cls=listener_cls)
+    pa._connectivity_checker = None
+    pa._execution_listener = None
 
 
 @pytest.mark.asyncio
@@ -566,13 +592,13 @@ async def test_doc_change_callback_delivers_alert_from_a_plain_thread():
 
 
 @pytest.mark.asyncio
-async def test_init_starts_connectivity_and_execution_singletons(monkeypatch):
+async def test_init_starts_connectivity_and_execution_singletons(monkeypatch, backend_singletons):
     """Task 5.5 (design D6): first session constructs + starts both process
     singletons. The checker's 60s /tickle poll is the IBKR session KEEPALIVE —
     a live-session-protection requirement, not cosmetics (app.py:348-377
     parity). No per-session subscribe in Phase 5 (chat alerts are Phase 6)."""
-    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
-    monkeypatch.setattr("claudia.panel_app._execution_listener", None)
+    sentinel = MagicMock()
+    monkeypatch.setattr("claudia.panel_app._gdrive_sync", sentinel)
 
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
@@ -586,33 +612,29 @@ async def test_init_starts_connectivity_and_execution_singletons(monkeypatch):
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
-        patch("claudia.panel_app.ConnectivityChecker") as mock_checker_cls,
-        patch("claudia.panel_app.ExecutionListener") as mock_listener_cls,
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-    checker_kwargs = mock_checker_cls.call_args.kwargs
+    checker_kwargs = backend_singletons.checker_cls.call_args.kwargs
     assert checker_kwargs["gateway_url"] is mock_toolkit._config.gateway_url
     assert checker_kwargs["gdrive_token_file"] is mock_toolkit._config.gdrive_token_file
     assert checker_kwargs["tv_bridge"] is None
-    mock_checker_cls.return_value.start.assert_called_once()
-    mock_checker_cls.return_value.subscribe.assert_not_called()
-    mock_listener_cls.assert_called_once_with(
+    assert checker_kwargs["gdrive_sync"] is sentinel
+    backend_singletons.checker_cls.return_value.start.assert_called_once()
+    backend_singletons.checker_cls.return_value.subscribe.assert_not_called()
+    backend_singletons.listener_cls.assert_called_once_with(
         mock_toolkit._config.gateway_url, mock_toolkit._store
     )
-    mock_listener_cls.return_value.start.assert_called_once()
+    backend_singletons.listener_cls.return_value.start.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_second_session_reuses_singletons_but_restarts_them(monkeypatch):
+async def test_second_session_reuses_singletons_but_restarts_them(backend_singletons):
     """app.py:360-361 parity: construction happens once, but .start() is called
     unconditionally every session (idempotent — restarts a cancelled task)."""
-    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
-    monkeypatch.setattr("claudia.panel_app._execution_listener", None)
-
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -625,8 +647,6 @@ async def test_second_session_reuses_singletons_but_restarts_them(monkeypatch):
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
-        patch("claudia.panel_app.ConnectivityChecker") as mock_checker_cls,
-        patch("claudia.panel_app.ExecutionListener") as mock_listener_cls,
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -635,20 +655,17 @@ async def test_second_session_reuses_singletons_but_restarts_them(monkeypatch):
         chat2 = _build_chat_app()
         await asyncio.wait_for(chat2.callback("b", "User", chat2), timeout=_CALLBACK_TIMEOUT)
 
-    mock_checker_cls.assert_called_once()
-    mock_listener_cls.assert_called_once()
-    assert mock_checker_cls.return_value.start.call_count == 2
-    assert mock_listener_cls.return_value.start.call_count == 2
+    backend_singletons.checker_cls.assert_called_once()
+    backend_singletons.listener_cls.assert_called_once()
+    assert backend_singletons.checker_cls.return_value.start.call_count == 2
+    assert backend_singletons.listener_cls.return_value.start.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_singletons_not_started_when_docs_missing(monkeypatch):
+async def test_singletons_not_started_when_docs_missing(backend_singletons):
     """Setup-required parity with app.py control flow: the missing-docs guard
     returns before app.py's singleton block runs — Panel matches (keepalive only
     for sessions that got past doc validation)."""
-    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
-    monkeypatch.setattr("claudia.panel_app._execution_listener", None)
-
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -659,8 +676,6 @@ async def test_singletons_not_started_when_docs_missing(monkeypatch):
         patch("claudia.panel_app._get_store", return_value=mock_store),
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app.ConnectivityChecker") as mock_checker_cls,
-        patch("claudia.panel_app.ExecutionListener") as mock_listener_cls,
     ):
         mock_loader_cls.return_value.load_system_prompt.side_effect = FileNotFoundError(
             "docs/context.md not found"
@@ -670,5 +685,5 @@ async def test_singletons_not_started_when_docs_missing(monkeypatch):
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-    mock_checker_cls.assert_not_called()
-    mock_listener_cls.assert_not_called()
+    backend_singletons.checker_cls.assert_not_called()
+    backend_singletons.listener_cls.assert_not_called()
