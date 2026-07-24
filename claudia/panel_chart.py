@@ -37,14 +37,31 @@ from bokeh.plotting import figure
 
 log = logging.getLogger(__name__)
 
-# Candle-body half-width in ms. A fixed daily-scale width is an acceptable first cut
-# (research doc §1): intraday bars render narrower relative to their spacing but stay
-# legible. Per-bar-size width tuning is a deferred restyle refinement.
-_BAR_WIDTH_MS = 12 * 60 * 60 * 1000
-
 _UP_COLOR = "#26a69a"  # teal — close >= open
 _DOWN_COLOR = "#ef5350"  # red — close < open
 _WICK_COLOR = "#666"
+
+# Body = 0.7x the bar spacing, so there is always a visible gap between candles.
+_BODY_WIDTH_FRACTION = 0.7
+# <2-row frames have no defined spacing; fall back to a daily-scale body.
+_FALLBACK_BAR_WIDTH_MS = 12 * 60 * 60 * 1000
+
+
+def _body_width_ms(index: pd.DatetimeIndex) -> float:
+    """Candle-body width in ms, scaled to the data's own bar spacing.
+
+    A Bokeh vbar `width` is in x-axis data units (ms on a datetime axis), so it
+    MUST track the actual bar interval: a fixed daily-scale width turns 1h/30m
+    candles into an overlapping smear (12x / 24x their spacing). Deriving the
+    width from the DataFrame's median spacing keeps this a pure function of the
+    data yet correct for every selectable bar size. Median (not mean) is robust
+    to weekend / overnight gaps; the <2-row branch covers the degenerate frame
+    where spacing is undefined.
+    """
+    if len(index) >= 2:
+        med = pd.Series(index).diff().dropna().median()
+        return float(med / pd.Timedelta(milliseconds=1)) * _BODY_WIDTH_FRACTION
+    return float(_FALLBACK_BAR_WIDTH_MS)
 
 
 def build_candlestick_figure(df: pd.DataFrame, title: str) -> figure:
@@ -56,6 +73,7 @@ def build_candlestick_figure(df: pd.DataFrame, title: str) -> figure:
     wicks are drawn as high-low segments.
     """
     inc = df["close"] >= df["open"]
+    width = _body_width_ms(df.index)
     # The inline call-arg ignore below is because x_axis_type is a bokeh
     # construction-only option (FigureOptions, _figure.py:1143), not a Plot model
     # property, so bokeh's property-typed init doesn't enumerate it and mypy flags
@@ -70,7 +88,7 @@ def build_candlestick_figure(df: pd.DataFrame, title: str) -> figure:
     p.segment(df.index, df["high"], df.index, df["low"], color=_WICK_COLOR)
     p.vbar(
         df.index[inc],
-        _BAR_WIDTH_MS,
+        width,
         df["open"][inc],
         df["close"][inc],
         fill_color=_UP_COLOR,
@@ -78,7 +96,7 @@ def build_candlestick_figure(df: pd.DataFrame, title: str) -> figure:
     )
     p.vbar(
         df.index[~inc],
-        _BAR_WIDTH_MS,
+        width,
         df["open"][~inc],
         df["close"][~inc],
         fill_color=_DOWN_COLOR,

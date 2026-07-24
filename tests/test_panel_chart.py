@@ -19,7 +19,9 @@ from bokeh.plotting import figure
 
 from claudia.panel_chart import (
     _DOWN_COLOR,
+    _FALLBACK_BAR_WIDTH_MS,
     _UP_COLOR,
+    _body_width_ms,
     build_candlestick_figure,
     build_chart_pane,
 )
@@ -106,6 +108,46 @@ def test_build_candlestick_figure_partitions_up_and_down_rows():
     assert sorted(down.data_source.data[down.glyph.top]) == [20.0, 21.0]
 
 
+# ── body-width scaling (the fixed-12h-smear fix) ──────────────────────────────
+
+
+def _ms(td: pd.Timedelta) -> float:
+    return td / pd.Timedelta(milliseconds=1)
+
+
+def test_body_width_scales_with_bar_spacing():
+    day = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"])
+    hour = pd.to_datetime(["2024-01-01 09:00", "2024-01-01 10:00", "2024-01-01 11:00"])
+    half = pd.to_datetime(["2024-01-01 09:00", "2024-01-01 09:30", "2024-01-01 10:00"])
+
+    assert _body_width_ms(day) == pytest.approx(_ms(pd.Timedelta(hours=24)) * 0.7)
+    assert _body_width_ms(hour) == pytest.approx(_ms(pd.Timedelta(hours=1)) * 0.7)
+    assert _body_width_ms(half) == pytest.approx(_ms(pd.Timedelta(minutes=30)) * 0.7)
+    # The fixed-12h bug is gone: intraday bodies are strictly narrower than daily,
+    # so 1h/30m candles no longer overlap into a smear.
+    assert _body_width_ms(half) < _body_width_ms(hour) < _body_width_ms(day)
+
+
+def test_body_width_median_is_robust_to_weekend_gaps():
+    # Thu, Fri, Mon, Tue — the Fri→Mon 72h gap must NOT inflate the body width;
+    # the median spacing stays 24h (mean would be pulled to 40h).
+    idx = pd.to_datetime(["2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09"])
+    assert _body_width_ms(idx) == pytest.approx(_ms(pd.Timedelta(hours=24)) * 0.7)
+
+
+def test_body_width_single_row_uses_fallback():
+    assert _body_width_ms(pd.to_datetime(["2024-01-01"])) == float(_FALLBACK_BAR_WIDTH_MS)
+
+
+def test_build_candlestick_figure_vbar_width_matches_spacing():
+    # The daily fixture's spacing is 24h, so both vbar glyphs carry a 0.7x24h body.
+    fig = build_candlestick_figure(_sample_df(), "T")
+    vbars = [r for r in _glyph_renderers(fig) if isinstance(r.glyph, VBar)]
+    expected = _ms(pd.Timedelta(hours=24)) * 0.7
+    for r in vbars:
+        assert r.glyph.width == pytest.approx(expected)
+
+
 # ── build_chart_pane (composition) ────────────────────────────────────────────
 
 
@@ -146,8 +188,31 @@ async def test_on_load_cache_hit_renders_figure_without_fetching():
         await cb(None)
 
     tk.execute.assert_not_called()  # cache hit — no IBKR fetch
-    tk._cache.load.assert_called_once()
+    # Pin the cache-key contract: timeframe is uppercased ("1d" → "1D") and the
+    # today-date is the 4th key. A regression that dropped either would still
+    # render (mocks ignore args) but break the real cache key.
+    from datetime import date
+
+    today = str(date.today())
+    tk._cache.check.assert_called_once_with("AAPL", "1D", "6m", today)
+    tk._cache.load.assert_called_once_with("AAPL", "1D", "6m", today)
     assert isinstance(_chart(pane).object, figure)
+    assert "Loaded 4 bars for AAPL" in _status(pane).object
+
+
+@pytest.mark.asyncio
+async def test_on_load_strips_and_uppercases_symbol():
+    from unittest.mock import patch
+
+    tk = _mock_toolkit(cached=False, df=_sample_df())
+    pane = build_chart_pane()
+    _first(pane, pn.widgets.TextInput).value = "  aapl "  # untrimmed, lowercase
+    cb = _get_click_callback(_button(pane))
+    with patch("claudia.panel_app._get_toolkit", return_value=tk):
+        await cb(None)
+
+    _name, inputs = tk.execute.call_args.args
+    assert inputs["symbol"] == "AAPL"  # normalized before the fetch
     assert "Loaded 4 bars for AAPL" in _status(pane).object
 
 
