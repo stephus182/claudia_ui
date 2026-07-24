@@ -131,7 +131,7 @@ class ContextLoader:
         plan's D7 notes). The emitter stays alive on the shared long-lived
         observer, which is harmless."""
         if self._watch is not None and self._handler is not None:
-            with suppress(Exception):  # KeyError if already removed
+            with suppress(KeyError):  # raised if already removed (set.remove underneath)
                 _get_shared_observer().remove_handler_for_watch(self._handler, self._watch)
         self._watch = None
         self._handler = None

@@ -45,6 +45,9 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Historical verification probe scripts (D4/D7/watchdog), committed verbatim as run —
+# evidence artifacts, not maintained code (see docs/probes/README.md, Task 5.6a review).
+extend-exclude = ["docs/probes"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RUF", "FA"]
