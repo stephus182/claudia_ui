@@ -31,6 +31,14 @@ Distinct from:
   `description`; `pn.state.notifications` toasts; template modal for destructive confirms)
   for future reconnect / end-session / launch actions.
 
+## Migration smoke screenshots
+
+Captured during the migration's live smokes (kept as visual evidence / restyle reference):
+
+- `dots-check.png` / `dots-full.png` — the `BooleanStatus` connectivity dots rendering in a
+  live session (Task 6.2 smoke).
+- `tv-offline-smoke.png` — the TV-offline path degrading honestly in the live UI.
+
 ## Cross-referenced verified findings (recorded in the migration plan, summarized here)
 
 - **Serving:** native `pn.serve(callable)` Tornado, one factory call per session, module
