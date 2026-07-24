@@ -6626,6 +6626,30 @@ core `app.py:907-951`.
 
 ### Task 9.2: PineScript copy/inject — auto-detect ```pine, real clipboard, Panel-native
 
+**✅ Completed 2026-07-24 — PHASE 9 COMPLETE.** Commits `f9c2f45` (implementation) +
+`b292531` (honest-inject false-success fix) + `ff5b72d` (review fixes). Full cycle:
+implement → spec review (COMPLIANT — injection-safety verified against an adversarial
+payload: pine code flows only as a serialized `js_on_click` arg, never interpolated;
+classifier polarity confirmed; agent.py UNTOUCHED) → quality review (Approve-with-fixes,
+1 Important + minors). The feature was DEAD CODE in Chainlit; now works Panel-native.
+**Live clipboard proof (the Panel-over-Chainlit win):** the smoke seeded the OS clipboard
+with a sentinel, clicked Copy, and `pbpaste` returned the exact 30-line pine strategy with
+newlines intact — real client-side clipboard Chainlit's server-side model could never do.
+**False-success caught by the smoke and fixed** (`b292531`): inject printed "Injected"
+even on `{"success": false}` — the same data-integrity class as the field-8089 order bug;
+now a fail-safe `_pine_inject_succeeded` classifier claims success ONLY on explicit
+`{"success": true}`, else an honest "✕ did not complete" with the sidecar's error.
+Review fixes (`ff5b72d`): (I1) added the inject-path loop-closure test teeth — the
+existing multi-block test guarded only the Copy path, which is closure-immune, so it never
+protected the path `_render_pine_block` exists for; the new test fires both inject handlers
+and asserts distinct sources (reviewer-proven to fail on a buggy inline version). (M1) the
+inject button now re-enables on every FAILURE path — inject is idempotent (unlike order
+flow's safety-critical one-shot) and the commonest failure ("TV not launched yet") is
+recoverable on the same button. (M2) the failure message surfaces the sidecar's `.error`
+text, not raw JSON. **agent.py stayed untouched** (detection lives entirely in the sink
+path — `PanelMessageSink.send_message` → `render_pinescript_blocks`). Tests +23; suite
+432 → 453, 1 warning (third-party only).
+
 Grounded by [`docs/panel/2026-07-24-pinescript-and-actionable-buttons-research.md`](../../panel/2026-07-24-pinescript-and-actionable-buttons-research.md)
 (all API-verified). Depends on Task 9.1 (panel_app's `_tv_bridge` singleton). User-chosen
 design: auto-detect ```pine blocks; agent.py UNTOUCHED (detection lives in the Panel sink
@@ -6659,23 +6683,23 @@ path); real client-side clipboard.
 modify `claudia/panel_sink.py` (getter param + send_message hook), `claudia/panel_app.py`
 (sink construction), `tests/test_panel_app.py` (getter wired).
 
-- [ ] **Step 1: Failing tests** — `extract_pine_blocks` (0/1/multiple/info-string/no-pine);
+- [x] **Step 1: Failing tests** — `extract_pine_blocks` (0/1/multiple/info-string/no-pine);
   render sends a Row with two Buttons per block; copy button carries a js_on_click callback
   with the code in args; inject with `tv_bridge_getter` returning None → not-connected
   message, no execute; returning a mock bridge → `execute("pine_set_source", {"source":
   code})` called + success message; execute raising → honest failure, no raise; sink
   `send_message` with a ```pine message triggers render, without → doesn't.
 
-- [ ] **Step 2: Implement** per the design.
+- [x] **Step 2: Implement** per the design.
 
-- [ ] **Step 3: Gates** — suite +N; ruff + mypy clean; 1 warning.
+- [x] **Step 3: Gates** — suite +N; ruff + mypy clean; 1 warning.
 
-- [ ] **Step 4: Manual smoke** — ask ClaudIA for a PineScript strategy (it emits ```pine)
+- [x] **Step 4: Manual smoke** — ask ClaudIA for a PineScript strategy (it emits ```pine)
   → Copy + Inject buttons render beneath; **Copy** → paste elsewhere confirms real
   clipboard (the Panel win); **Inject** with TV offline → honest not-connected message;
   (if TV Desktop available) Inject → code lands in the Pine Editor.
 
-- [ ] **Step 5: Commit** — `feat: Panel PineScript copy (real clipboard) + inject buttons — auto-detect, agent.py untouched`.
+- [x] **Step 5: Commit** — `feat: Panel PineScript copy (real clipboard) + inject buttons — auto-detect, agent.py untouched`.
 
 ## Phase 10: Dashboard + candlestick charting — outline
 
