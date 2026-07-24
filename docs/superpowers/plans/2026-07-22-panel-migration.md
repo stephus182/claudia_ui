@@ -6798,6 +6798,70 @@ dependency from `pyproject.toml`, and `claudia/assets/custom.css`/`custom.js`. U
 `claudia/panel_app.py` would be renamed to `claudia/app.py` if desired — decide during
 detailing whether that rename is worth the churn or whether keeping the name is clearer.
 
+### Detailed steps (parity audit + deletion groups, 2026-07-24)
+
+**Parity audit — COMPLETE. Every `app.py` capability has a live Panel equivalent; the
+5 Hard Rules all hold.** The keystone finding: **`agent.py` needs ZERO changes.** It routes
+order proposals through `self._sink.send_order_proposal(...)` (agent.py:679) — the
+`MessageSink` Protocol — never calling a Chainlit renderer directly. `PanelMessageSink`
+already implements that Protocol and delegates to `panel_order_flow`, so the cutover is
+pure deletion of the Chainlit surface with no rewiring of the safety path.
+
+| app.py capability | Panel equivalent (already shipped) |
+|---|---|
+| Chainlit entry / session lifecycle | `panel_app.py` `pn.serve(_build_session_root)`, `_init_session`, `on_session_destroyed`, GDrive up/down |
+| `ChainlitMessageSink` | `PanelMessageSink` (same `MessageSink` Protocol) |
+| agent output routing | `agent.py` via `MessageSink` — **unchanged** |
+| order staging + Gate 1/Gate 2 | `panel_order_flow.render_*` → retained `_execute_*_order_core` (gates live in the cores) |
+| opening status / trade lines | `opening_status.py` (shared) + `panel_app._send_opening_status` |
+| IBKR/GDrive/TV status dots | `panel_app` `BooleanStatus` indicators |
+| TradingView + PineScript | `tradingview.py` bridge (retained) + `panel_pinescript` (real clipboard) |
+| charts | `panel_chart.py` |
+| `/cl/custom.css`,`.js` status-bar/collapsible-code injection | Panel-native (status dots + `pn` widgets); Chainlit-only, delete |
+
+Hard Rules: #1 (no order tools) — unaffected, order staging stays a physical-button action;
+#2 (no API-key exposure) — unaffected; #3 (never weaken agent.py safety block) — **trivially
+satisfied, agent.py untouched**; #4 (history as messages) — unaffected; #5 (ibkr_core_mcp
+read-only) — unaffected.
+
+**Deletion executed in 4 verified groups (suite green + ruff + mypy after each; separate
+commits; never `--amend`):**
+
+- **Group A — pure deletions (no coverage migration):** `claudia/app.py`;
+  `tests/test_message_sink.py` (tests only the deleted `ChainlitMessageSink`); `.chainlit/`;
+  `chainlit.md`; `claudia/assets/custom.css` + `custom.js` (Chainlit frontend injection —
+  Panel does status-bar/collapsible-code natively). **Keep** `claudia/assets/claudia-logo.png`
+  (brand asset for the deferred restyle; not Chainlit-coupled). `pyproject.toml`: drop
+  `chainlit>=2.0`. `start-claudia.sh`: `chainlit run claudia/app.py` → `python -m
+  claudia.panel_app` (add a `__main__` guard calling `main()` if absent).
+- **Group B — `message_sink.py` surgical:** delete the `ChainlitMessageSink` class + `import
+  chainlit as cl`; **keep** the `ToolStepHandle` / `MessageSink` Protocols (agent.py type-hints
+  against `MessageSink`; `PanelMessageSink` duck-types it).
+- **Group C — `tradingview.py` surgical:** delete `render_pinescript`, `on_copy_pinescript`,
+  `on_inject_pinescript` + `import chainlit as cl` (dead + untested — no test changes). **Keep**
+  `_find_tv_mcp_bin`, `check_cdp_running`, `_tv_already_running_without_debug`,
+  `launch_tradingview`, `TradingViewBridge`.
+- **Group D — `order_flow.py` surgical + safety-critical test retarget:** delete `import
+  chainlit`, `_cl_send_status`, `render_order_proposal`/`render_cancel_proposal`/
+  `render_modify_proposal`, `execute_staged_order`/`execute_cancel_order`/`execute_modify_order`.
+  **Keep** `_execute_*_order_core`, `_format_*`, `_classify_execution_error`,
+  `_resolve_account_id`, `_is_ibkr_rejection`, `SendStatus`. The Chainlit wrappers are thin
+  (`json.loads(action.payload["order"])` → `_execute_*_core(proposal, _cl_send_status, …)` →
+  `action.remove()`), but `test_order_flow.py`'s `test_execute_*` tests exercise the
+  **core** Gate-1/Gate-2 / place_order / error-classification behavior *through* them — that
+  is the safety-critical coverage. **RETARGET** those onto `_execute_*_order_core(proposal,
+  mock_send_status, …)` directly (assert on the `send_status` mock instead of `cl.Message`);
+  delete only the genuinely wrapper-specific tests (invalid-`action.payload` parse,
+  `action.remove` called). Net: zero loss of core execution-path coverage.
+- **Docs:** `CLAUDE.md` architecture diagram (drop the Chainlit box, make `panel_app.py` the
+  entry) + every `cl.Action`/`cl.Message`/`cl.user_session`/"Chainlit" reference across
+  `CLAUDE.md` and `docs/`. Then a `python -m claudia.panel_app` import/run smoke.
+- **Naming:** keep `claudia/panel_app.py` (do NOT rename to `app.py` this pass) — the churn
+  (imports, tests, docs) outweighs the tidiness, and `panel_app` is unambiguous. Revisit in
+  the restyle plan if desired.
+
+Final step: independent code review of the whole cutover diff, then close the migration.
+
 ---
 
 ## Living-document protocol
