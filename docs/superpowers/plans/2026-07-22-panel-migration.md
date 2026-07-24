@@ -2601,7 +2601,7 @@ loop); the OS thread calls `loop.call_soon_threadsafe(partial(chat.send, <text>,
 user="System", respond=False))`. All four candidates (loop bridge, `pn.state.execute`,
 `doc.add_next_tick_callback`, even a direct `chat.send` from the thread) rendered
 correctly in-browser under isolated runs AND two-message pressure tests with clean
-server/console logs (probe: scratchpad `d4_probe.py` + run logs; ground truth =
+server/console logs (probe: `docs/probes/d4_probe.py` (committed) + run logs; ground truth =
 Playwright browser snapshot, not server-side `chat.objects`). The loop bridge is the
 standard because it is the only candidate serializing the ENTIRE `chat.send` (including
 the Python-side `ChatMessage` construction / `objects` append) onto the session loop —
@@ -2656,8 +2656,8 @@ swallowed by `except Exception: pass` (`handler.py:236-239`) → `client_lost()`
 `_cleanup_sessions` never destroys the session. bokeh-fastapi 0.1.8 is the LATEST
 release — no upgrade path. **Probe-verified fix:** monkeypatch `WSHandler._receive_loop`
 to handle the disconnect dict (call `client_lost()`, break) — with only that change the
-full destroy chain works (disconnect detected the same second the tab closed). Scratchpad
-`probe_d7_server_fixed.py`.
+full destroy chain works (disconnect detected the same second the tab closed). Committed:
+`docs/probes/probe_d7_server_fixed.py`.
 2. **Verified destroy-hook contract (with the bridge fix in place):** callback MUST be
 sync (async registers but never runs — `panel/io/application.py:85-99` invokes it bare
 and swallows exceptions into a log warning); receives one `BokehSessionContext` with
@@ -2683,7 +2683,7 @@ session's watcher RESTART kills all siblings. This bug exists in Chainlit today
 `unschedule(self._watch)` with
 `remove_handler_for_watch(self._handler, self._watch)` (suppress the KeyError on
 double-remove); sibling keeps firing, emitter stays alive harmlessly, re-scheduling the
-same path works. Scratchpad `probe_watchdog.py` / `probe_watchdog_fix.py`.
+same path works. Committed: `docs/probes/probe_watchdog.py` / `docs/probes/probe_watchdog_fix.py`.
 
 **D8 — action buttons reuse Phase 3's proven pattern.** "End Session" (always) and "Start
 IBKR Gateway" (only when IBKR offline) render as `pn.widgets.Button`s in a chat message
@@ -4279,6 +4279,23 @@ git commit -m "feat: Panel backend singletons — ConnectivityChecker keepalive 
 
 ### Task 5.6a: Prerequisite fixes — ContextLoader sibling-safe teardown + bokeh-fastapi disconnect bridge
 
+**✅ Completed 2026-07-23.** Commits `690d797` (Fix 1: sibling-safe watcher teardown —
+also fixes a live Chainlit multi-session bug) + `abb4658` (Fix 2: bokeh-fastapi 0.1.8
+disconnect bridge) + `a5d4194` (review hardening). Full cycle: implement → spec review
+(COMPLIANT — the verbatim-mirror property was proven MECHANICALLY: installed
+`_receive_loop` source diffed against `_receive_loop_fixed`, only the two mandated
+corrections differ; version-guard test probed non-vacuous) → quality review
+(Approve-with-fixes: 4 Important + 3 Minor, all applied). Live smoke: disconnect logged
+the same second the browser closed; Bokeh discarded the session 31s later — the destroy
+chain works under our topology for the first time. Key hardening: (1) a latent
+suite-hang mode killed (bare-exception side_effect re-raises forever; list form raises
+StopAsyncIteration on over-read) plus its false "timeout protects us" comment corrected;
+(2) `test_installed_version_is_covered_by_known_broken` — a CI forcing-function that
+FAILS on any bokeh-fastapi upgrade, converting the silent-revert risk into a red build;
+(3) suppress narrowed to KeyError; (4) all five D4/D7/watchdog probe scripts committed
+to `docs/probes/` with a README (run instructions + expected observations), ruff-excluded
+via pyproject to preserve their copied-as-run evidentiary form. Suite 402 → 403.
+
 Both fixes were mandated by the D7 verification (see "D7 RESOLVED" above). Without them,
 Task 5.6b's cleanup is respectively destructive (one session's teardown kills every
 other session's hot-reload) and dead code (destroy hooks never fire). Two commits, one
@@ -4296,7 +4313,7 @@ harmlessly on the shared long-lived observer).
 `WSHandler._receive_loop` misses Starlette's returned `websocket.disconnect` message
 (only catches the `WebSocketDisconnect` exception raw `receive()` never raises), so
 `client_lost()` never runs and sessions are never destroyed. The fixed loop was
-probe-verified end-to-end (scratchpad `probe_d7_server_fixed.py`). The patch is
+probe-verified end-to-end (`docs/probes/probe_d7_server_fixed.py`, committed). The patch is
 version-guarded: applied only on known-broken bokeh-fastapi versions; on any other
 version it logs a WARNING telling the developer to re-verify (fail-honest — without the
 patch, session cleanup silently never runs). Note the original loop has a second latent
@@ -4313,7 +4330,7 @@ through to an unbound/stale `ws_msg`.
 - Modify: `claudia/panel_app.py` (apply the fix at import time, before
   `add_application`)
 
-- [ ] **Step 1: Fix 1 failing tests**
+- [x] **Step 1: Fix 1 failing tests**
 
 In `tests/test_context_loader.py` (READ the existing watcher tests first — if any
 existing test asserts `unschedule` is called, it is pinning the BUG and must be updated
@@ -4352,7 +4369,7 @@ def test_stop_watching_twice_is_safe(tmp_path):
 
 Run → FAIL (`remove_handler_for_watch` not called; current code calls `unschedule`).
 
-- [ ] **Step 2: Fix 1 implementation**
+- [x] **Step 2: Fix 1 implementation**
 
 `claudia/context_loader.py`: add `self._handler: _DocChangeHandler | None = None` next
 to the existing `self._watch` init in `__init__`. In `start_watching`, after the
@@ -4379,7 +4396,7 @@ to the existing `self._watch` init in `__init__`. In `start_watching`, after the
 Update `start_watching`'s docstring line "Unschedules any previous watch" →
 "Removes this instance's previous handler first (sibling-safe — see stop_watching)."
 
-- [ ] **Step 3: Fix 1 gates + commit**
+- [x] **Step 3: Fix 1 gates + commit**
 
 `pytest tests/test_context_loader.py -v` → all pass; `pytest -m "not integration" -q`
 → 395 + 2 = 397 (adjust if Step 1 modified an existing bug-pinning test);
@@ -4390,7 +4407,7 @@ git add claudia/context_loader.py tests/test_context_loader.py
 git commit -m "fix: sibling-safe watcher teardown — remove_handler_for_watch, not unschedule (watchdog 6.0.0 shared-key trap)"
 ```
 
-- [ ] **Step 4: Fix 2 failing tests**
+- [x] **Step 4: Fix 2 failing tests**
 
 Create `tests/test_panel_ws_fix.py`:
 
@@ -4468,7 +4485,7 @@ def test_apply_skips_and_warns_on_unknown_version(caplog):
 
 Run → FAIL (`ModuleNotFoundError: claudia.panel_ws_fix`).
 
-- [ ] **Step 5: Fix 2 implementation**
+- [x] **Step 5: Fix 2 implementation**
 
 Create `claudia/panel_ws_fix.py`:
 
@@ -4593,7 +4610,7 @@ from claudia.panel_ws_fix import apply_ws_disconnect_fix
 apply_ws_disconnect_fix()
 ```
 
-- [ ] **Step 6: Fix 2 gates + smoke + commit**
+- [x] **Step 6: Fix 2 gates + smoke + commit**
 
 `pytest tests/test_panel_ws_fix.py -v` → 5/5. Full suite → 397 + 5 = 402. ruff + mypy
 on the new module clean. Smoke: uvicorn + Playwright — open the page, close the browser,
