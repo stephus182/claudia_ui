@@ -1,7 +1,8 @@
 """D4 probe: deliver chat.send() into a live Panel session from a plain OS thread.
 
-Mount idiom copied from claudia/panel_app.py (FastAPI + panel.io.fastapi.add_application,
-served by uvicorn). One candidate active per run, selected via env var D4_CANDIDATE:
+Mount idiom copied from the pre-5.6b-pre panel_app.py, before the native pn.serve switch
+(FastAPI + panel.io.fastapi.add_application, served by uvicorn). One candidate active per
+run, selected via env var D4_CANDIDATE:
 
   A       loop bridge: factory captures asyncio.get_running_loop();
           thread calls loop.call_soon_threadsafe(partial(chat.send, ...))

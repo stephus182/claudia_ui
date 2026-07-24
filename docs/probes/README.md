@@ -12,6 +12,7 @@ bokeh-fastapi, or watchdog.
 | `probe_d7_server_fixed.py` | Fixed disconnect bridge: full destroy contract/timing (hook arg, thread, curdoc, blocking + async callbacks) | `.venv/bin/uvicorn probe_d7_server_fixed:app --port 8124` |
 | `probe_watchdog.py` | watchdog 6.0.0 shared-key trap: one loader's `unschedule` kills the sibling's hot-reload | `.venv/bin/python probe_watchdog.py` |
 | `probe_watchdog_fix.py` | `remove_handler_for_watch` fix: sibling keeps firing; double-remove raises KeyError; re-schedule works after last handler removed | `.venv/bin/python probe_watchdog_fix.py` |
+| `pnserve_probe.py` | V1-V6 native-`pn.serve` re-verification that justified the topology switch: per-session factory, background send, thread bridge, unpatched destroy hooks + timing, SIGINT/SIGTERM shutdown behavior, `websocket_origin` allowlist. Runs on plain panel — no extras needed | `.venv/bin/python pnserve_probe.py` |
 
 Expected observations (one line each):
 
@@ -20,11 +21,15 @@ Expected observations (one line each):
 - `probe_d7_server_fixed.py`: disconnect logged immediately on tab close; session discarded and destroy hooks run 15-35s later.
 - `probe_watchdog.py`: VERDICT lines — stop_watching kills sibling: True; start_watching restart kills sibling: True (the bug).
 - `probe_watchdog_fix.py`: h2 still fires after h1 removed; double-remove → KeyError; re-schedule after last removal → OK.
+- `pnserve_probe.py`: destroy fires unpatched 15-24s after close; pn.serve returns ~2ms after SIGINT; SIGTERM bypasses everything.
 
 Note: the watchdog probes hardcode the worktree path in `WORKTREE`; the server probes write
 `.jsonl` logs next to themselves.
 
-Note: `probe_d7_server.py` / `probe_d7_server_fixed.py` document the ABANDONED FastAPI +
-`add_application` topology (replaced by native `pn.serve` per the migration plan's
-Panel-native principle, 2026-07-24) — running them now requires
-`pip install "panel[fastapi]"` + uvicorn, no longer project dependencies.
+Note: `d4_probe.py`, `probe_d7_server.py` and `probe_d7_server_fixed.py` document the
+ABANDONED FastAPI + `add_application` topology (replaced by native `pn.serve` per the
+migration plan's Panel-native principle, 2026-07-24) — running them now requires
+`pip install "panel[fastapi]"` + uvicorn, no longer project dependencies. Unlike the D7
+probes, D4's FINDING (the `loop.call_soon_threadsafe` thread→session bridge) remains
+current live code in `panel_app.py`'s `_on_doc_change` — only its serving harness used
+the old topology.

@@ -6,6 +6,10 @@ native-serving principle (2026-07-24): Panel-native serving, no workarounds.
 pn.serve calls _build_chat_app once per browser session; module-level singletons
 stay process-wide.
 
+Deliberately independent of the Chainlit entry point (claudia/app.py) during the
+transition — never import claudia.app, which imports chainlit. Phase 11 (cutover)
+makes this the sole entry point.
+
 Run with:  python -m claudia.panel_app
 """
 
