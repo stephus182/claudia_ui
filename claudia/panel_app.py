@@ -16,6 +16,7 @@ Run with:  python -m claudia.panel_app
 import asyncio
 import logging
 import os
+import signal
 import uuid
 from functools import partial
 from pathlib import Path
@@ -31,6 +32,7 @@ from ibkr_core_mcp import (
     IBKRClient,
     SQLiteStore,
 )
+from ibkr_core_mcp.gateway import GatewayManager
 
 from claudia.agent import ClaudIAAgent
 from claudia.context_loader import ContextLoader
@@ -39,6 +41,7 @@ from claudia.execution_listener import ExecutionListener
 from claudia.gdrive_sync import GDriveSync
 from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_sink import PanelMessageSink
+from claudia.session_reporter import generate_session_report
 from claudia.status import ConnectivityChecker
 
 log = logging.getLogger(__name__)
@@ -56,6 +59,12 @@ _conv_store: ConversationStore | None = None
 _gdrive_sync: GDriveSync | None = None
 _connectivity_checker: ConnectivityChecker | None = None
 _execution_listener: ExecutionListener | None = None
+
+# Strong references to destroy-hook cleanup tasks — the loop only weak-refs
+# tasks, so a bare create_task could be GC'd mid-cleanup (ruff RUF006).
+# Task[str]: _run_session_cleanup returns the status string (logged/ignored
+# on the destroy path).
+_cleanup_tasks: set[asyncio.Task[str]] = set()
 
 # Serializes the check-download-first-store-open section of _init_session across
 # concurrently-initializing sessions — see the comment at its acquire site.
@@ -166,13 +175,14 @@ def _register_doc_version(
 
 async def _send_opening_status(
     chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit
-) -> str | None:
-    """Send the second chat message with live account status and return the
-    trade/calendar context for the caller to stamp on agent._trade_context
-    (Task 5.3 — app.py:399-514 parity). Effectively non-raising: both builders
-    catch their own IBKR/store failures internally and degrade to offline/
-    fallback text; an unexpected escape is caught by _init_session's generic
-    handler."""
+) -> tuple[str | None, bool]:
+    """Send the second chat message with live account status and return
+    (trade_context, ibkr_offline): the trade/calendar context for the caller to
+    stamp on agent._trade_context, and the offline flag so _init_session can
+    decide whether to offer the Start-Gateway button (Task 5.3/5.6b —
+    app.py:399-514 parity). Effectively non-raising: both builders catch their
+    own IBKR/store failures internally and degrade to offline/fallback text; an
+    unexpected escape is caught by _init_session's generic handler."""
     status_block, ibkr_offline = await gather_status_block(toolkit)
     trade_status, trade_context = await asyncio.to_thread(
         build_trade_lines, toolkit, ibkr_offline
@@ -183,7 +193,110 @@ async def _send_opening_status(
         user="ClaudIA",
         respond=False,
     )
-    return trade_context
+    return trade_context, ibkr_offline
+
+
+async def _run_session_cleanup(
+    session_id: str | None,
+    store: ConversationStore | None,
+    loader: ContextLoader | None,
+) -> str:
+    """Close session, generate report, upload DB (app.py:670-700 parity).
+    Returns a one-line status string. Every blocking call is offloaded via
+    asyncio.to_thread — the destroy-hook path runs this on the shared loop,
+    where blocking would freeze every live session (V4 probe). NO UI calls:
+    on the destroy path the chat's Document is already gutted."""
+    if loader:
+        loader.stop_watching()
+
+    if store and session_id:
+        store.close_session(session_id, metadata={"model": _MODEL})
+        connectivity = (
+            {k: v.value for k, v in _connectivity_checker.get_status().items()}
+            if _connectivity_checker else {}
+        )
+        session_meta = store.get_session(session_id) or {}
+        await asyncio.to_thread(
+            generate_session_report,
+            session_id, store, connectivity, session_meta.get("doc_version"),
+        )
+        msg_count = store.count_messages(session_id)
+    else:
+        msg_count = 0
+
+    drive_note = ""
+    if _gdrive_sync is not None:
+        try:
+            await asyncio.to_thread(_gdrive_sync.upload_db, _DB_PATH)
+            drive_note = " · claudia.db → Drive ✅"
+        except Exception as exc:
+            log.warning("End-session Drive upload failed: %s", exc)
+            drive_note = " · Drive upload failed ⚠️"
+
+    return f"{msg_count} messages saved{drive_note}"
+
+
+def _send_action_buttons(
+    chat: pn.chat.ChatInterface,
+    _session: dict[str, Any],
+    session_id: str,
+    ibkr_offline: bool,
+) -> None:
+    """End Session (always) + Start IBKR Gateway (only when offline) — app.py
+    action-button parity, Phase 3 widget pattern (disable-first async handlers)."""
+    end_btn = pn.widgets.Button(name="End Session", button_type="light")
+    buttons: list[pn.widgets.Button] = [end_btn]
+
+    async def _on_end(event: Any) -> None:
+        for b in buttons:
+            b.disabled = True
+        if _session["closed"]:
+            return
+        _session["closed"] = True
+        chat.send("Saving session…", user="System", respond=False)
+        status = await _run_session_cleanup(session_id, _session["store"], _session["loader"])
+        chat.send(
+            f"**Session ended.** {status}\n\nSafe to close this tab.",
+            user="System", respond=False,
+        )
+
+    end_btn.on_click(_on_end)
+
+    if ibkr_offline:
+        gw_btn = pn.widgets.Button(name="Start IBKR Gateway", button_type="primary")
+        buttons.append(gw_btn)
+
+        async def _on_start_gateway(event: Any) -> None:
+            gw_btn.disabled = True
+            gm = GatewayManager()
+            try:
+                chat.send("▶ Ensuring Docker is running…", user="System", respond=False)
+                await asyncio.to_thread(gm.ensure_docker_running)
+                chat.send("▶ Starting IBKR gateway container…", user="System", respond=False)
+                await asyncio.to_thread(gm.start)
+                chat.send("▶ Waiting for gateway to be reachable (up to 120s)…",
+                          user="System", respond=False)
+                reachable = await asyncio.to_thread(gm.wait_for_gateway)
+                if not reachable:
+                    chat.send("✕ Gateway did not start within timeout. Check Docker logs.",
+                              user="System", respond=False)
+                    return
+                await asyncio.to_thread(gm.open_login_page)
+                if _connectivity_checker is not None:
+                    await _connectivity_checker._run_checks()
+                chat.send(
+                    "✅ IBKR Gateway is reachable. **https://localhost:5055** opened in "
+                    "your browser.\n\nComplete the IBKR login and 2FA. ClaudIA will "
+                    "notify you here once the session is authenticated.",
+                    user="System", respond=False,
+                )
+            except Exception as exc:
+                log.error("Gateway startup failed: %s", exc)
+                chat.send(f"✕ Gateway startup failed: {exc}", user="System", respond=False)
+
+        gw_btn.on_click(_on_start_gateway)
+
+    chat.send(pn.Row(*buttons), user="System", respond=False)
 
 
 def _build_chat_app() -> pn.chat.ChatInterface:
@@ -199,16 +312,37 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     session_id = str(uuid.uuid4())
     chat = pn.chat.ChatInterface()
 
-    # store/loader are written (not yet read here) for Tasks 5.6/5.7's session-end
-    # cleanup consumers; init_task keeps a strong reference to the background task.
+    # store/loader are read by the session-end cleanup consumers (End Session
+    # button + destroy hook); init_task keeps a strong reference to the
+    # background task; closed guards against double cleanup (End Session then
+    # tab close — app.py's session_closed parity).
     _session: dict[str, Any] = {
         "agent": None,
         "error": None,
         "store": None,
         "loader": None,
         "init_task": None,
+        "closed": False,
     }
     _init_done = asyncio.Event()
+
+    def _on_session_destroyed(session_context: Any) -> None:
+        """V4 contract: sync, fires 15-32s after disconnect on the shared loop
+        with pn.state.curdoc None — no UI calls; schedule async cleanup and
+        return immediately (blocking here freezes every live session)."""
+        if _session["closed"]:
+            return
+        _session["closed"] = True
+        task = asyncio.get_running_loop().create_task(
+            _run_session_cleanup(session_id, _session["store"], _session["loader"])
+        )
+        _cleanup_tasks.add(task)
+        task.add_done_callback(_cleanup_tasks.discard)
+
+    # Registered BEFORE the input callback wiring / init task, while curdoc is
+    # set (i.e. on the session Document) — so even a session whose init later
+    # fails still gets its cleanup on destroy.
+    pn.state.on_session_destroyed(_on_session_destroyed)
 
     async def _on_user_input(contents: str, user: str, instance: pn.chat.ChatInterface) -> None:
         await _init_done.wait()
@@ -356,8 +490,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             # Stamp trade context BEFORE publishing the agent: an agent visible
             # to the input gate without _trade_context would silently answer
             # without trade-history grounding.
-            agent._trade_context = await _send_opening_status(chat, toolkit)
+            agent._trade_context, ibkr_offline = await _send_opening_status(chat, toolkit)
             _session["agent"] = agent
+            _send_action_buttons(chat, _session, session_id, ibkr_offline)
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
             _session["error"] = str(exc)
@@ -385,19 +520,32 @@ def main() -> None:
     the pnserve probe, see the migration plan's re-verification note).
 
     Blocks until SIGINT (Ctrl-C): Panel installs its own SIGINT handler that stops
-    the IO loop and returns from pn.serve — Task 5.6b puts the final claudia.db
-    Drive upload after this call returns. SIGTERM currently bypasses that path
-    (dies instantly) — 5.6b adds the handler.
+    the IO loop and returns from pn.serve. SIGTERM is translated to SIGINT so
+    launchd/scripts reach the same clean-stop path; the final claudia.db upload
+    runs after pn.serve returns — V5 contract.
     """
-    pn.serve(
-        _build_chat_app,
-        port=_PANEL_PORT,
-        show=False,
-        title="ClaudIA",
-        # Default allowlist is localhost:<port> only; 127.0.0.1 access would get a
-        # 403 websocket refusal without this (probe-verified).
-        websocket_origin=[f"localhost:{_PANEL_PORT}", f"127.0.0.1:{_PANEL_PORT}"],
-    )
+    # Panel installs its SIGINT handler inside pn.serve; translating SIGTERM to
+    # SIGINT routes both through the same io_loop.stop() → serve-returns path.
+    # Empirically verified in this task's smoke step (V5 proved only SIGINT).
+    signal.signal(signal.SIGTERM, lambda *_: signal.raise_signal(signal.SIGINT))
+    try:
+        pn.serve(
+            _build_chat_app,
+            port=_PANEL_PORT,
+            show=False,
+            title="ClaudIA",
+            # Default allowlist is localhost:<port> only; 127.0.0.1 access would get a
+            # 403 websocket refusal without this (probe-verified).
+            websocket_origin=[f"localhost:{_PANEL_PORT}", f"127.0.0.1:{_PANEL_PORT}"],
+        )
+    finally:
+        # Loop is stopped here — synchronous blocking upload is fine (V5).
+        if _gdrive_sync is not None:
+            try:
+                _gdrive_sync.upload_db(_DB_PATH)
+                log.info("Final claudia.db upload complete")
+            except Exception as exc:
+                log.warning("Final Drive upload failed: %s — local DB preserved", exc)
 
 
 if __name__ == "__main__":
