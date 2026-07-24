@@ -243,7 +243,7 @@ it can be reviewed before Phase 1 starts.
      case before any change.
 10. **⚠️ FINDING (live test 2026-07-23) — first-ever live FUT test surfaced TWO order-path
     bugs in `order_flow.py` (shared code, not Panel-specific). Full spec:
-    [`docs/2026-07-23-futures-order-field-8089-bug.md`](../../2026-07-23-futures-order-field-8089-bug.md).**
+    [`docs/plans/2026-07-23-futures-order-field-8089-bug.md`](../../plans/2026-07-23-futures-order-field-8089-bug.md).**
     Test order `BUY 1 ES SEP2026 LMT 6000 GTC` — staging/gates/`place_order` all worked;
     IBKR rejected the order (`order_id: "0"`, not placed, verified on gateway).
     - **Bug A (FUT-specific) — ROOT CAUSE PROVEN via `whatif` isolation (2026-07-23, user
@@ -268,8 +268,14 @@ it can be reviewed before Phase 1 starts.
     - **✅ FIXED 2026-07-23** — commits `a16599f` (both bugs, TDD) + `89a14bb` (review
       hardening: cancel-docstring cross-ref, 10-case classifier contract test, order_id
       spelling in decision metadata), full subagent cycle, 371 unit tests green.
-      **Pending: live FUT re-test through the gate chain** on the next gateway session
-      (gateway was shut down before it could run).
+    - **✅ CLOSED 2026-07-24 — live FUT re-test PASSED** through the full gate chain on
+      the Panel app (native pn.serve) against the authenticated gateway: IBKR accepted
+      `BUY 1 ES SEP2026 LMT 6000 GTC` — real `order_id: "716373691"`,
+      `order_status: "Submitted"`, independently confirmed working via
+      `get_live_orders`. Bug A's `manualIndicator`-only body live-proven; Bug B's
+      success label now backed by a genuine order id. (Bug doc moved to
+      `docs/plans/` and closed.) Remaining cross-repo follow-up (ibkr_core_mcp):
+      `client.py` `place_order` docstring still instructs `extOperator` for FUT/FOP.
 
 ---
 

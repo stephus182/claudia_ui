@@ -1,12 +1,18 @@
 # Futures order path — two bugs found in first-ever live FUT test (2026-07-23)
 
-> **STATUS (2026-07-23 EOD): both fixes IMPLEMENTED** — commits `a16599f` (fix) +
-> `89a14bb` (review hardening) on `panel-migration`, full subagent cycle (implement → spec
-> review → code-quality review → hardening), 371 unit tests green (81→91 in
-> test_order_flow.py incl. a 10-case classifier contract test). **Remaining: live FUT
-> re-test through the full gate chain** — gateway was shut down before it could run;
-> re-test on next gateway session (expect a real order id for `BUY 1 ES SEP2026 LMT 6000
-> GTC`, or an honest REJECTED message — no false success either way).
+> **STATUS: CLOSED 2026-07-24 — live FUT re-test PASSED.** `BUY 1 ES SEP2026 LMT 6000
+> GTC` staged through the full gate chain (Touch ID + Gate 2) on the Panel app against
+> the authenticated live gateway: IBKR **accepted** the order — real
+> `order_id: "716373691"`, `order_status: "Submitted"` — and an independent
+> `get_live_orders` read confirmed it working on the account (ES BUY 1 @ 6000 GTC,
+> ClaudIA-staged). This live-proves Bug A's fix (`manualIndicator`-only FUT body — the
+> same body shape whatif-rejected with `extOperator` present on 2026-07-23) and shows
+> Bug B's "staged successfully" label now backed by a genuine order id (the
+> honest-rejection path remains pinned by the 10-case `_is_ibkr_rejection` contract
+> test). Both fixes: commits `a16599f` + `89a14bb` on `panel-migration`.
+>
+> Prior status (2026-07-23 EOD): both fixes implemented, full subagent cycle, 371 unit
+> tests green (81→91 in test_order_flow.py); re-test was pending gateway login.
 
 **Context:** First live test of the futures order-staging path (STK BUY/MODIFY had been
 validated; FUT/FOP never had been). Done on the Panel app against the live IBKR gateway.
