@@ -6498,19 +6498,20 @@ git commit -m "feat: TradingView screenshot upload via ChatInterface FileInput (
 ## Phase 9: TradingView launch button + sidecar tool merge
 
 **⚠ SCOPE FINDING 2026-07-24 (grounding pass): `render_pinescript` +
-`copy_pinescript`/`inject_pinescript` are DEAD CODE in the current Chainlit app.**
-`render_pinescript` (`tradingview.py:377`) is defined but called from NOWHERE
-(repo-wide grep: only the definition). The sink protocol has no pinescript method and
-`agent.py` detects only order/cancel/modify proposal blocks — so the PineScript
-copy/inject buttons never render in the live flow; the agent emits PineScript as plain
-```pine markdown through `send_message` (which already works in Panel unchanged). **There
-is no working behavior to port** — porting them would be Chainlit-shape mimicry of a
-non-functional feature (violates the design principle). Decision: do NOT port the
-pinescript buttons; the three dead functions (`render_pinescript`, `on_copy_pinescript`,
-`on_inject_pinescript`) are deleted with the rest of `tradingview.py`'s Chainlit surface
-at Phase 11. If the inject-to-Pine-Editor capability is wanted later, it's a NEW feature
-in the post-migration backlog (the `pine_set_source` sidecar tool exists; only the UI
-wiring is missing), NOT a migration parity item.
+`copy_pinescript`/`inject_pinescript` are DEAD CODE in the current Chainlit app** —
+`render_pinescript` (`tradingview.py:377`) is called from NOWHERE (repo-wide grep). The
+agent emits PineScript as plain ```pine markdown; the copy/inject buttons never render.
+
+**DECISION REVERSED by user 2026-07-24: make the feature WORK in Panel** ("Ideally I
+would like this feature to work"; "Panel actually makes it better than Chainlit could —
+we need to make the most of it"). Since it's not a working feature to *port*, it's built
+Panel-native as **Task 9.2** below, grounded by the research doc
+[`docs/panel/2026-07-24-pinescript-and-actionable-buttons-research.md`](../../panel/2026-07-24-pinescript-and-actionable-buttons-research.md)
+(scraped + installed-package verified, per API-Docs-First). Memory:
+`project-pinescript-feature-revival`. Key Panel wins verified: REAL client-side clipboard
+(`js_on_click` + `navigator.clipboard.writeText`; localhost = secure context) vs
+Chainlit's re-display-for-manual-copy; and the whole thing lives in the Panel SINK path,
+so safety-critical `agent.py` is UNTOUCHED.
 
 **What Phase 9 actually ports (the LIVE surface):** (1) the TradingView sidecar
 connect + status detection currently in the opening flow (`app.py:324-346`), deferred in
@@ -6592,7 +6593,60 @@ core `app.py:907-951`.
   works, no crash; (b) if TV Desktop available: click Launch → CDP comes up → tools
   merge → agent can call a TV tool. Report which tier ran.
 
-- [ ] **Step 5: Commit** — `feat: Panel TradingView launch button + sidecar tool merge (live surface; pinescript buttons are dead code, not ported)`.
+- [ ] **Step 5: Commit** — `feat: Panel TradingView launch button + sidecar tool merge`.
+
+### Task 9.2: PineScript copy/inject — auto-detect ```pine, real clipboard, Panel-native
+
+Grounded by [`docs/panel/2026-07-24-pinescript-and-actionable-buttons-research.md`](../../panel/2026-07-24-pinescript-and-actionable-buttons-research.md)
+(all API-verified). Depends on Task 9.1 (panel_app's `_tv_bridge` singleton). User-chosen
+design: auto-detect ```pine blocks; agent.py UNTOUCHED (detection lives in the Panel sink
+path); real client-side clipboard.
+
+**Design (locked):**
+
+- New `claudia/panel_pinescript.py` (mirrors `panel_order_flow.py`'s separation):
+  - `extract_pine_blocks(text: str) -> list[str]` — pure,
+    `re.findall(r"```pine\b[^\n]*\n(.*?)```", text, re.DOTALL)`, each stripped.
+  - `async render_pinescript_blocks(chat, text, tv_bridge_getter) -> None` — for each
+    detected block, `chat.send(pn.Row(copy_btn, inject_btn), user="ClaudIA — PineScript",
+    respond=False)`. **Copy**: `pn.widgets.Button(label="Copy PineScript", color="light")`
+    with `.js_on_click(args={"code": code}, code="navigator.clipboard.writeText(code)")`
+    (injection-safe — Bokeh serializes the arg; localhost = secure context). **Inject**:
+    `pn.widgets.Button(label="Inject into TradingView", color="primary")`, async on_click:
+    disable-first → `bridge = tv_bridge_getter()`; if `bridge is None` → honest
+    `chat.send("TradingView is not connected — launch it first, or copy the script
+    manually.")`; else `result = await bridge.execute("pine_set_source", {"source":
+    code})` → `chat.send(f"Injected into the Pine Editor. {result}")`; try/except →
+    honest failure message (no raise — mirrors `panel_order_flow`'s handlers).
+- `PanelMessageSink.__init__` gains `tv_bridge_getter: Callable[[], TradingViewBridge |
+  None] | None = None` (default None = inject shows not-connected). `send_message` after
+  its existing `chat.send(text)` calls `await render_pinescript_blocks(self._chat, text,
+  self._tv_bridge_getter)` when `extract_pine_blocks(text)` is non-empty. Getter is
+  INJECTED (not imported) → no panel_app↔panel_sink cycle, unit-testable.
+- `_init_session` builds the sink with `tv_bridge_getter=lambda: _tv_bridge` (reads
+  panel_app's live module global at click time — reflects a later TV launch).
+
+**Files:** Create `claudia/panel_pinescript.py` + `tests/test_panel_pinescript.py`;
+modify `claudia/panel_sink.py` (getter param + send_message hook), `claudia/panel_app.py`
+(sink construction), `tests/test_panel_app.py` (getter wired).
+
+- [ ] **Step 1: Failing tests** — `extract_pine_blocks` (0/1/multiple/info-string/no-pine);
+  render sends a Row with two Buttons per block; copy button carries a js_on_click callback
+  with the code in args; inject with `tv_bridge_getter` returning None → not-connected
+  message, no execute; returning a mock bridge → `execute("pine_set_source", {"source":
+  code})` called + success message; execute raising → honest failure, no raise; sink
+  `send_message` with a ```pine message triggers render, without → doesn't.
+
+- [ ] **Step 2: Implement** per the design.
+
+- [ ] **Step 3: Gates** — suite +N; ruff + mypy clean; 1 warning.
+
+- [ ] **Step 4: Manual smoke** — ask ClaudIA for a PineScript strategy (it emits ```pine)
+  → Copy + Inject buttons render beneath; **Copy** → paste elsewhere confirms real
+  clipboard (the Panel win); **Inject** with TV offline → honest not-connected message;
+  (if TV Desktop available) Inject → code lands in the Pine Editor.
+
+- [ ] **Step 5: Commit** — `feat: Panel PineScript copy (real clipboard) + inject buttons — auto-detect, agent.py untouched`.
 
 ## Phase 10: Dashboard + candlestick charting — outline
 
