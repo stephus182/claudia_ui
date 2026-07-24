@@ -106,6 +106,63 @@ def _write_version_snapshot(version: str, context_text: str, principles_text: st
         log.warning("Could not write version snapshot for %s: %s", version, exc)
 
 
+async def _read_context_docs() -> tuple[str | None, str | None]:
+    """Read context.md/principles.md via Drive (read_text falls back to the local
+    file when Drive is unreachable or the file is absent) — app.py:256-262 parity.
+    MUST be called while holding _init_lock: googleapiclient binds a single
+    AuthorizedHttp/httplib2.Http to the built Drive service, shared by every
+    .execute(), and httplib2.Http is not thread-safe — concurrent session inits
+    would run read_text on that one connection from two worker threads (worst
+    case: interleaved socket reads that still parse, handing a session the wrong
+    document content silently). Serializing the per-session reads costs ~nothing
+    for a single-user app."""
+    if _gdrive_sync is None:
+        return None, None
+    drive_context = await asyncio.to_thread(
+        _gdrive_sync.read_text,
+        "context.md",
+        local_path=_DOCS_PATH / "context.md",
+    )
+    drive_principles = await asyncio.to_thread(
+        _gdrive_sync.read_text,
+        "principles.md",
+        local_path=_DOCS_PATH / "principles.md",
+    )
+    return drive_context, drive_principles
+
+
+def _register_doc_version(
+    store: ConversationStore, loader: ContextLoader
+) -> tuple[str, str, str | None]:
+    """Register the current doc version (idempotent), write the human-readable
+    snapshot, and detect a hash change vs the previous session. Returns
+    (current_hash, version_label, hash_change_warning_or_None) — UI-free by
+    design: the caller decides how to surface the warning.
+
+    ORDERING INVARIANT: get_last_context_hash reads the newest session row, so
+    this helper must run BEFORE the session's own create_session — inserting the
+    new row first would make it see its own hash and the security warning would
+    never fire again."""
+    context_text, principles_text = loader.get_effective_texts()
+    current_hash = loader.compute_hash()
+    version_label = store.register_doc_version_if_new(
+        current_hash, context_text, principles_text
+    )
+    log.info("Active document version: %s", version_label)
+    _write_version_snapshot(version_label, context_text, principles_text)
+
+    warning: str | None = None
+    prev_hash = store.get_last_context_hash()
+    if prev_hash is not None and prev_hash != current_hash:
+        prev_version = store.get_version_label(prev_hash) or f"unknown ({prev_hash[:8]})"
+        warning = (
+            f"**WARNING: context.md / principles.md changed: "
+            f"{prev_version} → {version_label}.**\n"
+            "Please verify the content before continuing."
+        )
+    return current_hash, version_label, warning
+
+
 def _build_chat_app() -> pn.chat.ChatInterface:
     """Per-session factory: called fresh for each new browser session by Bokeh's
     _eval_panel (confirmed live against Panel 1.9.3 — see Phase 2 header note).
@@ -190,29 +247,8 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 toolkit = _get_toolkit()
                 store = _get_store()
 
-                # Read context/principles from Drive every session so each session picks
-                # up the latest version (app.py:256-262 parity; read_text falls back to
-                # the local file itself when Drive is unreachable or the file is absent).
-                # Deliberately INSIDE _init_lock: googleapiclient binds a single
-                # AuthorizedHttp/httplib2.Http to the built Drive service, shared by
-                # every .execute(), and httplib2.Http is not thread-safe — concurrent
-                # session inits would run read_text on that one connection from two
-                # worker threads (worst case: interleaved socket reads that still parse,
-                # handing a session the wrong document content silently). Serializing
-                # the per-session reads costs ~nothing for a single-user app.
-                drive_context: str | None = None
-                drive_principles: str | None = None
-                if _gdrive_sync is not None:
-                    drive_context = await asyncio.to_thread(
-                        _gdrive_sync.read_text,
-                        "context.md",
-                        local_path=_DOCS_PATH / "context.md",
-                    )
-                    drive_principles = await asyncio.to_thread(
-                        _gdrive_sync.read_text,
-                        "principles.md",
-                        local_path=_DOCS_PATH / "principles.md",
-                    )
+                # Drive reads must stay under the lock — see _read_context_docs.
+                drive_context, drive_principles = await _read_context_docs()
 
             loader = ContextLoader(
                 _DOCS_PATH, context_text=drive_context, principles_text=drive_principles
@@ -228,28 +264,11 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 )
                 return
 
-            # Register document version (idempotent) + snapshot + hash-change alert
-            context_text, principles_text = loader.get_effective_texts()
-            current_hash = loader.compute_hash()
-            version_label = store.register_doc_version_if_new(
-                current_hash, context_text, principles_text
-            )
-            log.info("Active document version: %s", version_label)
-            _write_version_snapshot(version_label, context_text, principles_text)
-
-            # Must run BEFORE this session's create_session below — get_last_context_hash
-            # reads the newest session row, so inserting ours first would make it see its
-            # own hash and the hash-change warning would never fire again.
-            prev_hash = store.get_last_context_hash()
-            if prev_hash is not None and prev_hash != current_hash:
-                prev_version = store.get_version_label(prev_hash) or f"unknown ({prev_hash[:8]})"
-                chat.send(
-                    f"**WARNING: context.md / principles.md changed: "
-                    f"{prev_version} → {version_label}.**\n"
-                    "Please verify the content before continuing.",
-                    user="System",
-                    respond=False,
-                )
+            # Must run BEFORE this session's create_session below (see the
+            # ordering invariant in _register_doc_version's docstring).
+            current_hash, version_label, warning = _register_doc_version(store, loader)
+            if warning is not None:
+                chat.send(warning, user="System", respond=False)
 
             store.create_session(
                 session_id, context_hash=current_hash, doc_version=version_label
