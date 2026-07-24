@@ -11,6 +11,13 @@
 > honest-rejection path remains pinned by the 10-case `_is_ibkr_rejection` contract
 > test). Both fixes: commits `a16599f` + `89a14bb` on `panel-migration`.
 >
+> **2026-07-24 addendum — ALL THREE FUT operations now live-proven:** in a fresh session,
+> `BUY 1 ES` placed (order 716373706, Submitted), then **MODIFIED** 6000 → 6100 through
+> the full gate chain (the modify mirror's `manualIndicator`-only body — the last
+> untested piece of the fix), then independently gateway-verified resting at 6100 GTC.
+> The earlier order 716373691 was CANCELLED through the gate chain (gateway shows
+> Cancelled). PLACE ✅ MODIFY ✅ CANCEL ✅ — this bug is fully closed.
+>
 > Prior status (2026-07-23 EOD): both fixes implemented, full subagent cycle, 371 unit
 > tests green (81→91 in test_order_flow.py); re-test was pending gateway login.
 
