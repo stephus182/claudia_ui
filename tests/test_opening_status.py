@@ -128,11 +128,12 @@ def test_build_trade_lines_offline_notes_connect_to_refresh():
 
 def test_build_trade_lines_no_data_yet():
     toolkit = _make_toolkit()
+    # Real empty-store return shape from SQLiteStore.get_trade_date_coverage (store.py:355).
     toolkit._store.get_trade_date_coverage.return_value = {
         "oldest": None,
         "newest": None,
         "total_trades": 0,
-        "days_since_newest": None,
+        "gaps": [],
     }
     status, context = build_trade_lines(toolkit, ibkr_offline=False)
     assert "no data yet" in status

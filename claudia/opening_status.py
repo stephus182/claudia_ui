@@ -3,8 +3,10 @@
 Faithful port of the Chainlit startup status logic (app.py:399-514) restructured
 into pure/thread-friendly functions so panel_app._init_session stays readable and
 tests can feed dict fixtures directly. app.py is deliberately left untouched — it
-is deleted wholesale at Phase 11 (cutover). Uses toolkit._config/_store — the
-same sanctioned reach-in app.py itself uses (app.py:433,466); ClaudeToolkit
+is deleted wholesale at Phase 11 (cutover). Uses the toolkit._store reach-in —
+the same one app.py itself uses (app.py:433,466); for config, the port
+substitutes toolkit._config for app.py's module-global _config (app.py:427) —
+behaviorally equivalent, both are Config.from_env() products. ClaudeToolkit
 exposes no public config/store properties.
 """
 
@@ -104,7 +106,8 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
                     "No trade data yet in the local store. Run `sync_flex_trades` to import recent data, "
                     "or `sync_flex_archive` to import historical XMLs from Drive."
                 )
-        except Exception:
+        except Exception as exc:
+            log.warning("Could not read trade date coverage: %s", exc)
             trade_status = "Trade history: syncing…"
     else:
         trade_status = "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
@@ -115,8 +118,8 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
         mkt = toolkit._store.get_market_calendar_context()
         if mkt:
             trade_context = (trade_context or "") + _format_market_calendar(mkt)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("Could not build market calendar context: %s", exc)
     return trade_status, trade_context
 
 

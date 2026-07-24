@@ -165,9 +165,10 @@ def _register_doc_version(
 
 
 async def _send_opening_status(
-    chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, agent: ClaudIAAgent
-) -> None:
-    """Second chat message with live account status + trade/calendar context
+    chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit
+) -> str | None:
+    """Send the second chat message with live account status and return the
+    trade/calendar context for the caller to stamp on agent._trade_context
     (Task 5.3 — app.py:399-514 parity). Effectively non-raising: both builders
     catch their own IBKR/store failures internally and degrade to offline/
     fallback text; an unexpected escape is caught by _init_session's generic
@@ -176,13 +177,13 @@ async def _send_opening_status(
     trade_status, trade_context = await asyncio.to_thread(
         build_trade_lines, toolkit, ibkr_offline
     )
-    agent._trade_context = trade_context
     chat.send(
         f"{status_block}\n\n_{trade_status}_\n\n"
         "_TradingView: not connected in the Panel preview._",
         user="ClaudIA",
         respond=False,
     )
+    return trade_context
 
 
 def _build_chat_app() -> pn.chat.ChatInterface:
@@ -231,7 +232,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
 
     chat.callback = _on_user_input
     chat.send(
-        "**ClaudIA is ready** — gathering your account status…",  # status block lands in Task 5.3
+        "**ClaudIA is ready** — gathering your account status…",  # status block follows via _send_opening_status once init completes
         user="ClaudIA",
         respond=False,
     )
@@ -308,10 +309,10 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 model=_MODEL,
                 doc_version=version_label,
             )
-            # Stamp trade context + send the status message BEFORE publishing the
-            # agent: an agent visible to the input gate without _trade_context
-            # would silently answer without trade-history grounding.
-            await _send_opening_status(chat, toolkit, agent)
+            # Stamp trade context BEFORE publishing the agent: an agent visible
+            # to the input gate without _trade_context would silently answer
+            # without trade-history grounding.
+            agent._trade_context = await _send_opening_status(chat, toolkit)
             _session["agent"] = agent
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
