@@ -3165,6 +3165,27 @@ git commit -m "feat: Panel sessions read context docs from Drive + register doc 
 
 ### Task 5.3: Opening status block — helper extraction, then the status port
 
+**✅ Completed 2026-07-23.** Commits `b5e4097` (pure refactor: `_read_context_docs` /
+`_register_doc_version` extracted from `_init_session`), `d6cf92b` (opening status block:
+new UI-free `claudia/opening_status.py` + `_send_opening_status` wiring), `4bf5a93`
+(review hardening). Full cycle: implement → spec review (COMPLIANT — reviewer mechanically
+tokenized every string literal against app.py:399-514 and confirmed character-level
+parity; refactor commit verified test-free and behavior-preserving at its own SHA) →
+quality review (Approve-with-fixes: 1 Important + 5 Minor, all applied). Key hardening:
+the `ibkr_offline` plumbing from `gather_status_block` into `build_trade_lines` was
+unpinned — a hardcoded `False` would have passed the whole suite while silently dropping
+the "connect IBKR to refresh" note; now pinned in both directions
+(`assert_called_once_with(toolkit, False)` + a dedicated `(…, True)` flow test). Also:
+no-data fixture re-anchored to the REAL empty-store dict (store.py:355 — it has `gaps`,
+not `days_since_newest`); `_send_opening_status` restructured to return `trade_context`
+instead of mutating the agent (single responsibility — the stamp now sits visibly next to
+the `_session["agent"]` publish); degrade paths gained `log.warning` diagnosability with
+zero user-visible string changes. Tests 11 → 13 in test_panel_app.py + 9 new in
+test_opening_status.py; suite 379 → 390. Spec-review observation on file (non-blocking):
+the publish-after-stamp ordering is defense-in-depth — the `_init_done` gate already
+prevents the hazard; it becomes load-bearing only if the gate ever changes to
+"agent is not None".
+
 Grounded 2026-07-23 against verified signatures: `IBKRClient.ping() -> bool`
 (`ibkr_core_mcp/client.py:178` — verifies authentication, not just reachability; retries
 once internally for the IBKR fresh-session `authenticated=false` quirk);
@@ -3210,7 +3231,7 @@ Parity source: `app.py:399-514`.
 - Modify: `tests/test_panel_app.py` (1 new integration test; 9 existing tests gain a
   `_send_opening_status` patch line)
 
-- [ ] **Step 1: Pure refactor — extract `_read_context_docs` / `_register_doc_version`**
+- [x] **Step 1: Pure refactor — extract `_read_context_docs` / `_register_doc_version`**
 
 In `claudia/panel_app.py`, add the two module-level helpers (between
 `_write_version_snapshot` and `_build_chat_app`):
@@ -3296,7 +3317,7 @@ loader.get_effective_texts()` through the WARNING `chat.send`) with:
 `_read_context_docs`'s docstring (shown above) — leave a one-line pointer at the lock's
 call site ("Drive reads must stay under the lock — see _read_context_docs").
 
-- [ ] **Step 2: Verify the refactor is behavior-preserving, then commit**
+- [x] **Step 2: Verify the refactor is behavior-preserving, then commit**
 
 Run: `pytest tests/test_panel_app.py -v` → all 11 pass UNCHANGED (they patch
 `ContextLoader`/`_write_version_snapshot` at module level and assert on
@@ -3309,7 +3330,7 @@ git add claudia/panel_app.py
 git commit -m "refactor: extract _read_context_docs/_register_doc_version from _init_session"
 ```
 
-- [ ] **Step 3: Write the failing tests for `claudia/opening_status.py`**
+- [x] **Step 3: Write the failing tests for `claudia/opening_status.py`**
 
 Create `tests/test_opening_status.py`:
 
@@ -3475,7 +3496,7 @@ def test_build_trade_lines_calendar_error_is_swallowed():
 Run: `pytest tests/test_opening_status.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'claudia.opening_status'`.
 
-- [ ] **Step 4: Implement `claudia/opening_status.py`**
+- [x] **Step 4: Implement `claudia/opening_status.py`**
 
 ```python
 """UI-free builders for the opening status message (Panel entry point).
@@ -3639,7 +3660,7 @@ def _format_market_calendar(mkt: dict[str, Any]) -> str:
 
 Run: `pytest tests/test_opening_status.py -v` → 9/9 pass.
 
-- [ ] **Step 5: Write the failing integration test in `tests/test_panel_app.py`**
+- [x] **Step 5: Write the failing integration test in `tests/test_panel_app.py`**
 
 ```python
 @pytest.mark.asyncio
@@ -3683,7 +3704,7 @@ Run: `pytest tests/test_panel_app.py::test_init_sends_opening_status_and_stamps_
 Expected: FAIL — `AttributeError: <module 'claudia.panel_app'> does not have the
 attribute 'gather_status_block'` (patch of a name that doesn't exist yet).
 
-- [ ] **Step 6: Implement the panel_app wiring**
+- [x] **Step 6: Implement the panel_app wiring**
 
 In `claudia/panel_app.py` — new import:
 
@@ -3746,21 +3767,21 @@ focused and deterministic.
 
 Run: `pytest tests/test_panel_app.py -v` → 12/12 pass.
 
-- [ ] **Step 7: Full suite + linters**
+- [x] **Step 7: Full suite + linters**
 
 Run: `pytest -m "not integration" -q`
 Expected: 379 baseline + 9 (opening_status) + 1 (integration) = 389, 0 failures.
 `ruff check claudia/opening_status.py claudia/panel_app.py tests/test_opening_status.py
 tests/test_panel_app.py` + `mypy claudia/opening_status.py claudia/panel_app.py` → clean.
 
-- [ ] **Step 8: Manual smoke (no gateway needed)**
+- [x] **Step 8: Manual smoke (no gateway needed)**
 
 `uvicorn claudia.panel_app:app --port 8001` → welcome line renders immediately; a beat
 later the status message arrives with "*IBKR gateway not connected…*" (offline fallback —
 gateway is down), a real trade-status line (Flex + SQLite work offline), and the
 TradingView note. No server-side errors.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add claudia/opening_status.py claudia/panel_app.py tests/test_opening_status.py tests/test_panel_app.py
