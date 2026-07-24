@@ -614,7 +614,7 @@ async def test_init_starts_connectivity_and_execution_singletons(monkeypatch, ba
     """Task 5.5 (design D6): first session constructs + starts both process
     singletons. The checker's 60s /tickle poll is the IBKR session KEEPALIVE —
     a live-session-protection requirement, not cosmetics (app.py:348-377
-    parity). No per-session subscribe in Phase 5 (chat alerts are Phase 6)."""
+    parity). Since Task 6.2 each session also subscribes its alert closure."""
     sentinel = MagicMock()
     monkeypatch.setattr("claudia.panel_app._gdrive_sync", sentinel)
 
@@ -642,7 +642,9 @@ async def test_init_starts_connectivity_and_execution_singletons(monkeypatch, ba
     assert checker_kwargs["tv_bridge"] is None
     assert checker_kwargs["gdrive_sync"] is sentinel
     backend_singletons.checker_cls.return_value.start.assert_called_once()
-    backend_singletons.checker_cls.return_value.subscribe.assert_not_called()
+    # Task 6.2 flipped this from assert_not_called(): the Phase 5 placeholder
+    # pinned the ABSENCE of per-session subscription; Phase 6 delivers it.
+    backend_singletons.checker_cls.return_value.subscribe.assert_called_once()
     backend_singletons.listener_cls.assert_called_once_with(
         mock_toolkit._config.gateway_url, mock_toolkit._store
     )
@@ -1102,6 +1104,173 @@ async def test_flex_sync_noop_when_offline_or_unconfigured():
     toolkit2._config.flex_token = ""
     await _maybe_background_flex_sync(MagicMock(), toolkit2, ibkr_offline=False)
     toolkit2._store.get_trade_date_coverage.assert_not_called()
+
+
+# ── Task 6.2: per-session status indicators + alert delivery (Phase 6) ────────
+
+
+def test_apply_status_maps_enum_to_value_and_color():
+    from claudia.panel_app import _apply_status, _make_status_indicators
+    from claudia.status import ServiceStatus
+
+    ind = _make_status_indicators()
+    assert set(ind) == {"ibkr", "gdrive", "tradingview"}
+    _apply_status(ind, {
+        "ibkr": ServiceStatus.OK,
+        "gdrive": ServiceStatus.ERROR,
+        "tradingview": ServiceStatus.UNKNOWN,
+    })
+    assert (ind["ibkr"].value, ind["ibkr"].color) == (True, "success")
+    assert (ind["gdrive"].value, ind["gdrive"].color) == (True, "danger")
+    assert (ind["tradingview"].value, ind["tradingview"].color) == (False, "dark")
+
+
+@pytest.mark.asyncio
+async def test_build_session_root_composes_indicators_above_chat():
+    from claudia.panel_app import _build_session_root
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = _build_session_root()
+        chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+    # Plan sketch said `from panel.indicators import BooleanStatus` — that module
+    # path doesn't exist (pn.indicators is panel/__init__.py's re-export of
+    # panel.widgets.indicators, verified in the venv); the accessor form is the
+    # importable one.
+    from panel.widgets.indicators import BooleanStatus
+    row = root.objects[0]
+    assert len([o for o in row.objects if isinstance(o, BooleanStatus)]) == 3
+
+
+@pytest.mark.asyncio
+async def test_build_session_root_registers_5s_periodic_refresh():
+    from claudia.panel_app import _build_session_root
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "add_periodic_callback") as mock_cb,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = _build_session_root()
+        chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
+        await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
+    assert mock_cb.call_args.kwargs.get("period") == 5000 or mock_cb.call_args.args[1] == 5000
+
+
+@pytest.mark.asyncio
+async def test_init_subscribes_alert_callback_and_it_sends_to_chat(backend_singletons):
+    """The singleton block must subscribe an async alert callback; invoking the
+    captured callback sends the pre-formatted alert text into the chat."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        unsub = MagicMock()
+        backend_singletons.checker_cls.return_value.subscribe.return_value = unsub
+        chat = _build_chat_app()   # subscription is in _init_session — plain factory is fine
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        backend_singletons.checker_cls.return_value.subscribe.assert_called_once()
+        alert_cb = backend_singletons.checker_cls.return_value.subscribe.call_args.args[0]
+        await alert_cb("⚠️ GDrive disconnected.")
+    assert any("GDrive disconnected" in t for t in _message_texts(chat))
+
+
+@pytest.mark.asyncio
+async def test_destroy_hook_unsubscribes_before_cleanup(backend_singletons):
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    unsub_mock = MagicMock()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "on_session_destroyed") as mock_register,
+        patch("claudia.panel_app._run_session_cleanup",
+              new=AsyncMock(return_value="ok")),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        backend_singletons.checker_cls.return_value.subscribe.return_value = unsub_mock
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        hook = mock_register.call_args.args[0]
+        hook(MagicMock())
+        await asyncio.sleep(0.05)
+    unsub_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_end_session_button_unsubscribes_too(backend_singletons):
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    unsub_mock = MagicMock()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch("claudia.panel_app._run_session_cleanup",
+              new=AsyncMock(return_value="7 messages saved")),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        backend_singletons.checker_cls.return_value.subscribe.return_value = unsub_mock
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        end_btn = next(b for b in _find_buttons(chat) if b.name == "End Session")
+        await _get_click_callback(end_btn)(None)
+    unsub_mock.assert_called_once()
 
 
 @pytest.mark.asyncio

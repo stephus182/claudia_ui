@@ -1,11 +1,12 @@
-"""Panel entry point for ClaudIA (Phase 5 complete: session lifecycle — background
+"""Panel entry point for ClaudIA (Phase 6 complete: session lifecycle — background
 init, Drive docs + versioning, opening status, hot-reload alerts, backend
-singletons, session-end cleanup + buttons, Flex sync).
+singletons, session-end cleanup + buttons, Flex sync — plus per-session
+connectivity indicators and chat-alert delivery).
 
 Served by Panel's own first-class Tornado server via pn.serve(callable) — the
 native-serving principle (2026-07-24): Panel-native serving, no workarounds.
-pn.serve calls _build_chat_app once per browser session; module-level singletons
-stay process-wide.
+pn.serve calls _build_session_root once per browser session; module-level
+singletons stay process-wide.
 
 Deliberately independent of the Chainlit entry point (claudia/app.py) during the
 transition — never import claudia.app, which imports chainlit. Phase 11 (cutover)
@@ -19,10 +20,11 @@ import logging
 import os
 import signal
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import panel as pn
 from dotenv import load_dotenv
@@ -44,7 +46,7 @@ from claudia.gdrive_sync import GDriveSync
 from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_sink import PanelMessageSink
 from claudia.session_reporter import generate_session_report
-from claudia.status import ConnectivityChecker
+from claudia.status import ConnectivityChecker, ServiceStatus
 
 log = logging.getLogger(__name__)
 
@@ -207,6 +209,51 @@ async def _send_opening_status(
     return trade_context, ibkr_offline
 
 
+_INDICATOR_LABELS = {"ibkr": "IBKR", "gdrive": "GDrive", "tradingview": "TradingView"}
+
+
+def _make_status_indicators() -> dict[str, pn.indicators.BooleanStatus]:
+    """One BooleanStatus per service, keyed like ConnectivityChecker.get_status().
+    UNKNOWN at build: gray dot for not-yet-checked, not an error. label= (not
+    name=) — Widget.name raises PendingDeprecationWarning on Panel 1.9.3
+    (probe-verified, same as the Task 5.6b Button finding)."""
+    return {
+        key: pn.indicators.BooleanStatus(value=False, color="dark", label=label)
+        for key, label in _INDICATOR_LABELS.items()
+    }
+
+
+def _apply_status(
+    indicators: dict[str, pn.indicators.BooleanStatus], status: dict[str, ServiceStatus]
+) -> None:
+    """ServiceStatus → (value, color): OK → lit green, ERROR → lit red,
+    UNKNOWN → unlit gray (matches _run_checks()' not-configured-is-not-an-error
+    rule). Unknown keys in either direction are ignored."""
+    # Literal-typed so mypy accepts assignment into BooleanStatus.color's
+    # Literal['primary', ..., 'dark'] param type.
+    mapping: dict[ServiceStatus, tuple[bool, Literal["success", "danger", "dark"]]] = {
+        ServiceStatus.OK: (True, "success"),
+        ServiceStatus.ERROR: (True, "danger"),
+        ServiceStatus.UNKNOWN: (False, "dark"),
+    }
+    for key, ind in indicators.items():
+        if key in status:
+            value, color = mapping[status[key]]
+            ind.value, ind.color = value, color
+
+
+def _make_alert_subscriber(chat: pn.chat.ChatInterface) -> Callable[[str], Awaitable[None]]:
+    """Async subscriber for ConnectivityChecker alerts — texts arrive
+    pre-formatted (_DISCONNECT_MESSAGES/_RECONNECT_MESSAGES). Runs inside the
+    checker's poll task on the same process-wide loop as the session (V2/V3
+    probe basis), so a direct chat.send is safe; a closed session's send is a
+    harmless no-op (V4)."""
+    async def _on_alert(text: str) -> None:
+        chat.send(text, user="System", respond=False)
+
+    return _on_alert
+
+
 def _send_action_buttons(
     chat: pn.chat.ChatInterface,
     _session: dict[str, Any],
@@ -223,6 +270,10 @@ def _send_action_buttons(
             b.disabled = True
         if _session["closed"]:
             return
+        unsub = _session["unsubscribe"]
+        if unsub is not None:
+            unsub()
+            _session["unsubscribe"] = None
         _session["closed"] = True
         chat.send("Saving session…", user="System", respond=False)
         status = await _run_session_cleanup(session_id, _session["store"], _session["loader"])
@@ -431,6 +482,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         "loader": None,
         "init_task": None,
         "closed": False,
+        "unsubscribe": None,
     }
     _init_done = asyncio.Event()
 
@@ -440,6 +492,10 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         return immediately (blocking here freezes every live session)."""
         if _session["closed"]:
             return
+        unsub = _session["unsubscribe"]
+        if unsub is not None:
+            unsub()
+            _session["unsubscribe"] = None
         _session["closed"] = True
         task = asyncio.get_running_loop().create_task(
             _run_session_cleanup(session_id, _session["store"], _session["loader"])
@@ -573,8 +629,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             # checker's 60s /tickle poll is the IBKR session KEEPALIVE — live-
             # session protection, not cosmetics. Constructed once per process,
             # started unconditionally each session (start() is idempotent and
-            # restarts a cancelled task). No per-session subscribe in Phase 5 —
-            # chat-alert delivery is Phase 6's work. Construction is synchronous
+            # restarts a cancelled task). Each session then subscribes its own
+            # alert closure (Phase 6) — unsubscribed on End Session AND on the
+            # destroy hook. Construction is synchronous
             # (no await between the None-check and assignment on this single-
             # threaded loop), so no lock is needed — same reasoning as
             # app.py:369-371. tv_bridge stays None until Phase 9 (D5).
@@ -587,6 +644,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                     gdrive_sync=_gdrive_sync,
                 )
             _connectivity_checker.start()
+            _session["unsubscribe"] = _connectivity_checker.subscribe(
+                _make_alert_subscriber(chat)
+            )
             if _execution_listener is None:
                 _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
             _execution_listener.start()
@@ -630,14 +690,36 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     return chat
 
 
+def _build_session_root() -> pn.Column:
+    """pn.serve target: status indicators (functional placement — deep styling
+    is the post-migration restyle plan) above the chat. Periodic refresh is
+    session-scoped with automatic cleanup (pn.state.add_periodic_callback
+    registers against this session's Document — source-verified, see the Phase
+    6 design note in the migration plan)."""
+    chat = _build_chat_app()
+    indicators = _make_status_indicators()
+
+    def _refresh() -> None:
+        if _connectivity_checker is not None:
+            _apply_status(indicators, _connectivity_checker.get_status())
+
+    pn.state.add_periodic_callback(_refresh, period=5000)
+    return pn.Column(
+        pn.Row(*indicators.values()),
+        chat,
+        sizing_mode="stretch_both",
+    )
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
 def main() -> None:
     """Serve ClaudIA on Panel's native Tornado server (design principle 2026-07-24:
-    Panel-native serving, no workarounds — pn.serve(callable) invokes _build_chat_app
-    once per browser session while module singletons stay process-wide; verified by
-    the pnserve probe, see the migration plan's re-verification note).
+    Panel-native serving, no workarounds — pn.serve(callable) invokes
+    _build_session_root once per browser session while module singletons stay
+    process-wide; verified by the pnserve probe, see the migration plan's
+    re-verification note).
 
     Blocks until SIGINT (Ctrl-C): Panel installs its own SIGINT handler that stops
     the IO loop and returns from pn.serve. SIGTERM is translated to SIGINT so
@@ -650,7 +732,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, lambda *_: signal.raise_signal(signal.SIGINT))
     try:
         pn.serve(
-            _build_chat_app,
+            _build_session_root,
             port=_PANEL_PORT,
             show=False,
             title="ClaudIA",
