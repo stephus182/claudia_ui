@@ -1,5 +1,6 @@
-"""Panel entry point for ClaudIA (Phase 5: session lifecycle — immediate render,
-background per-session init, input gated on init completion).
+"""Panel entry point for ClaudIA (Phase 5 complete: session lifecycle — background
+init, Drive docs + versioning, opening status, hot-reload alerts, backend
+singletons, session-end cleanup + buttons, Flex sync).
 
 Served by Panel's own first-class Tornado server via pn.serve(callable) — the
 native-serving principle (2026-07-24): Panel-native serving, no workarounds.
@@ -55,6 +56,8 @@ _VERSIONS_PATH = _DOCS_PATH / "versions"
 _DB_PATH = Path(os.environ.get("CLAUDIA_DB_PATH", "data/claudia.db"))
 _PANEL_PORT = int(os.environ.get("CLAUDIA_PANEL_PORT", "8001"))
 
+# ── Module state & process-level singletons ───────────────────────────────────
+
 _toolkit: ClaudeToolkit | None = None
 _conv_store: ConversationStore | None = None
 _gdrive_sync: GDriveSync | None = None
@@ -99,6 +102,9 @@ def _get_store() -> ConversationStore:
     if _conv_store is None:
         _conv_store = ConversationStore(_DB_PATH)
     return _conv_store
+
+
+# ── Init-flow helpers (in _init_session call order) ──────────────────────────
 
 
 # Duplicated VERBATIM from claudia/app.py's _write_version_snapshot (using this
@@ -199,48 +205,6 @@ async def _send_opening_status(
         respond=False,
     )
     return trade_context, ibkr_offline
-
-
-async def _run_session_cleanup(
-    session_id: str | None,
-    store: ConversationStore | None,
-    loader: ContextLoader | None,
-) -> str:
-    """Close session, generate report, upload DB (app.py:670-700 parity).
-    Returns a one-line status string. The slow calls (report generation, Drive
-    upload) are offloaded via asyncio.to_thread; the sqlite row ops and
-    stop_watching are ms-scale and run inline (app.py parity) — the destroy-hook
-    path runs this on the shared loop, where blocking would freeze every live
-    session (V4 probe). NO UI calls: on the destroy path the chat's Document is
-    already gutted."""
-    if loader:
-        loader.stop_watching()
-
-    if store and session_id:
-        store.close_session(session_id, metadata={"model": _MODEL})
-        connectivity = (
-            {k: v.value for k, v in _connectivity_checker.get_status().items()}
-            if _connectivity_checker else {}
-        )
-        session_meta = store.get_session(session_id) or {}
-        await asyncio.to_thread(
-            generate_session_report,
-            session_id, store, connectivity, session_meta.get("doc_version"),
-        )
-        msg_count = store.count_messages(session_id)
-    else:
-        msg_count = 0
-
-    drive_note = ""
-    if _gdrive_sync is not None:
-        try:
-            await asyncio.to_thread(_gdrive_sync.upload_db, _DB_PATH)
-            drive_note = " · claudia.db → Drive ✅"
-        except Exception as exc:
-            log.warning("End-session Drive upload failed: %s", exc)
-            drive_note = " · Drive upload failed ⚠️"
-
-    return f"{msg_count} messages saved{drive_note}"
 
 
 def _send_action_buttons(
@@ -395,6 +359,54 @@ async def _maybe_background_flex_sync(
     task.add_done_callback(_log_flex_done)
 
 
+# ── Session-end cleanup ───────────────────────────────────────────────────────
+
+
+async def _run_session_cleanup(
+    session_id: str | None,
+    store: ConversationStore | None,
+    loader: ContextLoader | None,
+) -> str:
+    """Close session, generate report, upload DB (app.py:670-700 parity).
+    Returns a one-line status string. The slow calls (report generation, Drive
+    upload) are offloaded via asyncio.to_thread; the sqlite row ops and
+    stop_watching are ms-scale and run inline (app.py parity) — the destroy-hook
+    path runs this on the shared loop, where blocking would freeze every live
+    session (V4 probe). NO UI calls: on the destroy path the chat's Document is
+    already gutted."""
+    if loader:
+        loader.stop_watching()
+
+    if store and session_id:
+        store.close_session(session_id, metadata={"model": _MODEL})
+        connectivity = (
+            {k: v.value for k, v in _connectivity_checker.get_status().items()}
+            if _connectivity_checker else {}
+        )
+        session_meta = store.get_session(session_id) or {}
+        await asyncio.to_thread(
+            generate_session_report,
+            session_id, store, connectivity, session_meta.get("doc_version"),
+        )
+        msg_count = store.count_messages(session_id)
+    else:
+        msg_count = 0
+
+    drive_note = ""
+    if _gdrive_sync is not None:
+        try:
+            await asyncio.to_thread(_gdrive_sync.upload_db, _DB_PATH)
+            drive_note = " · claudia.db → Drive ✅"
+        except Exception as exc:
+            log.warning("End-session Drive upload failed: %s", exc)
+            drive_note = " · Drive upload failed ⚠️"
+
+    return f"{msg_count} messages saved{drive_note}"
+
+
+# ── Per-session factory ───────────────────────────────────────────────────────
+
+
 def _build_chat_app() -> pn.chat.ChatInterface:
     """Per-session factory: called fresh for each new browser session by Bokeh's
     _eval_panel (confirmed live against Panel 1.9.3 — see Phase 2 header note).
@@ -495,9 +507,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                     # env-wide (toolkit construction needs the same Config later), so
                     # swallowing it as "continuing without Drive sync" would mislead —
                     # and init would then fail identically on the toolkit anyway.
-                    cfg = Config.from_env()
+                    drive_cfg = Config.from_env()
                     try:
-                        _gdrive_sync = GDriveSync(cfg)
+                        _gdrive_sync = GDriveSync(drive_cfg)
                         if _conv_store is None:
                             await asyncio.to_thread(_gdrive_sync.download_db, _DB_PATH)
                     except Exception as exc:
@@ -616,6 +628,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     # only weak-refs tasks, so a bare create_task could be GC'd mid-init (ruff RUF006).
     _session["init_task"] = asyncio.create_task(_init_session())
     return chat
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 
 def main() -> None:
