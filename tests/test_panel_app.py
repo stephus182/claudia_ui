@@ -967,8 +967,11 @@ async def test_start_gateway_click_timeout_reports_and_skips_login_page():
 def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
     """5.6b-pre review deferral (M2) + V5 shutdown contract: pn.serve kwargs are
     behavior-bearing (websocket_origin: 403 without 127.0.0.1 — probe-verified),
-    and the final Drive upload must run in the finally even if serve raises."""
-    from claudia.panel_app import main
+    and the final Drive upload must run in the finally even if serve raises.
+    Task 6.2 quality review (I1): the serve TARGET is behavior-bearing too —
+    reverting main() to serve _build_chat_app would silently drop the status
+    indicators while every other test stays green."""
+    from claudia.panel_app import _build_session_root, main
 
     mock_sync = MagicMock()
     monkeypatch.setattr("claudia.panel_app._gdrive_sync", mock_sync)
@@ -978,6 +981,7 @@ def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
         pytest.raises(KeyboardInterrupt),
     ):
         main()
+    assert mock_serve.call_args.args[0] is _build_session_root
     kwargs = mock_serve.call_args.kwargs
     assert kwargs["show"] is False
     assert any("127.0.0.1" in o for o in kwargs["websocket_origin"])
@@ -1155,6 +1159,11 @@ async def test_build_session_root_composes_indicators_above_chat():
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        # Composition is this test's subject, not the timer — patching the
+        # periodic registration keeps the module's no-real-background-objects
+        # discipline (an unpatched start=False cb would still be onload-started
+        # into a real _async_repeat task on this test's loop).
+        patch.object(pn.state, "add_periodic_callback"),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -1187,17 +1196,20 @@ async def test_build_session_root_registers_5s_periodic_refresh():
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
         patch.object(pn.state, "add_periodic_callback") as mock_cb,
+        patch.object(pn.state, "onload") as mock_onload,
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
         root = _build_session_root()
         chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
         await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
-    assert mock_cb.call_args.kwargs.get("period") == 5000 or mock_cb.call_args.args[1] == 5000
-    # start=False pins the held-event double-delivery fix: starting at build
-    # time double-registers the callback on the ServerSession (bokeh ValueError
-    # per session); the start is deferred to pn.state.onload instead.
+    assert mock_cb.call_args.kwargs["period"] == 5000
+    # start=False + onload(cb.start) pin the held-event double-delivery fix:
+    # starting at build time double-registers the callback on the ServerSession
+    # (bokeh ValueError per session), while dropping the onload start would
+    # freeze the dots gray forever (refresh never starts) with no test failing.
     assert mock_cb.call_args.kwargs.get("start") is False
+    mock_onload.assert_called_once_with(mock_cb.return_value.start)
 
 
 @pytest.mark.asyncio
@@ -1231,10 +1243,18 @@ async def test_init_subscribes_alert_callback_and_it_sends_to_chat(backend_singl
 
 @pytest.mark.asyncio
 async def test_destroy_hook_unsubscribes_before_cleanup(backend_singletons):
+    """The hook must unsubscribe BEFORE invoking cleanup (plan design point) —
+    ordering pinned via the shared-parent-Mock technique the D1 download-order
+    test established (6.2 quality review M4: the earlier body asserted only
+    that unsubscribe happened, not the ordering the name claims)."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
     unsub_mock = MagicMock()
+    mock_cleanup = AsyncMock(return_value="ok")
+    manager = Mock()
+    manager.attach_mock(unsub_mock, "unsub")
+    manager.attach_mock(mock_cleanup, "cleanup")
 
     with (
         patch.dict(os.environ, _NO_GDRIVE),
@@ -1246,8 +1266,7 @@ async def test_destroy_hook_unsubscribes_before_cleanup(backend_singletons):
         patch("claudia.panel_app._send_opening_status",
               new=AsyncMock(return_value=(None, False))),
         patch.object(pn.state, "on_session_destroyed") as mock_register,
-        patch("claudia.panel_app._run_session_cleanup",
-              new=AsyncMock(return_value="ok")),
+        patch("claudia.panel_app._run_session_cleanup", mock_cleanup),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -1259,6 +1278,10 @@ async def test_destroy_hook_unsubscribes_before_cleanup(backend_singletons):
         hook(MagicMock())
         await asyncio.sleep(0.05)
     unsub_mock.assert_called_once()
+    call_names = [name for name, _args, _kwargs in manager.mock_calls]
+    assert "unsub" in call_names
+    assert "cleanup" in call_names
+    assert call_names.index("unsub") < call_names.index("cleanup")
 
 
 @pytest.mark.asyncio
