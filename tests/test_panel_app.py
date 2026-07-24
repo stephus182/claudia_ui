@@ -20,6 +20,14 @@ reaches that code use _make_mock_store/_configure_loader for the required return
 patch claudia.panel_app._write_version_snapshot so no real files land under
 docs/versions/.
 
+Task 5.3: _init_session now sends the opening status message (account status +
+trade/calendar context) via _send_opening_status before publishing the agent. The
+nine tests whose init completes patch it with an AsyncMock: without the patch they
+would still pass via the offline-degrade path, but only through incidental
+MagicMock behavior — patching keeps them focused and deterministic. The two
+failure-path tests don't patch it (their init never reaches the status code);
+test_opening_status.py covers the builders themselves.
+
 Unless a test targets the GDrive branch, GOOGLE_DRIVE_FOLDER_ID is blanked via
 patch.dict so that branch of _init_session is skipped — unit tests must never touch
 the real Drive (the developer .env sets that var, and panel_app's load_dotenv would
@@ -78,6 +86,7 @@ async def test_build_chat_app_returns_a_chat_interface_with_callback_wired():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -104,6 +113,7 @@ async def test_build_chat_app_callback_waits_for_init_then_dispatches_to_agent()
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -134,6 +144,7 @@ async def test_build_chat_app_constructs_sink_with_the_real_store():
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.agent.AsyncAnthropic"),
         patch("claudia.panel_app.PanelMessageSink") as mock_sink_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
     ):
         _configure_loader(mock_loader_cls)
         chat = _build_chat_app()
@@ -176,6 +187,7 @@ async def test_init_downloads_drive_db_before_first_store_open(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -209,6 +221,7 @@ async def test_init_continues_without_drive_when_gdrive_sync_fails(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -292,6 +305,7 @@ async def test_init_registers_doc_version_and_creates_session_with_metadata():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot") as mock_snapshot,
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -326,6 +340,7 @@ async def test_init_hash_change_sends_warning():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -357,6 +372,7 @@ async def test_init_no_warning_when_hash_unchanged_or_first_run():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -395,6 +411,7 @@ async def test_init_reads_context_docs_from_drive_when_sync_available(monkeypatc
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -407,3 +424,40 @@ async def test_init_reads_context_docs_from_drive_when_sync_available(monkeypatc
     # freshness guard / fallback can compare against (and fall back to) the file.
     mock_sync.read_text.assert_any_call("context.md", local_path=_DOCS_PATH / "context.md")
     mock_sync.read_text.assert_any_call("principles.md", local_path=_DOCS_PATH / "principles.md")
+
+
+@pytest.mark.asyncio
+async def test_init_sends_opening_status_and_stamps_trade_context():
+    """Task 5.3: after the agent is built, init must send the status message
+    (status block + trade status line) and stamp agent._trade_context BEFORE the
+    input gate opens (app.py:399-514 parity) — an agent published without its
+    trade context would silently answer without trade-history grounding."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch(
+            "claudia.panel_app.gather_status_block",
+            new=AsyncMock(return_value=("STATUS BLOCK", False)),
+        ),
+        patch(
+            "claudia.panel_app.build_trade_lines",
+            return_value=("trade status line", "TRADE CTX"),
+        ),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    texts = _message_texts(chat)
+    assert any("STATUS BLOCK" in t and "trade status line" in t for t in texts)
+    assert mock_agent_cls.return_value._trade_context == "TRADE CTX"
+    mock_agent_cls.return_value.handle_message.assert_called_once_with("hello")

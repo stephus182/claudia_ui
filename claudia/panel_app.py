@@ -40,6 +40,7 @@ from claudia.agent import ClaudIAAgent
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.gdrive_sync import GDriveSync
+from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_sink import PanelMessageSink
 
 log = logging.getLogger(__name__)
@@ -163,6 +164,27 @@ def _register_doc_version(
     return current_hash, version_label, warning
 
 
+async def _send_opening_status(
+    chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, agent: ClaudIAAgent
+) -> None:
+    """Second chat message with live account status + trade/calendar context
+    (Task 5.3 — app.py:399-514 parity). Effectively non-raising: both builders
+    catch their own IBKR/store failures internally and degrade to offline/
+    fallback text; an unexpected escape is caught by _init_session's generic
+    handler."""
+    status_block, ibkr_offline = await gather_status_block(toolkit)
+    trade_status, trade_context = await asyncio.to_thread(
+        build_trade_lines, toolkit, ibkr_offline
+    )
+    agent._trade_context = trade_context
+    chat.send(
+        f"{status_block}\n\n_{trade_status}_\n\n"
+        "_TradingView: not connected in the Panel preview._",
+        user="ClaudIA",
+        respond=False,
+    )
+
+
 def _build_chat_app() -> pn.chat.ChatInterface:
     """Per-session factory: called fresh for each new browser session by Bokeh's
     _eval_panel (confirmed live against Panel 1.9.3 — see Phase 2 header note).
@@ -277,7 +299,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             sink = PanelMessageSink(chat=chat, session_id=session_id, store=store)
             _session["store"] = store
             _session["loader"] = loader
-            _session["agent"] = ClaudIAAgent(
+            agent = ClaudIAAgent(
                 toolkit=toolkit,
                 store=store,
                 context_loader=loader,
@@ -286,6 +308,11 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 model=_MODEL,
                 doc_version=version_label,
             )
+            # Stamp trade context + send the status message BEFORE publishing the
+            # agent: an agent visible to the input gate without _trade_context
+            # would silently answer without trade-history grounding.
+            await _send_opening_status(chat, toolkit, agent)
+            _session["agent"] = agent
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
             _session["error"] = str(exc)
