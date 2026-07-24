@@ -6273,6 +6273,150 @@ screenshot attachments, `app.py:624-643`) with Panel's `FileInput`
 block shape `agent.py`'s `handle_message(images=...)` parameter already expects — no change
 needed on the `agent.py` side, only how images arrive at the callback.
 
+### Task 8.1: Screenshot upload via ChatInterface's native FileInput widget
+
+Grounded 2026-07-24 (venv source, panel 1.9.3): `ChatInterface` accepts `widgets=[...]`
+(param verified); its default widget is `ChatAreaInput`. `_click_send`
+(`panel/chat/interface.py`) natively handles a `FileInput` active widget: it wraps the
+upload as `_FileInputMessage(contents=<bytes>, mime_type=<str>, file_name=<str>)` and
+passes THAT as the callback `contents` — Panel-native file delivery, zero custom
+plumbing. `FileInput` has `accept` and `multiple` params (verified).
+`ClaudIAAgent.handle_message(user_text, images: list[dict] | None)` (`agent.py:515`)
+already accepts the Anthropic base64 vision block shape; parity source for the block
+construction: `app.py:637-656`.
+
+**Design (locked at detailing — function-first):**
+
+- `chat = pn.chat.ChatInterface(widgets=[ChatAreaInput, FileInput(accept="image/*")])`
+  — the user switches to the file tab to upload a screenshot; Panel renders the tab UI
+  itself. `multiple=False` for now (Chainlit allowed multi-attach; one-at-a-time is
+  functionally sufficient — note for the restyle plan if multi-upload is wanted).
+- In `_on_user_input`, detect the file message by duck-typing
+  (`hasattr(contents, "contents") and hasattr(contents, "mime_type")`) rather than
+  importing the private `_FileInputMessage` class — version-robust; comment cites
+  `_click_send`'s wrapping behavior. Non-image mime → honest System reply, no agent
+  call. Image → base64 block exactly as `app.py:646-654` (media_type from
+  `contents.mime_type`) and
+  `await agent.handle_message(f"(screenshot attached: {contents.file_name})",
+  images=[block])` — the fixed caption keeps the two-widget flow simple; the user's
+  analytical question rides the next text message (agent history carries the image).
+- `import base64` joins panel_app's stdlib imports.
+
+**Files:**
+
+- Modify: `claudia/panel_app.py` (widgets kwarg in `_build_chat_app`; file branch in
+  `_on_user_input`)
+- Modify: `tests/test_panel_app.py` (3 new tests)
+
+- [ ] **Step 1: Failing tests**
+
+```python
+class _FakeFileMsg:
+    """Duck-typed stand-in for panel.chat.interface._FileInputMessage (private
+    class — the production code deliberately duck-types, so the test does too)."""
+    def __init__(self, contents: bytes, mime_type: str, file_name: str):
+        self.contents = contents
+        self.mime_type = mime_type
+        self.file_name = file_name
+
+
+@pytest.mark.asyncio
+async def test_image_upload_reaches_agent_as_vision_block():
+    (standard happy-path patch stack)
+    ...
+    chat = _build_chat_app()
+    await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+    fake = _FakeFileMsg(b"\x89PNG fake", "image/png", "shot.png")
+    await asyncio.wait_for(chat.callback(fake, "User", chat), timeout=_CALLBACK_TIMEOUT)
+    call = mock_agent_cls.return_value.handle_message.call_args_list[-1]
+    assert "shot.png" in call.args[0]
+    img = call.kwargs["images"][0]
+    assert img["source"]["media_type"] == "image/png"
+    import base64 as b64
+    assert b64.b64decode(img["source"]["data"]) == b"\x89PNG fake"
+
+
+@pytest.mark.asyncio
+async def test_non_image_upload_gets_honest_refusal_no_agent_call():
+    ... fake = _FakeFileMsg(b"%PDF", "application/pdf", "doc.pdf") ...
+    assert any("image" in t.lower() for t in _message_texts(chat))
+    # handle_message called only for the earlier text message, not the PDF
+    assert mock_agent_cls.return_value.handle_message.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_has_file_widget_configured():
+    (standard stack) ...
+    from panel.widgets import FileInput
+    assert any(isinstance(w, FileInput) for w in chat.widgets)
+    fi = next(w for w in chat.widgets if isinstance(w, FileInput))
+    assert fi.accept == "image/*"
+```
+
+("(standard … stack)" = expand from the existing tests, as in Task 6.2.) Run → FAIL.
+
+- [ ] **Step 2: Implement**
+
+`_build_chat_app`: replace `chat = pn.chat.ChatInterface()` with:
+
+```python
+    chat = pn.chat.ChatInterface(
+        widgets=[
+            pn.chat.ChatAreaInput(placeholder="Send a message"),
+            pn.widgets.FileInput(accept="image/*"),
+        ]
+    )
+```
+
+`_on_user_input`, after the init gate + agent-None check, before the text dispatch:
+
+```python
+        if hasattr(contents, "contents") and hasattr(contents, "mime_type"):
+            # Panel's ChatInterface wraps a FileInput send as a _FileInputMessage
+            # (private class — duck-typed here for version robustness; see
+            # panel/chat/interface.py _click_send). app.py:637-656 parity.
+            if not (contents.mime_type or "").startswith("image/"):
+                chat.send(
+                    "Only image attachments are supported (TradingView screenshots).",
+                    user="System", respond=False,
+                )
+                return
+            block = {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": contents.mime_type,
+                    "data": base64.b64encode(contents.contents).decode(),
+                },
+            }
+            await agent.handle_message(
+                f"(screenshot attached: {contents.file_name})", images=[block]
+            )
+            return
+```
+
+(`_on_user_input`'s `contents` parameter type widens from `str` to `Any` — adjust the
+annotation and docstring.)
+
+- [ ] **Step 3: Gates**
+
+File tests 40 + 3 = 43 (adjust to post-6.2-fix-pass baseline); full suite +3; ruff +
+mypy clean.
+
+- [ ] **Step 4: Manual smoke**
+
+Live server + Playwright: switch to the file tab, upload a real PNG (grab any small
+PNG; a TradingView screenshot if available), send → the "(screenshot attached: …)"
+message appears and the agent responds to the image (with ANTHROPIC_API_KEY present the
+reply should reference visible content). Non-image upload → honest System refusal.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add claudia/panel_app.py tests/test_panel_app.py
+git commit -m "feat: TradingView screenshot upload via ChatInterface FileInput (Panel-native)"
+```
+
 ## Phase 9: TradingView action buttons + sidecar tool merge — outline
 
 **Goal:** Port `tradingview.py`'s two `@cl.action_callback`s (`copy_pinescript`,
