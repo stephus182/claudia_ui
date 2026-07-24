@@ -5242,6 +5242,25 @@ git commit -m "feat: Panel session-end cleanup + End Session/Start Gateway butto
 
 ### Task 5.7: Background Flex sync decision + sync + store.db Drive backup
 
+**✅ Completed 2026-07-24 — PHASE 5 COMPLETE.** Commits `ea960f1` (implementation) +
+`dc8238b` (review fixes) + `556dfe8` (Phase-5 coherence tidy). Full cycle: implement →
+spec review (COMPLIANT — byte-parity on all strings; tz handling verified against the
+store's aware timestamps; drain sufficiency proven over 200 trials) → quality review
+(Approve-with-fixes: 1 Important + polish + a Phase-5-wide coherence check of the whole
+file). Key fixes: the plan-locked failure-logging done-callback on the flex background
+task (implementation had shipped app.py's weaker discard-only shape) with a test
+proving task-death is logged, not swallowed; wiring-test IndexError guard; kwargs
+`get_log`; two upstream known-gaps recorded in `docs/project-status.md` (empty-store
+first-sync skip; `upload_db` swallowed errors). The tidy commit (behavior-neutral,
+AST-verified: zero differing nodes) gave the file section dividers, call-order layout,
+and the `drive_cfg` rename. Tests 27 → 34 in test_panel_app.py; suite 406 → 413,
+1 warning (third-party only). **Deferred to Phase 6 detailing: a unified
+`_spawn_background_task` helper** (one blessed spawn pattern — `_cleanup_tasks` and
+`_background_tasks` currently carry two done-callback shapes) — pick it up when Phase
+6's alert delivery spawns its first task. Deviation note: the M2 parity cite uses
+worktree coordinates (`app.py:427-429 + 550-617`), consistent with every other cite in
+the file.
+
 Grounded 2026-07-24 against verified signatures: `store.get_log(n=100, event=None) ->
 list[dict]` (`ibkr_core_mcp/store.py:775`); coverage dict carries `stale` and
 `last_trading_day` keys (`store.py:400-401`); `GDriveCache.upload_account_file(
@@ -5282,7 +5301,7 @@ Task 5.6b's `_send_opening_status` return.
   `_maybe_background_flex_sync`; one call in `_init_session`)
 - Modify: `tests/test_panel_app.py` (fixture extension + 6 new tests)
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 New tests. Seam design: the decision/sync unit tests must exercise the REAL function
 while every init-driving test gets an AsyncMock seam — and the 27 existing tests must
@@ -5425,7 +5444,7 @@ async def test_init_awaits_flex_sync_seam_with_gather_offline_flag(flex_sync):
 (`import logging` in the test module if absent.) Run → unit tests FAIL
 (no `_maybe_background_flex_sync`); wiring test FAILS (seam never awaited).
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `claudia/panel_app.py` — `from datetime import UTC, datetime` import;
 `_background_tasks: set[asyncio.Task[None]] = set()` next to `_cleanup_tasks`.
@@ -5524,12 +5543,12 @@ pyproject `[tool.pytest.ini_options]` gains
 `markers = ["integration: ...existing...", "real_flex_sync: test exercises the real Flex-sync decision function (autouse seam disabled)"]`
 — READ the existing markers config first and extend, don't clobber.
 
-- [ ] **Step 3: Gates**
+- [x] **Step 3: Gates**
 
 `pytest tests/test_panel_app.py -v` → 27 + 6 = 33; full suite → 406 + 6 = **412**;
 ruff + mypy clean; warning count still 1.
 
-- [ ] **Step 4: Manual smoke (no gateway)**
+- [x] **Step 4: Manual smoke (no gateway)**
 
 `python -m claudia.panel_app` (INFO logging driver as before): with the gateway
 offline, the decision must short-circuit silently (ibkr_offline=True → no coverage
@@ -5537,7 +5556,7 @@ reads — verify no flex log lines). This smoke can't reach the sync path (needs
 gateway); the sync body is covered by unit tests + the identical app.py logic already
 live-verified 2026-06-23 (Flex integration memory). State this in the report.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add claudia/panel_app.py tests/test_panel_app.py pyproject.toml
