@@ -36,6 +36,7 @@ otherwise activate the branch).
 
 import asyncio
 import os
+import threading
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -496,3 +497,69 @@ async def test_init_offline_flag_flows_from_gather_to_trade_lines():
 
     mock_build.assert_called_once_with(mock_toolkit, True)
     assert any("OFFLINE BLOCK" in t for t in _message_texts(chat))
+
+
+@pytest.mark.asyncio
+async def test_init_starts_doc_watcher_with_alert_callback():
+    """Task 5.4: init must register a hot-reload callback on the loader
+    (app.py:275-294 parity)."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    loader = mock_loader_cls.return_value
+    loader.start_watching.assert_called_once()
+    assert callable(loader.start_watching.call_args.args[0])
+
+
+@pytest.mark.asyncio
+async def test_doc_change_callback_delivers_alert_from_a_plain_thread():
+    """The D4-verified loop bridge: the watchdog callback fires in a plain OS
+    thread with no asyncio/Bokeh context; the alert must still land in the chat
+    via loop.call_soon_threadsafe. The test invokes the REAL registered callback
+    from a real thread — if the bridge is replaced with a naive chat.send-only
+    callback this still passes (direct sends work too, per the D4 probe), but if
+    the callback raises on a foreign thread or the partial wiring breaks, the
+    alert never renders and this fails."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        on_reload = mock_loader_cls.return_value.start_watching.call_args.args[0]
+        t = threading.Thread(target=on_reload, args=("context.md", "new prompt text"))
+        t.start()
+        t.join(timeout=5)
+        assert not t.is_alive()
+        # call_soon_threadsafe scheduled the send onto THIS loop — yield to run it.
+        await asyncio.sleep(0.05)
+
+    texts = _message_texts(chat)
+    assert any("Document updated" in t_ and "context.md" in t_ for t_ in texts)
