@@ -54,7 +54,7 @@ before the API call. `ticker` is **not** stripped (valid IBKR field).
 
 ## Instrument-specific paths
 
-`execute_staged_order()` in `order_flow.py` resolves `conid` in this order: **(1)** the
+`_execute_staged_order_core()` in `order_flow.py` resolves `conid` in this order: **(1)** the
 proposal's own `conid` field, if set, always wins — no further lookup; **(2)** otherwise,
 routing depends on `sec_type`:
 
@@ -82,8 +82,8 @@ Source (536-B requirement): https://www.interactivebrokers.com/campus/ibkr-api-p
 ## Order Cancellation
 
 Mirrors the placement flow exactly: ClaudIA emits an `order-cancel-proposal` JSON block →
-`order_flow.render_cancel_proposal()` shows a "Cancel this order" / "Keep order" button pair →
-`execute_cancel_order()` calls `IBKRClient.cancel_order(account_id, order_id)` behind the same
+`panel_order_flow.render_cancel_proposal()` shows a "Cancel this order" / "Keep order" button pair →
+`_execute_cancel_order_core()` calls `IBKRClient.cancel_order(account_id, order_id)` behind the same
 Gate 1 (Touch ID) + Gate 2 (AppKit dialog) pair used by placement — the gates fire inside
 `cancel_order()` itself, not in `claudia_ui`. No reply chain to resolve (a single `DELETE` call).
 
@@ -118,7 +118,7 @@ Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#cancel
 account_id, order=None)` in `ibkr_core_mcp/order_confirm.py` takes an optional `order` param —
 when provided, the dialog displays the same symbol/side/qty/order type/price/TIF detail the place
 and modify Gate 2 dialogs already showed. `cancel_order()` gained a matching optional
-`order_details` param; `order_flow.py`'s `execute_cancel_order()` passes its in-hand `proposal`
+`order_details` param; `order_flow.py`'s `_execute_cancel_order_core()` passes its in-hand `proposal`
 through (`ibkr.cancel_order(account_id, order_id, order_details=proposal)`). See the resolved
 Known Gaps entry in `docs/project-status.md` for commit references and two flagged (non-blocking)
 residuals.
@@ -161,9 +161,9 @@ response uses **snake_case** (`order_id`, `order_type`, `order_status`, `tif`, `
 `size`, `total_size`, `order_not_editable`, `cannot_cancel_order`) — a different convention from
 `get_live_orders`'s response, which is **camelCase** (`orderId`, `orderType`, `secType`,
 `timeInForce`, `status`, `remainingQuantity`). Neither matches the modify/place request body's
-own camelCase field names (`orderType`, `tif`, `quantity`, `price`, `auxPrice`). `execute_modify_order()`
+own camelCase field names (`orderType`, `tif`, `quantity`, `price`, `auxPrice`). `_execute_modify_order_core()`
 therefore builds a **fresh** order body from the proposal's typed fields (mirroring
-`execute_staged_order()`) rather than forwarding anything from `get_order_status` verbatim —
+`_execute_staged_order_core()`) rather than forwarding anything from `get_order_status` verbatim —
 `modify_order()` does no `_`-prefix stripping (unlike `place_order()`), so display-only proposal
 fields (`_changed_fields`, `_previous_values`, `reason`) must never reach the request body.
 Sources: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#order-status ,

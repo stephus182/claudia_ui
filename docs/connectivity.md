@@ -262,7 +262,8 @@ their new hashes.
 claudia/status.py          — ConnectivityChecker, check_ibkr(), check_gdrive(), check_tradingview()
 claudia/gdrive_sync.py     — GDriveSync.ping(), upload_db(), download_db()
 ibkr_core_mcp/client.py   — IBKRClient.ping(), tickle(), get_auth_status()
-claudia/app.py             — ConnectivityChecker construction (passes gdrive_sync=)
-claudia/assets/custom.js   — 5s status bar poll (POLL_MS) → GET /api/status → lights update
-claudia/app.py:273-278     — GET /api/status route + response shape
+claudia/panel_app.py       — ConnectivityChecker construction (passes gdrive_sync=); pn.indicators.BooleanStatus dots updated in-session via a periodic callback
+# Post Phase-11 cutover: status is shown by in-session Panel BooleanStatus indicators.
+# The Chainlit custom.js status bar polling GET /api/status was removed (no such HTTP route
+# in panel_app — the dots are pushed over Panel's own websocket).
 ```

@@ -31,9 +31,10 @@ log = logging.getLogger(__name__)
 
 
 def _make_send_status(chat: pn.chat.ChatInterface) -> SendStatus:
-    """Bind a send_status callback to one specific chat session — the Panel
-    counterpart to order_flow.py's module-level _cl_send_status, which doesn't need
-    binding since Chainlit's cl.Message is already session-scoped via contextvars."""
+    """Bind a send_status callback to one specific chat session. order_flow's
+    _execute_*_order_core functions call this SendStatus `(text, author) -> None` to
+    surface progress and results; binding it to `chat` routes those messages to the
+    right Panel session (each session gets its own ChatInterface)."""
     async def _send_status(text: str, author: str) -> None:
         chat.send(text, user=author, respond=False)
     return _send_status
