@@ -3814,6 +3814,25 @@ git commit -m "feat: Panel opening status block — account/positions/P&L/orders
 
 ### Task 5.4: Watchdog hot-reload alert via the D4 loop bridge
 
+**✅ Completed 2026-07-23.** Commit `24a19aa`, single-commit full cycle: implement → spec
+review (COMPLIANT — insertion point, byte-identical alert text vs app.py:286-287, and
+both gates re-verified independently) → quality review (**Approve** outright; the alert
+tests were re-run 5x with no flakes and both timing constructs proven deterministic, not
+racy — `call_soon_threadsafe` enqueues before the thread returns, so any yield runs it).
+Live smoke: Playwright browser rendered the real "**Document updated:** `context.md`
+reloaded." alert ~3s after `touch docs/context.md`, clean logs. Tests 13 → 15; suite
+390 → 392. **Riders recorded for Task 5.6** (from both reviews, deferrable but must land
+with cleanup): (1) session-end cleanup must also cover the init-FAILURE path — if
+anything after `start_watching` raises, the watch leaks with a live closure over `chat`;
+(2) the watchdog **shared-ObservedWatch unschedule trap**: `ObservedWatch.__eq__`
+compares by (path, recursive) and `BaseObserver.unschedule` deletes ALL handlers for
+that key — a naive `loader.stop_watching()` on one session's end would silently kill
+hot-reload alerts in every other live session (pre-exists in app.py's `on_chat_end`
+too; Task 5.6 must verify actual multi-session behavior of `stop_watching` before
+wiring it); (3) optional: wrap the deferred `chat.send` in a session-tagged function
+instead of a bare partial so a send failure logs with session_id; (4) optional
+test-teeth: assert the "Principles apply from your next message." tail too.
+
 Grounded 2026-07-23: `ContextLoader.start_watching(on_reload: Callable[[str, str], None])`
 (`context_loader.py:104` — registers on the shared module-level Observer, per-instance
 handlers, so multiple concurrent sessions each watching their own loader is safe;
@@ -3843,7 +3862,7 @@ job is the user-visible alert. The delivery idiom is D4's proven loop bridge (se
   `_init_session`)
 - Modify: `tests/test_panel_app.py` (2 new tests)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_panel_app.py` (existing helpers/patch idioms; `threading` needs
 adding to the imports):
@@ -3918,7 +3937,7 @@ async def test_doc_change_callback_delivers_alert_from_a_plain_thread():
 Run: `pytest tests/test_panel_app.py -k "watcher or doc_change" -v`
 Expected: both FAIL (`start_watching` never called).
 
-- [ ] **Step 2: Implement the watcher block**
+- [x] **Step 2: Implement the watcher block**
 
 `claudia/panel_app.py` — add `from functools import partial` to the stdlib imports. In
 `_init_session`, immediately after the FileNotFoundError guard's `return` (i.e. once the
@@ -3948,17 +3967,17 @@ docs are known-valid), insert:
             loader.start_watching(_on_doc_change)
 ```
 
-- [ ] **Step 3: Run tests to verify pass**
+- [x] **Step 3: Run tests to verify pass**
 
 Run: `pytest tests/test_panel_app.py -v` → 15/15 pass.
 
-- [ ] **Step 4: Full suite + linters**
+- [x] **Step 4: Full suite + linters**
 
 Run: `pytest -m "not integration" -q` → 390 + 2 = 392, 0 failures.
 `ruff check claudia/panel_app.py tests/test_panel_app.py` + `mypy claudia/panel_app.py`
 → clean.
 
-- [ ] **Step 5: Manual smoke (no gateway needed)**
+- [x] **Step 5: Manual smoke (no gateway needed)**
 
 `uvicorn claudia.panel_app:app --port 8001`, open http://localhost:8001/ with the
 Playwright browser, wait for the welcome + status messages, then `touch docs/context.md`
@@ -3966,7 +3985,7 @@ Playwright browser, wait for the welcome + status messages, then `touch docs/con
 ~3s: the "**Document updated:** `context.md` reloaded." message renders in the page.
 No server tracebacks. Kill the server.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add claudia/panel_app.py tests/test_panel_app.py
