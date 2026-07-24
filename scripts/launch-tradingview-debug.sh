@@ -57,7 +57,10 @@ if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
 fi
 
 echo "▶ Launching TradingView with --remote-debugging-port=$DEBUG_PORT…"
-open -a "$APP_NAME" --args --remote-debugging-port="$DEBUG_PORT"
+# Guarded so a not-installed TradingView gives a clear message instead of
+# aborting on `set -e` before the timeout hint below.
+open -a "$APP_NAME" --args --remote-debugging-port="$DEBUG_PORT" \
+    || { echo "✕ Could not launch $APP_NAME — is TradingView Desktop installed?" >&2; exit 1; }
 
 echo "▶ Waiting up to ${WAIT_SECONDS}s for the CDP port to come up…"
 for _ in $(seq 1 "$WAIT_SECONDS"); do

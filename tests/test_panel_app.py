@@ -1654,6 +1654,18 @@ async def test_connect_tradingview_offline_paths_return_true_without_wiring(monk
     agent_b.set_tv_bridge.assert_not_called()
     checker.set_tv_bridge.assert_not_called()
 
+    # (c) sidecar up + CDP up but it exposes NO tools → still offline, no wiring.
+    agent_c = MagicMock()
+    bridge_c = MagicMock()
+    bridge_c.get_tools.return_value = []
+    with (
+        patch("claudia.panel_app._get_tv_bridge", new=AsyncMock(return_value=bridge_c)),
+        patch("claudia.panel_app.check_cdp_running", return_value=True),
+    ):
+        assert await _connect_tradingview(agent_c) is True
+    agent_c.set_tv_bridge.assert_not_called()
+    checker.set_tv_bridge.assert_not_called()
+
 
 @pytest.mark.real_tv_connect
 @pytest.mark.asyncio
@@ -1777,6 +1789,56 @@ async def test_launch_tv_button_click_success_wires_agent_in_order(monkeypatch):
     assert tv_btn.disabled is True
     texts = _message_texts(chat)
     assert any("✅ TradingView connected (2 tools available)." in t for t in texts)
+
+
+@pytest.mark.real_tv_connect
+@pytest.mark.asyncio
+async def test_launch_tv_click_stops_stale_bridge_before_rebuild(monkeypatch):
+    """The rebuild must tear down the stale (CDP-less) bridge FIRST: on a Launch
+    click, a resident _tv_bridge.stop() is awaited BEFORE _get_tv_bridge rebuilds
+    (removing the stop() line would leak the old sidecar connection)."""
+    old_bridge = MagicMock()
+    old_bridge.stop = AsyncMock()
+    launched_bridge = MagicMock()
+    launched_bridge.get_tools.return_value = [{"name": "tv_a"}]
+
+    order = MagicMock()
+    launch_mock = AsyncMock(return_value=True)
+    get_bridge_mock = AsyncMock(return_value=launched_bridge)
+    order.attach_mock(old_bridge.stop, "stop")
+    order.attach_mock(get_bridge_mock, "get_bridge")
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch("claudia.panel_app._get_tv_bridge", new=get_bridge_mock),
+        patch("claudia.panel_app.check_cdp_running", return_value=False),  # init → offline
+        patch("claudia.panel_app.launch_tradingview", new=launch_mock),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hi", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        tv_btn = next(b for b in _find_buttons(chat) if b.name == "Launch TradingView")
+        # A stale bridge is resident in the module global (init's patched
+        # _get_tv_bridge never set the real global); the click must stop it first.
+        monkeypatch.setattr("claudia.panel_app._tv_bridge", old_bridge)
+        order.reset_mock()
+        await _get_click_callback(tv_btn)(None)
+
+    old_bridge.stop.assert_awaited_once()
+    call_order = [name for name, _, _ in order.mock_calls if name in ("stop", "get_bridge")]
+    assert call_order == ["stop", "get_bridge"]
 
 
 @pytest.mark.real_tv_connect

@@ -215,11 +215,15 @@ async def _connect_tradingview(agent: ClaudIAAgent) -> bool:
     """Connect the tradingview-mcp sidecar and merge its tools into this session's
     agent. Returns tv_offline (True → offer the "Launch TradingView" button).
 
-    app.py:324-346 parity, minus the status STRING (the Panel status block renders
-    its own TV line via _send_opening_status). On success — sidecar up AND
-    TradingView Desktop's CDP port (9222) open — wires the bridge into the agent
-    (tool merge) and the ConnectivityChecker. Every other outcome (sidecar up but
-    CDP down, no tools, or ANY exception) logs and returns tv_offline=True.
+    Computes tv_offline like app.py:324-346; the agent/checker wiring mirrors
+    app.py's constructor injection (ClaudIAAgent(tv_bridge=...) app.py:390,
+    ConnectivityChecker.set_tv_bridge app.py:364) — panel_app uses set_tv_bridge
+    here because TV connects AFTER the agent is built. The status STRING is not
+    ported (the Panel status block renders its own TV line via
+    _send_opening_status). On success — sidecar up AND TradingView Desktop's CDP
+    port (9222) open — wires the bridge into the agent (tool merge) and the
+    ConnectivityChecker. Every other outcome (sidecar up but CDP down, no tools,
+    or ANY exception) logs and returns tv_offline=True.
 
     TV is OPTIONAL: a TV failure must NEVER block init, so the whole body is
     wrapped — parity with app.py's try/except that degrades silently
