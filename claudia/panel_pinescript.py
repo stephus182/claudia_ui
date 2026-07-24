@@ -23,6 +23,7 @@ the message rendered is still picked up at click time.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import TYPE_CHECKING
@@ -35,6 +36,24 @@ if TYPE_CHECKING:
     from claudia.tradingview import TradingViewBridge
 
 log = logging.getLogger(__name__)
+
+
+def _pine_inject_succeeded(result: str) -> bool:
+    """True only on an explicit success signal from pine_set_source. Fail-safe:
+    a non-JSON result (e.g. "TradingView is not connected.", a "…failed." string)
+    or success != True reads as FAILURE — never claim an inject that didn't happen
+    (same polarity as order_flow's _is_ibkr_rejection).
+
+    TradingViewBridge.execute (tradingview.py:336-362) returns a STRING that is
+    either the sidecar's jsonResult JSON ({"success": true, ...} /
+    {"success": false, "error": ...}) or a literal status string on the
+    no-session / exception paths — so the result must be classified, not trusted.
+    """
+    try:
+        payload = json.loads(result)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(payload, dict) and payload.get("success") is True
 
 
 def extract_pine_blocks(text: str) -> list[str]:
@@ -90,7 +109,18 @@ def _render_pine_block(
                 )
                 return
             result = await bridge.execute("pine_set_source", {"source": code})
-            chat.send(f"Injected into the Pine Editor. {result}", user="ClaudIA", respond=False)
+            # Classify — execute() returns the sidecar's own {"success": ...} JSON (or a
+            # literal status string). Reporting "Injected" on a {"success": false} result
+            # would be a false-success (same class as the field-8089 order bug); the
+            # project's data-integrity standard forbids claiming success on failure.
+            if _pine_inject_succeeded(result):
+                chat.send("✅ Injected into the TradingView Pine Editor.", user="ClaudIA", respond=False)
+            else:
+                chat.send(
+                    f"✕ Injection did not complete — copy the script manually.\n\n{result}",
+                    user="System",
+                    respond=False,
+                )
         except Exception:
             # No raise — mirror panel_order_flow's honest-degradation handlers. execute()
             # itself never raises (tradingview.py:339), but the getter / chat.send could.

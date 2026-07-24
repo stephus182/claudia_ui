@@ -12,7 +12,11 @@ import panel as pn
 import pytest
 from panel.links import Link
 
-from claudia.panel_pinescript import extract_pine_blocks, render_pinescript_blocks
+from claudia.panel_pinescript import (
+    _pine_inject_succeeded,
+    extract_pine_blocks,
+    render_pinescript_blocks,
+)
 from tests.conftest import _get_click_callback
 
 
@@ -156,6 +160,21 @@ async def test_inject_when_getter_itself_none_sends_not_connected():
     assert "not connected" in chat.send.call_args.args[0].lower()
 
 
+def test_pine_inject_succeeded_classifies_result_shapes():
+    # Explicit success signal — the only truthy case.
+    assert _pine_inject_succeeded('{"success": true}') is True
+    assert _pine_inject_succeeded('{"success": true, "source": "internal_api"}') is True
+    # Explicit failure from the sidecar.
+    assert _pine_inject_succeeded('{"success": false, "error": "CDP connection failed"}') is False
+    # Fail-safe: non-JSON status strings from execute()'s no-session / exception paths.
+    assert _pine_inject_succeeded("TradingView is not connected.") is False
+    assert _pine_inject_succeeded("TradingView tool 'pine_set_source' failed.") is False
+    # Fail-safe: malformed / non-dict JSON never reads as success.
+    assert _pine_inject_succeeded("{not valid json") is False
+    assert _pine_inject_succeeded("true") is False  # valid JSON, but not a {"success": true} dict
+    assert _pine_inject_succeeded("") is False
+
+
 @pytest.mark.asyncio
 async def test_inject_success_calls_pine_set_source_and_confirms():
     chat = _make_chat()
@@ -170,9 +189,51 @@ async def test_inject_success_calls_pine_set_source_and_confirms():
 
     bridge.execute.assert_awaited_once_with("pine_set_source", {"source": code})
     last = chat.send.call_args
-    assert "Injected into the Pine Editor" in last.args[0]
+    assert last.args[0] == "✅ Injected into the TradingView Pine Editor."
     assert last.kwargs["user"] == "ClaudIA"
     assert inject_btn.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_inject_sidecar_reports_failure_is_not_reported_as_success():
+    """The false-success fix: a {"success": false} sidecar result must NOT be prefixed
+    'Injected'. It surfaces the honest failure + the raw error, as a System message."""
+    chat = _make_chat()
+    text = "```pine\nstudy(\"A\")\n```"
+    bridge = MagicMock()
+    bridge.execute = AsyncMock(
+        return_value='{"success": false, "error": "CDP connection failed after 5 attempts"}'
+    )
+    await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: bridge)
+
+    inject_btn = _first_row(chat)[1]
+    await _get_click_callback(inject_btn)(None)
+
+    last = chat.send.call_args
+    assert "✅" not in last.args[0]
+    assert "did not complete" in last.args[0]
+    assert "CDP connection failed after 5 attempts" in last.args[0]  # raw error surfaced
+    assert last.kwargs["user"] == "System"
+    assert inject_btn.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_inject_non_json_status_string_is_treated_as_failure():
+    """execute()'s no-session path returns the literal 'TradingView is not connected.'
+    string (not JSON) — fail-safe classifies it as a failure, never 'Injected'."""
+    chat = _make_chat()
+    text = "```pine\nstudy(\"A\")\n```"
+    bridge = MagicMock()
+    bridge.execute = AsyncMock(return_value="TradingView is not connected.")
+    await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: bridge)
+
+    inject_btn = _first_row(chat)[1]
+    await _get_click_callback(inject_btn)(None)
+
+    last = chat.send.call_args
+    assert "✅" not in last.args[0]
+    assert "did not complete" in last.args[0]
+    assert last.kwargs["user"] == "System"
 
 
 @pytest.mark.asyncio
