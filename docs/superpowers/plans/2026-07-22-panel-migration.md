@@ -6862,6 +6862,35 @@ commits; never `--amend`):**
 
 Final step: independent code review of the whole cutover diff, then close the migration.
 
+**✅ PHASE 11 COMPLETE (2026-07-24) — MIGRATION COMPLETE.** Chainlit is fully removed;
+`claudia/panel_app.py` is the sole entry point. Commits: `d9928bb` (plan/audit), `e6d220d`
+(A+B+C), `cd7bcec` (D + dep drop + uninstall), `77a7484` (docs), `89c77a2` (final-review
+cleanup).
+- **Gates:** 451 passed, ruff clean, mypy clean, all modules import — with `chainlit`
+  uninstalled. `agent.py` diff across all of Phase 11 is **empty** (Hard Rule #3 held).
+- **Boot smoke:** `python -m claudia.panel_app` served `HTTP 200` with `<title>ClaudIA</title>`
+  on an isolated port (8002, no GDrive, temp DB); the live 8001 server was untouched.
+- **Final independent review:** the load-bearing question — did the Group D retarget preserve
+  100% of the order-execution safety-critical test coverage — was answered **YES**. Every
+  Gate-1/Gate-2, place/cancel/modify, 200-with-rejection, FUT 536-B, FOP-guard,
+  conid-override, decision-logging, and modify-immutability path retains an equivalent
+  assertion against `_execute_*_order_core`; the 9 deleted tests were exclusively wrapper
+  plumbing (JSON re-parse + Chainlit button-removal, the latter re-covered — more strongly,
+  disable-before-await — by the Panel button-disable tests). The review's CHANGES-REQUESTED
+  items were cleanup only, all fixed in `89c77a2`: (I-1) `.chainlit/` was still tracked
+  because a mid-work pytest run regenerated it while chainlit was still imported+installed —
+  now `git rm`-ed and can't regenerate (chainlit uninstalled); (I-2) `docs/order-api-reference.md`
+  function names; (M-1) `docs/connectivity.md` app.py/`/api/status`; (M-2) a stale
+  `panel_order_flow.py` comment.
+- **Deferred (recorded, not blocking migration):** ONE live fetch→render chart smoke (Task
+  10.1 Step 4) needs an authenticated gateway; the deep restyle (Phase 7, separate plan); the
+  anti-fabrication guardrail spec; a bounded `TradingViewBridge.start()` handshake; the
+  `upload_db` returns-bool honesty fix (pre-existing, byte-parity with the old app.py — see
+  `docs/project-status.md` Known Gaps); ibkr_core_mcp cross-repo follow-ups.
+
+**Next:** `superpowers:finishing-a-development-branch` — merge `panel-migration` → `main`
+(user's call). The branch is feature-complete and green.
+
 ---
 
 ## Living-document protocol
