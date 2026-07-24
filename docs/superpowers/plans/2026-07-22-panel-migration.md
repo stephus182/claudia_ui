@@ -6009,6 +6009,35 @@ registry this task adds) are designed to fix — do not attempt to fix it here.
 
 ### Task 6.2: Per-session status indicators + alert delivery (completes Phase 6)
 
+**✅ Completed 2026-07-24 — PHASE 6 COMPLETE.** Commits `9366083` (implementation —
+committed by the controller after the implementer was killed mid-task by a spend limit,
+pre-self-review) + `3f166f2` (spec-review fixes) + `37e7dfd` (quality-review test
+teeth). Full cycle with an unusual provenance handled deliberately: the spec review was
+the FIRST close read of the code and it delivered — two real catches: (1) **TV
+indicator key mismatch** (`"tradingview"` vs the checker's real `"tv"` — dead wiring
+introduced by this plan's own sketch, invisible while tv_bridge=None, would have broken
+silently at Phase 9; now renamed + pinned by a contract test against the REAL
+ConnectivityChecker's key set so impl and test can never share a wrong assumption
+again); (2) the per-session `ValueError: A callback of the same type…` — mechanism
+LIVE-REPRODUCED with instrumented registration stacks: a build-time `chat.send` HOLDS
+the Bokeh document; `add_periodic_callback(start=True)` registers doc-side pre-session;
+ServerSession.__init__'s sweep registers it (succeeds — why dots worked); the deferred
+unhold replays `SessionCallbackAdded` into a duplicate `_assign_remover` → the error,
+once per session, noisy-but-functional. **Fix: `start=False` +
+`pn.state.onload(cb.start)`** — post-fix smoke on :8002: ZERO ValueErrors, dots
+gray→green live (IBKR+GDrive, gateway authenticated), TV gray (correct until Phase 9),
+clean SIGINT. Plus an init-race unsubscribe guard (destroy-during-init would leak a
+process-lifetime subscription holding a dead chat) with a deterministic teeth-checked
+test. Quality review (Approve-with-fixes): serve-target and onload-deferral assertions
+added — BOTH teeth-proven by reverting the production line and watching the test fail;
+timer-leak hygiene; ordering assert made real. Live smoke evidence: full-page
+screenshot of dots above the chat with the LIVE gateway (IBKR green, GDrive green — the
+dots are born gray, so green = periodic refresh + websocket push proven end-to-end);
+the live opening status block rendered real account data. Tests 34 → 42 in
+test_panel_app.py; suite 413 → 421, 1 warning (third-party only). Note for the restyle
+plan: BooleanStatus dots have no accessible role (a11y snapshots prune them) — add
+labels/tooltips in the restyle.
+
 Grounded 2026-07-24: `pn.indicators.BooleanStatus(value: bool, color: str)` re-verified
 live in the venv (colors incl. `success`/`danger`/`dark`);
 `pn.state.add_periodic_callback` exists (session-scoped auto-cleanup verified at source
@@ -6054,7 +6083,7 @@ ERROR→(True, danger), UNKNOWN→(False, dark) per the Phase 6 design note.
   `main()` serve target)
 - Modify: `tests/test_panel_app.py` (~6 new tests)
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```python
 def test_apply_status_maps_enum_to_value_and_color():
@@ -6132,7 +6161,7 @@ async def test_end_session_button_unsubscribes_too():
 the named existing tests — the implementer expands them to real code; every stack
 already exists verbatim in the file.) Run → all FAIL (`_apply_status` etc. missing).
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 `claudia/panel_app.py` — init-flow helpers section gains:
 
@@ -6231,12 +6260,12 @@ through as it already is). `_init_session` singleton block, after
 `main()`: `pn.serve(_build_session_root, ...)` (kwargs unchanged — the locked-kwargs
 test's serve target assertion, if any, updates accordingly).
 
-- [ ] **Step 3: Gates**
+- [x] **Step 3: Gates**
 
 `pytest tests/test_panel_app.py -v` → 34 + 6 = 40; full suite → 413 + 6 = **419**,
 1 warning; ruff + mypy clean.
 
-- [ ] **Step 4: Manual smoke (no gateway)**
+- [x] **Step 4: Manual smoke (no gateway)**
 
 `python -m claudia.panel_app` + Playwright: three gray dots render above the chat;
 within ~10s the GDrive dot goes green (checker's first poll; creds present) while
@@ -6244,7 +6273,7 @@ IBKR stays red/gray per gateway state — confirm at least one dot CHANGES state
 live page (proves the websocket push + periodic refresh loop end-to-end). Buttons +
 chat still work below the indicator row. Kill cleanly.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add claudia/panel_app.py tests/test_panel_app.py
