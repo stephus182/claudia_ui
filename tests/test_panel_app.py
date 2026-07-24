@@ -1820,4 +1820,6 @@ async def test_launch_tv_button_click_failure_shows_manual_launch(monkeypatch):
     get_bridge_mock.assert_not_awaited()      # no rebuild on failed launch
     agent.set_tv_bridge.assert_not_called()
     texts = _message_texts(chat)
-    assert any("open -a 'TradingView' --args --remote-debugging-port=9222" in t for t in texts)
+    # Points at the one-command quit+relaunch helper — the debug port can only be
+    # set at launch, so an already-running TV must be relaunched, not patched.
+    assert any("./scripts/launch-tradingview-debug.sh" in t for t in texts)

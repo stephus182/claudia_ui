@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Launch (or relaunch) TradingView Desktop with the CDP remote-debugging port
+# open, so the tradingview-mcp sidecar can drive it.
+#
+# WHY THIS EXISTS: the debug port (--remote-debugging-port=9222) can only be set
+# at launch. If TradingView is ALREADY running without it, ClaudIA's in-app
+# "Launch TradingView" button / launch_tradingview() cannot fix it — they refuse
+# to quit your app for you and instead point here. This script does the full
+# quit → relaunch → wait-for-CDP cycle in one command.
+#
+# macOS only (TradingView Desktop + `open -a`). Safe to re-run: if CDP is
+# already up it exits immediately without touching the running app.
+#
+# Usage:  ./scripts/launch-tradingview-debug.sh
+# Exit:   0 = CDP port is up (ready);  1 = failed to open the port in time.
+#
+# TradingView auto-saves chart layouts to your account, so the quit below does
+# not lose your workspace. Source for the debug-port approach:
+# https://github.com/tradesdontlie/tradingview-mcp/blob/main/SETUP_GUIDE.md
+
+set -euo pipefail
+
+APP_NAME="TradingView"
+DEBUG_PORT="${TV_DEBUG_PORT:-9222}"
+WAIT_SECONDS="${TV_WAIT_SECONDS:-30}"
+
+cdp_up() {
+    # 0 if something is accepting connections on the CDP port, 1 otherwise.
+    # nc -z is the most portable TCP probe available by default on macOS.
+    nc -z localhost "$DEBUG_PORT" >/dev/null 2>&1
+}
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "✕ This helper is macOS-only. On other platforms launch TradingView with" >&2
+    echo "  --remote-debugging-port=$DEBUG_PORT yourself." >&2
+    exit 1
+fi
+
+if cdp_up; then
+    echo "✅ TradingView CDP port $DEBUG_PORT already open — nothing to do."
+    exit 0
+fi
+
+if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+    echo "▶ TradingView is running without the debug port — quitting it first…"
+    # Graceful quit (lets TradingView flush state); fall back to a hard kill.
+    osascript -e "quit app \"$APP_NAME\"" >/dev/null 2>&1 || true
+    for _ in $(seq 1 10); do
+        pgrep -x "$APP_NAME" >/dev/null 2>&1 || break
+        sleep 1
+    done
+    if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+        echo "  …still running, forcing quit."
+        pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+        sleep 2
+    fi
+fi
+
+echo "▶ Launching TradingView with --remote-debugging-port=$DEBUG_PORT…"
+open -a "$APP_NAME" --args --remote-debugging-port="$DEBUG_PORT"
+
+echo "▶ Waiting up to ${WAIT_SECONDS}s for the CDP port to come up…"
+for _ in $(seq 1 "$WAIT_SECONDS"); do
+    if cdp_up; then
+        echo "✅ TradingView CDP port $DEBUG_PORT is ready."
+        exit 0
+    fi
+    sleep 1
+done
+
+echo "✕ TradingView did not open CDP port $DEBUG_PORT within ${WAIT_SECONDS}s." >&2
+echo "  Make sure TradingView Desktop is installed and try again." >&2
+exit 1

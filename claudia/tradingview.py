@@ -188,9 +188,12 @@ async def launch_tradingview() -> bool:
         )
     if _tv_already_running_without_debug():
         raise RuntimeError(
-            f"TradingView is already running without the remote debug port. "
-            f"Quit TradingView, then relaunch it:\n"
-            f"  open -a '{_TV_APP_NAME}' --args --remote-debugging-port={_TV_DEBUG_PORT}"
+            "TradingView is already running without the remote debug port "
+            "(it can only be set at launch). Run the one-command quit+relaunch "
+            "helper:\n"
+            "  ./scripts/launch-tradingview-debug.sh\n"
+            f"(equivalent: quit TradingView, then "
+            f"open -a '{_TV_APP_NAME}' --args --remote-debugging-port={_TV_DEBUG_PORT})"
         )
     log.info("Launching TradingView Desktop with --remote-debugging-port=%d", _TV_DEBUG_PORT)
     subprocess.Popen(

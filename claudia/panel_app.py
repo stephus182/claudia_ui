@@ -404,8 +404,9 @@ def _send_action_buttons(
                 if not launched:
                     chat.send(
                         "✕ TradingView Desktop did not open its debug port within 30s.\n\n"
-                        "Try launching it manually:\n"
-                        "```\nopen -a 'TradingView' --args --remote-debugging-port=9222\n```",
+                        "If it's already running without the debug port, it can't be "
+                        "fixed in place — run the one-command quit+relaunch helper:\n"
+                        "```\n./scripts/launch-tradingview-debug.sh\n```",
                         user="System", respond=False,
                     )
                     return
