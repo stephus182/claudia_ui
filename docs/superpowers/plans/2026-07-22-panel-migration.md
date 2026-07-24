@@ -2529,6 +2529,114 @@ Panel; the native Tornado websocket path is mature and needs no patch. Consequen
   (timing, sync-only contract, blocking behavior); and server-shutdown behavior for the
   upload-on-stop design.
 
+**Re-verification COMPLETE 2026-07-24 (probe `pnserve_probe.py`, scratchpad; Panel
+1.9.3 / bokeh 3.9.1 / tornado 6.5.7): ZERO regressions vs the FastAPI topology.**
+
+- V1 `pn.serve(callable)`: factory invoked once per browser session (5/5), module
+  singleton constructed once process-wide, distinct ChatInterface per session; factory
+  runs on MainThread with a live running loop (official docs concur:
+  how_to/server/multiple.html). Note: a bare curl GET also creates a session (reaped as
+  unused ~16-24s later).
+- V2 background-task `chat.send`: renders in the live page, every session.
+- V3 D4 thread→loop idiom: unchanged — two rapid thread deliveries render in order.
+- V4 **`on_session_destroyed` fires UNPATCHED**, exactly once per session, 15.2-23.9s
+  after disconnect (same bokeh defaults: unused_session_lifetime 15000ms / check
+  17000ms — bokeh tornado.py:72,76, Panel passes no override). Contract identical to
+  the FastAPI findings: sync-only (async body never runs), MainThread, running loop
+  available, `pn.state.curdoc` None, `chat.send` unreliable in the hook, and **blocking
+  in the hook freezes every live session** (10s sleep stalled a second session's chat
+  for the full 10s) — 5.6b must offload Drive upload/report via thread/executor.
+- V5 shutdown: destroy hooks still do NOT run for still-connected sessions (no change),
+  **but SIGINT now yields a real process-level hook: `pn.serve` RETURNS ~2ms after
+  Ctrl-C** (Panel installs its own SIGINT handler → io_loop.stop() — panel/io/
+  server.py:1419-1441), then finally/atexit run and `server.get_sessions()` still
+  enumerates live sessions. **SIGTERM dies instantly — no finally, no atexit**: 5.6b
+  must install a SIGTERM handler if launchd/scripts may send it. The final claudia.db
+  upload belongs after `pn.serve()` returns (try/finally), NOT in destroy hooks.
+- V6 practicals: `pn.serve(factory, port=..., show=False, title=..., start=True)`;
+  `if __name__ == "__main__"` entry verified; tornado 6.5.7 already installed;
+  **websocket_origin defaults to `localhost:<port>` only** — 127.0.0.1 access gets a
+  403 websocket refusal unless `websocket_origin=["localhost:<port>",
+  "127.0.0.1:<port>"]` is passed (verified working).
+
+### Task 5.6b-pre: Topology switch — native `pn.serve`, delete panel_ws_fix
+
+**Files:**
+
+- Modify: `claudia/panel_app.py` (module docstring, imports, drop FastAPI mount +
+  ws-fix call, add `main()` + `__main__` entry)
+- Delete: `claudia/panel_ws_fix.py`, `tests/test_panel_ws_fix.py` (user-confirmed:
+  deleted entirely)
+- Modify: `pyproject.toml` (`panel[fastapi]>=1.9` → `panel>=1.9`)
+- Modify: `docs/probes/README.md` (note the two D7 FastAPI probes need
+  `pip install panel[fastapi]` to run — they remain as evidence of the abandoned
+  topology)
+
+- [ ] **Step 1: panel_app.py surgery**
+
+Remove: the `from fastapi import FastAPI` import, the panel.io.fastapi comment block +
+`from panel.io.fastapi import add_application` import, the `from claudia.panel_ws_fix
+import apply_ws_disconnect_fix` import and its call + comment, and the entire
+`app = FastAPI()` / `@add_application(...)` / `_serve_chat_app` tail. Add at the tail:
+
+```python
+def main() -> None:
+    """Serve ClaudIA on Panel's native Tornado server (design principle 2026-07-24:
+    Panel-native serving, no workarounds — pn.serve(callable) invokes _build_chat_app
+    once per browser session while module singletons stay process-wide; verified by
+    the pnserve probe, see the migration plan's re-verification note).
+
+    Blocks until SIGINT (Ctrl-C): Panel installs its own SIGINT handler that stops
+    the IO loop and returns from pn.serve — Task 5.6b puts the final claudia.db
+    Drive upload after this call returns. SIGTERM currently bypasses that path
+    (dies instantly) — 5.6b adds the handler.
+    """
+    pn.serve(
+        _build_chat_app,
+        port=_PANEL_PORT,
+        show=False,
+        title="ClaudIA",
+        # Default allowlist is localhost:<port> only; 127.0.0.1 access would get a
+        # 403 websocket refusal without this (probe-verified).
+        websocket_origin=[f"localhost:{_PANEL_PORT}", f"127.0.0.1:{_PANEL_PORT}"],
+    )
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Module docstring: replace the FastAPI/uvicorn run instructions with
+`python -m claudia.panel_app` and one sentence on the native-serving principle.
+
+- [ ] **Step 2: delete the ws-fix pair + pyproject**
+
+`git rm claudia/panel_ws_fix.py tests/test_panel_ws_fix.py`. pyproject:
+`"panel[fastapi]>=1.9"` → `"panel>=1.9"` (keep the ruff `extend-exclude` for
+docs/probes). Check whether `fastapi`/`uvicorn` appear anywhere else in pyproject or
+claudia/ (they should not after the surgery; uvicorn was invoked ad hoc, never a
+declared dep — verify and report). README note for the two probe files.
+
+- [ ] **Step 3: gates**
+
+`pytest -m "not integration" -q` → 403 − 6 = **397** expected. `ruff check .` clean.
+`mypy claudia` clean (panel_ws_fix gone from the module set). Grep: zero references to
+`panel_ws_fix`, `add_application`, `FastAPI` under `claudia/` and `tests/`.
+
+- [ ] **Step 4: manual smoke (native serve)**
+
+`.venv/bin/python -m claudia.panel_app` → Playwright to `http://localhost:8001/`:
+welcome renders, offline status block arrives, a typed message gets the agent flow (or
+honest offline behavior). Close the browser → within ~35s the server log shows the
+session discard (destroy chain alive, unpatched). Ctrl-C → clean exit, port freed.
+
+- [ ] **Step 5: commit**
+
+```bash
+git add -A claudia/panel_app.py claudia/panel_ws_fix.py tests/test_panel_ws_fix.py pyproject.toml docs/probes/README.md
+git commit -m "refactor: native pn.serve topology — delete panel_ws_fix, drop fastapi extra (Panel-native principle)"
+```
+
 ## Phase 5: Session lifecycle completeness — outline
 
 **Carry over from Task 2.2 (2026-07-22):** the Phase 2 skeleton's `_build_chat_app()` calls
