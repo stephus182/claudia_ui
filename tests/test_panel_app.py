@@ -67,6 +67,20 @@ def _message_texts(chat) -> list[str]:
     return [(m.object if hasattr(m, "object") else str(m)) for m in chat.objects]
 
 
+def _iter_tree(node):
+    """Depth-first walk over a Panel layout tree (yields the node then descendants).
+    Task 10.1 nested the chat one Column deeper inside the session-root Row, so the
+    composition tests find the chat by type across the whole tree rather than by a
+    fixed root.objects index."""
+    yield node
+    for child in getattr(node, "objects", []):
+        yield from _iter_tree(child)
+
+
+def _find_chat(root) -> pn.chat.ChatInterface:
+    return next(n for n in _iter_tree(root) if isinstance(n, pn.chat.ChatInterface))
+
+
 def _make_mock_store() -> MagicMock:
     """ConversationStore mock with the versioning defaults every happy-path init
     consumes (Task 5.2): no prior session hash (first run — no WARNING expected)
@@ -1223,15 +1237,22 @@ async def test_build_session_root_composes_indicators_above_chat():
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
         root = _build_session_root()
-        chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
+        chat = _find_chat(root)
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
     # Plan sketch said `from panel.indicators import BooleanStatus` — that module
     # path doesn't exist (pn.indicators is panel/__init__.py's re-export of
     # panel.widgets.indicators, verified in the venv); the accessor form is the
     # importable one.
     from panel.widgets.indicators import BooleanStatus
-    row = root.objects[0]
-    assert len([o for o in row.objects if isinstance(o, BooleanStatus)]) == 3
+
+    # Task 10.1 nested the chat + indicators inside a left Column of a top-level Row;
+    # the indicator Row is now root.objects[0].objects[0].
+    left_column = root.objects[0]
+    indicator_row = left_column.objects[0]
+    assert len([o for o in indicator_row.objects if isinstance(o, BooleanStatus)]) == 3
+    assert chat in left_column.objects  # chat sits beside the indicators in the left column
+    # The independent candlestick chart pane is composed into the root beside the chat.
+    assert any(isinstance(n, pn.pane.Bokeh) for n in _iter_tree(root))
 
 
 @pytest.mark.asyncio
@@ -1256,7 +1277,7 @@ async def test_build_session_root_registers_5s_periodic_refresh():
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
         root = _build_session_root()
-        chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
+        chat = _find_chat(root)
         await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
     assert mock_cb.call_args.kwargs["period"] == 5000
     # start=False + onload(cb.start) pin the held-event double-delivery fix:
@@ -1568,14 +1589,15 @@ async def test_file_widget_configured_and_composed_in_session_root():
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
         root = _build_session_root()
-        chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
+        chat = _find_chat(root)
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
     from panel.widgets import FileInput
     fi = _screenshot_file_input(chat)
     assert isinstance(fi, FileInput)
     assert fi.accept == "image/*"
-    assert fi in root.objects[0].objects  # placed in the top (indicator) row
+    # Task 10.1 nesting: the indicator/upload Row is now the left Column's first child.
+    assert fi in root.objects[0].objects[0].objects
 
 
 @pytest.mark.asyncio

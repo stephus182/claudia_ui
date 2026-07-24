@@ -79,9 +79,13 @@ no_implicit_optional = true
 check_untyped_defs = true
 show_error_codes = true
 
-# The only genuinely unstubbed import in claudia/ or tests/ (verified 2026-07-21 against the
-# actual venv — chainlit, mcp, and ibkr_core_mcp all ship py.typed, so ignore_missing_imports
-# is not needed for them).
+# The genuinely unstubbed third-party imports in claudia/ or tests/ (verified against the
+# actual venv — chainlit, mcp, ibkr_core_mcp, panel, and bokeh all ship py.typed, so
+# ignore_missing_imports is not needed for them):
+#   googleapiclient — no py.typed (verified 2026-07-21).
+#   pandas          — ships no py.typed and pandas-stubs is not installed (verified
+#                     2026-07-24, Task 10.1). claudia/panel_chart.py types the cache
+#                     DataFrame it charts; the fixture DataFrames in tests do too.
 [[tool.mypy.overrides]]
-module = ["googleapiclient.*"]
+module = ["googleapiclient.*", "pandas", "pandas.*"]
 ignore_missing_imports = true

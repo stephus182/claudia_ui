@@ -46,6 +46,7 @@ from claudia.conversation_store import ConversationStore
 from claudia.execution_listener import ExecutionListener
 from claudia.gdrive_sync import GDriveSync
 from claudia.opening_status import build_trade_lines, gather_status_block
+from claudia.panel_chart import build_chart_pane
 from claudia.panel_sink import PanelMessageSink
 from claudia.session_reporter import generate_session_report
 from claudia.status import ConnectivityChecker, ServiceStatus
@@ -921,10 +922,11 @@ def _screenshot_file_input(chat: pn.chat.ChatInterface) -> pn.widgets.FileInput:
     return chat._claudia_file_input  # type: ignore[attr-defined, no-any-return]
 
 
-def _build_session_root() -> pn.Column:
-    """pn.serve target: status indicators + screenshot FileInput (functional
-    placement — deep styling is the post-migration restyle plan) above the
-    chat. Periodic refresh is session-scoped with automatic cleanup
+def _build_session_root() -> pn.Row:
+    """pn.serve target: chat (with its status-indicator + screenshot-FileInput row
+    above it) on the left, the independent candlestick chart pane on the right
+    (Task 10.1) — functional placement; deep styling is the post-migration restyle
+    plan. Periodic refresh is session-scoped with automatic cleanup
     (pn.state.add_periodic_callback registers against this session's Document —
     source-verified, see the Phase 6 design note in the migration plan)."""
     chat = _build_chat_app()
@@ -943,9 +945,16 @@ def _build_session_root() -> pn.Column:
     # in pn.state._periodic[curdoc], so session auto-cleanup is preserved.
     cb = pn.state.add_periodic_callback(_refresh, period=5000, start=False)
     pn.state.onload(cb.start)
-    return pn.Column(
-        pn.Row(*indicators.values(), _screenshot_file_input(chat)),
-        chat,
+    # Chat + its status/upload row on the left, the independent candlestick chart
+    # pane on the right (Task 10.1). The chart is driven by its own Load button —
+    # decoupled from the conversation by design. Split ratio / tabs-vs-side-by-side
+    # is a deferred restyle refinement (research doc §4).
+    return pn.Row(
+        pn.Column(
+            pn.Row(*indicators.values(), _screenshot_file_input(chat)),
+            chat,
+        ),
+        build_chart_pane(),
         sizing_mode="stretch_both",
     )
 
