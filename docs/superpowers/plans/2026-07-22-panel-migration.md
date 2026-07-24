@@ -2649,6 +2649,18 @@ git add -A claudia/panel_app.py claudia/panel_ws_fix.py tests/test_panel_ws_fix.
 git commit -m "refactor: native pn.serve topology — delete panel_ws_fix, drop fastapi extra (Panel-native principle)"
 ```
 
+## Scope ruling, 2026-07-24 (user directive): function-first migration; deep styling is a separate post-migration plan
+
+Phase 7 is REDUCED to minimal functional styling only. No deep design specs during the
+migration — design also depends on future widgets (futures widgets etc.) that don't
+exist yet. **Goal: achieve full functional migration.** After full migration, deep
+restyling gets its own dedicated plan with proper specs, worked separately. Practical
+consequences: (a) widgets get simple, obvious functional placement — never block a
+functional task on a layout decision; (b) collect styling observations in this plan's
+notes for the future restyle plan instead of acting on them; (c) Phase 6's former
+"exact placement depends on Phase 7" coordination note is void — place functionally.
+(Saved to memory: `project-migration-styling-deferred`.)
+
 ## Phase 5: Session lifecycle completeness — outline
 
 **Carry over from Task 2.2 (2026-07-22):** the Phase 2 skeleton's `_build_chat_app()` calls
@@ -5988,6 +6000,250 @@ session is currently active" — a pre-existing property of the current shipped 
 unchanged by this task. Multi-session-correct alert delivery is exactly what Phase 6's
 later Panel-native tasks (per-session `BooleanStatus` widgets driven by the same subscriber
 registry this task adds) are designed to fix — do not attempt to fix it here.
+
+### Task 6.2: Per-session status indicators + alert delivery (completes Phase 6)
+
+Grounded 2026-07-24: `pn.indicators.BooleanStatus(value: bool, color: str)` re-verified
+live in the venv (colors incl. `success`/`danger`/`dark`);
+`pn.state.add_periodic_callback` exists (session-scoped auto-cleanup verified at source
+level in the Phase 6 design note above); `ConnectivityChecker.subscribe(cb:
+Callable[[str], Awaitable[None]]) -> unsubscribe` (Task 6.1, `status.py:193`) and
+`_send_alert` awaits each subscriber with per-subscriber try/except
+(`status.py:248-261`) — the checker's poll task runs on the same process-wide loop as
+sessions, so an async subscriber may call `chat.send` directly (V2/V3 probe basis).
+`ServiceStatus` enum keys from `get_status()`: mapping OK→(True, success),
+ERROR→(True, danger), UNKNOWN→(False, dark) per the Phase 6 design note.
+
+**Design (locked at detailing — functional placement per the 2026-07-24 scope ruling):**
+
+- New `_build_session_root() -> pn.Column` becomes the `pn.serve` target: composes
+  `pn.Column(pn.Row(*indicators), chat, sizing_mode="stretch_both")` where `chat`
+  comes from the UNCHANGED `_build_chat_app()` — the 34 existing tests keep their
+  entry point untouched.
+- Three indicators (IBKR / GDrive / TradingView) built per session by a pure helper
+  `_make_status_indicators() -> dict[str, BooleanStatus]`; a pure
+  `_apply_status(indicators, status)` maps the enum → (value, color) (unit-testable
+  with plain dicts, no Panel server).
+- Per-session refresh: `pn.state.add_periodic_callback(_refresh, period=5000)`
+  registered in `_build_session_root`; `_refresh` guards `_connectivity_checker is
+  None` (first session: checker not built until background init) by leaving
+  UNKNOWN.
+- **Alert delivery**: subscription happens in `_init_session`'s singleton block right
+  after `_connectivity_checker.start()` (checker guaranteed non-None there):
+  `_session["unsubscribe"] = _connectivity_checker.subscribe(_make_alert_subscriber(chat))`
+  where the subscriber is `async def _on_alert(text): chat.send(text, user="System",
+  respond=False)` (alert texts arrive pre-formatted from
+  `_DISCONNECT_MESSAGES`/`_RECONNECT_MESSAGES`). The `_session` holder gains
+  `"unsubscribe": None`; `_on_session_destroyed` calls it (before scheduling cleanup)
+  so a dead session stops receiving alerts — and the End-Session handler does the
+  same. Double-unsubscribe is safe (Task 6.1's suppress(ValueError)).
+- `main()` serves `_build_session_root` instead of `_build_chat_app`.
+- The deferred `_spawn_background_task` unification stays parked (YAGNI: this task
+  spawns no new tasks — subscribers are awaited by the checker's own poll task).
+
+**Files:**
+
+- Modify: `claudia/panel_app.py` (indicator helpers, `_build_session_root`,
+  subscription in `_init_session`, unsubscribe in destroy hook + End Session,
+  `main()` serve target)
+- Modify: `tests/test_panel_app.py` (~6 new tests)
+
+- [ ] **Step 1: Failing tests**
+
+```python
+def test_apply_status_maps_enum_to_value_and_color():
+    from claudia.status import ServiceStatus
+    from claudia.panel_app import _apply_status, _make_status_indicators
+
+    ind = _make_status_indicators()
+    assert set(ind) == {"ibkr", "gdrive", "tradingview"}
+    _apply_status(ind, {
+        "ibkr": ServiceStatus.OK,
+        "gdrive": ServiceStatus.ERROR,
+        "tradingview": ServiceStatus.UNKNOWN,
+    })
+    assert (ind["ibkr"].value, ind["ibkr"].color) == (True, "success")
+    assert (ind["gdrive"].value, ind["gdrive"].color) == (True, "danger")
+    assert (ind["tradingview"].value, ind["tradingview"].color) == (False, "dark")
+
+
+@pytest.mark.asyncio
+async def test_build_session_root_composes_indicators_above_chat():
+    with (standard happy-path patch stack from any existing init test):
+        root = _build_session_root()
+        chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+    from panel.indicators import BooleanStatus
+    row = root.objects[0]
+    assert len([o for o in row.objects if isinstance(o, BooleanStatus)]) == 3
+
+
+@pytest.mark.asyncio
+async def test_build_session_root_registers_5s_periodic_refresh():
+    with (standard stack + patch.object(pn.state, "add_periodic_callback") as mock_cb):
+        root = _build_session_root()
+        chat = next(o for o in root.objects if isinstance(o, pn.chat.ChatInterface))
+        await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
+    assert mock_cb.call_args.kwargs.get("period") == 5000 or mock_cb.call_args.args[1] == 5000
+
+
+@pytest.mark.asyncio
+async def test_init_subscribes_alert_callback_and_it_sends_to_chat():
+    """The singleton block must subscribe an async alert callback; invoking the
+    captured callback sends the pre-formatted alert text into the chat."""
+    (standard stack; backend_singletons fixture provides checker_cls)
+    ...
+    unsub = MagicMock()
+    backend_singletons.checker_cls.return_value.subscribe.return_value = unsub
+    chat = _build_chat_app()   # subscription is in _init_session — plain factory is fine
+    await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+    backend_singletons.checker_cls.return_value.subscribe.assert_called_once()
+    alert_cb = backend_singletons.checker_cls.return_value.subscribe.call_args.args[0]
+    await alert_cb("⚠️ GDrive disconnected.")
+    assert any("GDrive disconnected" in t for t in _message_texts(chat))
+
+
+@pytest.mark.asyncio
+async def test_destroy_hook_unsubscribes_before_cleanup():
+    (standard stack + patch.object(pn.state, "on_session_destroyed") as mock_register
+     + backend_singletons.checker_cls.return_value.subscribe.return_value = unsub_mock
+     + patched _run_session_cleanup AsyncMock)
+    ... build, drain init ...
+    hook = mock_register.call_args.args[0]
+    hook(MagicMock())
+    await asyncio.sleep(0.05)
+    unsub_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_end_session_button_unsubscribes_too():
+    (standard stack as in the existing End-Session test + subscribe.return_value = unsub_mock)
+    ... click End Session via _get_click_callback ...
+    unsub_mock.assert_called_once()
+```
+
+(The parenthesized "(standard stack…)" markers mean: copy the exact patch stack from
+the named existing tests — the implementer expands them to real code; every stack
+already exists verbatim in the file.) Run → all FAIL (`_apply_status` etc. missing).
+
+- [ ] **Step 2: Implement**
+
+`claudia/panel_app.py` — init-flow helpers section gains:
+
+```python
+_INDICATOR_LABELS = {"ibkr": "IBKR", "gdrive": "GDrive", "tradingview": "TradingView"}
+
+
+def _make_status_indicators() -> dict[str, pn.indicators.BooleanStatus]:
+    """One BooleanStatus per service, keyed like ConnectivityChecker.get_status().
+    UNKNOWN at build: gray dot for not-yet-checked, not an error."""
+    return {
+        key: pn.indicators.BooleanStatus(value=False, color="dark", name=label)
+        for key, label in _INDICATOR_LABELS.items()
+    }
+
+
+def _apply_status(
+    indicators: dict[str, pn.indicators.BooleanStatus], status: dict[str, Any]
+) -> None:
+    """ServiceStatus → (value, color): OK → lit green, ERROR → lit red,
+    UNKNOWN → unlit gray (matches _run_checks()' not-configured-is-not-an-error
+    rule). Unknown keys in either direction are ignored."""
+    from claudia.status import ServiceStatus
+
+    mapping = {
+        ServiceStatus.OK: (True, "success"),
+        ServiceStatus.ERROR: (True, "danger"),
+        ServiceStatus.UNKNOWN: (False, "dark"),
+    }
+    for key, ind in indicators.items():
+        if key in status:
+            value, color = mapping[status[key]]
+            ind.value, ind.color = value, color
+
+
+def _make_alert_subscriber(chat: pn.chat.ChatInterface) -> Any:
+    """Async subscriber for ConnectivityChecker alerts — texts arrive
+    pre-formatted (_DISCONNECT_MESSAGES/_RECONNECT_MESSAGES). Runs inside the
+    checker's poll task on the same process-wide loop as the session (V2/V3
+    probe basis), so a direct chat.send is safe; a closed session's send is a
+    harmless no-op (V4)."""
+    async def _on_alert(text: str) -> None:
+        chat.send(text, user="System", respond=False)
+
+    return _on_alert
+```
+
+Move the `from claudia.status import ConnectivityChecker` import to also bring
+`ServiceStatus` at module level (drop the function-local import above if ruff/mypy are
+happier that way — implementer's call, report it).
+
+Per-session factory section gains:
+
+```python
+def _build_session_root() -> pn.Column:
+    """pn.serve target: status indicators (functional placement — deep styling
+    is the post-migration restyle plan) above the chat. Periodic refresh is
+    session-scoped with automatic cleanup (pn.state.add_periodic_callback
+    registers against this session's Document — source-verified, see the Phase
+    6 design note)."""
+    chat = _build_chat_app()
+    indicators = _make_status_indicators()
+
+    def _refresh() -> None:
+        if _connectivity_checker is not None:
+            _apply_status(indicators, _connectivity_checker.get_status())
+
+    pn.state.add_periodic_callback(_refresh, period=5000)
+    return pn.Column(
+        pn.Row(*indicators.values()),
+        chat,
+        sizing_mode="stretch_both",
+    )
+```
+
+`_build_chat_app`: holder gains `"unsubscribe": None`. `_on_session_destroyed` calls
+it first:
+
+```python
+            unsub = _session["unsubscribe"]
+            if unsub is not None:
+                unsub()
+                _session["unsubscribe"] = None
+```
+
+(same lines at the top of `_on_end` in `_send_action_buttons` — pass `_session`
+through as it already is). `_init_session` singleton block, after
+`_connectivity_checker.start()`:
+
+```python
+            _session["unsubscribe"] = _connectivity_checker.subscribe(
+                _make_alert_subscriber(chat)
+            )
+```
+
+`main()`: `pn.serve(_build_session_root, ...)` (kwargs unchanged — the locked-kwargs
+test's serve target assertion, if any, updates accordingly).
+
+- [ ] **Step 3: Gates**
+
+`pytest tests/test_panel_app.py -v` → 34 + 6 = 40; full suite → 413 + 6 = **419**,
+1 warning; ruff + mypy clean.
+
+- [ ] **Step 4: Manual smoke (no gateway)**
+
+`python -m claudia.panel_app` + Playwright: three gray dots render above the chat;
+within ~10s the GDrive dot goes green (checker's first poll; creds present) while
+IBKR stays red/gray per gateway state — confirm at least one dot CHANGES state in the
+live page (proves the websocket push + periodic refresh loop end-to-end). Buttons +
+chat still work below the indicator row. Kill cleanly.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add claudia/panel_app.py tests/test_panel_app.py
+git commit -m "feat: per-session connectivity indicators + alert delivery — completes Phase 6"
+```
 
 ## Phase 7: Styling — outline
 
