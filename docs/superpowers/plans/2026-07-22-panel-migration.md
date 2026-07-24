@@ -3163,6 +3163,610 @@ And add `doc_version=version_label` to the `ClaudIAAgent(...)` construction.
 git commit -m "feat: Panel sessions read context docs from Drive + register doc versions"
 ```
 
+### Task 5.3: Opening status block — helper extraction, then the status port
+
+Grounded 2026-07-23 against verified signatures: `IBKRClient.ping() -> bool`
+(`ibkr_core_mcp/client.py:178` — verifies authentication, not just reachability; retries
+once internally for the IBKR fresh-session `authenticated=false` quirk);
+`ClaudeToolkit.execute(name, inputs) -> tuple[str, None]` (`claude_tools.py:1048`);
+`get_live_pnl_text(toolkit) -> str` (`claudia/execution_listener.py:88` — module verified
+chainlit-free, safe for panel_app to import); `SQLiteStore.get_trade_date_coverage(
+gap_threshold_days=45) -> dict` (`ibkr_core_mcp/store.py:335`) and
+`get_market_calendar_context` (`store.py:407`). `ClaudeToolkit` exposes `client` and
+`tools` properties but NO public `config`/`store` — use `toolkit._config` /
+`toolkit._store`, the same sanctioned reach-in `app.py` itself uses (`app.py:433,466`).
+Parity source: `app.py:399-514`.
+
+**Design decisions (locked at detailing):**
+
+- The ~110 lines of status/trade/calendar logic land in a NEW UI-free module
+  `claudia/opening_status.py` (three functions), NOT inline in `_init_session` — the Task
+  5.2 quality review flagged `_init_session` at its readable size limit, and pure
+  functions let tests feed dict fixtures directly instead of driving everything through
+  the init task. `app.py` is deliberately left untouched (deleted wholesale at Phase 11).
+- Task starts with the review-mandated **pure refactor**: extract `_read_context_docs()`
+  and `_register_doc_version()` from `_init_session` (behavior-preserving, own commit,
+  all 11 existing tests pass unchanged) before any new feature code.
+- Status gathering runs INSIDE `_init_session` before `_init_done.set()` — parity with
+  app.py, where `agent._trade_context` is always stamped before the first user message
+  can be processed. An agent published to `_session` without its trade context would
+  silently answer without trade-history grounding — the exact class of silent gap this
+  project treats as non-negotiable — so `_session["agent"]` is assigned only AFTER
+  `_send_opening_status` completes.
+- The Panel welcome already says "gathering your account status…"; the status block
+  arrives as a second `chat.send`. Its tail carries the honest D5 TradingView note
+  ("not connected in the Panel preview" — Phase 9 replaces it).
+- Port subtlety that MUST be preserved: the market-calendar block appends to
+  `trade_context` even when Flex is unconfigured (`app.py:511` does
+  `(trade_context or "") + _cal_block`).
+- The 4-way `asyncio.gather` over `asyncio.to_thread` replaces `cl.make_async` — same
+  thread-pool parallelism against `IBKRClient` as app.py, no new concurrency hazard.
+
+**Files:**
+
+- Create: `claudia/opening_status.py`
+- Create: `tests/test_opening_status.py`
+- Modify: `claudia/panel_app.py` (refactor extraction + `_send_opening_status` wiring)
+- Modify: `tests/test_panel_app.py` (1 new integration test; 9 existing tests gain a
+  `_send_opening_status` patch line)
+
+- [ ] **Step 1: Pure refactor — extract `_read_context_docs` / `_register_doc_version`**
+
+In `claudia/panel_app.py`, add the two module-level helpers (between
+`_write_version_snapshot` and `_build_chat_app`):
+
+```python
+async def _read_context_docs() -> tuple[str | None, str | None]:
+    """Read context.md/principles.md via Drive (read_text falls back to the local
+    file when Drive is unreachable or the file is absent) — app.py:256-262 parity.
+    MUST be called while holding _init_lock: googleapiclient binds a single
+    AuthorizedHttp/httplib2.Http to the built Drive service, shared by every
+    .execute(), and httplib2.Http is not thread-safe — concurrent session inits
+    would run read_text on that one connection from two worker threads (worst
+    case: interleaved socket reads that still parse, handing a session the wrong
+    document content silently). Serializing the per-session reads costs ~nothing
+    for a single-user app."""
+    if _gdrive_sync is None:
+        return None, None
+    drive_context = await asyncio.to_thread(
+        _gdrive_sync.read_text,
+        "context.md",
+        local_path=_DOCS_PATH / "context.md",
+    )
+    drive_principles = await asyncio.to_thread(
+        _gdrive_sync.read_text,
+        "principles.md",
+        local_path=_DOCS_PATH / "principles.md",
+    )
+    return drive_context, drive_principles
+
+
+def _register_doc_version(
+    store: ConversationStore, loader: ContextLoader
+) -> tuple[str, str, str | None]:
+    """Register the current doc version (idempotent), write the human-readable
+    snapshot, and detect a hash change vs the previous session. Returns
+    (current_hash, version_label, hash_change_warning_or_None) — UI-free by
+    design: the caller decides how to surface the warning.
+
+    ORDERING INVARIANT: get_last_context_hash reads the newest session row, so
+    this helper must run BEFORE the session's own create_session — inserting the
+    new row first would make it see its own hash and the security warning would
+    never fire again."""
+    context_text, principles_text = loader.get_effective_texts()
+    current_hash = loader.compute_hash()
+    version_label = store.register_doc_version_if_new(
+        current_hash, context_text, principles_text
+    )
+    log.info("Active document version: %s", version_label)
+    _write_version_snapshot(version_label, context_text, principles_text)
+
+    warning: str | None = None
+    prev_hash = store.get_last_context_hash()
+    if prev_hash is not None and prev_hash != current_hash:
+        prev_version = store.get_version_label(prev_hash) or f"unknown ({prev_hash[:8]})"
+        warning = (
+            f"**WARNING: context.md / principles.md changed: "
+            f"{prev_version} → {version_label}.**\n"
+            "Please verify the content before continuing."
+        )
+    return current_hash, version_label, warning
+```
+
+Then in `_init_session`, replace the inline Drive-read block (the
+`drive_context/drive_principles` assignments inside the lock) with:
+
+```python
+                drive_context, drive_principles = await _read_context_docs()
+```
+
+and replace the inline versioning block (from `context_text, principles_text =
+loader.get_effective_texts()` through the WARNING `chat.send`) with:
+
+```python
+            # Must run BEFORE this session's create_session below (see the
+            # ordering invariant in _register_doc_version's docstring).
+            current_hash, version_label, warning = _register_doc_version(store, loader)
+            if warning is not None:
+                chat.send(warning, user="System", respond=False)
+```
+
+`store.create_session(...)` and the agent construction keep using `current_hash` /
+`version_label` exactly as before. The big httplib2 comment moves INTO
+`_read_context_docs`'s docstring (shown above) — leave a one-line pointer at the lock's
+call site ("Drive reads must stay under the lock — see _read_context_docs").
+
+- [ ] **Step 2: Verify the refactor is behavior-preserving, then commit**
+
+Run: `pytest tests/test_panel_app.py -v` → all 11 pass UNCHANGED (they patch
+`ContextLoader`/`_write_version_snapshot` at module level and assert on
+`mock_store.mock_calls` order — the helper calls the same names in the same order).
+Run: `pytest -m "not integration" -q` → 379 pass. `ruff check claudia/panel_app.py` +
+`mypy claudia/panel_app.py` → clean.
+
+```bash
+git add claudia/panel_app.py
+git commit -m "refactor: extract _read_context_docs/_register_doc_version from _init_session"
+```
+
+- [ ] **Step 3: Write the failing tests for `claudia/opening_status.py`**
+
+Create `tests/test_opening_status.py`:
+
+```python
+"""Tests for claudia/opening_status.py — UI-free builders for the Panel opening
+status message (Task 5.3). Fixtures mirror the real shapes: toolkit.execute
+returns (text, None) 2-tuples (claude_tools.py:1048); get_trade_date_coverage /
+get_market_calendar_context return the dict shapes app.py:426-513 consumes
+(the port's parity source)."""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from claudia.opening_status import (
+    OFFLINE_STATUS,
+    build_trade_lines,
+    gather_status_block,
+)
+
+
+def _make_toolkit(flex: bool = True) -> MagicMock:
+    toolkit = MagicMock()
+    toolkit._config.flex_token = "tok" if flex else ""
+    toolkit._config.flex_query_id = "qid" if flex else ""
+    toolkit._store.get_market_calendar_context.return_value = None
+    return toolkit
+
+
+_MKT = {
+    "today": "2026-07-23",
+    "is_trading_day": True,
+    "last_trading_day": "2026-07-22",
+    "next_trading_day": "2026-07-24",
+    "holidays_by_exchange": {"XNYS": ["2026-12-25"], "CME": []},
+    "futures": {
+        "note": "CME futures trade nearly 23h/day.",
+        "maintenance_break_ct": "16:00-17:00 CT",
+        "cme_open_nyse_closed": ["2026-11-27"],
+        "product_groups": {
+            "equity_index": {
+                "exchange": "CME",
+                "globex_hours_ct": "17:00-16:00",
+                "products": ["ES", "NQ", "YM", "RTY", "MES"],
+                "note": "daily maintenance 16:00-17:00",
+            }
+        },
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_gather_status_block_happy_path_contains_all_four_sections():
+    toolkit = MagicMock()
+    toolkit.client.ping.return_value = True
+    toolkit.execute.side_effect = lambda name, inputs: (f"{name} text", None)
+    with patch("claudia.opening_status.get_live_pnl_text", return_value="pnl text"):
+        block, offline = await gather_status_block(toolkit)
+    assert offline is False
+    assert "**Account Summary**\nget_account_summary text" in block
+    assert "**Open Positions**\nget_positions text" in block
+    assert "**Account P&L**\npnl text" in block
+    assert "**Live Orders**\nget_live_orders text" in block
+
+
+@pytest.mark.asyncio
+async def test_gather_status_block_offline_when_ping_false():
+    """ping() returning False means unreachable/unauthenticated — the 4 status
+    calls must be SKIPPED entirely (toolkit.execute swallows exceptions into
+    error strings, so calling it offline would render 4 error blobs)."""
+    toolkit = MagicMock()
+    toolkit.client.ping.return_value = False
+    block, offline = await gather_status_block(toolkit)
+    assert offline is True
+    assert block == OFFLINE_STATUS
+    toolkit.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gather_status_block_offline_when_ping_raises():
+    toolkit = MagicMock()
+    toolkit.client.ping.side_effect = ConnectionError("gateway down")
+    block, offline = await gather_status_block(toolkit)
+    assert offline is True
+    assert block == OFFLINE_STATUS
+
+
+def test_build_trade_lines_flex_not_configured_still_appends_calendar():
+    toolkit = _make_toolkit(flex=False)
+    toolkit._store.get_market_calendar_context.return_value = _MKT
+    status, context = build_trade_lines(toolkit, ibkr_offline=False)
+    assert "Flex not configured" in status
+    toolkit._store.get_trade_date_coverage.assert_not_called()
+    # app.py:511 subtlety: the calendar block lands in trade_context even when
+    # Flex is unconfigured — (trade_context or "") + _cal_block.
+    assert context is not None
+    assert "## Market Calendar" in context
+    assert "NYSE: 2026-12-25" in context
+    assert "CME Futures: no holidays this year/next" in context
+    assert "Equity Index (CME): 17:00-16:00 [ES, NQ, YM, RTY…]" in context
+    assert "CME open when NYSE is closed: 2026-11-27" in context
+
+
+def test_build_trade_lines_flex_configured_with_data():
+    toolkit = _make_toolkit()
+    toolkit._store.get_trade_date_coverage.return_value = {
+        "oldest": "2024-01-02",
+        "newest": "2026-07-22",
+        "total_trades": 1234,
+        "days_since_newest": 1,
+    }
+    status, context = build_trade_lines(toolkit, ibkr_offline=False)
+    assert "1234 trades" in status
+    assert "last refreshed 2026-07-22" in status
+    assert "connect IBKR to refresh" not in status
+    assert context is not None
+    assert "## Trade History" in context
+    assert "1234 executions from 2024-01-02 to 2026-07-22" in context
+
+
+def test_build_trade_lines_offline_notes_connect_to_refresh():
+    toolkit = _make_toolkit()
+    toolkit._store.get_trade_date_coverage.return_value = {
+        "oldest": "2024-01-02",
+        "newest": "2026-07-22",
+        "total_trades": 1234,
+        "days_since_newest": 1,
+    }
+    status, _context = build_trade_lines(toolkit, ibkr_offline=True)
+    assert "(1d ago) — connect IBKR to refresh" in status
+
+
+def test_build_trade_lines_no_data_yet():
+    toolkit = _make_toolkit()
+    toolkit._store.get_trade_date_coverage.return_value = {
+        "oldest": None,
+        "newest": None,
+        "total_trades": 0,
+        "days_since_newest": None,
+    }
+    status, context = build_trade_lines(toolkit, ibkr_offline=False)
+    assert "no data yet" in status
+    assert context is not None
+    assert "sync_flex_trades" in context
+
+
+def test_build_trade_lines_coverage_error_degrades_to_syncing():
+    toolkit = _make_toolkit()
+    toolkit._store.get_trade_date_coverage.side_effect = RuntimeError("db locked")
+    status, context = build_trade_lines(toolkit, ibkr_offline=False)
+    assert status == "Trade history: syncing…"
+    assert context is None  # calendar mock returns None → nothing appended
+
+
+def test_build_trade_lines_calendar_error_is_swallowed():
+    toolkit = _make_toolkit(flex=False)
+    toolkit._store.get_market_calendar_context.side_effect = RuntimeError("boom")
+    status, context = build_trade_lines(toolkit, ibkr_offline=False)
+    assert "Flex not configured" in status
+    assert context is None
+```
+
+Run: `pytest tests/test_opening_status.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'claudia.opening_status'`.
+
+- [ ] **Step 4: Implement `claudia/opening_status.py`**
+
+```python
+"""UI-free builders for the opening status message (Panel entry point).
+
+Faithful port of the Chainlit startup status logic (app.py:399-514) restructured
+into pure/thread-friendly functions so panel_app._init_session stays readable and
+tests can feed dict fixtures directly. app.py is deliberately left untouched — it
+is deleted wholesale at Phase 11 (cutover). Uses toolkit._config/_store — the
+same sanctioned reach-in app.py itself uses (app.py:433,466); ClaudeToolkit
+exposes no public config/store properties.
+"""
+
+import asyncio
+import logging
+from typing import Any
+
+from ibkr_core_mcp import ClaudeToolkit
+
+from claudia.execution_listener import get_live_pnl_text
+
+log = logging.getLogger(__name__)
+
+OFFLINE_STATUS = "*IBKR gateway not connected — data will load when gateway is online.*"
+
+_EXCHANGE_LABELS = {
+    "XNYS": "NYSE", "CME": "CME Futures",
+    "XLON": "LSE London", "XETR": "Xetra Frankfurt", "XEUR": "Eurex",
+    "XPAR": "Euronext Paris", "XMIL": "Borsa Italiana",
+    "XTKS": "TSE Tokyo", "XHKG": "HKEX Hong Kong", "XSHG": "SSE Shanghai",
+    "XBOM": "BSE Mumbai", "XKRX": "KRX Seoul", "XASX": "ASX Sydney",
+    "XTSE": "TSX Toronto", "BVMF": "B3 São Paulo", "XMEX": "BMV Mexico City",
+    "XJSE": "JSE Johannesburg", "XSAU": "Tadawul (Sun–Thu week)",  # noqa: RUF001 — correct en-dash for a day range
+    "XIDX": "IDX Jakarta", "XIST": "Borsa Istanbul",
+}
+
+
+async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
+    """(status_block_markdown, ibkr_offline).
+
+    toolkit.execute() swallows all exceptions and returns an error string instead
+    of raising, so we pre-check reachability and skip the calls when the gateway
+    is unreachable. ping() verifies authentication (not just reachability); it
+    retries once internally for the IBKR first-call quirk where
+    authenticated=false on a fresh session. The 4-way gather over to_thread
+    matches app.py's cl.make_async concurrency exactly (same thread-pool
+    parallelism against IBKRClient — no new hazard)."""
+    try:
+        gateway_up = await asyncio.to_thread(toolkit.client.ping)
+        if not gateway_up:
+            raise ConnectionError("IBKR gateway not reachable")
+        (opening_text, _), (orders_text, _), (positions_text, _), pnl_text = (
+            await asyncio.gather(
+                asyncio.to_thread(toolkit.execute, "get_account_summary", {}),
+                asyncio.to_thread(toolkit.execute, "get_live_orders", {}),
+                asyncio.to_thread(toolkit.execute, "get_positions", {}),
+                asyncio.to_thread(get_live_pnl_text, toolkit),
+            )
+        )
+        return (
+            f"**Account Summary**\n{opening_text}\n\n"
+            f"**Open Positions**\n{positions_text}\n\n"
+            f"**Account P&L**\n{pnl_text}\n\n"
+            f"**Live Orders**\n{orders_text}"
+        ), False
+    except Exception as exc:
+        log.warning("Could not load IBKR opening status: %s", exc)
+        return OFFLINE_STATUS, True
+
+
+def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, str | None]:
+    """(trade_status_line, trade_context_or_None) — the welcome status line and
+    the system-prompt trade/calendar context for agent._trade_context.
+
+    Blocking (SQLite reads) — call via asyncio.to_thread. Port of app.py:426-513,
+    including the subtlety that the market-calendar block appends to
+    trade_context even when Flex is unconfigured."""
+    config = toolkit._config
+    flex_configured = bool(config and config.flex_token and config.flex_query_id)
+    trade_context: str | None = None
+    if flex_configured:
+        try:
+            cov = toolkit._store.get_trade_date_coverage()
+            if cov["oldest"]:
+                if ibkr_offline:
+                    days = cov["days_since_newest"]
+                    sync_note = f"last refreshed {cov['newest']} ({days}d ago) — connect IBKR to refresh"
+                else:
+                    sync_note = f"last refreshed {cov['newest']}"
+                trade_status = f"Historical dataset loaded: {cov['total_trades']} trades ({cov['oldest']} → {cov['newest']}, integrity validated) — {sync_note}"
+                trade_context = (
+                    f"## Trade History (local store — integrity validated)\n"
+                    f"{cov['total_trades']} executions from {cov['oldest']} to {cov['newest']}. "
+                    f"Last refreshed: {cov['newest']}. Dataset is complete and verified — no missing imports.\n"
+                    f"Flex data lags 1 day (T+1). Newest entry being yesterday is normal, not stale. "
+                    f"Do not flag the data as stale or suggest syncing unless the user explicitly asks "
+                    f"or days_since_newest > 3 on a weekday.\n"
+                    f"Date gaps in the dataset are verified inactivity periods (no trading). "
+                    f"Do not mention gaps or suggest XML backfill unless the user specifically asks about data integrity.\n"
+                    f"Use `get_trades` (default: source='store') for any analysis beyond 6 days. "
+                    f"Today's intraday trades: use `get_trades source='live'`."
+                )
+            else:
+                trade_status = "Trade history: no data yet — syncing…"
+                trade_context = (
+                    "## Trade History (local store)\n"
+                    "No trade data yet in the local store. Run `sync_flex_trades` to import recent data, "
+                    "or `sync_flex_archive` to import historical XMLs from Drive."
+                )
+        except Exception:
+            trade_status = "Trade history: syncing…"
+    else:
+        trade_status = "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
+
+    # Append market calendar context (holidays, last/next trading day, futures
+    # schedule). app.py:511 parity: appends even when trade_context is None.
+    try:
+        mkt = toolkit._store.get_market_calendar_context()
+        if mkt:
+            trade_context = (trade_context or "") + _format_market_calendar(mkt)
+    except Exception:
+        pass
+    return trade_status, trade_context
+
+
+def _format_market_calendar(mkt: dict[str, Any]) -> str:
+    """Pure formatting of get_market_calendar_context's dict → the '## Market
+    Calendar' system-prompt block (verbatim app.py:468-510 port)."""
+    holiday_lines = []
+    for xcode, holidays in mkt.get("holidays_by_exchange", {}).items():
+        name = _EXCHANGE_LABELS.get(xcode, xcode)
+        holiday_lines.append(
+            f"{name}: {', '.join(holidays)}" if holidays else f"{name}: no holidays this year/next"
+        )
+
+    fut = mkt.get("futures", {})
+    cme_extra = fut.get("cme_open_nyse_closed", [])
+    group_lines = []
+    for gname, g in fut.get("product_groups", {}).items():
+        syms = ", ".join(g["products"][:4]) + ("…" if len(g["products"]) > 4 else "")
+        group_lines.append(
+            f"  {gname.replace('_', ' ').title()} ({g['exchange']}): "
+            f"{g['globex_hours_ct']} [{syms}]"
+            + (f" — {g['note']}" if "note" in g else "")
+        )
+
+    return (
+        f"\n\n## Market Calendar\n"
+        f"Today: {mkt['today']} ({'trading day' if mkt['is_trading_day'] else 'non-trading day'} on NYSE).\n"
+        f"Last trading day (NYSE): {mkt['last_trading_day']}. "
+        f"Next trading day (NYSE): {mkt['next_trading_day']}.\n\n"
+        f"### Exchange Holidays (current + next year)\n" +
+        "\n".join(f"  - {line}" for line in holiday_lines) + "\n\n"
+        f"### Futures vs Securities — Key Distinction\n"
+        f"{fut.get('note', '')}\n"
+        f"Maintenance break: {fut.get('maintenance_break_ct', 'N/A')}\n"
+        f"CME open when NYSE is closed: {', '.join(cme_extra) if cme_extra else 'none this period'}\n\n"
+        f"### CME Globex Product Schedule (all times CT)\n" +
+        "\n".join(group_lines) + "\n"
+    )
+```
+
+Run: `pytest tests/test_opening_status.py -v` → 9/9 pass.
+
+- [ ] **Step 5: Write the failing integration test in `tests/test_panel_app.py`**
+
+```python
+@pytest.mark.asyncio
+async def test_init_sends_opening_status_and_stamps_trade_context():
+    """Task 5.3: after the agent is built, init must send the status message
+    (status block + trade status line) and stamp agent._trade_context BEFORE the
+    input gate opens (app.py:399-514 parity) — an agent published without its
+    trade context would silently answer without trade-history grounding."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch(
+            "claudia.panel_app.gather_status_block",
+            new=AsyncMock(return_value=("STATUS BLOCK", False)),
+        ),
+        patch(
+            "claudia.panel_app.build_trade_lines",
+            return_value=("trade status line", "TRADE CTX"),
+        ),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    texts = _message_texts(chat)
+    assert any("STATUS BLOCK" in t and "trade status line" in t for t in texts)
+    assert mock_agent_cls.return_value._trade_context == "TRADE CTX"
+    mock_agent_cls.return_value.handle_message.assert_called_once_with("hello")
+```
+
+Run: `pytest tests/test_panel_app.py::test_init_sends_opening_status_and_stamps_trade_context -v`
+Expected: FAIL — `AttributeError: <module 'claudia.panel_app'> does not have the
+attribute 'gather_status_block'` (patch of a name that doesn't exist yet).
+
+- [ ] **Step 6: Implement the panel_app wiring**
+
+In `claudia/panel_app.py` — new import:
+
+```python
+from claudia.opening_status import build_trade_lines, gather_status_block
+```
+
+New module-level helper (after `_register_doc_version`):
+
+```python
+async def _send_opening_status(
+    chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, agent: ClaudIAAgent
+) -> None:
+    """Second chat message with live account status + trade/calendar context
+    (Task 5.3 — app.py:399-514 parity). Effectively non-raising: both builders
+    catch their own IBKR/store failures internally and degrade to offline/
+    fallback text; an unexpected escape is caught by _init_session's generic
+    handler."""
+    status_block, ibkr_offline = await gather_status_block(toolkit)
+    trade_status, trade_context = await asyncio.to_thread(
+        build_trade_lines, toolkit, ibkr_offline
+    )
+    agent._trade_context = trade_context
+    chat.send(
+        f"{status_block}\n\n_{trade_status}_\n\n"
+        "_TradingView: not connected in the Panel preview._",
+        user="ClaudIA",
+        respond=False,
+    )
+```
+
+In `_init_session`, replace the direct `_session["agent"] = ClaudIAAgent(...)`
+assignment with a local variable, and publish it only AFTER the status send:
+
+```python
+            agent = ClaudIAAgent(
+                toolkit=toolkit,
+                store=store,
+                context_loader=loader,
+                session_id=session_id,
+                sink=sink,
+                model=_MODEL,
+                doc_version=version_label,
+            )
+            # Stamp trade context + send the status message BEFORE publishing the
+            # agent: an agent visible to the input gate without _trade_context
+            # would silently answer without trade-history grounding.
+            await _send_opening_status(chat, toolkit, agent)
+            _session["agent"] = agent
+```
+
+Then add `patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),` to
+the patch stack of the 9 EXISTING tests whose init completes (wired-callback, gating,
+sink, D1-order, drive-fail, doc-version-metadata, hash-warning, no-warning, drive-read) —
+NOT to the two failure-path tests (missing-docs, unexpected-failure), whose init never
+reaches the status code. Without the patch those 9 tests would still pass via the
+offline-degrade path, but only through incidental MagicMock behavior (unpacking a
+MagicMock raises TypeError inside gather_status_block's try) — patching keeps them
+focused and deterministic.
+
+Run: `pytest tests/test_panel_app.py -v` → 12/12 pass.
+
+- [ ] **Step 7: Full suite + linters**
+
+Run: `pytest -m "not integration" -q`
+Expected: 379 baseline + 9 (opening_status) + 1 (integration) = 389, 0 failures.
+`ruff check claudia/opening_status.py claudia/panel_app.py tests/test_opening_status.py
+tests/test_panel_app.py` + `mypy claudia/opening_status.py claudia/panel_app.py` → clean.
+
+- [ ] **Step 8: Manual smoke (no gateway needed)**
+
+`uvicorn claudia.panel_app:app --port 8001` → welcome line renders immediately; a beat
+later the status message arrives with "*IBKR gateway not connected…*" (offline fallback —
+gateway is down), a real trade-status line (Flex + SQLite work offline), and the
+TradingView note. No server-side errors.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add claudia/opening_status.py claudia/panel_app.py tests/test_opening_status.py tests/test_panel_app.py
+git commit -m "feat: Panel opening status block — account/positions/P&L/orders + trade & calendar context"
+```
+
 ## Phase 6: Connectivity status — designed Panel-native, not ported
 
 **This phase was fully redesigned 2026-07-22 per the "no Chainlit-shape mimicry" principle
