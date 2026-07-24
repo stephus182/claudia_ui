@@ -6495,20 +6495,104 @@ git add claudia/panel_app.py tests/test_panel_app.py
 git commit -m "feat: TradingView screenshot upload via ChatInterface FileInput (Panel-native)"
 ```
 
-## Phase 9: TradingView action buttons + sidecar tool merge — outline
+## Phase 9: TradingView launch button + sidecar tool merge
 
-**Goal:** Port `tradingview.py`'s two `@cl.action_callback`s (`copy_pinescript`,
-`inject_pinescript`, `tradingview.py:401-440`) and `render_pinescript()`
-(`tradingview.py:377-398`) to Panel's button pattern (same mechanism as Phase 3). Also port
-the `launch_tradingview` action button from `app.py:873-940`. `TradingViewBridge` itself
-(sidecar process/MCP client, `tradingview.py:214-372`) needs zero changes — it has no
-Chainlit dependency.
+**⚠ SCOPE FINDING 2026-07-24 (grounding pass): `render_pinescript` +
+`copy_pinescript`/`inject_pinescript` are DEAD CODE in the current Chainlit app.**
+`render_pinescript` (`tradingview.py:377`) is defined but called from NOWHERE
+(repo-wide grep: only the definition). The sink protocol has no pinescript method and
+`agent.py` detects only order/cancel/modify proposal blocks — so the PineScript
+copy/inject buttons never render in the live flow; the agent emits PineScript as plain
+```pine markdown through `send_message` (which already works in Panel unchanged). **There
+is no working behavior to port** — porting them would be Chainlit-shape mimicry of a
+non-functional feature (violates the design principle). Decision: do NOT port the
+pinescript buttons; the three dead functions (`render_pinescript`, `on_copy_pinescript`,
+`on_inject_pinescript`) are deleted with the rest of `tradingview.py`'s Chainlit surface
+at Phase 11. If the inject-to-Pine-Editor capability is wanted later, it's a NEW feature
+in the post-migration backlog (the `pine_set_source` sidecar tool exists; only the UI
+wiring is missing), NOT a migration parity item.
 
-**One thing to fix, not just port:** `tradingview.py:428` does
-`from claudia.app import _tv_bridge` inside `on_inject_pinescript` — a reach into the
-Chainlit entry point's module-level singleton. The Panel port needs its own equivalent
-singleton reference (likely `claudia.panel_app._tv_bridge`, mirroring the pattern, not
-importing across the two entry-point modules).
+**What Phase 9 actually ports (the LIVE surface):** (1) the TradingView sidecar
+connect + status detection currently in the opening flow (`app.py:324-346`), deferred in
+Phase 5 by D5; (2) the "Launch TradingView" button (`app.py:525-531` action +
+`app.py:886-953` callback core); (3) the agent tool-merge — when the bridge connects, the
+session's agent gains the TV tools via `agent.set_tv_bridge(bridge, tools)`
+(`agent.py:492`). `TradingViewBridge` itself (`tradingview.py:214-372`) needs zero
+changes — no Chainlit dependency. The `from claudia.app import _tv_bridge` reach
+(`tradingview.py:428`) dies with the dead inject function, so no cross-module-singleton
+fix is needed — panel_app gets its own `_tv_bridge` singleton + `_tv_bridge_lock` +
+`_get_tv_bridge()` (mirrors `app.py:70,181-194`).
+
+**⚠ Live-test limitation:** the launch/connect path needs TradingView Desktop installed
+and launchable with CDP (port 9222) — cannot be fully live-verified in every environment.
+Unit tests cover the wiring (button present when TV offline; handler calls
+launch→get_bridge→set_tv_bridge in order; D6's ConnectivityChecker gets the bridge);
+the actual Desktop launch is a manual smoke when TV is available. Per
+`project-tradingview-robustness` (memory): the sidecar is fragile — the port preserves
+the existing graceful-degradation (every failure path is an honest chat message, never a
+crash), and TV-offline is the normal expected state, not an error.
+
+### Task 9.1: TV singleton + opening-status detection + Launch button + tool merge
+
+Grounded 2026-07-24: `TradingViewBridge()` + `await bridge.start()`,
+`.get_tools() -> list[dict]` (`tradingview.py:325`), `.stop()` (`:361`),
+`.execute(name, input)`; `check_cdp_running() -> bool` (`:142`),
+`launch_tradingview() -> bool` (`:166`, polls CDP up to 30s);
+`ClaudIAAgent.set_tv_bridge(bridge, tools)` (`agent.py:492`) and its constructor already
+take `extra_tools`/`tv_bridge` (`agent.py:463-464`); `ConnectivityChecker.set_tv_bridge`
+(`status.py:172`). Parity sources: opening TV block `app.py:324-346`; launch callback
+core `app.py:907-951`.
+
+**Design (locked at detailing — function-first placement):**
+
+- panel_app gains module globals `_tv_bridge: TradingViewBridge | None = None` +
+  `_tv_bridge_lock = asyncio.Lock()` + an async `_get_tv_bridge()` verbatim-mirroring
+  `app.py:181-194` (start-under-lock, assign-only-on-success).
+- **Opening-flow TV detection** moves into `_init_session` (D5 deferral now lands): after
+  the backend singletons, a `_connect_tradingview(agent) -> bool` (returns `tv_offline`)
+  tries `_get_tv_bridge()` → `get_tools()` + `check_cdp_running()`; on success wires
+  `agent.set_tv_bridge(bridge, tools)` and `_connectivity_checker.set_tv_bridge(bridge)`;
+  every failure path logs + returns `tv_offline=True` (sidecar unavailable / CDP down /
+  no tools — the `app.py:324-346` branch logic, minus the status STRING which the Panel
+  status block already renders its own way). Wrapped so a TV failure NEVER blocks init
+  (TV is optional; parity with app.py where the try/except degrades silently).
+- **Launch button**: `_send_action_buttons` gains a `tv_offline` param; when True it adds
+  a "Launch TradingView" `pn.widgets.Button(label=..., color="warning")` beside End
+  Session / Start Gateway. Its async handler ports `app.py:907-951`: disable-first →
+  progress `chat.send`s → `launch_tradingview()` (to_thread — it's a blocking CDP poll?
+  check: it's `async def` at `:166`, so `await` directly) → on fail the manual-launch
+  message → else rebuild bridge under `_tv_bridge_lock` (stop old, `_get_tv_bridge()`),
+  `_connectivity_checker.set_tv_bridge`, `agent.set_tv_bridge(bridge, tools)`, success
+  message. `_init_session` passes `tv_offline` from `_connect_tradingview` into
+  `_send_action_buttons` (threaded alongside the existing `ibkr_offline`).
+- `_send_opening_status`'s hardcoded "TradingView: not connected in the Panel preview."
+  line (Task 5.3) is replaced by a real TV status line derived from `tv_offline`.
+
+**Files:**
+
+- Modify: `claudia/panel_app.py` (TV singleton trio, `_connect_tradingview`,
+  `_send_action_buttons` TV button, `_init_session` wiring, opening-status TV line)
+- Modify: `tests/test_panel_app.py` (~5 new tests, all with the bridge/launch patched —
+  no real sidecar in unit tests)
+
+- [ ] **Step 1: Failing tests** (detail with the real patch stacks at dispatch — assert:
+  TV button present only when `tv_offline`; `_connect_tradingview` success wires
+  `set_tv_bridge` on both agent and checker; TV failure returns `tv_offline=True` and
+  does NOT block init (agent still built, chat usable); launch handler calls
+  `launch_tradingview`→`_get_tv_bridge`→`agent.set_tv_bridge` in order and sends the
+  success message; launch-fail sends the manual-launch message and does NOT set the
+  bridge).
+
+- [ ] **Step 2: Implement** (per the design above — verbatim-mirror the app.py cores).
+
+- [ ] **Step 3: Gates** (suite +5; ruff + mypy clean; 1 warning).
+
+- [ ] **Step 4: Manual smoke** — two-tier: (a) always: TV offline (no Desktop) → status
+  line says not-connected, "Launch TradingView" button present, init completes and chat
+  works, no crash; (b) if TV Desktop available: click Launch → CDP comes up → tools
+  merge → agent can call a TV tool. Report which tier ran.
+
+- [ ] **Step 5: Commit** — `feat: Panel TradingView launch button + sidecar tool merge (live surface; pinescript buttons are dead code, not ported)`.
 
 ## Phase 10: Dashboard + candlestick charting — outline
 
