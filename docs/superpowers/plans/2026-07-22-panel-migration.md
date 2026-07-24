@@ -2595,6 +2595,30 @@ be **verified empirically before writing the task code** — same discipline as 
 `on_session_created` verification above, and per CLAUDE.md's API-Docs-First rule. Whatever
 is proven becomes the single documented pattern for both call sites.
 
+**D4 RESOLVED 2026-07-23 (empirical probe + official docs, in agreement).** Proven idiom:
+capture `loop = asyncio.get_running_loop()` at session build (on the session's event
+loop); the OS thread calls `loop.call_soon_threadsafe(partial(chat.send, <text>,
+user="System", respond=False))`. All four candidates (loop bridge, `pn.state.execute`,
+`doc.add_next_tick_callback`, even a direct `chat.send` from the thread) rendered
+correctly in-browser under isolated runs AND two-message pressure tests with clean
+server/console logs (probe: scratchpad `d4_probe.py` + run logs; ground truth =
+Playwright browser snapshot, not server-side `chat.objects`). The loop bridge is the
+standard because it is the only candidate serializing the ENTIRE `chat.send` (including
+the Python-side `ChatMessage` construction / `objects` append) onto the session loop —
+`pn.state.execute` from a plain thread degenerates to a direct synchronous call
+(`state._curdoc` is a ContextVar, None on foreign threads — panel 1.9.3
+`state.py:706-743`, probe-confirmed), with thread safety then coming only from Panel's
+reactive `_apply_update` rescheduling (`reactive.py:345-364`), which protects the
+Bokeh-model sync but runs the Python mutation on the caller's thread. Official docs
+agree (panel.holoviz.org `how_to/callbacks/server.html` + 
+`how_to/concurrency/manual_threading.html`); the nuance that `pn.state.execute` doesn't
+actually cross-thread-schedule from a plain thread is recorded here deliberately.
+Caveats: kwargs need `functools.partial` (`call_soon_threadsafe` is positional-only);
+closed-session delivery is a harmless no-op under the process-wide uvicorn loop
+(`_apply_update` short-circuits when no live views — `reactive.py:354`), but wrap the
+thread-side call in try/except as hygiene against a per-session-loop topology ever
+appearing.
+
 **D5 — TradingView sidecar stays out of Phase 5** (per the phase goal above: buttons in
 Phase 9). The agent runs without `extra_tools`/`tv_bridge` — both already default to
 empty/None in `ClaudIAAgent`. The welcome line notes TradingView as "not connected in the
@@ -3786,6 +3810,167 @@ TradingView note. No server-side errors.
 ```bash
 git add claudia/opening_status.py claudia/panel_app.py tests/test_opening_status.py tests/test_panel_app.py
 git commit -m "feat: Panel opening status block — account/positions/P&L/orders + trade & calendar context"
+```
+
+### Task 5.4: Watchdog hot-reload alert via the D4 loop bridge
+
+Grounded 2026-07-23: `ContextLoader.start_watching(on_reload: Callable[[str, str], None])`
+(`context_loader.py:104` — registers on the shared module-level Observer, per-instance
+handlers, so multiple concurrent sessions each watching their own loader is safe;
+`stop_watching()` at `:121` is Task 5.6's cleanup concern). The callback receives
+`(filename, new_prompt)`; like app.py's `_on_doc_change` (`app.py:283-292`), we ignore
+`new_prompt` — the loader has already applied the reload internally; the callback's only
+job is the user-visible alert. The delivery idiom is D4's proven loop bridge (see the
+"D4 RESOLVED" note above — probe + official docs in agreement).
+
+**Design notes:**
+
+- The watcher starts in `_init_session` immediately after the FileNotFoundError guard
+  (app.py parity position: watching begins as soon as the docs are known-valid, before
+  versioning — a reload alert during the rest of init is acceptable and correct).
+- `loop` is captured inside `_init_session` (which runs ON the session's event loop);
+  the thread-side call is wrapped in try/except per the D4 caveat (hygiene against a
+  per-session-loop topology; under uvicorn's process-wide loop a closed-session delivery
+  is already a harmless no-op).
+- Watcher lifecycle: `loader` is already stored in `_session["loader"]` (Task 5.1);
+  Task 5.6's session-end cleanup calls `stop_watching()`. Until 5.6 lands, a closed
+  session's watch persists until process exit — same interim state app.py would have
+  without its `on_chat_end`, accepted for the transition window.
+
+**Files:**
+
+- Modify: `claudia/panel_app.py` (`functools.partial` import; watcher block in
+  `_init_session`)
+- Modify: `tests/test_panel_app.py` (2 new tests)
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_panel_app.py` (existing helpers/patch idioms; `threading` needs
+adding to the imports):
+
+```python
+@pytest.mark.asyncio
+async def test_init_starts_doc_watcher_with_alert_callback():
+    """Task 5.4: init must register a hot-reload callback on the loader
+    (app.py:275-294 parity)."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    loader = mock_loader_cls.return_value
+    loader.start_watching.assert_called_once()
+    assert callable(loader.start_watching.call_args.args[0])
+
+
+@pytest.mark.asyncio
+async def test_doc_change_callback_delivers_alert_from_a_plain_thread():
+    """The D4-verified loop bridge: the watchdog callback fires in a plain OS
+    thread with no asyncio/Bokeh context; the alert must still land in the chat
+    via loop.call_soon_threadsafe. The test invokes the REAL registered callback
+    from a real thread — if the bridge is replaced with a naive chat.send-only
+    callback this still passes (direct sends work too, per the D4 probe), but if
+    the callback raises on a foreign thread or the partial wiring breaks, the
+    alert never renders and this fails."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        on_reload = mock_loader_cls.return_value.start_watching.call_args.args[0]
+        t = threading.Thread(target=on_reload, args=("context.md", "new prompt text"))
+        t.start()
+        t.join(timeout=5)
+        assert not t.is_alive()
+        # call_soon_threadsafe scheduled the send onto THIS loop — yield to run it.
+        await asyncio.sleep(0.05)
+
+    texts = _message_texts(chat)
+    assert any("Document updated" in t_ and "context.md" in t_ for t_ in texts)
+```
+
+Run: `pytest tests/test_panel_app.py -k "watcher or doc_change" -v`
+Expected: both FAIL (`start_watching` never called).
+
+- [ ] **Step 2: Implement the watcher block**
+
+`claudia/panel_app.py` — add `from functools import partial` to the stdlib imports. In
+`_init_session`, immediately after the FileNotFoundError guard's `return` (i.e. once the
+docs are known-valid), insert:
+
+```python
+            # Hot-reload alert (app.py:275-294 parity). The watchdog fires in a
+            # plain OS thread; the D4-verified loop bridge serializes the entire
+            # chat.send onto this session's event loop (see the D4 RESOLVED note
+            # in the migration plan — probe + official Panel docs in agreement).
+            loop = asyncio.get_running_loop()
+
+            def _on_doc_change(filename: str, new_prompt: str) -> None:
+                try:
+                    loop.call_soon_threadsafe(
+                        partial(
+                            chat.send,
+                            f"**Document updated:** `{filename}` reloaded. "
+                            "Principles apply from your next message.",
+                            user="System",
+                            respond=False,
+                        )
+                    )
+                except RuntimeError:  # loop closed — session gone, alert moot
+                    log.debug("Dropped doc-change alert for closed session %s", session_id)
+
+            loader.start_watching(_on_doc_change)
+```
+
+- [ ] **Step 3: Run tests to verify pass**
+
+Run: `pytest tests/test_panel_app.py -v` → 15/15 pass.
+
+- [ ] **Step 4: Full suite + linters**
+
+Run: `pytest -m "not integration" -q` → 390 + 2 = 392, 0 failures.
+`ruff check claudia/panel_app.py tests/test_panel_app.py` + `mypy claudia/panel_app.py`
+→ clean.
+
+- [ ] **Step 5: Manual smoke (no gateway needed)**
+
+`uvicorn claudia.panel_app:app --port 8001`, open http://localhost:8001/ with the
+Playwright browser, wait for the welcome + status messages, then `touch docs/context.md`
+(mtime change is enough for watchdog's on_modified; content untouched). Snapshot within
+~3s: the "**Document updated:** `context.md` reloaded." message renders in the page.
+No server tracebacks. Kill the server.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add claudia/panel_app.py tests/test_panel_app.py
+git commit -m "feat: Panel hot-reload alert via D4 loop bridge (watchdog thread -> session chat)"
 ```
 
 ## Phase 6: Connectivity status — designed Panel-native, not ported
