@@ -28,6 +28,31 @@ async def test_send_message_sends_to_chat_interface_as_claudia():
 
 
 @pytest.mark.asyncio
+async def test_send_message_with_pine_block_triggers_pinescript_render():
+    chat = _make_chat()
+
+    def getter():  # sentinel getter — the sink just passes it straight through
+        return None
+
+    sink = PanelMessageSink(chat=chat, session_id="s1", tv_bridge_getter=getter)
+    text = 'Here:\n```pine\n//@version=5\nstrategy("X")\n```'
+    with patch("claudia.panel_pinescript.render_pinescript_blocks", new=AsyncMock()) as mock_render:
+        await sink.send_message(text)
+    # The raw text is still sent first, then the buttons are rendered beneath it.
+    chat.send.assert_called_once_with(text, user="ClaudIA", respond=False)
+    mock_render.assert_awaited_once_with(chat, text, getter)
+
+
+@pytest.mark.asyncio
+async def test_send_message_without_pine_block_does_not_render_pinescript():
+    chat = _make_chat()
+    sink = PanelMessageSink(chat=chat, session_id="s1")
+    with patch("claudia.panel_pinescript.render_pinescript_blocks", new=AsyncMock()) as mock_render:
+        await sink.send_message("No code here, just prose.")
+    mock_render.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_send_max_tokens_warning_sends_as_system():
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1")

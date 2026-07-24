@@ -224,6 +224,39 @@ async def test_build_chat_app_constructs_sink_with_the_real_store():
 
 
 @pytest.mark.asyncio
+async def test_build_chat_app_wires_tv_bridge_getter_reading_live_module_global(monkeypatch):
+    """Task 9.2: the sink's tv_bridge_getter must read panel_app's live _tv_bridge
+    module global at click time — so a ```pine Inject button reflects a TradingView
+    launched AFTER the message rendered, not a snapshot captured at init."""
+    import claudia.panel_app as panel_app
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.agent.AsyncAnthropic"),
+        patch("claudia.panel_app.PanelMessageSink") as mock_sink_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+    ):
+        _configure_loader(mock_loader_cls)
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("ping", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    getter = mock_sink_cls.call_args.kwargs["tv_bridge_getter"]
+    assert callable(getter)
+    # Reads the live global: mutate _tv_bridge after init, the getter reflects it.
+    sentinel = object()
+    monkeypatch.setattr(panel_app, "_tv_bridge", sentinel)
+    assert getter() is sentinel
+
+
+@pytest.mark.asyncio
 async def test_init_downloads_drive_db_before_first_store_open(monkeypatch):
     """Design D1 ordering: the GDrive DB download must COMPLETE before
     ConversationStore first opens the DB file — otherwise the store's sqlite

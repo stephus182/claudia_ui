@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING
 import panel as pn
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from claudia.conversation_store import ConversationStore
+    from claudia.tradingview import TradingViewBridge
 
 
 class _PanelToolStepHandle:
@@ -74,13 +77,29 @@ class _PanelToolStepHandle:
 class PanelMessageSink:
     """MessageSink backed by a live pn.chat.ChatInterface instance for one session."""
 
-    def __init__(self, chat, session_id: str, store: ConversationStore | None = None) -> None:
+    def __init__(
+        self,
+        chat,
+        session_id: str,
+        store: ConversationStore | None = None,
+        tv_bridge_getter: Callable[[], TradingViewBridge | None] | None = None,
+    ) -> None:
         self._chat = chat
         self._session_id = session_id
         self._store = store
+        # Resolved lazily at click time (default None → inject shows not-connected)
+        # so a TradingView launch after a ```pine message rendered is still picked up.
+        self._tv_bridge_getter = tv_bridge_getter
 
     async def send_message(self, text: str) -> None:
         self._chat.send(text, user="ClaudIA", respond=False)
+        # Auto-detect ```pine blocks and drop Copy/Inject buttons beneath them. Deferred
+        # import (mirrors the order-proposal methods below) — no panel_app↔panel_sink cycle,
+        # and agent.py stays untouched (detection lives in the sink path). See
+        # claudia/panel_pinescript.py.
+        from claudia.panel_pinescript import extract_pine_blocks, render_pinescript_blocks
+        if extract_pine_blocks(text):
+            await render_pinescript_blocks(self._chat, text, self._tv_bridge_getter)
 
     def tool_step(self, name: str) -> _PanelToolStepHandle:
         chat_step = pn.chat.ChatStep(

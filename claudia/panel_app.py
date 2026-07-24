@@ -859,7 +859,14 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
             _execution_listener.start()
 
-            sink = PanelMessageSink(chat=chat, session_id=session_id, store=store)
+            # tv_bridge_getter reads panel_app's live _tv_bridge module global at click
+            # time, so a ```pine Inject button reflects a TradingView launched later.
+            sink = PanelMessageSink(
+                chat=chat,
+                session_id=session_id,
+                store=store,
+                tv_bridge_getter=lambda: _tv_bridge,
+            )
             _session["store"] = store
             _session["loader"] = loader
             agent = ClaudIAAgent(
