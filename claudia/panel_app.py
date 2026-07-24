@@ -62,8 +62,8 @@ _execution_listener: ExecutionListener | None = None
 
 # Strong references to destroy-hook cleanup tasks — the loop only weak-refs
 # tasks, so a bare create_task could be GC'd mid-cleanup (ruff RUF006).
-# Task[str]: _run_session_cleanup returns the status string (logged/ignored
-# on the destroy path).
+# Task[str]: _run_session_cleanup returns the status string, logged on the
+# destroy path by the done callback.
 _cleanup_tasks: set[asyncio.Task[str]] = set()
 
 # Serializes the check-download-first-store-open section of _init_session across
@@ -202,10 +202,12 @@ async def _run_session_cleanup(
     loader: ContextLoader | None,
 ) -> str:
     """Close session, generate report, upload DB (app.py:670-700 parity).
-    Returns a one-line status string. Every blocking call is offloaded via
-    asyncio.to_thread — the destroy-hook path runs this on the shared loop,
-    where blocking would freeze every live session (V4 probe). NO UI calls:
-    on the destroy path the chat's Document is already gutted."""
+    Returns a one-line status string. The slow calls (report generation, Drive
+    upload) are offloaded via asyncio.to_thread; the sqlite row ops and
+    stop_watching are ms-scale and run inline (app.py parity) — the destroy-hook
+    path runs this on the shared loop, where blocking would freeze every live
+    session (V4 probe). NO UI calls: on the destroy path the chat's Document is
+    already gutted."""
     if loader:
         loader.stop_watching()
 
@@ -244,7 +246,7 @@ def _send_action_buttons(
 ) -> None:
     """End Session (always) + Start IBKR Gateway (only when offline) — app.py
     action-button parity, Phase 3 widget pattern (disable-first async handlers)."""
-    end_btn = pn.widgets.Button(name="End Session", button_type="light")
+    end_btn = pn.widgets.Button(label="End Session", color="light")
     buttons: list[pn.widgets.Button] = [end_btn]
 
     async def _on_end(event: Any) -> None:
@@ -263,7 +265,7 @@ def _send_action_buttons(
     end_btn.on_click(_on_end)
 
     if ibkr_offline:
-        gw_btn = pn.widgets.Button(name="Start IBKR Gateway", button_type="primary")
+        gw_btn = pn.widgets.Button(label="Start IBKR Gateway", color="primary")
         buttons.append(gw_btn)
 
         async def _on_start_gateway(event: Any) -> None:
@@ -337,7 +339,15 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             _run_session_cleanup(session_id, _session["store"], _session["loader"])
         )
         _cleanup_tasks.add(task)
-        task.add_done_callback(_cleanup_tasks.discard)
+
+        def _log_cleanup_done(t: asyncio.Task[str]) -> None:
+            _cleanup_tasks.discard(t)
+            try:
+                log.info("Destroy-path cleanup (session %s): %s", session_id, t.result())
+            except Exception:
+                log.exception("Destroy-path cleanup failed (session %s)", session_id)
+
+        task.add_done_callback(_log_cleanup_done)
 
     # Registered BEFORE the input callback wiring / init task, while curdoc is
     # set (i.e. on the session Document) — so even a session whose init later

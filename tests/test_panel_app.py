@@ -41,6 +41,7 @@ otherwise activate the branch).
 
 import asyncio
 import os
+import signal
 import threading
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
@@ -49,6 +50,7 @@ import panel as pn
 import pytest
 
 from claudia.panel_app import _DOCS_PATH, _build_chat_app
+from tests.conftest import _find_buttons, _get_click_callback
 
 _NO_GDRIVE = {"GOOGLE_DRIVE_FOLDER_ID": ""}
 _CALLBACK_TIMEOUT = 5
@@ -763,37 +765,9 @@ async def test_session_destroy_hook_registered_and_runs_cleanup_once():
         hook(MagicMock())          # second → suppressed by closed flag
         await asyncio.sleep(0.05)  # let the created task run
 
-    mock_cleanup.assert_awaited_once()
-
-
-def _find_buttons(chat):
-    """All pn.widgets.Button objects across chat messages (Phase 3 pattern:
-    buttons live in a pn.Column/Row inside a message)."""
-    found = []
-    for m in chat.objects:
-        obj = getattr(m, "object", None)
-        if obj is None:
-            continue
-        stack = [obj]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, pn.widgets.Button):
-                found.append(node)
-            stack.extend(getattr(node, "objects", []))
-    return found
-
-
-def _get_click_callback(button):
-    """Extract the real on_click callback from a live pn.widgets.Button, for direct
-    invocation in a unit test — the Phase 3 click-simulation idiom, duplicated
-    verbatim from tests/test_panel_order_flow.py (see its docstring for the live
-    verification against panel==1.9.3: on_click registers the ONE watcher with
-    onlychanged=False on 'clicks'; Panel's own internal watchers are always
-    onlychanged=True)."""
-    watchers = button.param.watchers["clicks"]["value"]
-    matches = [w.fn for w in watchers if not w.onlychanged]
-    assert len(matches) == 1, f"expected exactly 1 on_click watcher, found {len(matches)}"
-    return matches[0]
+    # ANY = the session's uuid; store/loader pin the holder wiring (the hook
+    # must pass THIS session's store and loader, not fresh or global objects).
+    mock_cleanup.assert_awaited_once_with(ANY, mock_store, mock_loader_cls.return_value)
 
 
 @pytest.mark.asyncio
@@ -856,6 +830,123 @@ async def test_start_gateway_button_present_only_when_ibkr_offline():
     assert len(gateway_btns) == 1
 
 
+@pytest.mark.asyncio
+async def test_destroy_hook_cleanup_failure_is_logged_not_raised(caplog):
+    """5.6b quality review (I2): the destroy-path task's outcome must be
+    consumed by the done callback — a failing cleanup logs 'Destroy-path
+    cleanup failed' (log.exception) instead of dying as an unretrieved task
+    exception on the shared loop."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "on_session_destroyed") as mock_register,
+        patch("claudia.panel_app._run_session_cleanup",
+              new=AsyncMock(side_effect=RuntimeError("cleanup blew up"))),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        hook = mock_register.call_args.args[0]
+        hook(MagicMock())
+        await asyncio.sleep(0.05)  # let the task fail and the done callback run
+
+    assert "Destroy-path cleanup failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_click_success_path_streams_and_refreshes_status(monkeypatch):
+    """5.6b quality review (I3a): clicking the REAL gateway button drives the
+    full app.py:838-874 core — ensure_docker_running → start → wait_for_gateway
+    → open_login_page — renders the success message, and awaits the immediate
+    connectivity re-check (app.py:863-864 parity)."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, True))),   # offline → button present
+        patch("claudia.panel_app.GatewayManager") as mock_gm_cls,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        gm = mock_gm_cls.return_value
+        gm.wait_for_gateway.return_value = True
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        # Stronger of the two review options: a checker mock with an AsyncMock
+        # _run_checks, asserted awaited — pins the immediate re-check trigger,
+        # not just its absence of crash.
+        checker = MagicMock()
+        checker._run_checks = AsyncMock()
+        monkeypatch.setattr("claudia.panel_app._connectivity_checker", checker)
+
+        gw_btn = next(b for b in _find_buttons(chat) if b.name == "Start IBKR Gateway")
+        await _get_click_callback(gw_btn)(None)
+
+    gm.ensure_docker_running.assert_called_once()
+    gm.start.assert_called_once()
+    gm.wait_for_gateway.assert_called_once()
+    gm.open_login_page.assert_called_once()
+    checker._run_checks.assert_awaited_once()
+    assert gw_btn.disabled is True
+    texts = _message_texts(chat)
+    assert any("✅ IBKR Gateway is reachable" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_click_timeout_reports_and_skips_login_page():
+    """5.6b quality review (I3b): wait_for_gateway returning False renders the
+    timeout message and never opens the login page."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, True))),   # offline → button present
+        patch("claudia.panel_app.GatewayManager") as mock_gm_cls,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        gm = mock_gm_cls.return_value
+        gm.wait_for_gateway.return_value = False
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+        gw_btn = next(b for b in _find_buttons(chat) if b.name == "Start IBKR Gateway")
+        await _get_click_callback(gw_btn)(None)
+
+    gm.wait_for_gateway.assert_called_once()
+    gm.open_login_page.assert_not_called()
+    texts = _message_texts(chat)
+    assert any("✕ Gateway did not start within timeout" in t for t in texts)
+
+
 def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
     """5.6b-pre review deferral (M2) + V5 shutdown contract: pn.serve kwargs are
     behavior-bearing (websocket_origin: 403 without 127.0.0.1 — probe-verified),
@@ -866,7 +957,7 @@ def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
     monkeypatch.setattr("claudia.panel_app._gdrive_sync", mock_sync)
     with (
         patch("claudia.panel_app.pn.serve", side_effect=KeyboardInterrupt) as mock_serve,
-        patch("claudia.panel_app.signal.signal"),
+        patch("claudia.panel_app.signal.signal") as mock_signal,
         pytest.raises(KeyboardInterrupt),
     ):
         main()
@@ -874,4 +965,5 @@ def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
     assert kwargs["show"] is False
     assert any("127.0.0.1" in o for o in kwargs["websocket_origin"])
     assert any(o.startswith("localhost") for o in kwargs["websocket_origin"])
+    mock_signal.assert_called_once_with(signal.SIGTERM, ANY)
     mock_sync.upload_db.assert_called_once()

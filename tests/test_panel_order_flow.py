@@ -16,6 +16,7 @@ from claudia.panel_order_flow import (
     render_modify_proposal,
     render_order_proposal,
 )
+from tests.conftest import _get_click_callback
 
 
 def _make_chat():
@@ -39,31 +40,6 @@ def _make_ibkr_mock():
     client.cancel_order.return_value = {"order_id": "242538143", "msg": "Cancelled"}
     client.modify_order_and_confirm.return_value = {"order_id": "242538143", "order_status": "Submitted"}
     return mod, client
-
-
-def _get_click_callback(button):
-    """Extract the real on_click callback from a live pn.widgets.Button, for direct
-    invocation in a unit test (no browser, no running Panel server).
-
-    Verified live, 2026-07-22, against the installed panel==1.9.3: Button.on_click(cb)
-    is implemented as `self.param.watch(cb, 'clicks', onlychanged=False)` (confirmed via
-    `inspect.getsource(pn.widgets.Button.on_click)`) — there is no `_on_click` attribute
-    on the button itself. The registered callback lives in
-    `button.param.watchers['clicks']['value']`, a list of param Watcher namedtuples;
-    Panel's own internal sync watchers (name/label/value mirroring etc.) are always
-    registered with `onlychanged=True`, while on_click's own watcher is always
-    `onlychanged=False` — confirmed by direct inspection of that list — so filtering on
-    that flag reliably isolates the one watcher this file's own render_* functions
-    registered, regardless of how many internal watchers Panel itself adds. Calling
-    `.fn` directly and awaiting it (async callbacks are supported natively, confirmed via
-    `param.parameterized`'s `iscoroutinefunction(watcher.fn)` branch) exercises the exact
-    function a real click would invoke, without needing Panel's async_executor/event-loop
-    plumbing that a bare pytest run doesn't have.
-    """
-    watchers = button.param.watchers["clicks"]["value"]
-    matches = [w.fn for w in watchers if not w.onlychanged]
-    assert len(matches) == 1, f"expected exactly 1 on_click watcher, found {len(matches)}"
-    return matches[0]
 
 
 @pytest.mark.asyncio
