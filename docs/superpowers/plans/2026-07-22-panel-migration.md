@@ -3992,6 +3992,230 @@ git add claudia/panel_app.py tests/test_panel_app.py
 git commit -m "feat: Panel hot-reload alert via D4 loop bridge (watchdog thread -> session chat)"
 ```
 
+### Task 5.5: ConnectivityChecker + ExecutionListener singletons (D6)
+
+Grounded 2026-07-23 against verified signatures: `ConnectivityChecker(gateway_url: str,
+gdrive_token_file: Path, tv_bridge=None, gdrive_sync=None)` (`status.py:60`), `.start()`
+idempotent — no-ops on a running task, recreates a finished/cancelled one
+(`status.py:176-185`), `.subscribe(cb) -> unsubscribe` (`status.py:193`);
+`ExecutionListener(gateway_url: str, store: SQLiteStore)` (`execution_listener.py:131`),
+`.start()` same idempotent contract (`execution_listener.py:136-142`). Parity source:
+`app.py:348-377`. Both `.start()`s create asyncio tasks on the CURRENT running loop —
+in Panel that's the process-wide uvicorn loop (empirically confirmed by the D4 probe:
+the session factory runs on MainThread with the process-wide loop), so the singleton
+tasks survive individual sessions exactly as they do under Chainlit.
+
+**Design notes:**
+
+- Per D6: constructed + started in `_init_session` under `is None` guards; `.start()`
+  called unconditionally each session (app.py:360-361 parity — restarts a cancelled
+  task). **NO per-session `subscribe`** — chat-alert delivery is Phase 6's remaining
+  work (the D4 idiom is now proven, but the Phase 5 goal is backend keepalive only:
+  the checker's 60s `/tickle` poll is the IBKR session keepalive, a live-session
+  protection gap Panel currently has).
+- `tv_bridge=None` (D5 — no TV in Phase 5; Phase 9 wires `set_tv_bridge`).
+- Config via `toolkit._config` (same sanctioned reach-in as Task 5.3), gdrive_sync via
+  the module global; construction is synchronous with no `await` between the None-check
+  and assignment, so no lock is needed on the single-threaded loop (same reasoning as
+  app.py:369-371's comment).
+- Placement: after `store.create_session(...)`, before the sink/agent block —
+  app.py's relative order.
+
+**Files:**
+
+- Modify: `claudia/panel_app.py` (imports, 2 module globals, singleton block)
+- Modify: `tests/test_panel_app.py` (3 new tests)
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_panel_app.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_init_starts_connectivity_and_execution_singletons(monkeypatch):
+    """Task 5.5 (design D6): first session constructs + starts both process
+    singletons. The checker's 60s /tickle poll is the IBKR session KEEPALIVE —
+    a live-session-protection requirement, not cosmetics (app.py:348-377
+    parity). No per-session subscribe in Phase 5 (chat alerts are Phase 6)."""
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
+    monkeypatch.setattr("claudia.panel_app._execution_listener", None)
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
+        patch("claudia.panel_app.ConnectivityChecker") as mock_checker_cls,
+        patch("claudia.panel_app.ExecutionListener") as mock_listener_cls,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    checker_kwargs = mock_checker_cls.call_args.kwargs
+    assert checker_kwargs["gateway_url"] is mock_toolkit._config.gateway_url
+    assert checker_kwargs["gdrive_token_file"] is mock_toolkit._config.gdrive_token_file
+    assert checker_kwargs["tv_bridge"] is None
+    mock_checker_cls.return_value.start.assert_called_once()
+    mock_checker_cls.return_value.subscribe.assert_not_called()
+    mock_listener_cls.assert_called_once_with(
+        mock_toolkit._config.gateway_url, mock_toolkit._store
+    )
+    mock_listener_cls.return_value.start.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_second_session_reuses_singletons_but_restarts_them(monkeypatch):
+    """app.py:360-361 parity: construction happens once, but .start() is called
+    unconditionally every session (idempotent — restarts a cancelled task)."""
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
+    monkeypatch.setattr("claudia.panel_app._execution_listener", None)
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new_callable=AsyncMock),
+        patch("claudia.panel_app.ConnectivityChecker") as mock_checker_cls,
+        patch("claudia.panel_app.ExecutionListener") as mock_listener_cls,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat1 = _build_chat_app()
+        await asyncio.wait_for(chat1.callback("a", "User", chat1), timeout=_CALLBACK_TIMEOUT)
+        chat2 = _build_chat_app()
+        await asyncio.wait_for(chat2.callback("b", "User", chat2), timeout=_CALLBACK_TIMEOUT)
+
+    mock_checker_cls.assert_called_once()
+    mock_listener_cls.assert_called_once()
+    assert mock_checker_cls.return_value.start.call_count == 2
+    assert mock_listener_cls.return_value.start.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_singletons_not_started_when_docs_missing(monkeypatch):
+    """Setup-required parity with app.py control flow: the missing-docs guard
+    returns before app.py's singleton block runs — Panel matches (keepalive only
+    for sessions that got past doc validation)."""
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
+    monkeypatch.setattr("claudia.panel_app._execution_listener", None)
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app.ConnectivityChecker") as mock_checker_cls,
+        patch("claudia.panel_app.ExecutionListener") as mock_listener_cls,
+    ):
+        mock_loader_cls.return_value.load_system_prompt.side_effect = FileNotFoundError(
+            "docs/context.md not found"
+        )
+        mock_loader_cls.return_value.reload_count = 0
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    mock_checker_cls.assert_not_called()
+    mock_listener_cls.assert_not_called()
+```
+
+Run: `pytest tests/test_panel_app.py -k "singleton" -v`
+Expected: the first two FAIL on `AttributeError` (patching
+`claudia.panel_app.ConnectivityChecker`, which doesn't exist yet); the third fails the
+same way at patch time.
+
+- [ ] **Step 2: Implement**
+
+`claudia/panel_app.py` — new imports:
+
+```python
+from claudia.execution_listener import ExecutionListener
+from claudia.status import ConnectivityChecker
+```
+
+New module globals (next to `_gdrive_sync`):
+
+```python
+_connectivity_checker: ConnectivityChecker | None = None
+_execution_listener: ExecutionListener | None = None
+```
+
+In `_init_session`, after `store.create_session(...)` and before the sink construction:
+
+```python
+            # Backend singletons (design D6, app.py:348-377 parity). The
+            # checker's 60s /tickle poll is the IBKR session KEEPALIVE — live-
+            # session protection, not cosmetics. Constructed once per process,
+            # started unconditionally each session (start() is idempotent and
+            # restarts a cancelled task). No per-session subscribe in Phase 5 —
+            # chat-alert delivery is Phase 6's work. Construction is synchronous
+            # (no await between the None-check and assignment on this single-
+            # threaded loop), so no lock is needed — same reasoning as
+            # app.py:369-371. tv_bridge stays None until Phase 9 (D5).
+            global _connectivity_checker, _execution_listener
+            cfg = toolkit._config
+            if _connectivity_checker is None:
+                _connectivity_checker = ConnectivityChecker(
+                    gateway_url=cfg.gateway_url,
+                    gdrive_token_file=cfg.gdrive_token_file,
+                    tv_bridge=None,
+                    gdrive_sync=_gdrive_sync,
+                )
+            _connectivity_checker.start()
+            if _execution_listener is None:
+                _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
+            _execution_listener.start()
+```
+
+(The existing `global _gdrive_sync` line at the top of `_init_session` extends to
+`global _gdrive_sync, _connectivity_checker, _execution_listener` — Python allows only
+one binding site; keep a single global statement.)
+
+- [ ] **Step 3: Run tests to verify pass**
+
+Run: `pytest tests/test_panel_app.py -v` → 18/18 pass.
+
+- [ ] **Step 4: Full suite + linters**
+
+Run: `pytest -m "not integration" -q` → 392 + 3 = 395, 0 failures.
+`ruff check claudia/panel_app.py tests/test_panel_app.py` + `mypy claudia/panel_app.py`
+→ clean.
+
+- [ ] **Step 5: Manual smoke (no gateway needed)**
+
+`uvicorn claudia.panel_app:app --port 8001`, load the page, watch the log ~70s: the
+ConnectivityChecker's first poll cycle runs (expect its IBKR-offline log lines — gateway
+is down — with no tracebacks); ExecutionListener's websocket retry loop logs its
+connection failure and backs off without spinning. Kill the server.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add claudia/panel_app.py tests/test_panel_app.py
+git commit -m "feat: Panel backend singletons — ConnectivityChecker keepalive + ExecutionListener (D6)"
+```
+
 ## Phase 6: Connectivity status — designed Panel-native, not ported
 
 **This phase was fully redesigned 2026-07-22 per the "no Chainlit-shape mimicry" principle
