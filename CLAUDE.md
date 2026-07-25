@@ -189,6 +189,9 @@ the fix that established this (75,480 → 2,910 tokens/session).
   headless button testing): `docs/panel/panel-reference.md`
 - Panel UI design & styling (no-styling baseline, shadow-DOM constraint, scraped styling
   surface, proposed restyle direction): `docs/panel/ui-design-reference.md`
+- Panel data surfaces — graphs/tables/indicators not yet built (Tabulator, Trend/Number,
+  ECharts, `pn.extension()` gate, side windows, stream/patch + connectivity, chatbot-piloted
+  vs. independent sketch): `docs/panel/data-surfaces-reference.md`
 - Panel folder hub (both references + dated research + smoke screenshots): `docs/panel/README.md`
 - Startup flow, phase by phase (diagnose startup failures): `docs/startup-flow.md`
 - Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and `docs/trading-data-reference.md`

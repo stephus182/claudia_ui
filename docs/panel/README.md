@@ -33,6 +33,14 @@ Distinct from:
   scraped styling surface (designs, themes, the eight `--design-*` tokens, templates,
   `ChatInterface`'s own appearance parameters), the open design questions, a **proposed**
   direction for the Track D restyle, and the official-source URL index.
+- [Panel data surfaces reference](data-surfaces-reference.md) — **graphs, tables, indicators and
+  the wiring to drive them.** Started 2026-07-24, before any of this work began: the component
+  inventory filtered to trading surfaces (Tabulator/Perspective, Trend/Number/LinearGauge, the
+  Bokeh-and-ECharts-only dependency reality), the `pn.extension()` gate and its extension-name
+  list, side-window tooling (`FloatPanel`/`Modal`/`GridStack`/`Tabs` vs. templates vs. a second
+  `pn.serve` slug), the connectivity surface (stream/patch, periodic callbacks, `pn.bind`, URL
+  sync, reconnect, thread bridge), and a **sketch** — not a design — for chatbot-piloted vs.
+  independently-driven surfaces. Every claim tagged scraped / probed / code / unverified.
 
 ### Research — point-in-time, not updated
 
