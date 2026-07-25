@@ -19,7 +19,7 @@ code changes.
 | [`gdrive-sync-reference.md`](gdrive-sync-reference.md) | GDrive sync — folder layout, credential flow, error handling |
 | [`market-calendar-reference.md`](market-calendar-reference.md) | 20-exchange market calendar, futures schedules |
 | [`order-api-reference.md`](order-api-reference.md) | Full order-staging spec (Gate 1/2, immutability rule, FUT/FOP conid) |
-| [`project-status.md`](project-status.md) | Living status doc — feature timeline, known gaps, live test log/plan |
+| [`project-status.md`](project-status.md) | Living status doc — milestone history, test coverage, live testing (index/outstanding/log), work plan, known gaps |
 | [`prompt-caching-upgrade.md`](prompt-caching-upgrade.md) | Prompt-caching implementation note — status, verified numbers, findings |
 | [`startup-flow.md`](startup-flow.md) | Every phase of ClaudIA startup in order |
 | [`trading-data-reference.md`](trading-data-reference.md) | Trade data architecture, Flex vs live API, P&L/execution listener |

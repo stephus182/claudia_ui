@@ -201,7 +201,7 @@ Implementation plan and live-verified numbers —
 | [`docs/flex-query-setup.md`](docs/flex-query-setup.md) | IBKR Flex Query setup: token, query config, backfill, ongoing sync |
 | [`docs/tradingview-mcp-recovery.md`](docs/tradingview-mcp-recovery.md) | TradingView break patterns, recovery steps, CDP fallback |
 | [`docs/connectivity.md`](docs/connectivity.md) | IBKR / GDrive / TradingView check logic, reconnection flows, live test results |
-| [`docs/project-status.md`](docs/project-status.md) | Feature timeline, test coverage, live test plan and log |
+| [`docs/project-status.md`](docs/project-status.md) | Milestone history, test coverage, live testing index and log, known gaps |
 
 ---
 
