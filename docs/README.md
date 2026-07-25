@@ -44,13 +44,16 @@ bridge, D7 session-destroy, `pn.serve` behavior, watchdog) — the executable ev
 load-bearing claims in the migration plan and `docs/panel/`. See
 [`probes/README.md`](probes/README.md).
 
-## Plans (`docs/plans/`)
+## Plans (`docs/plans/` — git-ignored, local + Google Drive only)
 
-**All plans live here** — designs (`*-design.md`), implementation plans, and
+**All plans live here, and the whole directory is git-ignored** (user rule 2026-07-24:
+plans are personal working documents, kept local and on Drive, never committed). Any
+`docs/plans/...` path mentioned elsewhere in this repo is a pointer into this local
+archive, not a repo file. Designs (`*-design.md`), implementation plans, and
 workflow-executed plans alike (never in a separate `docs/superpowers/` directory). Filenames
 carry a `YYYY-MM-DD-<topic>` prefix, so a filename sort gives chronological order. A design
 spec captures the why/what, a plan captures the how. Workflow-executed plans (e.g.
-[`2026-07-22-panel-migration.md`](plans/2026-07-22-panel-migration.md), the complete
+`2026-07-22-panel-migration.md`, the complete
 Chainlit→Panel migration record) are living documents *during* execution — task notes and
 review outcomes appended in place — and freeze once their project completes. All others are
 point-in-time records: once written they are not edited to reflect later changes, including

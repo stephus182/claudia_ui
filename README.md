@@ -187,7 +187,7 @@ Full information-flow map (prompts, session archive, scrape access, and the
 design constraints a future RAG layer must respect) —
 [`docs/audits/2026-07-03-agent-info-architecture-review.md`](docs/audits/2026-07-03-agent-info-architecture-review.md).
 Implementation plan and live-verified numbers —
-[`docs/plans/2026-07-03-prompt-caching-upgrade.md`](docs/plans/2026-07-03-prompt-caching-upgrade.md).
+`docs/plans/2026-07-03-prompt-caching-upgrade.md`.
 
 ---
 
