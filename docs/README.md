@@ -44,22 +44,18 @@ bridge, D7 session-destroy, `pn.serve` behavior, watchdog) — the executable ev
 load-bearing claims in the migration plan and `docs/panel/`. See
 [`probes/README.md`](probes/README.md).
 
-## Superpowers plans (`docs/superpowers/plans/`)
-
-Plans executed via the subagent-driven-development workflow — living documents *during*
-execution (task notes, review outcomes, completion records appended in place), frozen once
-their project completes. Currently:
-[`2026-07-22-panel-migration.md`](superpowers/plans/2026-07-22-panel-migration.md) — the
-complete Chainlit→Panel migration record (COMPLETE 2026-07-24).
-
 ## Plans (`docs/plans/`)
 
-Point-in-time records of what was decided and how — a design spec (`*-design.md`) captures the
-why/what, a plan (plain topic name) captures the how, for both features and fixes. Filenames
-carry a `YYYY-MM-DD-<topic>` prefix, so a filename sort gives chronological order. These are not
-living documents — once written they are not edited to reflect later changes, including later
-file moves; a later revisit gets a new dated file. Browse the directory directly rather than
-looking for an index entry here.
+**All plans live here** — designs (`*-design.md`), implementation plans, and
+workflow-executed plans alike (never in a separate `docs/superpowers/` directory). Filenames
+carry a `YYYY-MM-DD-<topic>` prefix, so a filename sort gives chronological order. A design
+spec captures the why/what, a plan captures the how. Workflow-executed plans (e.g.
+[`2026-07-22-panel-migration.md`](plans/2026-07-22-panel-migration.md), the complete
+Chainlit→Panel migration record) are living documents *during* execution — task notes and
+review outcomes appended in place — and freeze once their project completes. All others are
+point-in-time records: once written they are not edited to reflect later changes, including
+later file moves; a later revisit gets a new dated file. Browse the directory directly
+rather than looking for an index entry here.
 
 ## Audits (`docs/audits/`)
 

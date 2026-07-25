@@ -12,7 +12,7 @@ URL cited). Probe scripts referenced in the docs live in the session scratchpad 
 load-bearing, are committed under `docs/probes/`.
 
 Distinct from:
-- `docs/superpowers/plans/2026-07-22-panel-migration.md` — the migration execution plan
+- `docs/plans/2026-07-22-panel-migration.md` — the migration execution plan
   (task-by-task). These research docs are the *reference material* it and the restyle plan
   cite, not the plan itself.
 - `docs/probes/` — runnable verification scripts (D4/D7/pn.serve/watchdog probes).

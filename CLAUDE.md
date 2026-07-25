@@ -1,6 +1,6 @@
 # ClaudIA UI — Developer Guide
 
-ClaudIA is a Panel-based trading assistant chatbot that connects to Interactive Brokers via `ibkr_core_mcp`. It provides conversational access to IBKR data, backtesting, technical analysis, TradingView integration, an external candlestick chart pane, and human-confirmed order staging. (It was migrated from Chainlit to Panel — see `docs/superpowers/plans/2026-07-22-panel-migration.md`.)
+ClaudIA is a Panel-based trading assistant chatbot that connects to Interactive Brokers via `ibkr_core_mcp`. It provides conversational access to IBKR data, backtesting, technical analysis, TradingView integration, an external candlestick chart pane, and human-confirmed order staging. (It was migrated from Chainlit to Panel — see `docs/plans/2026-07-22-panel-migration.md`.)
 
 ---
 
@@ -103,6 +103,11 @@ that repo.
   diagnosis. Cite the source URL in the error string and commit message. This rule exists
   because two production bugs went undetected for months and were caught instantly once
   docs were checked. Full source table: `docs/api-reference.md`
+- **All plans live in `docs/plans/`** (dated `YYYY-MM-DD-<topic>.md` filenames — designs,
+  implementation plans, and workflow-executed plans alike). Never create a
+  `docs/superpowers/` directory — this overrides any skill's default plan location. (The
+  2026-07-14 docs reorg dissolved `docs/superpowers/` into `docs/plans/`; a skill default
+  recreated it on 2026-07-22 and it was re-dissolved on 2026-07-24.)
 - `context.md` / `principles.md` define ClaudIA's persona and trading rules. Hot-reloaded
   mid-session, never commit either file. Loading/versioning mechanics: `docs/context-loading-reference.md`
 - Prompt caching uses 3 breakpoints (tools → system → messages). Mechanics and live-verified

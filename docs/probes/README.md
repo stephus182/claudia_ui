@@ -1,6 +1,6 @@
 # Verification probes (Panel migration — D4/D7/watchdog)
 
-Standalone scripts behind the design decisions in `docs/superpowers/plans/2026-07-22-panel-migration.md`
+Standalone scripts behind the design decisions in `docs/plans/2026-07-22-panel-migration.md`
 (D4/D7 notes) and Task 5.6a. Historical artifacts, copied verbatim from the runs that produced the
 findings — not maintained code, not collected by pytest. Re-run them after upgrading Panel,
 bokeh-fastapi, or watchdog.
