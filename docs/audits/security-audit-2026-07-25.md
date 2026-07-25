@@ -84,10 +84,60 @@ function as M-2.
 This contradicted the `project-context-principles-exposure` memory, which recorded the
 issue as fully resolved. That memory has been corrected.
 
-**Fix (user decision — untrack only, no history rewrite):** `git rm --cached` on both files
-plus `data/test-sessions/2026-06-23-2208.md`. The v1 blobs stay reachable in history by
-SHA; **treat that content as disclosed.** Same posture already accepted for the committed
-screenshots at `f434312`.
+**Fix, stage 1 — untrack:** `git rm --cached` on both files plus
+`data/test-sessions/2026-06-23-2208.md`.
+
+**Fix, stage 2 — full history scrub (same day, on request).** Before rewriting, every path
+in history was enumerated rather than assuming the known two — the exact step the 2026-07-10
+scrub skipped. Scanning **every `.md` blob in every ref** for the documents' distinctive
+headers found the content in exactly two blobs, both under `docs/versions/v1/`. That
+enumeration also surfaced two exposures that untracking `main` had done nothing about:
+
+- **`refs/heads/panel-migration` still existed on the remote** at `f0bdec58`, carrying both
+  files. Only the *local* branch had been deleted after the migration merged.
+- **Both tags** (`v0.9.0`, `pre-claude-md-split-2026-07-10`) carried them too.
+
+So the scrub had to cover all four refs, not just `main`:
+
+```bash
+git clone --mirror . ~/Documents/claudia_ui-backup-pre-versions-scrub-2026-07-25.git
+git filter-repo --path docs/versions/ --invert-paths --force
+git push --force origin main panel-migration refs/tags/v0.9.0 \
+                              refs/tags/pre-claude-md-split-2026-07-10
+```
+
+423 commits preserved (none became empty). Verified by **mirror-cloning back from GitHub**
+and re-running the blob scan across all refs: zero `docs/versions/` paths, zero
+private-content blobs. Local files untouched on disk at 0600; 497 tests still green.
+
+**Residual — and it is not zero.** GitHub still serves the old blobs by direct SHA:
+`c443aea` and `f0bdec58` return **HTTP 200** on `raw.githubusercontent.com`, even though
+both commits are unreachable from every current ref and absent from a fresh clone. This is
+GitHub retaining unreachable objects, and it matches their documented behaviour — a force
+push alone does not purge cached views. Per GitHub's own guidance, the remaining step is a
+Support request to dereference, garbage-collect, and remove cached views:
+
+> "contact us through the GitHub Support portal" to "Remove cached views."
+> — [Removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)
+
+Details Support asks for, gathered:
+
+| Field | Value |
+|---|---|
+| Repository | `stephus182/claudia_ui` |
+| Affected pull requests | **0** (`gh pr list --state all` → empty) |
+| Forks | **0** — no independent copies keeping the blobs alive |
+| First changed commit | `56631169d0483a901bb0138ac5f490316aefe6c5` → `424910317b3623fa12c1e2669a05473deca27485` |
+
+Until that request completes, **treat the content as disclosed.** GitHub's guidance is
+explicit that for genuinely secret material the first step is rotation, not removal — these
+are trading rules and persona text rather than credentials, so there is nothing to rotate,
+but the disclosure window (2026-06-11 → 2026-07-25) stands regardless.
+
+Backup kept permanently at
+`~/Documents/claudia_ui-backup-pre-versions-scrub-2026-07-25.git` (13 MB, verified to
+contain the pre-scrub blobs). Any other clone of this repo now has orphaned history and
+needs a fresh re-clone, not a pull.
 
 ---
 

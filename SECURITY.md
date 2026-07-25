@@ -584,8 +584,20 @@ already tracked** — it only prevents new ones from being added. That gap is ho
 `docs/versions/v1/{context,principles}.md` stayed tracked and publicly readable on
 `origin/main` from 2026-06-11 until 2026-07-25: the 2026-07-10 `git-filter-repo` scrub was
 path-scoped to `docs/context.md` and `docs/principles.md` and never covered the version
-snapshots. The v1 blobs remain reachable in history by commit SHA (untrack-only remediation
-was the deliberate choice); treat that content as disclosed.
+snapshots.
+
+Both were untracked and then scrubbed from history on 2026-07-25. **Two lessons from that
+scrub, because the first one had already been learned the hard way:**
+
+1. **Enumerate the content, not the paths you remember.** Scan every blob in every ref for
+   the documents' distinctive headers before choosing what to filter. Doing so found the
+   same content on `refs/heads/panel-migration` (still live on the remote — only the local
+   branch had been deleted) and inside both tags. A `main`-only scrub would have missed all
+   three.
+2. **A force push does not purge GitHub.** Unreachable commits still served their blobs over
+   `raw.githubusercontent.com` afterwards. Removing cached views requires a GitHub Support
+   request — see `docs/audits/security-audit-2026-07-25.md` H-2 for the exact procedure and
+   the details Support asks for.
 
 Check with the structural command, not by eye:
 
