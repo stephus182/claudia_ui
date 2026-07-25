@@ -358,13 +358,15 @@ Full suite: `pytest` (451 tests). Gates: `ruff check claudia/ tests/ && mypy cla
 | Package | Declared | Installed |
 |---|---|---|
 | `panel` | `>=1.9` ([`pyproject.toml:11`](../../pyproject.toml#L11)) — lower bound only | **1.9.3** |
-| `bokeh` | ⚠ **not declared** | **3.9.1** (transitive via panel's `bokeh<3.10,>=3.7`) |
+| `bokeh` | `>=3.7` ([`pyproject.toml:12-17`](../../pyproject.toml#L12-L17)) — lower bound only | **3.9.1** |
 | `panel-material-ui` | not declared | 0.14.0 (transitive via panel; **imported nowhere**) |
 
-⚠ **Known gap:** [`panel_chart.py:36`](../../claudia/panel_chart.py#L36) imports
-`bokeh.plotting` directly while `bokeh` appears nowhere in `pyproject.toml`. It resolves today
-only because panel depends on it. A panel release that drops or renames the dependency would
-break the chart pane at import time. The fix is a one-line declared dependency.
+**Resolved 2026-07-24 (was a known gap):** [`panel_chart.py:36`](../../claudia/panel_chart.py#L36)
+imports `bokeh.plotting` directly, but `bokeh` used to appear nowhere in `pyproject.toml` — it
+resolved only because panel depends on it, so a panel release dropping or renaming that dependency
+would have broken the chart pane at import time. It is now a declared direct dependency. The floor
+matches panel 1.9.3's own requirement (`bokeh<3.10,>=3.7.0`); no upper bound is set here, leaving
+panel as the single place that caps the version.
 
 mypy note: panel and bokeh both ship `py.typed`, so `ignore_missing_imports` is **not** needed
 for them ([`pyproject.toml:81-90`](../../pyproject.toml#L81-L90)).

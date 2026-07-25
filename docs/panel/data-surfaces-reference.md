@@ -49,6 +49,46 @@ disagreement is called out (there is one — §6.5).
 
 So the honest baseline for this document: **one chart, three dots, and no extension call.**
 
+### 1.1 Decisions taken (2026-07-24)
+
+Unlike §5–§8, these are **settled** — confirmed by the user after reviewing §2.1's dependency
+findings. Do not re-litigate them without new evidence.
+
+**D1 — Bokeh is the chart engine. No new charting dependency.**
+Every item on the deferred chart list is native Bokeh: volume subplot (a second figure), MA and
+indicator overlays (`p.line`), crosshair and hover (`CrosshairTool` / `HoverTool`), zoom
+synchronization (a shared `x_range`), multi-symbol comparison, theme-matched colors. Two other
+"deferred chart features" are not charting questions at all — non-STK instruments is conid
+resolution in the data layer, and freeform period entry is a widget. **Nothing currently wanted is
+out of Bokeh's reach**, so the trade is not capability, it is verbosity: hand-built glyphs mean
+more code we own and must test. The `vbar`-width bug (`794d7c0`) is the concrete example of that
+cost, and it is accepted deliberately in favor of a light dependency structure.
+
+The trigger that would reopen D1 is evidence, not preference: repeating the same glyph scaffolding
+for a third and fourth chart. One hand-built chart is not enough evidence to justify an
+abstraction. If it is reopened, hvPlot/HoloViews' actual OHLC support is the thing to verify
+first — it has **not** been checked **[?]**.
+
+**D2 — Rendering lives in `claudia_ui`; computation stays in `ibkr_core_mcp`.**
+The split already exists in our own code: indicator *computation* is `ibkr_core_mcp/indicators.py`,
+indicator *rendering* is `panel_chart.py`. Any charting library, if one is ever added, goes in this
+repo. Three reasons: `ibkr_core_mcp` is usable standalone and should not make data consumers pay
+for a presentation library; pushing rendering down reintroduces exactly the coupling the
+`MessageSink` seam was built to remove; and a mis-rendered chart should be fixable in the repo that
+owns the UI, without a cross-repo change.
+
+**D3 — One scenario is explicitly carved out for later: chart → PNG → ClaudIA's own vision.**
+Rendering a chart to a static image *so the model can look at it* is a genuinely different use case
+from displaying it to the user, and it is the one case where a second library (matplotlib) would be
+weighed on its own merits rather than against D1. **Not scheduled, not designed** — recorded so the
+idea is not lost and so it is not confused with the display path.
+
+**Follow-up, independent of all three — CLOSED 2026-07-24:** `bokeh` is imported directly at
+[`panel_chart.py:36`](../../claudia/panel_chart.py#L36) but was declared nowhere in
+`pyproject.toml`, resolving only because Panel depends on it. Now declared as `bokeh>=3.7`
+([`pyproject.toml:12-17`](../../pyproject.toml#L12-L17)) — floor matched to panel 1.9.3's own
+(`bokeh<3.10,>=3.7.0`), with no upper bound here so panel remains the single place that caps it.
+
 ---
 
 ## 2. Component inventory
@@ -71,6 +111,9 @@ components **[S]**. Only the ones relevant to trading data surfaces are listed h
 dependencies only if it is Bokeh or ECharts**. Everything else adds a dependency to
 `pyproject.toml` — worth deciding deliberately, given the repo already has one undeclared-bokeh
 gap (`panel-reference.md` §11).
+
+→ **This table informed D1 (§1.1), which is settled: Bokeh, no new charting dependency.** The rest
+of the table is kept for the reopening case, not as a live menu.
 
 ⚠ Note that ECharts' *JavaScript* being bundled is not the same as a Python dependency: the
 bundle ships inside the installed panel package (`panel/dist/bundled/echarts/echarts@6.0.0`)

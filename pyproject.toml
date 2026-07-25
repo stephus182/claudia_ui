@@ -9,6 +9,12 @@ description = "ClaudIA — AI trading assistant powered by ibkr_core_mcp"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "panel>=1.9",
+    # Direct dependency, not transitive: claudia/panel_chart.py imports bokeh.plotting
+    # itself to build the candlestick figure. It resolved for a while only because panel
+    # requires it (bokeh<3.10,>=3.7.0 as of panel 1.9.3) — a panel release that dropped or
+    # renamed that dependency would have broken the chart pane at import time. Floor matches
+    # panel's own; no upper bound here, so panel stays the single place that caps it.
+    "bokeh>=3.7",
     "anthropic>=0.28",
     # ibkr_core_mcp is installed separately: pip install -e ../ibkr_core_mcp
     "watchdog>=4.0",
