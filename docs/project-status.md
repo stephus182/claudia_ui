@@ -368,22 +368,52 @@ bugs first, THEN focus on price alerts.** Alerts are now deliberately lowest pri
 blocks the whole feature area regardless of engineering effort, so there's no upside to working
 on it before the two live findings below.
 
-**2026-07-24 update — post-Panel-migration future-work order.** The Chainlit→Panel
-migration is COMPLETE and merged to `main` (see Feature Timeline). Current work order,
-superseding the 2026-07-17 list below where they overlap:
+**2026-07-24 update — post-Panel-migration work order (SESSION-READY).** The
+Chainlit→Panel migration is COMPLETE and merged to `main` (see Feature Timeline). Full
+executable detail — step-by-step protocols, design questions, preconditions — is in the
+local plan archive: `docs/plans/2026-07-24-post-migration-work-order.md`. This checklist
+supersedes the 2026-07-17 list below where they overlap.
 
-1. **Anti-fabrication guardrail spec + implementation** — now the top open defect: the
-   proposal-button omission was reproduced 2026-07-24 in a FRESH session (~5 turns), so
-   it is not conversation-length-dependent and has no reliable workaround. See the Known
-   Gaps row (2026-07-24 update) and the migration-carryover register for the two-detection
-   design direction.
-2. **Next authenticated-gateway session:** live chart fetch→render smoke (Task 10.1
-   Step 4), plus the still-pending soft-timeout live verification (item 3 below) and the
-   Gate 2 screenshot residual check.
-3. **Post-migration deep restyle** — dedicated plan with specs, drawing on `docs/panel/`.
-4. Everything else in the "Unfixed issues carried out of the Chainlit→Panel migration"
-   register (Known Gaps section): chart no-data message honesty, bounded TV-bridge
-   handshake, cross-repo ibkr_core_mcp follow-ups.
+**Pick the track by gateway availability (decide at session start):**
+
+**Track B — authenticated-gateway live batch (~45-60 min, human present).** Preconditions:
+`caffeinate` on; ONE fresh gateway login up front, never re-auth mid-session; far-out
+prices for any write test; launch via `./start-claudia.sh`.
+- [ ] **B1 Chart live smoke** (closes Task 10.1 Step 4): uncached liquid STK (e.g. MSFT)
+      6m/1d Load → fetch→render, screenshot; re-Load → cache hit (no fetch in log);
+      **eyeball `1h`/`30m` body widths** (the `794d7c0` median-spacing fix has never been
+      seen live); bogus symbol → honest error, spinner clears. Log + flip register row.
+- [ ] **B2 Soft-timeout recovery live verify**: idle >6 min (overlap with B3/B4), watch
+      for the silent `ssodh/init` recovery, no 2FA prompt (protocol = the 2026-07-17
+      soft-timeout plan's Task 5; log per its Task 6).
+- [ ] **B3 Gate 2 cancel-dialog screenshot** (twice-missed residual): disposable AAPL LMT
+      far below market, **pre-arm the screenshot before clicking** (or screen-record);
+      check duplicate `order_id`/`Order ID` row + unfiltered fields; clean up order.
+- [ ] **B4 Guardrail corpus capture**: fresh session, ES far-out LMT, modify request ~5
+      turns in — capture the transcript either way (evidence for Track A, no fixing live).
+
+**Track A — anti-fabrication guardrail (no gateway needed; the top open defect).**
+- [ ] **A1 Design doc + user sign-off** (`docs/plans/2026-07-25-anti-fabrication-guardrail-design.md`,
+      local): detection (a) proposal-intent-without-block (post-strip deterministic check
+      on display_text; precision over recall; validate signals against the real 2026-07-17
+      + 2026-07-24 transcripts in claudia.db); response policy = ONE corrective retry, then
+      honest System notice; detection (b) data-question-without-tool-call DESCOPED to a
+      later iteration. Hard constraints: safety block untouched, guardrail never
+      synthesizes/repairs a block, every violation logged.
+- [ ] **A2 TDD implement** (subagent-driven, spec+quality reviews): `claudia/agent.py`
+      post-response check + bounded retry; fixtures include a verbatim real failing
+      transcript + innocent look-alikes; live acceptance (ES-modify recipe) rides the next
+      gateway session.
+
+**Track C — small-fix batch (fill-in, independent, no gateway):** chart "No data"
+IBKR-offline-vs-unknown-symbol honesty (verify `execute()`'s real return shape first);
+bounded `TradingViewBridge.start()` handshake (`asyncio.wait_for` ~15s → screenshot-mode
+degradation); `upload_db` → returns `bool`, threaded into cleanup status lines. Cross-repo
+(`ibkr_core_mcp`, own session): empty-trades staleness, `get_watchlists` nested-dict,
+`place_order` extOperator docstring.
+
+**Track D — deep restyle: LATER, own project** (brainstorm+spec with user first; draws on
+`docs/panel/`; includes split-vs-tabs, theme, deferred chart features).
 
 **Top priority — fix these two 2026-07-17 findings:**
 
