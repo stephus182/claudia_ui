@@ -2,8 +2,7 @@
 
 send_message and tool_step have real, working (if basic) behavior; order/cancel/modify
 proposal rendering delegates to claudia/panel_order_flow.py's render_*_proposal
-functions, mirroring how tests/test_message_sink.py verifies ChainlitMessageSink's
-equivalent delegation to claudia/order_flow.py.
+functions — these tests verify that delegation contract.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch

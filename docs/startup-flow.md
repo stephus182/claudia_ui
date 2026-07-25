@@ -15,7 +15,7 @@ Use this to diagnose startup failures: each phase is labeled with where to look.
 
 **File:** `start-claudia.sh` → `ibkr_core_mcp/gateway/manager.py` → `GatewayManager.startup()`
 
-Runs before Chainlit starts. Two paths:
+Runs before the Panel app starts. Two paths:
 
 **Fast path — container already running and authenticated:**
 ```
@@ -119,7 +119,7 @@ Binary discovery order:
 **File:** `claudia/status.py` → `ConnectivityChecker`
 
 The connectivity checker is a **process-level singleton** — created once and reused
-across Chainlit sessions. It polls every 60 seconds (`POLL_INTERVAL` in `claudia/status.py`).
+across Panel sessions. It polls every 60 seconds (`POLL_INTERVAL` in `claudia/status.py`).
 
 | Service | Check method | Condition for OK |
 |---|---|---|
@@ -260,7 +260,7 @@ The welcome message includes:
 ```
 ./start-claudia.sh
   → Phase -1: is_running=true, is_authenticated=true → fast path
-  → Chainlit starts
+  → Panel app starts
   → Phase 5: ping() returns True → account summary fetched, no button shown
 ```
 
@@ -274,7 +274,7 @@ No container restart. No login. Session uninterrupted.
   → Docker launched, fresh container started
   → Login page opened
   → User completes IBKR login + mobile 2FA
-  → Phase 5 in Chainlit: ping() returns True
+  → Phase 5 in the Panel app: ping() returns True
   → ConnectivityChecker: "IBKR Gateway reconnected" alert
 ```
 
@@ -287,7 +287,7 @@ No container restart. No login. Session uninterrupted.
    check on this path. It calls `ensure_docker_running()` then `start()`, which
    **unconditionally** removes and recreates the gateway container every time, then
    `wait_for_gateway()` and `open_login_page()`. (The fast-path skip-if-authenticated logic
-   in `startup()` is only used by `start-claudia.sh`'s pre-Chainlit Phase -1, not this in-chat
+   in `startup()` is only used by `start-claudia.sh`'s pre-Panel Phase -1, not this in-chat
    button.)
 4. ConnectivityChecker detects recovery → "IBKR Gateway reconnected" alert
 

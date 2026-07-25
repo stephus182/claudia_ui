@@ -156,7 +156,7 @@ def generate_session_report(
 ) -> Path | None:
     """Generate a Markdown session report and write it to data/test-sessions/.
 
-    Called from app.py on_stop. Returns the report path, or None on error.
+    Called from panel_app.py's _run_session_cleanup. Returns the report path, or None on error.
     """
     try:
         report_dir = Path("data/test-sessions")

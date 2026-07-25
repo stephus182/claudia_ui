@@ -5,7 +5,7 @@ settled batch of executions, recording the result into
 SQLiteStore.pnl_snapshots via record_pnl_snapshot().
 
 Runs for the life of the process — one subscription shared across all
-concurrent Chainlit sessions. Mirrors the background-task shape of
+concurrent Panel sessions. Mirrors the background-task shape of
 ConnectivityChecker (status.py). Retry/backoff shape mirrors
 ibkr_core_mcp.mcp_server._stream_loop_with_retry.
 
@@ -60,7 +60,7 @@ def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
     """Format a SQLiteStore.get_latest_pnl() row into a human-readable P&L line.
 
     Shared by the get_live_pnl tool (agent.py) and the opening status block
-    (app.py) so both surfaces render identically. Any individually-missing
+    (opening_status.py) so both surfaces render identically. Any individually-missing
     numeric field formats as 'n/a' rather than discarding the whole snapshot.
     """
     if latest is None:

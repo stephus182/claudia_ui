@@ -2,8 +2,8 @@
 Connectivity monitor for ClaudIA.
 
 Polls IBKR gateway, GDrive token file, and TradingView sidecar every 60s.
-Caches status in memory (instant reads for /api/status endpoint).
-Notifies registered subscribers on state transitions; alert delivery (e.g. Chainlit
+Caches status in memory (instant reads for the panel_app status dots).
+Notifies registered subscribers on state transitions; alert delivery (e.g. Panel
 chat messages) is wired externally via subscribe().
 """
 
@@ -54,7 +54,7 @@ class ConnectivityChecker:
 
     Notifies registered subscribers on state transitions (UNKNOWN/OK → ERROR, ERROR → OK)
     — see subscribe().
-    The cached status dict is served synchronously by GET /api/status for the UI lights.
+    The cached status dict is read synchronously via get_status() by panel_app's status dots.
     """
 
     def __init__(

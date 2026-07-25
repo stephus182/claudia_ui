@@ -1,8 +1,8 @@
 """Tests for claudia/opening_status.py — UI-free builders for the Panel opening
 status message (Task 5.3). Fixtures mirror the real shapes: toolkit.execute
 returns (text, None) 2-tuples (claude_tools.py:1048); get_trade_date_coverage /
-get_market_calendar_context return the dict shapes app.py:426-513 consumes
-(the port's parity source)."""
+get_market_calendar_context return the dict shapes the removed Chainlit app.py:426-513
+consumed (the port's parity source)."""
 
 from unittest.mock import MagicMock, patch
 

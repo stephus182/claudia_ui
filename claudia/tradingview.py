@@ -5,12 +5,12 @@ Phase 1 (this module):
   - Spawns the tradingview-mcp Node.js sidecar process on startup.
   - Connects to it via MCP stdio transport using the `mcp` Python client.
   - Merges a curated subset of tradingview-mcp tools into the Anthropic tools= list.
-  - Renders PineScript output as a formatted Chainlit message with action buttons.
+  - PineScript rendering (copy / inject buttons) lives in claudia/panel_pinescript.py, not here.
   - Falls back gracefully when TradingView Desktop is not running.
 
 Phase 1 fallback (always available):
   - Screenshot analysis via Claude vision — user drags image into chat.
-  - Handled in app.py / agent.py; no code in this module required.
+  - Handled in panel_app.py / agent.py; no code in this module required.
 
 Prerequisites (user must install once):
   git clone https://github.com/tradesdontlie/tradingview-mcp ~/.tradingview-mcp

@@ -17,10 +17,6 @@ venv/
 .ruff_cache/
 .pytest_cache/
 
-# Chainlit
-.files/
-chainlit.db
-
 # ClaudIA data
 data/claudia.db
 data/*.db

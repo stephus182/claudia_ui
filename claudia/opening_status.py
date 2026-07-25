@@ -40,7 +40,7 @@ async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
     is unreachable. ping() verifies authentication (not just reachability); it
     retries once internally for the IBKR first-call quirk where
     authenticated=false on a fresh session. The 4-way gather over to_thread
-    matches app.py's cl.make_async concurrency exactly (same thread-pool
+    matches the removed Chainlit app.py's cl.make_async concurrency exactly (same thread-pool
     parallelism against IBKRClient — no new hazard)."""
     try:
         gateway_up = await asyncio.to_thread(toolkit.client.ping)

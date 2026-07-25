@@ -1,4 +1,4 @@
-"""Panel counterpart to order_flow.py's Chainlit-native render_*_proposal functions.
+"""Panel rendering layer for order_flow.py's framework-agnostic order/cancel/modify cores.
 
 Reuses order_flow.py's framework-agnostic pieces directly: _format_*_summary (pure
 formatting, already tested) and _execute_*_order_core (the actual safety-critical
