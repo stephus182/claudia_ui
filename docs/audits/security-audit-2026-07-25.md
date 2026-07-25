@@ -129,15 +129,46 @@ Details Support asks for, gathered:
 | Forks | **0** — no independent copies keeping the blobs alive |
 | First changed commit | `56631169d0483a901bb0138ac5f490316aefe6c5` → `424910317b3623fa12c1e2669a05473deca27485` |
 
-Until that request completes, **treat the content as disclosed.** GitHub's guidance is
-explicit that for genuinely secret material the first step is rotation, not removal — these
-are trading rules and persona text rather than credentials, so there is nothing to rotate,
-but the disclosure window (2026-06-11 → 2026-07-25) stands regardless.
+**Decision (user, 2026-07-25): the Support request will not be filed. Residual accepted —
+do not re-raise.** The rationale is proportionate: this is persona and trading-rules text,
+not credentials, so GitHub's "rotate first" guidance has nothing to act on, and the blobs
+are already unreachable from every ref and absent from any clone. What remains is retained
+storage addressable only by someone who already recorded a specific pre-rewrite SHA.
+
+**Treat the content as disclosed** for the window 2026-06-11 → 2026-07-25. The forward-
+looking control is not removal but prevention — see "Standing rule" below.
 
 Backup kept permanently at
 `~/Documents/claudia_ui-backup-pre-versions-scrub-2026-07-25.git` (13 MB, verified to
 contain the pre-scrub blobs). Any other clone of this repo now has orphaned history and
 needs a fresh re-clone, not a pull.
+
+### Standing rule (user, 2026-07-25)
+
+> "Keep private data and all plans out of git. If older versions are left, it's acceptable.
+> Keep clean git and no stale branches, all main updated."
+
+Older leftovers in unreachable GitHub storage are explicitly accepted. The forward-looking
+control is prevention, now enforced structurally rather than by memory:
+
+| Class | Path | Guard |
+|---|---|---|
+| Secrets | `.env` | `test_private_content_is_not_git_tracked` |
+| Persona / trading rules | `docs/context.md`, `docs/principles.md` | same |
+| Verbatim snapshots of both | `docs/versions/` | same |
+| Personal working documents | `docs/plans/` | same |
+| Live account data in images | `docs/panel/screenshots/` | same |
+| Conversation DB, Flex archive, session reports | `data/` | same |
+
+Plus `test_every_private_path_is_gitignored`, which asserts each class is actually covered
+by a `.gitignore` rule — absence from the index is the symptom, the ignore rule is the
+control. That test found a real gap when written: `.gitignore` enumerated `data/claudia.db`,
+`data/*.db`, `data/ibkr_flex_archive/`, `data/test-sessions/` individually, so any *new*
+`data/` file would not have been ignored — the same shape as the `docs/versions/` leak.
+Replaced with a wholesale `data/` rule.
+
+Branch hygiene: `panel-migration` was deleted from the remote on 2026-07-25 (0 unique
+commits — fully merged). `main` is the only branch, local and remote.
 
 ---
 

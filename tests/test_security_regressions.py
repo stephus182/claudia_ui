@@ -457,23 +457,60 @@ def test_pn_serve_binds_loopback_only():
 
 # ── H-2 — private documents must never be tracked by git ─────────────────────────────────
 
-def test_private_documents_are_not_git_tracked():
-    """No private doc may be tracked (H-2).
+# Every class of content the project has decided must never enter git. Standing rule
+# (user, 2026-07-25): "keep private data and all plans out of git."
+_MUST_NEVER_BE_TRACKED = [
+    ".env",                     # ANTHROPIC_API_KEY, IBKR_FLEX_TOKEN
+    "docs/context.md",          # ClaudIA persona
+    "docs/principles.md",       # personal trading rules
+    "docs/versions",            # verbatim snapshots of both of the above (H-2)
+    "docs/plans",               # personal working documents — local + Drive only
+    "docs/panel/screenshots",   # UI smokes carry live account data, balances, order IDs
+    "data",                     # claudia.db, Flex archive, session reports
+]
+
+
+@pytest.mark.parametrize("path", _MUST_NEVER_BE_TRACKED)
+def test_private_content_is_not_git_tracked(path):
+    """No private content may be tracked, in any class (H-2).
 
     docs/versions/v1/{context,principles}.md were tracked and PUBLIC on GitHub for ~6 weeks:
     the 2026-07-10 filter-repo scrub was path-scoped to docs/context.md and
     docs/principles.md and never covered the version snapshots. .gitignore does not untrack
     files that are already tracked, so only a structural check catches this.
+
+    Parametrised per path so a failure names the class that leaked rather than one blob.
     """
     import subprocess
 
     repo = Path(__file__).resolve().parent.parent
     out = subprocess.run(
-        ["git", "ls-files", "docs/context.md", "docs/principles.md", "docs/versions"],
+        ["git", "ls-files", "--", path],
         cwd=repo, capture_output=True, text=True, check=False,
     )
     tracked = [line for line in out.stdout.splitlines() if line.strip()]
-    assert not tracked, f"Private documents are git-tracked: {tracked}"
+    assert not tracked, f"{path!r} is git-tracked and must not be: {tracked}"
+
+
+def test_every_private_path_is_gitignored():
+    """Each private class must also be covered by .gitignore, not merely absent (H-2).
+
+    Absence from the index is the symptom; the ignore rule is the control. Without it a
+    stray `git add -A` re-adds the content and the check above only notices afterwards.
+    """
+    import subprocess
+
+    repo = Path(__file__).resolve().parent.parent
+    unignored = []
+    for path in _MUST_NEVER_BE_TRACKED:
+        probe = path if Path(repo / path).is_file() else f"{path}/probe.md"
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", "--", probe],
+            cwd=repo, capture_output=True, check=False,
+        )
+        if result.returncode != 0:
+            unignored.append(path)
+    assert not unignored, f"Private paths missing from .gitignore: {unignored}"
 
 
 def test_no_tracked_but_ignored_files():

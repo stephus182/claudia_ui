@@ -596,8 +596,31 @@ scrub, because the first one had already been learned the hard way:**
    three.
 2. **A force push does not purge GitHub.** Unreachable commits still served their blobs over
    `raw.githubusercontent.com` afterwards. Removing cached views requires a GitHub Support
-   request — see `docs/audits/security-audit-2026-07-25.md` H-2 for the exact procedure and
-   the details Support asks for.
+   request; that request was **deliberately not filed** and the residual is accepted (user
+   decision, 2026-07-25 — persona/trading text, not credentials; blobs unreachable from
+   every ref). Do not re-raise. Detail: `docs/audits/security-audit-2026-07-25.md` H-2.
+
+**Standing rule (user, 2026-07-25): keep private data and all plans out of git; older
+leftovers are acceptable.** Prevention, not removal, is the control from here. Every class
+below is guarded by `test_private_content_is_not_git_tracked` (not in the index) *and*
+`test_every_private_path_is_gitignored` (covered by an ignore rule — the index check is the
+symptom, the ignore rule is the control):
+
+| Class | Path |
+|---|---|
+| Secrets | `.env` |
+| Persona / trading rules | `docs/context.md`, `docs/principles.md` |
+| Verbatim snapshots of both | `docs/versions/` |
+| Personal working documents | `docs/plans/` |
+| Live account data in images | `docs/panel/screenshots/` |
+| Conversation DB, Flex archive, session reports | `data/` |
+
+Writing that second test exposed a real gap: `.gitignore` had enumerated `data/` subpaths
+individually, so any *new* `data/` file would have been unignored — the same shape as the
+`docs/versions/` leak. Now a wholesale `data/` rule.
+
+**Branches:** `main` only, local and remote. `panel-migration` was deleted 2026-07-25 after
+confirming 0 unique commits.
 
 Check with the structural command, not by eye:
 

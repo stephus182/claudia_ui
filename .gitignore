@@ -17,11 +17,13 @@ venv/
 .ruff_cache/
 .pytest_cache/
 
-# ClaudIA data
-data/claudia.db
-data/*.db
-data/ibkr_flex_archive/
-data/test-sessions/
+# ClaudIA data — the whole directory. It holds only runtime/private artefacts:
+# claudia.db (conversation history), the IBKR Flex archive, and session reports.
+# Ignored wholesale rather than by enumerated subpath, because the enumerated form
+# left any *new* data/ file unignored — that is the shape of the docs/versions/ leak
+# (security-audit-2026-07-25.md, H-2). Nothing in data/ is tracked; if something ever
+# needs to be, un-ignore it explicitly with a `!data/<file>` negation.
+data/
 
 # Private documents — never commit
 docs/context.md
@@ -52,7 +54,6 @@ vendor/tradingview-mcp/package-lock.json
 # All plans are personal working documents — kept local + Google Drive only, not for
 # git history (user rule 2026-07-24; supersedes the earlier per-file ignores).
 docs/plans/
-data/*.upload.tmp
 
 # UI smoke screenshots contain live account data (account number, balances, positions,
 # P&L, order IDs) — kept local + Google Drive only, never committed (user rule 2026-07-24).
