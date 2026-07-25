@@ -33,9 +33,16 @@ not part of this catalog. See `context-loading-reference.md` for how they're loa
 ## Panel framework reference (`docs/panel/`)
 
 Living reference for the Panel UI (the framework since the 2026-07-24 Chainlit→Panel
-cutover): verified `pn.serve`/widget/chart/clipboard findings — each backed by the installed
-package or a scraped URL — plus the migration's smoke screenshots. Start at
-[`panel/README.md`](panel/README.md); the post-migration restyle plan draws from here.
+cutover) — each claim backed by a `file:line`, the installed package, or a scraped URL. Start
+at [`panel/README.md`](panel/README.md), which indexes:
+
+| File | Description |
+| --- | --- |
+| [`panel/panel-reference.md`](panel/panel-reference.md) | How ClaudIA uses Panel — serving model, session lifecycle, layout tree, `MessageSink` seam, widget gotchas, status dots, chart pane, headless button testing, dependency state |
+| [`panel/ui-design-reference.md`](panel/ui-design-reference.md) | UI design & styling — the no-styling baseline, the shadow-DOM constraint, Panel's scraped styling surface (designs/themes/tokens/templates), open design questions, a proposed Track D direction, official-source index |
+
+Plus two dated research docs (candlestick chart pane, PineScript/actionable buttons) and the
+migration's smoke screenshots. The post-migration restyle project draws from here.
 
 ## Probes (`docs/probes/`)
 

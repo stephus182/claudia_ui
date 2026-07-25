@@ -18,7 +18,7 @@ ClaudIA is a Panel-based trading assistant that gives you a persistent, principl
 - **GDrive sync** — `claudia.db` and context/principles docs auto-sync to Google Drive; pick up any session from any machine
 - **Hot-reload documents** — edit `context.md` or `principles.md` while a session is open; changes apply from the next message
 - **In-chat startup buttons** — "Start IBKR Gateway" and "Launch TradingView" action buttons appear when services are offline at session start
-- **Connectivity status dots** — live IBKR / GDrive / TradingView indicators above the chat, refreshed every 60s over Panel's websocket
+- **Connectivity status dots** — live IBKR / GDrive / TradingView indicators above the chat; the dots re-read status every 5s over Panel's websocket, and the underlying services are polled every 60s (IBKR's `/tickle` keepalive interval)
 - **Session reports** — auto-generated Markdown report at session end: tools called, decisions, errors, connectivity state
 
 ---

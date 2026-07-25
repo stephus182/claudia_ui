@@ -185,7 +185,11 @@ literal path instead. See `docs/plans/2026-07-10-claude-md-delink-imports.md` fo
 the fix that established this (75,480 → 2,910 tokens/session).
 
 - Connectivity (IBKR/GDrive/TV status dots, check logic, reconnection flows): `docs/connectivity.md`
-- Panel framework reference (verified pn.serve/widget/chart findings, smoke screenshots): `docs/panel/README.md`
+- Panel implementation (serving model, session lifecycle, MessageSink seam, widget gotchas,
+  headless button testing): `docs/panel/panel-reference.md`
+- Panel UI design & styling (no-styling baseline, shadow-DOM constraint, scraped styling
+  surface, proposed restyle direction): `docs/panel/ui-design-reference.md`
+- Panel folder hub (both references + dated research + smoke screenshots): `docs/panel/README.md`
 - Startup flow, phase by phase (diagnose startup failures): `docs/startup-flow.md`
 - Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and `docs/trading-data-reference.md`
 - Market calendar (20 exchanges, futures schedules): `docs/market-calendar-reference.md`

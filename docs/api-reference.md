@@ -228,6 +228,12 @@ widget idioms, `pn.pane.Bokeh` candlesticks, `js_on_click` clipboard — live in
 | Panel documentation (ChatInterface, widgets, serving) | https://panel.holoviz.org |
 | Bokeh (candlestick chart glyphs) | https://docs.bokeh.org |
 
+The **full per-page Panel URL index** — styling how-tos (`apply_css`, `design`, `themes`,
+`design_variables`), the templates index, the `ChatInterface` component reference, and the MDN
+shadow-DOM/clipboard pages — is maintained in
+[`docs/panel/ui-design-reference.md`](panel/ui-design-reference.md) § "Official sources"
+rather than duplicated here (single source, scraped 2026-07-24).
+
 ## Standard libraries used in claudia_ui
 
 | Library | Used in | Official reference |

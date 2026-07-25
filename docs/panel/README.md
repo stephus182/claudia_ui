@@ -19,6 +19,23 @@ Distinct from:
 
 ## Index
 
+### Living references — updated in place
+
+- [Panel implementation reference](panel-reference.md) — **how ClaudIA uses Panel today.**
+  Serving model (`pn.serve`, `websocket_origin`, SIGTERM translation), session lifecycle (the
+  init gate, the `_init_lock` data-integrity rationale, the V4 destroy contract), the layout
+  tree, the `MessageSink` seam, the widget idioms and gotchas that cost real debugging time,
+  status dots, the chart pane, how the 103 Panel tests drive buttons with no browser, and the
+  version/dependency state. Every claim cites a `file:line`.
+- [Panel UI design & styling reference](ui-design-reference.md) — **the styling surface.** The
+  honest visual baseline (there is currently *no* CSS, theme, template or `pn.extension()`
+  call anywhere), the shadow-DOM constraint that dictates every styling choice, Panel's
+  scraped styling surface (designs, themes, the eight `--design-*` tokens, templates,
+  `ChatInterface`'s own appearance parameters), the open design questions, a **proposed**
+  direction for the Track D restyle, and the official-source URL index.
+
+### Research — point-in-time, not updated
+
 - [2026-07-24 — External candlestick chart pane (Phase 10)](2026-07-24-candlestick-chart-pane-research.md)
   — Bokeh candlestick via `segment`+`vbar` glyphs (no hvplot — bokeh already installed);
   `pn.pane.Bokeh` embed + `pane.object=` refresh; OHLCV from `toolkit._cache.load` (parquet,
@@ -31,15 +48,26 @@ Distinct from:
   `description`; `pn.state.notifications` toasts; template modal for destructive confirms)
   for future reconnect / end-session / launch actions.
 
-## Migration smoke screenshots
+## Migration smoke screenshots — local only
 
-Captured during the migration's live smokes (kept as visual evidence / restyle reference):
+Captured during the migration's live smokes and kept as visual evidence / restyle reference.
+They live in `docs/panel/screenshots/`, which is **git-ignored** — local + Google Drive, never
+committed (same treatment as `docs/plans/`). Reference them as plain paths, never as markdown
+links: a link would be broken for anyone who clones the repo.
 
-- `dots-check.png` / `dots-full.png` — the `BooleanStatus` connectivity dots rendering in a
-  live session (Task 6.2 smoke).
-- `tv-offline-smoke.png` — the TV-offline path degrading honestly in the live UI.
+- `screenshots/dots-check.png` / `screenshots/dots-full.png` — the `BooleanStatus` connectivity
+  dots rendering in a live session (Task 6.2 smoke).
+- `screenshots/tv-offline-smoke.png` — the TV-offline path degrading honestly in the live UI.
 
-## Cross-referenced verified findings (recorded in the migration plan, summarized here)
+Because they are not in the repo, `ui-design-reference.md` §1 describes the baseline **in
+prose** rather than relying on the image being available.
+
+## Cross-referenced verified findings
+
+Originally recorded in the migration plan and summarized here. **These now live in full, with
+`file:line` citations to the code that depends on them, in
+[`panel-reference.md`](panel-reference.md)** — start there. The summary is kept for quick
+orientation:
 
 - **Serving:** native `pn.serve(callable)` Tornado, one factory call per session, module
   singletons process-wide; SIGINT returns from `pn.serve` (~2ms), SIGTERM bypasses unless
