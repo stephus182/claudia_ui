@@ -1,5 +1,4 @@
-"""
-Auto-generate a structured test session report at session end.
+"""Auto-generate a structured test session report at session end.
 
 Reads tool calls, decisions, and connectivity state from the current session
 and writes a Markdown report to data/test-sessions/YYYY-MM-DD-HHmm.md.

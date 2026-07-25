@@ -1,5 +1,4 @@
-"""
-GDrive sync for claudia.db, context.md, and principles.md.
+"""GDrive sync for claudia.db, context.md, and principles.md.
 
 Downloads claudia.db from Drive at session start; uploads at stop.
 Reads context.md / principles.md from Drive if present (fallback: local files).
@@ -113,6 +112,7 @@ class GDriveSync:
 
     @staticmethod
     def _download_chunked(downloader: MediaIoBaseDownload) -> None:
+        """Pump a Drive download to completion, one chunk per iteration."""
         done = False
         while not done:
             _, done = downloader.next_chunk()

@@ -1,5 +1,4 @@
-"""
-Human-initiated order staging for ClaudIA — the framework-agnostic execution core.
+"""Human-initiated order staging for ClaudIA — the framework-agnostic execution core.
 
 The LLM never calls this code directly. Flow:
   1. ClaudIA embeds an order-proposal block in its response text.
@@ -43,6 +42,26 @@ framework-agnostic: they never import or know about any specific UI toolkit."""
 
 
 def _format_order_summary(proposal: dict) -> str:
+    """Build the human-approval text for a new order.
+
+    Safety surface: this string, plus the Gate 2 dialog, is everything the user sees before
+    authorising a live order. It deliberately ends with the Touch-ID/confirmation warning so
+    the consequence of the click is never implicit.
+
+    Recognised keys: `symbol`, `action`, `quantity`, `order_type` (default MKT),
+    `limit_price` / `stop_price` (shown only for LMT / STP respectively), `sec_type`
+    (default STK; labelled inline only when it is not STK), and `reason`. TIF is read from
+    `tif`, then `time_in_force`, then `timeInForce`, defaulting to DAY — the identical
+    expression `_execute_staged_order_core` uses, so display and execution cannot diverge.
+    Do not change one without the other.
+
+    Args:
+        proposal: Schema-checked order-proposal dict.
+
+    Returns:
+        Markdown for the proposal message. Rendered via `safe_markdown` — `reason` is
+        free-form LLM text.
+    """
     symbol = proposal.get("symbol", "?")
     action = proposal.get("action", "?")
     qty = proposal.get("quantity", "?")
@@ -373,6 +392,18 @@ async def _execute_staged_order_core(
 # ── Order cancellation ───────────────────────────────────────────────────────
 
 def _format_cancel_summary(proposal: dict) -> str:
+    """Build the human-approval text for cancelling a live order.
+
+    Same safety-surface role as `_format_order_summary`. Keys: `order_id` (the order being
+    cancelled) plus display-only context — `symbol`, `action`, `quantity`, `order_type`,
+    `limit_price` / `stop_price`, `tif` (this path reads only the `tif` spelling), `reason`.
+
+    Args:
+        proposal: Schema-checked cancel-proposal dict.
+
+    Returns:
+        Markdown for the proposal message.
+    """
     order_id = proposal.get("order_id", "?")
     symbol = proposal.get("symbol", "?")
     action = proposal.get("action", "?")
@@ -487,6 +518,26 @@ async def _execute_cancel_order_core(
 # ── Order modification ───────────────────────────────────────────────────────
 
 def _format_modify_summary(proposal: dict) -> str:
+    """Build the human-approval text for modifying a live order, as a field-by-field diff.
+
+    The only consumer of the two private keys the LLM supplies alongside the replacement
+    order:
+
+    - `_changed_fields`: list of field names the model says it is changing.
+    - `_previous_values`: dict mapping those names to their prior values.
+
+    For each entry the line reads ``field: <_previous_values[field]> → <proposal[field]>``.
+    Both keys are LLM-authored, so the "before" column is a claim, not a verified read of
+    the resting order — Gate 2 re-renders the actual order, and that is the authoritative
+    view. Falls back to "(no changed fields listed)" when `_changed_fields` is absent or
+    empty.
+
+    Args:
+        proposal: Schema-checked modify-proposal dict — the full replacement order.
+
+    Returns:
+        Markdown for the proposal message.
+    """
     order_id = proposal.get("order_id", "?")
     symbol = proposal.get("symbol", "?")
     changed = proposal.get("_changed_fields") or []

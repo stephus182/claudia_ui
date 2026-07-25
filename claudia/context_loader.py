@@ -1,5 +1,4 @@
-"""
-Loads context.md and principles.md, computes a SHA-256 hash for integrity
+"""Loads context.md and principles.md, computes a SHA-256 hash for integrity
 tracking, and watches for file changes via watchdog so a running session
 can hot-reload without restart.
 
@@ -35,6 +34,12 @@ _shared_observer: BaseObserver | None = None
 
 
 def _get_shared_observer() -> BaseObserver:
+    """Return the one process-wide watchdog Observer, starting it if needed.
+
+    Shared rather than one-per-loader because macOS FSEvents raises "already scheduled" if
+    two observers watch the same directory. Restarted transparently if a previous observer
+    died. Runs as a daemon thread so it never blocks interpreter shutdown.
+    """
     global _shared_observer
     if _shared_observer is None or not _shared_observer.is_alive():
         _shared_observer = Observer()
@@ -47,8 +52,7 @@ _PRINCIPLES_HEADER = "\n\n# TRADING PRINCIPLES & STRATEGIES\n\n"
 
 
 class ContextLoader:
-    """
-    Manages the two user-written documents that form ClaudIA's system prompt.
+    """Manages the two user-written documents that form ClaudIA's system prompt.
 
     Documents are loaded from CLAUDIA_DOCS_PATH (default: docs/).
     Optional context_text / principles_text override local file reads (used
@@ -62,6 +66,18 @@ class ContextLoader:
         context_text: str | None = None,
         principles_text: str | None = None,
     ) -> None:
+        """Configure where the documents live and optionally override their content.
+
+        Args:
+            docs_path: Directory holding context.md and principles.md.
+            context_text: In-memory override for context.md — used when the text came
+                from Drive rather than disk. None means read the local file.
+            principles_text: Same, for principles.md.
+
+        Overrides are cleared on the first local edit (see `_handle_change`), after which
+        the on-disk files are the sole source of truth. `reload_count` starts at 0 and
+        increments on every hot reload.
+        """
         self.docs_path = Path(docs_path)
         self._context_path = self.docs_path / "context.md"
         self._principles_path = self.docs_path / "principles.md"
@@ -76,6 +92,12 @@ class ContextLoader:
         self.reload_count: int = 0
 
     def _get_text(self, override: str | None, path: Path, name: str) -> str:
+        """Return the override if set, else the file's contents.
+
+        Both branches `.strip()`, so the hash is stable no matter which source a given
+        session read from — otherwise a Drive-sourced session and a disk-sourced session
+        would compute different hashes for identical content and spuriously alert.
+        """
         if override is not None:
             return override.strip()  # match _read_required's strip() for hash stability
         return self._read_required(path, name)
@@ -103,8 +125,7 @@ class ContextLoader:
         return hashlib.sha256((context + principles).encode()).hexdigest()
 
     def start_watching(self, on_reload: Callable[[str, str], None]) -> None:
-        """
-        Register a watchdog handler on the shared module-level Observer.
+        """Register a watchdog handler on the shared module-level Observer.
         Removes this instance's previous handler first (sibling-safe — see
         stop_watching).
         Uses a shared Observer so macOS FSEvents never sees the same path
@@ -138,6 +159,13 @@ class ContextLoader:
         self._reload_callback = None
 
     def _handle_change(self, changed_file: str) -> None:
+        """Reload after a debounced file change and notify the session.
+
+        Clears **both** overrides atomically regardless of which file changed, bumps
+        `reload_count`, and invokes the registered callback. Callback exceptions are
+        swallowed: a UI failure must not kill the watchdog thread and silently end
+        hot-reloading for the rest of the session.
+        """
         # Both overrides are cleared atomically regardless of which file changed —
         # local files become the sole source of truth after any edit.
         self._context_override = None
@@ -152,6 +180,12 @@ class ContextLoader:
 
     @staticmethod
     def _read_required(path: Path, name: str) -> str:
+        """Read a required document, stripped.
+
+        Raises:
+            FileNotFoundError: if the file is absent — these documents define ClaudIA's
+                persona and trading rules, so starting without them is never correct.
+        """
         if not path.exists():
             raise FileNotFoundError(
                 f"Required document not found: {path}\n"
@@ -187,6 +221,10 @@ class _DocChangeHandler(FileSystemEventHandler):
         self.on_modified(event)
 
     def _schedule(self, filename: str) -> None:
+        """Debounce a filesystem event: fire the callback 300ms after the last one.
+
+        Editors typically write a temp file and rename, producing several events per save.
+        """
         # Rapid saves (e.g. editor writing a temp file then renaming) fire multiple events.
         # Cancel any pending timer before starting a new one so the callback fires once,
         # 300ms after the last event.

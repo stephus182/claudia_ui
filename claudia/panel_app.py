@@ -1,15 +1,19 @@
-"""Panel entry point for ClaudIA (Phase 6 complete: session lifecycle — background
-init, Drive docs + versioning, opening status, hot-reload alerts, backend
-singletons, session-end cleanup + buttons, Flex sync — plus per-session
-connectivity indicators and chat-alert delivery).
+"""Panel entry point for ClaudIA — the sole entry point since the Phase 11 cutover
+removed the Chainlit app (claudia/app.py) and the chainlit dependency.
+
+Owns the whole session lifecycle: background init, Drive document download +
+versioning, opening status, document hot-reload alerts, process-wide backend
+singletons, per-session connectivity indicators and chat-alert delivery, the
+TradingView bridge, the external candlestick chart pane, screenshot upload,
+background Flex sync, and session-end cleanup.
 
 Served by Panel's own first-class Tornado server via pn.serve(callable) — the
 native-serving principle (2026-07-24): Panel-native serving, no workarounds.
 pn.serve calls _build_session_root once per browser session; module-level
 singletons stay process-wide.
 
-The sole ClaudIA entry point since the Phase 11 cutover removed the Chainlit
-app (claudia/app.py) and the chainlit dependency.
+**Bound to loopback only** (`address="127.0.0.1"` in main()). There is no auth layer,
+so that bind is the security boundary — see SECURITY.md §8 before changing it.
 
 Run with:  python -m claudia.panel_app
 """
@@ -46,6 +50,7 @@ from claudia.execution_listener import ExecutionListener
 from claudia.gdrive_sync import GDriveSync
 from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_chart import build_chart_pane
+from claudia.panel_markdown import safe_markdown
 from claudia.panel_sink import PanelMessageSink
 from claudia.session_reporter import generate_session_report
 from claudia.status import ConnectivityChecker, ServiceStatus
@@ -69,8 +74,8 @@ _gdrive_sync: GDriveSync | None = None
 _connectivity_checker: ConnectivityChecker | None = None
 _execution_listener: ExecutionListener | None = None
 
-# Process-level TradingViewBridge singleton (Phase 9). Own trio here — panel_app
-# never imports claudia.app (module docstring); verbatim-mirrors app.py:69-70,181-194.
+# Process-level TradingViewBridge singleton (Phase 9). Originally mirrored from the old
+# claudia/app.py; app.py was removed in the Phase 11 cutover, so this is now the only copy.
 _tv_bridge: TradingViewBridge | None = None
 _tv_bridge_lock = asyncio.Lock()
 
@@ -90,10 +95,16 @@ _init_lock = asyncio.Lock()
 
 
 def _get_toolkit() -> ClaudeToolkit:
-    """Process-level ClaudeToolkit singleton — identical pattern to claudia/app.py's
-    _get_toolkit(), duplicated rather than imported to keep this module fully
-    independent of the Chainlit entry point during the transition (see module
-    docstring)."""
+    """Return the process-level ClaudeToolkit singleton, building it on first call.
+
+    Shared by every session: one ClaudeToolkit, and therefore one IBKRClient, cache, and
+    SQLiteStore, for the whole process. Session isolation covers UI state only — the IBKR
+    account behind it is process-global, which is sound because ClaudIA is single-user by
+    design (SECURITY.md §8).
+
+    Originally duplicated from the old claudia/app.py; app.py was removed in the Phase 11
+    cutover, so this is now the only copy.
+    """
     global _toolkit
     if _toolkit is None:
         config = Config.from_env()
@@ -108,6 +119,11 @@ def _get_toolkit() -> ClaudeToolkit:
 
 
 def _get_store() -> ConversationStore:
+    """Return the process-level ConversationStore singleton, opening it on first call.
+
+    Shared across sessions, like _get_toolkit's. The store opens a connection per
+    operation, so concurrent sessions do not contend on a single handle.
+    """
     global _conv_store
     if _conv_store is None:
         _conv_store = ConversationStore(_DB_PATH)
@@ -115,13 +131,15 @@ def _get_store() -> ConversationStore:
 
 
 async def _get_tv_bridge() -> TradingViewBridge:
-    """Return the process-level TradingViewBridge singleton, starting it on first
-    call. Verbatim mirror of app.py:181-194 (panel_app keeps its own singleton —
-    it never imports claudia.app).
+    """Return the process-level TradingViewBridge singleton, starting it on first call.
 
     _tv_bridge_lock prevents a double-start race when two sessions initialise
-    concurrently. _tv_bridge is only assigned after start() succeeds, so a failed
-    start leaves it None and the next caller will retry."""
+    concurrently. _tv_bridge is only assigned after start() succeeds, so a failed start
+    leaves it None and the next caller will retry.
+
+    Originally duplicated from the old claudia/app.py; app.py was removed in the Phase 11
+    cutover, so this is now the only copy.
+    """
     global _tv_bridge
     async with _tv_bridge_lock:
         if _tv_bridge is None:
@@ -138,7 +156,26 @@ async def _get_tv_bridge() -> TradingViewBridge:
 # claudia/app.py during the migration to keep panel_app independent; app.py was
 # removed in the Phase 11 cutover, so this is now the only copy).
 def _write_version_snapshot(version: str, context_text: str, principles_text: str) -> None:
-    """Write human-readable snapshot to docs/versions/{version}/. No-op if already exists."""
+    """Write a human-readable snapshot of the private docs to docs/versions/{version}/.
+
+    No-op if the pair already exists — snapshots are immutable once written.
+
+    Both files are chmod 0o600 after writing. Path.write_text() honours the process umask
+    (0644 on a default macOS setup), and these snapshots hold the full verbatim content of
+    context.md/principles.md — ClaudIA's persona and the user's trading rules. This mirrors
+    the token-file reasoning in SECURITY.md §7: creation flags only set the mode on files
+    that did not already exist, so the chmod must be unconditional and after every write.
+    Without it, each new doc version silently re-created world-readable copies
+    (security-audit-2026-07-25.md, M-2).
+
+    Args:
+        version: Version label from ConversationStore, e.g. "v3". Never user-supplied.
+        context_text: Full effective context.md content for this version.
+        principles_text: Full effective principles.md content for this version.
+
+    Never raises — a snapshot failure is logged and swallowed so it cannot block session
+    init; the version row in the DB is the authoritative record, the files are a convenience.
+    """
     try:
         version_dir = _VERSIONS_PATH / version
         ctx_file = version_dir / "context.md"
@@ -148,6 +185,8 @@ def _write_version_snapshot(version: str, context_text: str, principles_text: st
         version_dir.mkdir(parents=True, exist_ok=True)
         ctx_file.write_text(context_text, encoding="utf-8")
         pri_file.write_text(principles_text, encoding="utf-8")
+        ctx_file.chmod(0o600)
+        pri_file.chmod(0o600)
         log.info("Written version snapshot: docs/versions/%s/", version)
     except Exception as exc:
         log.warning("Could not write version snapshot for %s: %s", version, exc)
@@ -155,7 +194,7 @@ def _write_version_snapshot(version: str, context_text: str, principles_text: st
 
 async def _read_context_docs() -> tuple[str | None, str | None]:
     """Read context.md/principles.md via Drive (read_text falls back to the local
-    file when Drive is unreachable or the file is absent) — app.py:256-262 parity.
+    file when Drive is unreachable or the file is absent) — parity with the removed app.py.
     MUST be called while holding _init_lock: googleapiclient binds a single
     AuthorizedHttp/httplib2.Http to the built Drive service, shared by every
     .execute(), and httplib2.Http is not thread-safe — concurrent session inits
@@ -214,9 +253,9 @@ async def _connect_tradingview(agent: ClaudIAAgent) -> bool:
     """Connect the tradingview-mcp sidecar and merge its tools into this session's
     agent. Returns tv_offline (True → offer the "Launch TradingView" button).
 
-    Computes tv_offline like app.py:324-346; the agent/checker wiring mirrors
-    app.py's constructor injection (ClaudIAAgent(tv_bridge=...) app.py:390,
-    ConnectivityChecker.set_tv_bridge app.py:364) — panel_app uses set_tv_bridge
+    Computes tv_offline as the removed app.py did; the agent/checker wiring mirrors
+    its constructor injection (ClaudIAAgent(tv_bridge=...),
+    ConnectivityChecker.set_tv_bridge) — panel_app uses set_tv_bridge
     here because TV connects AFTER the agent is built. The status STRING is not
     ported (the Panel status block renders its own TV line via
     _send_opening_status). On success — sidecar up AND TradingView Desktop's CDP
@@ -257,7 +296,7 @@ async def _send_opening_status(
     (trade_context, ibkr_offline): the trade/calendar context for the caller to
     stamp on agent._trade_context, and the offline flag so _init_session can
     decide whether to offer the Start-Gateway button (Task 5.3/5.6b —
-    app.py:399-514 parity). tv_offline (from _connect_tradingview) drives the
+    parity with the removed app.py). tv_offline (from _connect_tradingview) drives the
     TradingView status line. Effectively non-raising: both builders catch their
     own IBKR/store failures internally and degrade to offline/fallback text; an
     unexpected escape is caught by _init_session's generic handler."""
@@ -318,6 +357,7 @@ def _make_alert_subscriber(chat: pn.chat.ChatInterface) -> Callable[[str], Await
     probe basis), so a direct chat.send is safe; a closed session's send is a
     harmless no-op (V4)."""
     async def _on_alert(text: str) -> None:
+        """Deliver one connectivity alert into this session's chat feed."""
         chat.send(text, user="System", respond=False)
 
     return _on_alert
@@ -337,6 +377,11 @@ def _send_action_buttons(
     buttons: list[pn.widgets.Button] = [end_btn]
 
     async def _on_end(event: Any) -> None:
+        """End the session from the button: disable controls, unsubscribe, run cleanup.
+
+        Idempotent — the `_session["closed"]` guard means clicking End Session and then
+        closing the tab (which fires the destroy hook) cleans up exactly once.
+        """
         for b in buttons:
             b.disabled = True
         if _session["closed"]:
@@ -360,6 +405,13 @@ def _send_action_buttons(
         buttons.append(gw_btn)
 
         async def _on_start_gateway(event: Any) -> None:
+            """Start the IBKR gateway from chat: Docker → container → wait → login page.
+
+            Runs the blocking GatewayManager calls on worker threads, waits up to 120s for
+            reachability, opens the browser login page, then forces a connectivity re-check
+            so the status dot reflects reality without waiting for the next 60s poll.
+            Every branch, including each failure, reports honestly into the chat feed.
+            """
             gw_btn.disabled = True
             gm = GatewayManager()
             try:
@@ -396,7 +448,7 @@ def _send_action_buttons(
         async def _on_launch_tv(event: Any) -> None:
             """Launch TradingView Desktop with CDP debugging, then rebuild the
             sidecar bridge and merge its tools into this session's agent —
-            app.py:907-951 parity. Every failure path is an honest chat message,
+            Parity with the removed app.py. Every failure path is an honest chat message,
             never a crash (project-tradingview-robustness memory)."""
             global _tv_bridge
             tv_btn.disabled = True
@@ -443,7 +495,7 @@ def _send_action_buttons(
 async def _maybe_background_flex_sync(
     chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, ibkr_offline: bool
 ) -> None:
-    """Startup Flex sync decision + background sync (app.py:427-429 + 550-617 parity).
+    """Startup Flex sync decision + background sync (parity with the removed app.py).
 
     Decision (fast sqlite, threaded) runs inline; only the actual sync — Flex
     API call + store.db Drive backup — is spawned as a background task. Logic:
@@ -490,6 +542,12 @@ async def _maybe_background_flex_sync(
         return
 
     async def _background_flex_sync() -> None:
+        """Run the Flex trade sync off the critical path, then back up store.db to Drive.
+
+        Fire-and-forget: **never raises**. A sync failure falls back to reporting
+        `check_flex_coverage` so the user learns what data is actually present rather than
+        just that something broke.
+        """
         try:
             result, _ = await asyncio.to_thread(toolkit.execute, "sync_flex_trades", {})
             chat.send(f"✅ {result}", user="System", respond=False)
@@ -522,6 +580,7 @@ async def _maybe_background_flex_sync(
     _background_tasks.add(task)
 
     def _log_flex_done(t: asyncio.Task[None]) -> None:
+        """Drop the strong task reference (RUF006) and log a task that died."""
         _background_tasks.discard(t)
         if not t.cancelled() and t.exception() is not None:
             log.error("Background Flex sync task died", exc_info=t.exception())
@@ -537,7 +596,7 @@ async def _run_session_cleanup(
     store: ConversationStore | None,
     loader: ContextLoader | None,
 ) -> str:
-    """Close session, generate report, upload DB (app.py:670-700 parity).
+    """Close session, generate report, upload DB (parity with the removed app.py).
     Returns a one-line status string. The slow calls (report generation, Drive
     upload) are offloaded via asyncio.to_thread; the sqlite row ops and
     stop_watching are ms-scale and run inline (app.py parity) — the destroy-hook
@@ -588,7 +647,12 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     init instead of racing it or erroring.
     """
     session_id = str(uuid.uuid4())
-    chat = pn.chat.ChatInterface()
+    # renderers= routes every string sent through this feed via safe_markdown, closing the
+    # raw-HTML/run_scripts execution path (security-audit-2026-07-25.md, H-1). Panel objects
+    # (ChatStep, Column, image panes) bypass renderers and are unaffected. Note this must be
+    # the top-level `renderers` param — passing it inside message_params raises TypeError,
+    # since ChatFeed._build_message already forwards self.renderers explicitly.
+    chat = pn.chat.ChatInterface(renderers=[safe_markdown])
 
     # store/loader are read by the session-end cleanup consumers (End Session
     # button + destroy hook); init_task keeps a strong reference to the
@@ -622,6 +686,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         _cleanup_tasks.add(task)
 
         def _log_cleanup_done(t: asyncio.Task[str]) -> None:
+            """Drop the strong task reference (RUF006) and log the cleanup outcome."""
             _cleanup_tasks.discard(t)
             try:
                 log.info("Destroy-path cleanup (session %s): %s", session_id, t.result())
@@ -636,6 +701,12 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     pn.state.on_session_destroyed(_on_session_destroyed)
 
     async def _on_user_input(contents: str, user: str, instance: pn.chat.ChatInterface) -> None:
+        """ChatInterface callback — the primary chat entry point.
+
+        Blocks on `_init_done` first, so a message typed during startup is answered once
+        the agent exists rather than dropped. If init failed there is no agent, and the
+        stored error is reported instead of the message being silently swallowed.
+        """
         await _init_done.wait()
         agent = _session["agent"]
         if agent is None:
@@ -672,6 +743,13 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     file_input = pn.widgets.FileInput(accept="image/*")
 
     async def _on_file_upload(event: Any) -> None:
+        """Send an uploaded screenshot to the agent's vision path.
+
+        All three widget params (`value`, `mime_type`, `filename`) are snapshotted at
+        watcher entry, **before** the init await. `FileInput` is a single shared widget, so
+        a second upload arriving during the init window would overwrite them mid-flight and
+        cross-wire one image with another's metadata.
+        """
         if not event.new:
             return  # our own post-processing reset re-fires the watcher with None
         # Snapshot all three params at watcher entry, BEFORE the init await.
@@ -708,7 +786,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 return
             # Echo the screenshot into the feed (the standalone widget renders
             # no message of its own), then hand the agent the Anthropic vision
-            # block — app.py:637-656 parity.
+            # block — parity with the removed app.py.
             chat.send(pn.pane.Image(io.BytesIO(data), width=400), user="User", respond=False)
             block = {
                 "type": "image",
@@ -746,6 +824,21 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     chat._claudia_file_input = file_input  # type: ignore[attr-defined]
 
     async def _init_session() -> None:
+        """Bring one session fully online, in order, as a background task.
+
+        Drive DB download → store open → doc load + versioning → agent construction →
+        connectivity checker → execution listener → opening status → TradingView connect →
+        background Flex sync. Sets `_init_done` when finished; `_on_user_input` waits on it.
+
+        The Drive download runs under the process-wide `_init_lock`. `asyncio.to_thread`
+        opens a yield window the old synchronous path did not have, so without the lock a
+        second session could open the DB file while the first is replacing it — leaving the
+        first holding an unlinked inode and silently writing to a file nobody will read.
+
+        Never raises: any failure is captured into `_session["error"]` and surfaced on the
+        next user message, so a broken startup degrades to an explained UI rather than a
+        dead one.
+        """
         global _gdrive_sync, _connectivity_checker, _execution_listener
         try:
             # GDrive DB download — MUST complete before ConversationStore first opens
@@ -795,13 +888,19 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 )
                 return
 
-            # Hot-reload alert (app.py:275-294 parity). The watchdog fires in a
+            # Hot-reload alert (parity with the removed app.py). The watchdog fires in a
             # plain OS thread; the D4-verified loop bridge serializes the entire
             # chat.send onto this session's event loop (see the D4 RESOLVED note
             # in the migration plan — probe + official Panel docs in agreement).
             loop = asyncio.get_running_loop()
 
             def _on_doc_change(filename: str, new_prompt: str) -> None:
+                """Announce a hot-reloaded document — called from the watchdog thread.
+
+                Hops back to the session's event loop via `call_soon_threadsafe`, since
+                Panel widgets must not be touched off-loop. A `RuntimeError` means the loop
+                already closed (tab gone); that is expected and ignored.
+                """
                 try:
                     loop.call_soon_threadsafe(
                         partial(
@@ -827,7 +926,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 session_id, context_hash=current_hash, doc_version=version_label
             )
 
-            # Backend singletons (design D6, app.py:348-377 parity). The
+            # Backend singletons (design D6, parity with the removed app.py). The
             # checker's 60s /tickle poll is the IBKR session KEEPALIVE — live-
             # session protection, not cosmetics. Constructed once per process,
             # started unconditionally each session (start() is idempotent and
@@ -836,7 +935,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             # destroy hook. Construction is synchronous
             # (no await between the None-check and assignment on this single-
             # threaded loop), so no lock is needed — same reasoning as
-            # app.py:369-371. tv_bridge stays None until Phase 9 (D5).
+            # Parity with the removed app.py. tv_bridge stays None until Phase 9 (D5).
             cfg = toolkit._config
             if _connectivity_checker is None:
                 _connectivity_checker = ConnectivityChecker(
@@ -877,7 +976,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 model=_MODEL,
                 doc_version=version_label,
             )
-            # TradingView connect + tool merge (app.py:324-346 parity, deferred by
+            # TradingView connect + tool merge (parity with the removed app.py, deferred by
             # D5 into Phase 9). Runs before the opening status so the TV status line
             # reflects the real connection state, and before the buttons so tv_offline
             # decides whether to offer "Launch TradingView". Wrapped internally so a
@@ -931,6 +1030,7 @@ def _build_session_root() -> pn.Row:
     indicators = _make_status_indicators()
 
     def _refresh() -> None:
+        """Repaint the status dots from the checker's latest cached result."""
         if _connectivity_checker is not None:
             _apply_status(indicators, _connectivity_checker.get_status())
 
@@ -982,8 +1082,25 @@ def main() -> None:
             port=_PANEL_PORT,
             show=False,
             title="ClaudIA",
+            # Loopback ONLY. Without address=, Panel passes address=None to bokeh, which
+            # calls tornado bind_sockets(port, None) — "None to listen on all available
+            # interfaces" — so the server binds *:8001 on both IPv4 and IPv6 and is
+            # reachable from the LAN. Confirmed live 2026-07-25 via lsof before the fix
+            # (security-audit-2026-07-25.md, H-3).
+            #
+            # websocket_origin below is NOT a substitute and must never be treated as one:
+            #   1. It gates the websocket upgrade only — GET / (bokeh DocHandler) is not
+            #      origin-checked at all, and serving it creates a full ClaudIA session
+            #      (Drive download, IBKR calls, DB row, possible Flex sync).
+            #   2. Tornado skips check_origin entirely when the request carries no Origin
+            #      header ("we assume it did not come from a browser" — tornado/websocket.py),
+            #      so any non-browser client just omits it.
+            # There is no auth layer, so the bind address is the actual boundary.
+            # Source: https://www.tornadoweb.org/en/stable/netutil.html#tornado.netutil.bind_sockets
+            address="127.0.0.1",
             # Default allowlist is localhost:<port> only; 127.0.0.1 access would get a
-            # 403 websocket refusal without this (probe-verified).
+            # 403 websocket refusal without this (probe-verified). Defence-in-depth against
+            # cross-origin browser attacks (incl. DNS rebinding), layered on the bind above.
             websocket_origin=[f"localhost:{_PANEL_PORT}", f"127.0.0.1:{_PANEL_PORT}"],
         )
     finally:

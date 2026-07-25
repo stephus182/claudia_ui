@@ -1,5 +1,4 @@
-"""
-Persistent conversation store for ClaudIA.
+"""Persistent conversation store for ClaudIA.
 
 Tables:
   sessions     — one row per chat session
@@ -27,10 +26,22 @@ log = logging.getLogger(__name__)
 
 
 def _utcnow() -> str:
+    """Current UTC time as an ISO-8601 string — the storage format for every timestamp."""
     return datetime.now(UTC).isoformat()
 
 
 class ConversationStore:
+    """SQLite-backed conversation memory: sessions, messages, decisions, doc versions.
+
+    Connection-per-operation (see `_conn`) rather than one long-lived handle, so the store
+    can be shared process-wide across every Panel session without handle contention. WAL
+    mode makes that safe alongside `GDriveSync.upload_db()`, which reads the same file from
+    a separate thread at session stop while the main loop may still be reading history.
+
+    Full-text search over messages is provided by an FTS5 virtual table kept in sync by
+    triggers; see `_init_schema`.
+    """
+
     def __init__(self, db_path: str | Path = "data/claudia.db"):
         """Open (or create) the SQLite DB and apply schema migrations.
 
@@ -44,6 +55,13 @@ class ConversationStore:
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
+        """Yield a configured connection, committing on success and rolling back on error.
+
+        Yields:
+            A connection with `row_factory=sqlite3.Row`, WAL journaling, and foreign keys
+            enabled. Closed on exit either way; exceptions roll back and re-raise rather
+            than being swallowed, so a partial write never looks like a success.
+        """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         # WAL mode allows concurrent readers during a write — required because
@@ -64,6 +82,18 @@ class ConversationStore:
             conn.close()
 
     def _init_schema(self) -> None:
+        """Create the schema if absent. Idempotent — safe on every startup.
+
+        Tables: `sessions` (one row per browser session, carrying the context hash and doc
+        version), `messages` (user/assistant/tool turns), `decisions` (order proposals and
+        their outcomes), and `doc_versions` (hash-keyed context/principles history).
+        Plus a `messages_fts` FTS5 virtual table with insert/update/delete triggers keeping
+        it in sync, and indexes on the session foreign keys.
+
+        Everything uses `CREATE ... IF NOT EXISTS`; the one additive column migration is
+        wrapped in `suppress(sqlite3.OperationalError)` so re-running against an
+        already-migrated DB is a no-op rather than an error.
+        """
         with self._conn() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS sessions (

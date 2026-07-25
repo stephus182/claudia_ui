@@ -19,8 +19,18 @@ class ToolStepHandle(Protocol):
     input: str
     output: str
 
-    async def __aenter__(self) -> ToolStepHandle: ...
-    async def __aexit__(self, exc_type, exc, tb) -> bool | None: ...
+    async def __aenter__(self) -> ToolStepHandle:
+        """Open the step indicator and return the handle to write input/output on."""
+        ...
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool | None:
+        """Close the step, marking it success or failure from `exc_type`.
+
+        The return value governs **exception suppression**: a truthy value swallows an
+        exception raised inside the tool call. Implementations must return falsy unless they
+        genuinely intend to hide the error from the agent loop.
+        """
+        ...
 
 
 class MessageSink(Protocol):
@@ -38,6 +48,46 @@ class MessageSink(Protocol):
         """Notify the user a response was truncated at the token limit."""
         ...
 
-    async def send_order_proposal(self, proposal: dict) -> None: ...
-    async def send_cancel_proposal(self, proposal: dict) -> None: ...
-    async def send_modify_proposal(self, proposal: dict) -> None: ...
+    # ── Order proposals ──────────────────────────────────────────────────────────────
+    #
+    # All three render a human-approval surface and MUST NOT execute anything. The agent
+    # loop has no order-execution tools (CLAUDE.md Hard Rule 1); execution begins only when
+    # a human clicks the rendered button, and even then only after Gate 1 (Touch ID) and
+    # Gate 2 (the AppKit confirmation dialog). A sink that acted on a proposal directly
+    # would defeat the single most important safety property in the system.
+    #
+    # `proposal` arrives already schema-checked by agent.py against
+    # order_proposal_schema — a sink must still never repair or normalise its values, since
+    # order parameters are immutable.
+
+    async def send_order_proposal(self, proposal: dict) -> None:
+        """Render a new-order proposal for human approval. Never places the order.
+
+        Args:
+            proposal: Keys per _SAFETY_BLOCK's "ORDER PROPOSAL FORMAT" — `symbol`, `action`,
+                `quantity`, `order_type`, `limit_price`, `stop_price`, `tif`, `sec_type`,
+                `conid`, `reason`.
+        """
+        ...
+
+    async def send_cancel_proposal(self, proposal: dict) -> None:
+        """Render an order-cancellation proposal for human approval. Never cancels.
+
+        Args:
+            proposal: `order_id` identifies the live order; the remaining fields
+                (`symbol`, `action`, `quantity`, `order_type`, prices, `tif`) are
+                display-only context.
+        """
+        ...
+
+    async def send_modify_proposal(self, proposal: dict) -> None:
+        """Render an order-modification proposal for human approval. Never modifies.
+
+        Args:
+            proposal: The **full replacement order** (IBKR requires the complete order, not
+                a diff), keyed by `order_id`. Two private keys drive the displayed diff:
+                `_changed_fields` (list of field names the LLM says it is changing) and
+                `_previous_values` (dict of those fields' prior values). Both are
+                LLM-authored — the diff is presentation, not a verified before/after.
+        """
+        ...

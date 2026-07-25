@@ -14,9 +14,11 @@ conversation memory. The new principals and threats are:
 
 | Principal | Threat | Mitigation |
 |---|---|---|
-| `docs/context.md` | Prompt injection: attacker modifies the file to override ClaudIA's behavior | File permissions (0o600); SHA-256 hash logged at session start; file is never executable |
+| `docs/context.md` | Prompt injection: attacker modifies the file to override ClaudIA's behavior | File permissions (0o600 — restored 2026-07-25, both files had drifted to 0644); SHA-256 hash logged at session start; file is never executable |
 | `docs/principles.md` | Prompt injection: attacker weakens risk rules | Same mitigations as context.md; ClaudIA cannot modify this file |
+| `docs/versions/*/` snapshots | Same content, weaker protection: the version snapshots hold verbatim copies of both documents | `_write_version_snapshot` chmods each file 0600 after writing (`Path.write_text` honours the umask, so the chmod must be explicit and unconditional). Never git-tracked — see §14 |
 | Conversation history | Re-injection: past messages contained adversarial content that gets fed back | History loaded as structured `role:user/assistant` blocks, not raw system prompt injection |
+| LLM / tool output rendered in the UI | XSS: injected HTML executes in the trading UI's origin, reading account data and forging chat content | All rendering goes through `claudia/panel_markdown.py` — see §9 |
 | TradingView sidecar | Supply chain: `tradingview-mcp` npm package has full CDP access to TradingView Desktop | Accepted risk (personal local tool); subprocess env is a strict allowlist (`PATH`, `HOME`, `USER`, `TMPDIR`, `NODE_*`) — `ANTHROPIC_API_KEY`, GDrive tokens, and IBKR credentials are never passed; vendor archive provides known-good fallback; `docs/tradingview-mcp-recovery.md` covers incident response |
 
 ---
@@ -37,9 +39,16 @@ ClaudIA has **zero** tools for order execution. This is the most critical securi
 
 ### Order staging flow (human-in-the-loop)
 1. ClaudIA outputs a text `order-proposal` block — this is just text, no side effects
-2. `agent.py` parses it and calls `order_flow.render_order_proposal()` — renders a button
+2. `agent.py` parses it, schema-checks it via `order_proposal_schema.validate_order_proposal()`
+   (rejects an action outside `{BUY, SELL}`, a non-positive or non-numeric quantity, a blank
+   symbol, or an `order_type`/`tif`/`sec_type` outside the declared enums), then hands the
+   dict to the `MessageSink` (`send_order_proposal`). `PanelMessageSink` routes it to
+   `panel_order_flow.render_order_proposal()`, which renders the button. A rejected proposal
+   is dropped and reported in chat — never silently, so ClaudIA cannot appear to have staged
+   an order it did not. **Validation rejects; it never repairs** — order parameters are
+   immutable
 3. **Human physically clicks the button** — this is the first human gate
-4. `IBKRClient.place_order()` fires:
+4. `IBKRClient.place_order_and_confirm()` fires:
    - **Gate 1:** Apple `LocalAuthentication` biometric (Touch ID, Face ID) — no password fallback
    - **Gate 2:** native macOS AppKit dialog (green/red banner by order side) with full order
      details + 60-second auto-cancel countdown; Return key disabled on the confirm button to
@@ -60,7 +69,11 @@ every proposed action against this document before responding.
 ```bash
 chmod 600 docs/context.md docs/principles.md
 ```
-Only the file owner can read or modify these files.
+Only the file owner can read or modify these files. These two are hand-maintained —
+`GDriveSync.read_text()` returns a string and never writes them — so the mode persists once
+set. The `docs/versions/*/` snapshots are different: the app rewrites those on every new doc
+version, which is why `_write_version_snapshot` chmods them explicitly (§1). Both source
+files were found at 0644 during the 2026-07-25 audit and restored.
 
 **Hash verification:**
 At session start, `context_loader.py` computes `SHA-256(context.md + principles.md)` and
@@ -99,7 +112,7 @@ content could influence future responses.
 
 ## 5. Hardcoded Safety Block
 
-`_SAFETY_BLOCK` (`claudia/agent.py:47-201`) is embedded directly in code and appended to
+`_SAFETY_BLOCK` (`claudia/agent.py:48-202`) is embedded directly in code and appended to
 every system prompt. It is **not** loaded from any user-editable file and cannot be
 overridden by `context.md` or `principles.md`. Modifications require a code change — a
 deliberate developer action, not a document edit (CLAUDE.md Hard Rule 3).
@@ -108,7 +121,7 @@ deliberate developer action, not a document edit (CLAUDE.md Hard Rule 3).
 here would duplicate content that changes whenever the prompt is tuned, and would go
 stale exactly the way the previous version of this section did (it quoted only the first
 of what are now 8 non-overridable subsections, and had never been updated to reflect the
-other 7). Read `claudia/agent.py:47-201` directly for the authoritative current text. As
+other 7). Read `claudia/agent.py:48-202` directly for the authoritative current text. As
 of this writing, the block's non-overridable subsections are:
 
 - **ABSOLUTE CONSTRAINTS** — no order execution, no financial-advisor claims, principles
@@ -190,8 +203,15 @@ cannot place IBKR orders. Financial blast radius is limited to TradingView UI da
 ## 7. Secrets Management
 
 - `.env` is in `.gitignore` and must never be committed.
-- `ANTHROPIC_API_KEY` is never logged, never included in Chainlit message output,
-  and never passed to the LLM as text.
+- `.env` itself must be `0600` (it holds `ANTHROPIC_API_KEY` and `IBKR_FLEX_TOKEN`).
+  Found at 0644 and restored 2026-07-25.
+- `ANTHROPIC_API_KEY` is never logged, never included in Panel chat output, and never
+  passed to the LLM as text. Audited 2026-07-25: the name appears in `claudia/` only inside
+  two comments in `tradingview.py`; `AsyncAnthropic()` reads it from the environment.
+  Two indirect channels are worth knowing about, neither observed to carry the key (the
+  Anthropic SDK redacts auth in `APIStatusError`): `panel_app`'s
+  `f"**Session init failed:** {exc}"` send, and `ChatInterface.callback_exception`
+  defaulting to `"summary"`, which renders `type(e).__name__: str(e)` into the feed.
 - `claudia.db` does not store API keys or IBKR credentials.
 - Google Drive credentials follow the same `0o600` permission pattern as `ibkr_core_mcp`.
   Token refresh explicitly calls `os.chmod(token_path, 0o600)` after every write because
@@ -207,17 +227,48 @@ cannot place IBKR orders. Financial blast radius is limited to TradingView UI da
 
 ClaudIA runs entirely on `localhost`. By default:
 
-| Service | Binding |
-|---|---|
-| Chainlit web UI | `localhost:8000` |
-| IBKR gateway | `localhost:5055` |
-| TradingView debug port | `localhost:9222` |
+| Service | Binding | Enforced by |
+|---|---|---|
+| Panel web UI | `127.0.0.1:8001` | `address="127.0.0.1"` in `panel_app.main()`'s `pn.serve` call |
+| IBKR gateway | `127.0.0.1:5055` | gateway container config |
+| TradingView debug port | `localhost:9222` | CDP default |
+
+The UI port is `CLAUDIA_PANEL_PORT` (default `8001`). There is **no authentication layer** —
+the loopback bind is the actual boundary, so it is load-bearing, not cosmetic.
 
 **Never expose these ports to external networks.** If remote access is required,
 use a VPN or Tailscale tunnel — never a public-facing reverse proxy without authentication.
 
-**CORS:** `.chainlit/config.toml` restricts `allow_origins` to `["http://localhost:8000"]`.
-Do not widen this to `"*"` — the app connects to a live brokerage account.
+**Bind address (the control that replaced Chainlit-era CORS):**
+
+`pn.serve` must always be called with `address="127.0.0.1"`. Omitting it passes
+`address=None` to bokeh, which calls tornado's `bind_sockets(port, None)` — documented as
+*"None to listen on all available interfaces"* — so the server binds `*:8001` on IPv4 and
+IPv6 and the whole UI becomes reachable from the LAN. This was the live state until
+2026-07-25 (verified by `lsof` on the running process); guarded now by
+`test_pn_serve_binds_loopback_only`.
+
+Source: https://www.tornadoweb.org/en/stable/netutil.html#tornado.netutil.bind_sockets
+
+**`websocket_origin` is defence-in-depth, not a boundary.** It is set to
+`["localhost:8001", "127.0.0.1:8001"]` and does genuinely stop cross-origin browser attacks
+including DNS rebinding. It does **not** substitute for the bind address:
+
+- It gates only the websocket upgrade. `GET /` (bokeh's `DocHandler`) is not origin-checked
+  at all, and serving that page creates a **full ClaudIA session** — Drive download, IBKR
+  account calls, a `create_session` row, possibly a live Flex sync; and on disconnect,
+  session-report generation plus a `claudia.db` upload to Drive.
+- Tornado skips `check_origin` entirely when the request carries no `Origin` header ("we
+  assume it did not come from a browser"), so any non-browser client simply omits it.
+- `Origin` is a client-supplied header and trivially forged in any case.
+
+**What a reachable session would expose:** the opening-status payload — Account Summary,
+Open Positions, Account P&L, Live Orders — plus the ability to drive every widget. Order
+placement would still require physical Touch ID and the local AppKit dialog, so the §2
+barriers hold; the exposure is read of live account data and control of the agent.
+
+**Never enable `--dev` / `autoreload`** on this app (currently off, and `start-claudia.sh`
+passes no flags): it starts a filesystem watcher that re-executes app source.
 
 **SSRF guard — two-layer architecture:**
 
@@ -264,33 +315,75 @@ in cross-origin fetches.
 
 ---
 
-## 9. Custom UI Endpoints
+## 9. UI Surface (Panel)
 
-The following HTTP endpoints are added by `claudia/app.py` on top of Chainlit's built-in routes:
+ClaudIA adds **no HTTP endpoints of its own.** The Chainlit-era routes this section used to
+describe (`/api/status`, `/cl/custom.css`, `/cl/custom.js`, `/cl/claudia-logo.png`) were
+removed with `claudia/app.py` in the Phase 11 cutover; `claudia/assets/` now holds only an
+orphan logo that no route serves. Everything the browser receives arrives over the
+Bokeh/Tornado session websocket, and the only routes are Panel's own (`/`, `/ws`,
+`/autoload.js`, `/metadata`, `/static/*`, `/components/*`). Connectivity lights are
+`pn.indicators.BooleanStatus` widgets repainted in-process by a 5-second periodic callback —
+still only `(bool, colour)` on the wire, but no longer an unauthenticated HTTP route.
 
-| Endpoint | Purpose | Data exposed |
+### Markdown rendering — the XSS control
+
+**All chat rendering must go through `claudia/panel_markdown.py`.** Panel's Markdown pane is
+not safe by default, verified end-to-end against panel 1.9.3 / bokeh 3.9.1:
+
+1. `MarkdownIt('gfm-like').options['html']` is `True` — raw HTML passes the parser.
+2. The bokeh `HTML` model defaults to `run_scripts = True`.
+3. The client calls `html_decode(model.text)`, assigns `innerHTML`, then `run_scripts()`
+   **re-creates every `<script>` node via `document.createElement`** — which executes it.
+
+Untrusted text reaches those panes from the LLM, from IBKR and TradingView responses, from
+exception strings, and — the most exposed sink, needing no LLM cooperation — from raw tool
+results: a page fetched by `fetch_web_page`/`firecrawl_*` is streamed into the tool step
+verbatim. An attacker who lands script here can read the DOM (positions, P&L, account IDs),
+exfiltrate it, and forge ClaudIA messages and order-proposal UI. The §2 gates still prevent a
+silent order, but the on-screen context around a Touch ID prompt would be attacker-controlled.
+
+Two helpers, because there are two rendering paths:
+
+| Helper | Covers | Mechanism |
 |---|---|---|
-| `GET /api/status` | Connectivity lights (JS polling) | Service status strings only — `"ok"`, `"error"`, `"unknown"` for IBKR (authenticated session), GDrive (API reachable), TradingView (CDP port open). No credentials, tokens, or account data. |
-| `GET /cl/custom.css` | Dark theme stylesheet | Static asset, no user data |
-| `GET /cl/custom.js` | Status bar DOM injector | Static asset, no user data |
-| `GET /cl/claudia-logo.png` | Logo image | Static asset, no user data |
+| `safe_markdown()` | Every `chat.send()` (installed as `ChatInterface(renderers=[...])`) and every directly-constructed pane | `renderer_options={"html": False}` — double-escapes, so the client's single `html_decode` yields text |
+| `escape_markup()` | Text streamed into a `pn.chat.ChatStep` | `html.escape(quote=False)` — `ChatStep` has no `renderers` parameter and builds its own panes, so the feed-level hook cannot reach it |
 
-**`/api/status` data sensitivity:** The endpoint reveals whether IBKR is reachable and
-whether Google Drive credentials exist on disk. This is operational metadata, not account
-data or credentials. It requires no authentication because ClaudIA has no auth layer
-(localhost-only, single user). Do not proxy this endpoint externally.
+Two things that are **not** adequate substitutes, both tested: wrapping untrusted text in a
+```` ``` ```` fence (content carrying its own closing fence escapes it), and `run_scripts=False`
+(stops `<script>` but not `onerror=`/`onload=`). Markdown-it's `validateLink` does already
+reject `javascript:`, `data:` and `vbscript:` link schemes while allowing `https:`.
 
-**Custom JS security:** `claudia/assets/custom.js` only uses `document.createElement`,
-`textContent`, `className`, and `title` for DOM manipulation. It never calls `eval`,
-never uses `innerHTML`, and never injects user-controlled data into the DOM. Review this
-file after any modification for XSS vectors.
+Guarded by `test_safe_markdown_neutralises_html`,
+`test_escape_markup_neutralises_chatstep_stream`,
+`test_no_unguarded_markdown_panes_in_package` (structural — fails if any module constructs
+`pn.pane.Markdown/HTML/Str` directly), and `test_unsafe_markdown_would_be_vulnerable` (fails
+if Panel's default ever changes, so the control is re-evaluated rather than silently becoming
+a no-op).
 
-**IBKR gateway TLS:** `claudia/status.py → check_ibkr()` sets `verify=False` because
-the IBKR Client Portal Gateway uses a self-signed certificate on localhost. This is
-intentional and scoped to the single keepalive call (`GET /tickle`). No credentials are
-sent in this request. The JSON response body is parsed for `iserver.authStatus.authenticated`
-and `iserver.authStatus.connected`; neither field contains credentials. All JSON parsing
-is wrapped in `except Exception` so a malformed response returns `False` without raising.
+### Client-side JS
+
+The only JS ClaudIA injects is the PineScript copy button
+(`panel_pinescript.py` → `js_on_click(args={"code": code}, code="navigator.clipboard.writeText(code)")`).
+This is injection-safe by construction: the pine source is a **named CustomJS argument**
+bound as a JS function parameter, never interpolated into the code string — probe-verified
+with a breakout payload, which survived intact as data. Keep it that way; never build the
+`code=` string by interpolation.
+
+### IBKR gateway TLS
+
+`claudia/status.py` sets `verify=False` because the IBKR Client Portal Gateway uses a
+self-signed certificate on localhost. This is intentional and scoped to **two** calls, both
+against `127.0.0.1:5055`:
+
+| Site | Call | Notes |
+|---|---|---|
+| `check_ibkr()` | `GET /tickle` | Keepalive. No credentials sent. Response parsed for `iserver.authStatus.authenticated` / `.connected` — neither field contains credentials |
+| `_attempt_soft_recovery()` | `POST /iserver/auth/ssodh/init` | Added 2026-07-17. Body-parsed, not status-parsed; `compete=False` hardcoded so it can never evict a competing session — see §11 |
+
+All JSON parsing is wrapped in `except Exception` so a malformed response returns `False`
+without raising.
 
 ---
 
@@ -397,9 +490,11 @@ runtime state, not a proxy indicator (file existence, process liveness).
 - All three checks are wrapped in `except Exception: return False`. Exceptions never
   propagate to `_run_checks()` as unhandled errors that could crash the poll loop or leak
   stack traces to the chat UI.
-- The `/api/status` endpoint returns only the three status strings (`"ok"` / `"error"` /
-  `"unknown"`). The underlying session state, token contents, and auth details are
-  never serialised to this endpoint.
+- Only the three `ServiceStatus` values reach the browser, as `BooleanStatus` widget
+  state over the session websocket — `(bool, colour)` and nothing else. The underlying
+  session state, token contents, and auth details are never serialised to the UI. (Before
+  the Panel cutover this was an unauthenticated `GET /api/status` route; that route no
+  longer exists — see §9.)
 - The keepalive side effect of `/tickle` (resetting the IBKR inactivity timer every 60s)
   is intentional and prevents unintended session expiry during active trading sessions.
 
@@ -430,7 +525,7 @@ narrow safety scoping, verified directly in `claudia/status.py`:
   *session* — it has no relationship to `place_order`/`modify_order`/`cancel_order`, and
   the Order Execution Barriers in §2 are completely unaffected by whether this recovery
   path fires.
-- 15 dedicated unit tests cover every branch (never fires from `UNKNOWN`/`ERROR`/hard-disconnect;
+- 12 dedicated unit tests cover every branch (never fires from `UNKNOWN`/`ERROR`/hard-disconnect;
   successful recovery suppresses the disconnect alert; failed recovery — including a
   "successful" POST whose immediate re-check still fails — still alerts exactly once).
   Full design: `docs/plans/2026-07-17-ibkr-soft-timeout-recovery.md`.
@@ -447,12 +542,15 @@ Run this checklist before any significant code change to ClaudIA:
 - [ ] New conversation history injections use structured message objects, not raw string injection
 - [ ] `docs/context.md` and `docs/principles.md` have `chmod 600` permissions
 - [ ] `.env` is in `.gitignore` and was not staged for commit
+- [ ] `.env` and both private docs are `0600`; no private document is git-tracked (`git ls-files -i -c --exclude-standard` prints nothing)
+- [ ] `pn.serve` is still called with a loopback `address=` — `websocket_origin` alone is not a boundary (§8)
+- [ ] Any new Panel content rendered into a session goes through `safe_markdown()` / `escape_markup()` — never a bare `pn.pane.Markdown/HTML/Str` (§9). This replaces the old "new HTTP endpoint" check: the app authors no HTTP routes, so everything reaching the browser goes over the session websocket
+- [ ] Any new client-side JS passes untrusted values as **named CustomJS args**, never interpolated into the `code=` string (§9)
+- [ ] Any new file written by the app that contains private-document or account content is `chmod 0600` immediately after the write (`Path.write_text` honours the umask)
 - [ ] Any new `IBKRClient` usage goes through `ClaudeToolkit` (not direct calls in tool handlers)
-- [ ] Any new HTTP endpoint does not expose credentials, API keys, or account data
-- [ ] Any new custom JS reviewed for `eval`, `innerHTML`, and user-data injection (XSS)
 - [ ] Any new subprocess call uses an env allowlist — never `{**os.environ}` or `env=None`
 - [ ] Any new Drive download has a size guard before the download loop
-- [ ] Any new shared state accessed from `cl.make_async()` handlers is protected by a `threading.Lock` or `threading.RLock` (use `RLock` if any method holding the lock calls another method that also acquires it)
+- [ ] Any new shared state touched from a worker thread (`asyncio.to_thread`, the watchdog observer) is protected by a `threading.Lock` or `threading.RLock` (use `RLock` if any method holding the lock calls another method that also acquires it). Cross-thread UI updates go through `loop.call_soon_threadsafe`
 - [ ] Any new connectivity check returns a plain bool, wraps all exceptions, and does not log or expose credentials on failure
 - [ ] Any new tool that makes outbound HTTP requests blocks localhost / private IP ranges (SSRF guard — see §8 `fetch_web_page` pattern)
 - [ ] Any new outbound HTTP path re-validates **every redirect hop** against the SSRF guard (never `allow_redirects=True` on an LLM-driven fetch — S1, 2026-07-03)
@@ -467,5 +565,33 @@ Run this checklist before any significant code change to ClaudIA:
 | 2026-06-12 | `gdrive_sync.py`, `tradingview.py`, `app.py`, `ibkr_core_mcp/client.py` | 2 High, 4 Medium, 2 Low | All 8 resolved | [`docs/audits/security-audit-2026-06-12.md`](docs/audits/security-audit-2026-06-12.md) |
 | 2026-06-25 | All 8 claudia_ui modules (full re-audit) | 1 High, 0 Medium, 3 Low | H-1 fixed; 3 Low accepted | [`docs/audits/security-audit-2026-06-25.md`](docs/audits/security-audit-2026-06-25.md) |
 | 2026-06-27 | ibkr_core_mcp v1.0 pre-release audit (ported back to `agent.py`) | 1 Medium ported | Decimal/hex IP bypass (`http://2130706433/`) fixed via `socket.gethostbyname()` resolve-then-check | see commit |
+| 2026-07-25 | Post-Panel-migration full audit — all 18 `claudia/` modules (7 had never been audited), `SECURITY.md`, git hygiene | 3 High, 3 Medium, 3 Low | All High + Medium fixed; Lows recorded | [`docs/audits/security-audit-2026-07-25.md`](docs/audits/security-audit-2026-07-25.md) |
 
-**Regression tests:** `tests/test_security_regressions.py` — 21 tests covering all three audits. These must stay green.
+**Regression tests:** `tests/test_security_regressions.py` — 46 tests covering all four
+audits, plus `test_chat_interface_installs_the_safe_markdown_renderer` in
+`tests/test_panel_app.py` (needs that module's session scaffolding). These must stay green.
+
+---
+
+## 14. Private Documents and Git
+
+`docs/context.md`, `docs/principles.md`, and every `docs/versions/*/` snapshot contain
+ClaudIA's persona and the user's trading rules. **None may ever be committed.** The repo is
+public.
+
+`.gitignore` lists all three paths, but **`.gitignore` does not untrack a file that is
+already tracked** — it only prevents new ones from being added. That gap is how
+`docs/versions/v1/{context,principles}.md` stayed tracked and publicly readable on
+`origin/main` from 2026-06-11 until 2026-07-25: the 2026-07-10 `git-filter-repo` scrub was
+path-scoped to `docs/context.md` and `docs/principles.md` and never covered the version
+snapshots. The v1 blobs remain reachable in history by commit SHA (untrack-only remediation
+was the deliberate choice); treat that content as disclosed.
+
+Check with the structural command, not by eye:
+
+```bash
+git ls-files -i -c --exclude-standard   # must print nothing
+```
+
+Guarded by `test_private_documents_are_not_git_tracked` and
+`test_no_tracked_but_ignored_files`.

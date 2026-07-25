@@ -35,6 +35,8 @@ import pandas as pd
 import panel as pn
 from bokeh.plotting import figure
 
+from claudia.panel_markdown import safe_markdown
+
 log = logging.getLogger(__name__)
 
 _UP_COLOR = "#26a69a"  # teal — close >= open
@@ -124,10 +126,17 @@ def build_chart_pane() -> pn.Column:
     )
     bar = pn.widgets.Select(label="Bar", options=["1d", "1h", "30m"], value="1d")
     load_btn = pn.widgets.Button(label="Load chart", color="primary")
-    status = pn.pane.Markdown("STK only. Enter a symbol and click **Load chart**.")
+    status = safe_markdown("STK only. Enter a symbol and click **Load chart**.")
     chart = pn.pane.Bokeh(None)
 
     async def _on_load(event: Any) -> None:
+        """Load bars for the entered symbol and rebuild the candlestick figure.
+
+        Checks the parquet cache first and fetches on a miss — a multi-second IBKR wait,
+        hence the spinner, which is cleared in `finally` on every path. An empty result and
+        a failure are both reported honestly in the status line rather than leaving the
+        previous chart up as if it were current.
+        """
         # loading spinner first — the fetch-on-miss path is a multi-second IBKR wait
         # (actionable-buttons research). Always cleared in the finally.
         load_btn.loading = True

@@ -345,3 +345,221 @@ def test_fetch_web_page_ssrf_guard_blocks_decimal_ip(monkeypatch):
     assert "Blocked" in result, (
         f"Decimal IP 2130706433 (=127.0.0.1) was not blocked; got: {result!r}"
     )
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════
+# Post-Panel-migration audit — 2026-07-25 (docs/audits/security-audit-2026-07-25.md)
+# ════════════════════════════════════════════════════════════════════════════════════════
+
+# ── H-1 — Panel Markdown must not render untrusted HTML as executable markup ─────────────
+
+_XSS_PAYLOAD = '<img src=x onerror="alert(1)"><script>alert(2)</script>'
+_FENCE_BREAKOUT = "a\n```\n<script>alert(3)</script>\n```\nb"
+
+
+def _decodes_to_markup(model_text: str) -> bool:
+    """True if the browser's single html_decode would turn model_text back into live markup.
+
+    Panel escapes the pane text for transport, then the client calls html_decode() once
+    before assigning innerHTML and re-executing <script> nodes. So "&lt;script&gt;" in the
+    model becomes real markup, while "&amp;lt;script&amp;gt;" stays literal text.
+    """
+    return "&lt;script&gt;" in model_text or "&lt;img" in model_text
+
+
+@pytest.mark.parametrize("payload", [_XSS_PAYLOAD, _FENCE_BREAKOUT])
+def test_safe_markdown_neutralises_html(payload):
+    """safe_markdown() must keep untrusted HTML double-escaped (H-1).
+
+    Panel's Markdown pane defaults to markdown-it `html: True` plus bokeh `run_scripts=True`,
+    which together execute <script> from any rendered chat text.
+    """
+    from claudia.panel_markdown import safe_markdown
+
+    text = safe_markdown(f"Output: {payload}").get_root().text
+    assert not _decodes_to_markup(text), f"safe_markdown left executable markup: {text!r}"
+
+
+def test_unsafe_markdown_would_be_vulnerable():
+    """Guards the guard: a default pane IS vulnerable, so the test above is meaningful (H-1).
+
+    If Panel ever changes its default, this test fails and safe_markdown can be re-evaluated
+    rather than silently becoming a no-op.
+    """
+    import panel as pn
+
+    text = pn.pane.Markdown(f"Output: {_XSS_PAYLOAD}").get_root().text
+    assert _decodes_to_markup(text), (
+        "Panel's default Markdown pane no longer renders raw HTML — re-check H-1's premise"
+    )
+
+
+@pytest.mark.parametrize("payload", [_XSS_PAYLOAD, _FENCE_BREAKOUT])
+def test_escape_markup_neutralises_chatstep_stream(payload):
+    """Tool input/output streamed into a ChatStep must be escaped (H-1).
+
+    ChatStep has no `renderers` parameter and builds its own Markdown panes, so the
+    ChatInterface-level safe_markdown hook cannot reach this path. Raw tool results are the
+    most exposed sink in the UI: a page fetched by fetch_web_page reaches here verbatim.
+    """
+    import panel as pn
+
+    from claudia.panel_markdown import escape_markup
+
+    step = pn.chat.ChatStep()
+    step.stream(f"Output: {escape_markup(payload)}")
+    text = step.objects[-1].get_root().text
+    assert not _decodes_to_markup(text), f"ChatStep stream left executable markup: {text!r}"
+
+
+def test_no_unguarded_markdown_panes_in_package():
+    """No module may construct pn.pane.Markdown directly — safe_markdown is the only route (H-1).
+
+    A structural check: a new direct pane would silently reopen the injection, and that is
+    exactly how this class of bug returns.
+    """
+    import re
+
+    package = Path(__file__).resolve().parent.parent / "claudia"
+    offenders = []
+    for path in sorted(package.glob("*.py")):
+        if path.name == "panel_markdown.py":  # the one sanctioned construction site
+            continue
+        for num, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"pn\.pane\.(Markdown|HTML|Str)\(", line):
+                offenders.append(f"{path.name}:{num}: {line.strip()}")
+    assert not offenders, "Unguarded Markdown/HTML panes found:\n" + "\n".join(offenders)
+
+
+# ── H-3 — the Panel server must bind loopback only ───────────────────────────────────────
+
+def test_pn_serve_binds_loopback_only():
+    """main() must pass address="127.0.0.1" to pn.serve (H-3).
+
+    Without it Panel passes address=None to bokeh, tornado binds every interface, and the
+    UI — live account data, P&L, positions, and every widget — is reachable from the LAN.
+    websocket_origin is NOT a substitute: it gates only the websocket upgrade, and tornado
+    skips the origin check entirely when no Origin header is sent.
+    """
+    from claudia import panel_app
+
+    with patch("claudia.panel_app.pn.serve") as mock_serve, \
+         patch("claudia.panel_app.signal.signal"), \
+         patch.object(panel_app, "_gdrive_sync", None):
+        panel_app.main()
+
+    assert mock_serve.called, "pn.serve was never called"
+    address = mock_serve.call_args.kwargs.get("address")
+    assert address in ("127.0.0.1", "localhost"), (
+        f"pn.serve address={address!r} — must be loopback, not all-interfaces"
+    )
+
+
+# ── H-2 — private documents must never be tracked by git ─────────────────────────────────
+
+def test_private_documents_are_not_git_tracked():
+    """No private doc may be tracked (H-2).
+
+    docs/versions/v1/{context,principles}.md were tracked and PUBLIC on GitHub for ~6 weeks:
+    the 2026-07-10 filter-repo scrub was path-scoped to docs/context.md and
+    docs/principles.md and never covered the version snapshots. .gitignore does not untrack
+    files that are already tracked, so only a structural check catches this.
+    """
+    import subprocess
+
+    repo = Path(__file__).resolve().parent.parent
+    out = subprocess.run(
+        ["git", "ls-files", "docs/context.md", "docs/principles.md", "docs/versions"],
+        cwd=repo, capture_output=True, text=True, check=False,
+    )
+    tracked = [line for line in out.stdout.splitlines() if line.strip()]
+    assert not tracked, f"Private documents are git-tracked: {tracked}"
+
+
+def test_no_tracked_but_ignored_files():
+    """.gitignore and the index must agree (H-2, L-3)."""
+    import subprocess
+
+    repo = Path(__file__).resolve().parent.parent
+    out = subprocess.run(
+        ["git", "ls-files", "-i", "-c", "--exclude-standard"],
+        cwd=repo, capture_output=True, text=True, check=False,
+    )
+    offenders = [line for line in out.stdout.splitlines() if line.strip()]
+    assert not offenders, f"Tracked files matched by .gitignore: {offenders}"
+
+
+# ── M-2 — version snapshots of the private docs must be chmod 0600 ───────────────────────
+
+def test_version_snapshot_is_chmod_600(tmp_path, monkeypatch):
+    """_write_version_snapshot must chmod both files to 0600 (M-2).
+
+    Path.write_text() honours the umask (0644 by default), and these snapshots hold the
+    verbatim persona and trading rules. Mirrors the token-file reasoning in SECURITY.md §7:
+    creation flags only set the mode on files that did not already exist.
+    """
+    from claudia import panel_app
+
+    monkeypatch.setattr(panel_app, "_VERSIONS_PATH", tmp_path)
+    panel_app._write_version_snapshot("v9", "persona text", "trading rules")
+
+    for name in ("context.md", "principles.md"):
+        path = tmp_path / "v9" / name
+        assert path.exists(), f"{name} was not written"
+        mode = oct(path.stat().st_mode & 0o777)
+        assert mode == oct(0o600), f"{name} permissions {mode} != 0o600"
+
+
+# ── M-1 — order proposals must be schema-checked before rendering or staging ─────────────
+
+@pytest.mark.parametrize("proposal,reason", [
+    ({"symbol": "AAPL", "action": "HODL", "quantity": 1}, "action outside {BUY, SELL}"),
+    ({"symbol": "AAPL", "action": "BUY", "quantity": -5}, "negative quantity"),
+    ({"symbol": "AAPL", "action": "BUY", "quantity": 0}, "zero quantity"),
+    ({"symbol": "AAPL", "action": "BUY", "quantity": True}, "bool quantity"),
+    ({"symbol": "AAPL", "action": "BUY", "quantity": "10"}, "string quantity"),
+    ({"symbol": "   ", "action": "BUY", "quantity": 1}, "blank symbol"),
+    ({"action": "BUY", "quantity": 1}, "missing symbol"),
+    ({"symbol": "A", "action": "BUY", "quantity": 1, "order_type": "YOLO"}, "bad order_type"),
+    ({"symbol": "A", "action": "BUY", "quantity": 1, "tif": "FOREVER"}, "bad tif"),
+    ({"symbol": "A", "action": "BUY", "quantity": 1, "sec_type": "CRYPTO"}, "bad sec_type"),
+])
+def test_malformed_order_proposal_is_rejected(proposal, reason):
+    """A proposal the model was not permitted to emit must never reach the staging button (M-1)."""
+    from claudia.order_proposal_schema import ProposalValidationError, validate_order_proposal
+
+    with pytest.raises(ProposalValidationError):
+        validate_order_proposal(proposal)
+    assert reason  # label only — keeps parametrize ids readable
+
+
+@pytest.mark.parametrize("proposal", [
+    {"symbol": "AAPL", "action": "BUY", "quantity": 1},
+    {"symbol": "AAPL", "action": "buy", "quantity": 2, "order_type": "lmt", "limit_price": 1.0},
+    # The live-proven ES order (716373691) that cleared the full gate chain on 2026-07-24.
+    {"symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "LMT",
+     "limit_price": 6100.0, "sec_type": "FUT", "conid": 730283085, "tif": "GTC"},
+    {"symbol": "EUR.USD", "action": "SELL", "quantity": 1000.5, "sec_type": "CASH"},
+])
+def test_valid_order_proposal_is_accepted(proposal):
+    """Real proposal shapes must still pass — the validator rejects, it must not over-reject (M-1)."""
+    from claudia.order_proposal_schema import validate_order_proposal
+
+    validate_order_proposal(proposal)
+
+
+def test_validator_never_mutates_the_proposal():
+    """Order parameters are immutable — validation must reject, never repair (M-1).
+
+    A validator that silently normalised action/quantity/price would violate the rule
+    enforced in _SAFETY_BLOCK (feedback-order-parameter-immutability).
+    """
+    import copy
+
+    from claudia.order_proposal_schema import validate_order_proposal
+
+    proposal = {"symbol": "aapl", "action": "buy", "quantity": 3, "order_type": "lmt",
+                "limit_price": 100.0, "tif": "gtc"}
+    before = copy.deepcopy(proposal)
+    validate_order_proposal(proposal)
+    assert proposal == before, "validator mutated the proposal"

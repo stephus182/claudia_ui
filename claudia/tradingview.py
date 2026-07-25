@@ -1,5 +1,4 @@
-"""
-TradingView integration for ClaudIA.
+"""TradingView integration for ClaudIA.
 
 Phase 1 (this module):
   - Spawns the tradingview-mcp Node.js sidecar process on startup.
@@ -59,14 +58,13 @@ _TV_DEBUG_PORT = int(os.environ.get("TRADINGVIEW_DEBUG_PORT", "9222"))
 
 
 def _find_tv_mcp_bin() -> str | None:
-    """
-    Find the tradingview-mcp entry point, in priority order:
-      1. TRADINGVIEW_MCP_PATH env var
-      2. tradingview-mcp on PATH
-      3. ~/.tradingview-mcp/src/server.js   (JS version — no build step)
-      4. ~/.tradingview-mcp/build/index.js  (TypeScript build output)
-      5. vendor/tradingview-mcp/src/server.js  (archived fallback, needs node_modules/)
-      6. vendor/tradingview-mcp/index.js    (legacy single-bundle archived fallback)
+    """Find the tradingview-mcp entry point, in priority order:
+    1. TRADINGVIEW_MCP_PATH env var
+    2. tradingview-mcp on PATH
+    3. ~/.tradingview-mcp/src/server.js   (JS version — no build step)
+    4. ~/.tradingview-mcp/build/index.js  (TypeScript build output)
+    5. vendor/tradingview-mcp/src/server.js  (archived fallback, needs node_modules/)
+    6. vendor/tradingview-mcp/index.js    (legacy single-bundle archived fallback)
     """
     if path := os.environ.get("TRADINGVIEW_MCP_PATH"):
         p = Path(path)
@@ -163,8 +161,7 @@ def _tv_already_running_without_debug() -> bool:
 
 
 async def launch_tradingview() -> bool:
-    """
-    Launch TradingView Desktop with --remote-debugging-port on macOS.
+    """Launch TradingView Desktop with --remote-debugging-port on macOS.
 
     If TradingView is already running without the debug port, raises RuntimeError
     with instructions to quit and relaunch — the process cannot be relaunched while
@@ -214,8 +211,7 @@ async def launch_tradingview() -> bool:
 # ── TradingViewBridge ─────────────────────────────────────────────────────────
 
 class TradingViewBridge:
-    """
-    Manages the tradingview-mcp sidecar and exposes its tools to ClaudIA.
+    """Manages the tradingview-mcp sidecar and exposes its tools to ClaudIA.
 
     Lifecycle:
       await bridge.start()        — spawn sidecar, list available tools
@@ -225,6 +221,13 @@ class TradingViewBridge:
     """
 
     def __init__(self) -> None:
+        """Create an unstarted bridge. Nothing is spawned until `start()`.
+
+        Holds four pieces of state: the MCP `ClientSession`, the sidecar's full tool list,
+        the curated subset actually exposed to the LLM, and `_cm` — the retained
+        `stdio_client` context manager, which `stop()` needs in order to shut the
+        subprocess down cleanly.
+        """
         self._session: ClientSession | None = None
         self._tools: list[dict] = []
         self._curated_tools: list[dict] = []

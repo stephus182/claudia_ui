@@ -109,6 +109,17 @@ def _render_pine_block(
     inject_btn = pn.widgets.Button(label="Inject into TradingView", color="primary")
 
     async def _on_inject(event) -> None:
+        """Inject the pine source into TradingView's editor via the sidecar bridge.
+
+        Two invariants:
+
+        - **Re-enables on every failure.** Unlike the order-flow buttons (one-shot, because
+          an order is not idempotent), injection just sets the editor source, and the
+          commonest failure — TradingView not launched yet — is recoverable on the same
+          button.
+        - **Never reports a false success.** A result carrying `success: false` is surfaced
+          as a failure with the sidecar's own error detail, not as "Injected".
+        """
         # disable-first closes the double-click window during the await, but — unlike
         # panel_order_flow (safety-critical, one live order) — PineScript inject is
         # idempotent (it just sets the editor source), so every FAILURE path re-enables

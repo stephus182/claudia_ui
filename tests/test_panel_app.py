@@ -1940,3 +1940,38 @@ async def test_launch_tv_button_click_failure_shows_manual_launch(monkeypatch):
     # Points at the one-command quit+relaunch helper — the debug port can only be
     # set at launch, so an already-running TV must be relaunched, not patched.
     assert any("./scripts/launch-tradingview-debug.sh" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_chat_interface_installs_the_safe_markdown_renderer():
+    """Security regression (2026-07-25 audit, H-1): the feed must escape untrusted HTML.
+
+    Panel's Markdown pane defaults to markdown-it `html: True` plus bokeh
+    `run_scripts=True`, so without this renderer any chat text — the LLM response, opening
+    status, Flex results, the seven exception sends — could execute injected <script>.
+    Lives here rather than in test_security_regressions.py because asserting it requires
+    this module's _init_session scaffolding.
+    """
+    from claudia.panel_markdown import safe_markdown
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    assert safe_markdown in chat.renderers, (
+        f"safe_markdown missing from ChatInterface.renderers: {chat.renderers!r}"
+    )

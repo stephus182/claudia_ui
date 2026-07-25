@@ -1,5 +1,4 @@
-"""
-Background WebSocket subscriber that listens for IBKR trade executions (any
+"""Background WebSocket subscriber that listens for IBKR trade executions (any
 origin — mobile, TWS, web, API) and triggers a one-shot account P&L check per
 settled batch of executions, recording the result into
 SQLiteStore.pnl_snapshots via record_pnl_snapshot().
@@ -70,9 +69,11 @@ def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
         )
 
     def _fmt_signed(v: float | None) -> str:
+        """Format a P&L figure with an explicit sign; "n/a" when absent."""
         return f"{v:+.2f}" if isinstance(v, (int, float)) else "n/a"
 
     def _fmt(v: float | None) -> str:
+        """Format a plain 2-decimal figure; "n/a" when absent."""
         return f"{v:.2f}" if isinstance(v, (int, float)) else "n/a"
 
     return (
@@ -129,6 +130,12 @@ class ExecutionListener:
     """
 
     def __init__(self, gateway_url: str, store: SQLiteStore) -> None:
+        """Configure the listener. No connection is opened until `start()`.
+
+        Args:
+            gateway_url: Base URL of the IBKR Client Portal gateway.
+            store: Store that executions and P&L snapshots are written to.
+        """
         self._gateway_url = gateway_url
         self._store = store
         self._task: asyncio.Task | None = None
@@ -174,6 +181,16 @@ class ExecutionListener:
                 attempt += 1
 
     async def _run_once(self) -> None:
+        """Run one full WebSocket lifecycle: authenticate, subscribe, pump until close.
+
+        Extracts the browser session cookie, subscribes with
+        `realtime_updates_only=True` (historical replay would re-record executions already
+        in the store), and pumps messages until the stream ends.
+
+        A clean close surfaces as `StopAsyncIteration` and **returns normally** — the
+        caller treats that as "reconnect in 5s", not as an error. Genuine failures
+        propagate so the retry loop can log them.
+        """
         session = requests.Session()
         await asyncio.to_thread(
             BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")).apply, session

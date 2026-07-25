@@ -59,10 +59,28 @@ target-version = "py311"
 extend-exclude = ["docs/probes"]
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RUF", "FA"]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RUF", "FA", "D"]
 ignore = [
     "E501",  # line-too-long — ~160 pre-existing lines exceed 100 chars, mostly
              # docstrings/URLs/system-prompt text; revisit as a dedicated pass if prioritized
+
+    # pydocstyle: "D" is enabled for the D1xx *coverage* rules only. Those are the ones
+    # worth enforcing — the 2026-07-25 audit found 67 undocumented definitions, including
+    # the three handlers that fire live orders and the SSRF boundary, and nothing in CI
+    # could see them. The codes below are formatting opinions that conflict with this
+    # codebase's house style (multi-paragraph docstrings that explain *why*, cite source
+    # URLs, and open with a full-sentence summary). Enforcing them would mean ~118 edits
+    # of pure churn across docstrings whose content is already correct.
+    "D203",  # incompatible with D211 (ruff warns and drops it anyway)
+    "D205",  # blank line required between summary and description
+    "D209",  # multi-line closing quotes on their own line
+    "D213",  # summary on the second line — the inverse of D212 and of the house style,
+             # which opens on the first line; ruff warns if both are selected
+    "D301",  # backslash in docstring requires a raw string
+    "D400",  # summary must end with a period
+    "D401",  # summary must be in imperative mood
+    "D413",  # blank line required after the last section
+    "D415",  # summary must end with punctuation
 ]
 
 # RUF002 (ambiguous-unicode in docstrings) can't take an inline noqa — the comment would
@@ -71,6 +89,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "claudia/order_flow.py" = ["RUF002"]
 "tests/test_session_reporter.py" = ["RUF002"]
+# Docstring coverage is enforced on the package, not the suite: test names are the
+# documentation there, and the security regression tests all carry real docstrings anyway.
+"tests/*" = ["D"]
 
 [tool.mypy]
 python_version = "3.11"

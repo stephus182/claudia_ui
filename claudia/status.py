@@ -1,5 +1,4 @@
-"""
-Connectivity monitor for ClaudIA.
+"""Connectivity monitor for ClaudIA.
 
 Polls IBKR gateway, GDrive token file, and TradingView sidecar every 60s.
 Caches status in memory (instant reads for the panel_app status dots).
@@ -32,6 +31,17 @@ POLL_INTERVAL = 60  # seconds — matches IBKR /tickle keepalive requirement
 
 
 class ServiceStatus(StrEnum):
+    """Connectivity state of one monitored service.
+
+    Three states, and the distinction matters for alerting:
+
+    - `UNKNOWN`: **not configured** — e.g. no Drive credentials on disk. Renders as a grey
+      dot and is deliberately *not* an error; a UNKNOWN→OK transition at startup raises no
+      alert.
+    - `OK`: reachable and, for IBKR, authenticated.
+    - `ERROR`: configured but unreachable. This is the only state that alerts.
+    """
+
     UNKNOWN = "unknown"
     OK = "ok"
     ERROR = "error"
@@ -196,6 +206,7 @@ class ConnectivityChecker:
         unsubscribe function."""
         self._subscribers.append(callback)
         def _unsubscribe() -> None:
+            """Detach this callback. Safe to call twice — a missing entry is ignored."""
             with suppress(ValueError):
                 self._subscribers.remove(callback)
         return _unsubscribe
@@ -203,6 +214,12 @@ class ConnectivityChecker:
     # ── Internal ────────────────────────────────────────────────────────────
 
     async def _poll_loop(self) -> None:
+        """Check once immediately, then every POLL_INTERVAL seconds until cancelled.
+
+        `CancelledError` breaks the loop cleanly; any other exception is logged and the
+        loop continues, so one transient failure cannot take monitoring down for the rest
+        of the session.
+        """
         try:
             await self._run_checks()      # run once immediately on start
         except Exception as exc:
@@ -217,6 +234,14 @@ class ConnectivityChecker:
                 log.warning("ConnectivityChecker poll error: %s", exc)
 
     async def _run_checks(self) -> None:
+        """Poll all three services, map results to ServiceStatus, and alert on transitions.
+
+        IBKR gets one extra step: if it was `OK` and now looks down with the exact
+        soft-timeout signature (connected but no longer authenticated), a narrowly-scoped
+        recovery is attempted and the state re-checked before any alert fires — see §11 of
+        SECURITY.md for why that call is safe. TradingView maps a closed CDP port to
+        `UNKNOWN` (not launched) rather than `ERROR`. Alerts fire only on a state change.
+        """
         ibkr_ok = await asyncio.to_thread(self.check_ibkr)
         if not ibkr_ok and self._status["ibkr"] == ServiceStatus.OK:
             auth = self._last_ibkr_auth_status
@@ -246,6 +271,12 @@ class ConnectivityChecker:
                 await self._send_alert(service, prev_state, new_state)
 
     async def _send_alert(self, service: str, prev: ServiceStatus, new: ServiceStatus) -> None:
+        """Notify subscribers of a state change worth surfacing.
+
+        Two deliberate silences: `UNKNOWN`→`OK` (a service coming online at startup is not
+        news) and any transition into `UNKNOWN`. The subscriber list is copied before
+        iterating so a callback that unsubscribes itself mid-notify cannot corrupt the walk.
+        """
         if new == ServiceStatus.ERROR:
             msg = _DISCONNECT_MESSAGES.get(service, f"⚠️ {service} disconnected.")
         elif new == ServiceStatus.OK and prev == ServiceStatus.ERROR:

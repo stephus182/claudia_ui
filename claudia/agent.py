@@ -1,5 +1,4 @@
-"""
-Core Anthropic SDK streaming agent loop for ClaudIA.
+"""Core Anthropic SDK streaming agent loop for ClaudIA.
 
 Builds the system prompt, loads conversation history, streams Claude responses
 with multi-turn tool use, and persists every interaction to ConversationStore.
@@ -30,6 +29,14 @@ from typing import TYPE_CHECKING
 
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
+
+# Dependency-free schema check for the proposal blocks declared in _SAFETY_BLOCK below.
+# Importing it does not couple agent.py to the order-execution layer — see that module.
+from claudia.order_proposal_schema import (
+    ProposalValidationError,
+    validate_amend_proposal,
+    validate_order_proposal,
+)
 
 if TYPE_CHECKING:
     from ibkr_core_mcp import ClaudeToolkit
@@ -212,6 +219,12 @@ def _make_block_stripper(tag: str):
     pattern = re.compile(rf"```{re.escape(tag)}\s*\n(.*?)\n```", re.DOTALL)
 
     def _strip(text: str) -> tuple[str, dict | None]:
+        """Split `text` into (text without the block, parsed block or None).
+
+        Malformed JSON degrades to `(text, None)` and a warning rather than raising —
+        a bad block must never break the response, and dropping it fails safe: no
+        proposal is rendered, so nothing can be staged.
+        """
         m = pattern.search(text)
         if not m:
             return text, None
@@ -394,7 +407,18 @@ def _log_cache_usage(usage) -> None:
 
 
 def _history_to_messages(history: list[dict]) -> list[MessageParam]:
-    """Convert ConversationStore rows to Anthropic message dicts."""
+    """Convert ConversationStore rows to Anthropic message dicts.
+
+    Args:
+        history: Rows from `get_history`, each with `role` and `content`.
+
+    Returns:
+        Only `user` and `assistant` messages, in order. **Tool rows are deliberately
+        dropped** — the DB stores neither the Anthropic-assigned `tool_use_id`s nor the
+        intermediate assistant messages carrying the matching `tool_use` blocks, so
+        replaying them would send orphaned `tool_result` blocks and the API would 400. The
+        assistant's text already summarises what each tool returned.
+    """
     messages: list[MessageParam] = []
     for row in history:
         role = row["role"]
@@ -446,10 +470,10 @@ def _with_history_cache_marker(messages: list) -> list:
 
 
 class ClaudIAAgent:
-    """
-    Manages one chat session's Anthropic API interaction.
+    """Manages one chat session's Anthropic API interaction.
     Instantiated once per chat session by whichever UI entry point owns that session
-    (claudia/app.py today, claudia/panel_app.py once the Panel migration lands).
+    (claudia/panel_app.py — the sole entry point since the Phase 11 cutover removed the
+    Chainlit app).
     """
 
     def __init__(
@@ -490,7 +514,18 @@ class ClaudIAAgent:
         self._system_reload_seen: int = -1
 
     def set_tv_bridge(self, bridge: TradingViewBridge, tools: list[dict]) -> None:
-        """Update TradingView connection mid-session (called by on_launch_tradingview)."""
+        """Update the TradingView connection mid-session, after a successful launch.
+
+        Called by panel_app's "Launch TradingView" button handler
+        (`_send_action_buttons._on_launch_tv`) once the sidecar is up, so a session that
+        started without TradingView gains its tools without a restart.
+
+        Args:
+            bridge: The connected TradingViewBridge.
+            tools: Curated TradingView tool definitions to merge into the Anthropic
+                `tools=` list; their names are recorded so the dispatcher can route calls
+                to the bridge rather than the IBKR toolkit.
+        """
         self._tv_bridge = bridge
         self._extra_tools = tools
         self._tv_tool_names = {t["name"] for t in tools}
@@ -516,12 +551,34 @@ class ClaudIAAgent:
 
     @property
     def _all_tools(self) -> list[dict]:
+        """The full tool list for the Anthropic `tools=` parameter.
+
+        Order is toolkit (42 IBKR tools) + TradingView extras + `_LOCAL_TOOLS`, and is
+        stable across turns because the cache marker is applied to the final entry —
+        reordering would invalidate the tools cache breakpoint on every request.
+        """
         return _with_cache_marker(self._toolkit.tools + self._extra_tools + _LOCAL_TOOLS)
 
     async def handle_message(self, user_text: str, images: list[dict] | None = None) -> None:
-        """
-        Process one user message: stream Claude's response, handle tool calls,
-        render order proposals as action buttons, and persist everything.
+        """Process one user message end to end.
+
+        Streams Claude's response, runs the multi-turn tool loop (stream → collect
+        `tool_use` → execute → append `tool_result` → stream again), validates and renders
+        any proposal block, and persists every message and decision.
+
+        Args:
+            user_text: The user's message, persisted before the first API call so it
+                survives a mid-turn failure.
+            images: Optional Anthropic image content blocks (screenshot uploads,
+                TradingView captures) appended to this turn's user message.
+
+        Persists: the user message, the final assistant text (with proposal blocks
+        stripped), and any proposal as a decision row.
+
+        Exceptions from the API or a tool are **not** caught here — they propagate to the
+        Panel callback, which surfaces them in the chat feed
+        (`ChatInterface.callback_exception="summary"`). Tool-level errors that the toolkit
+        turns into strings are fed back to the model instead, so the loop continues.
         """
         # Persist user message
         self._store.add_message(self._session_id, "user", user_text)
@@ -656,6 +713,33 @@ class ClaudIAAgent:
         display_text, cancel_proposal = _strip_order_cancel_proposal(display_text)
         display_text, modify_proposal = _strip_order_modify_proposal(display_text)
 
+        # Schema-check before anything is rendered: a proposal that fails is dropped, so no
+        # staging button is ever built from values the model was not permitted to emit
+        # (security-audit-2026-07-25.md, M-1). Rejection is reported to the user rather than
+        # swallowed — silently dropping would worsen the known failure mode where ClaudIA
+        # claims an order was staged without emitting a usable block
+        # (finding-llm-proposal-block-emission).
+        rejections: list[str] = []
+        if order_proposal:
+            try:
+                validate_order_proposal(order_proposal)
+            except ProposalValidationError as exc:
+                log.warning("Rejected malformed order-proposal: %s", exc)
+                rejections.append(f"order proposal ({exc})")
+                order_proposal = None
+        for name, prop in (("cancel", cancel_proposal), ("modify", modify_proposal)):
+            if not prop:
+                continue
+            try:
+                validate_amend_proposal(prop, name)
+            except ProposalValidationError as exc:
+                log.warning("Rejected malformed %s-proposal: %s", name, exc)
+                rejections.append(f"{name} proposal ({exc})")
+                if name == "cancel":
+                    cancel_proposal = None
+                else:
+                    modify_proposal = None
+
         # Persist final assistant message
         msg_id = self._store.add_message(
             self._session_id, "assistant", display_text
@@ -664,6 +748,14 @@ class ClaudIAAgent:
         # Render text response
         if display_text:
             await self._sink.send_message(display_text)
+
+        # Surface any rejection so the user never believes a dropped proposal was staged.
+        if rejections:
+            await self._sink.send_message(
+                "⚠️ **Proposal rejected — nothing was staged.** ClaudIA emitted a malformed "
+                + ", ".join(rejections)
+                + ". Re-state the order explicitly and it will be re-proposed."
+            )
 
         # Render a proposal button if present — at most one type per message.
         # The system prompt instructs at most one proposal block per response; if the
@@ -786,6 +878,33 @@ class ClaudIAAgent:
     _MAX_REDIRECTS = 5
 
     def _fetch_web_page(self, inputs: dict) -> str:
+        """Fetch a public web page as Markdown for the LLM — the SSRF boundary.
+
+        This is the only place the agent loop makes an LLM-directed outbound HTTP request,
+        so the guard here is load-bearing (SECURITY.md §8, Layer 1).
+
+        **Redirects are followed manually** — `allow_redirects=False`, up to
+        `_MAX_REDIRECTS` (5) hops — and `_validate_public_url` re-runs on *every* hop.
+        Letting `requests` follow them would allow a public URL to 302 into
+        `localhost:5055` (the IBKR gateway) without re-validation; that was finding S1,
+        2026-07-03. A hop that fails validation reports "(via redirect)" so the log
+        distinguishes it from a directly-blocked URL.
+
+        Residual, accepted: a TOCTOU gap between the DNS check and `requests.get()` — a
+        hostname could flip to a private address in between. The Crawl4AI path closes this
+        with a browser-level route handler (Layer 2); this path does not.
+
+        Args:
+            inputs: `url` (required) and optional `extract`, a focus hint echoed back to
+                the model above the content.
+
+        Returns:
+            `[Fetched: <url>]` followed by the page as Markdown, truncated at 12,000
+            characters to bound context growth. **Never raises** — every failure path
+            (missing URL, blocked host, too many redirects, connection error, non-2xx)
+            returns an explanatory string, because the caller feeds this straight back to
+            the model as a tool result.
+        """
         import urllib.parse
 
         import html2text
@@ -892,7 +1011,15 @@ class ClaudIAAgent:
             )
 
     async def handle_image(self, image_b64: str, media_type: str, caption: str = "") -> None:
-        """Convenience method for TradingView screenshot analysis."""
+        """Send a single image with an optional caption as one user turn.
+
+        Convenience wrapper over `handle_message` for TradingView screenshot analysis.
+
+        Args:
+            image_b64: Base64-encoded image bytes (no data-URI prefix).
+            media_type: MIME type, e.g. "image/png".
+            caption: Optional accompanying text; a default prompt is used when empty.
+        """
         images = [
             {
                 "type": "image",

@@ -69,7 +69,7 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
     """(trade_status_line, trade_context_or_None) — the welcome status line and
     the system-prompt trade/calendar context for agent._trade_context.
 
-    Blocking (SQLite reads) — call via asyncio.to_thread. Port of app.py:426-513,
+    Blocking (SQLite reads) — call via asyncio.to_thread. Port of the removed app.py,
     including the subtlety that the market-calendar block appends to
     trade_context even when Flex is unconfigured."""
     config = toolkit._config
@@ -111,7 +111,7 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
         trade_status = "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
 
     # Append market calendar context (holidays, last/next trading day, futures
-    # schedule). app.py:511 parity: appends even when trade_context is None.
+    # schedule). Parity with the removed app.py: appends even when trade_context is None.
     try:
         mkt = toolkit._store.get_market_calendar_context()
         if mkt:
@@ -123,7 +123,7 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
 
 def _format_market_calendar(mkt: dict[str, Any]) -> str:
     """Pure formatting of get_market_calendar_context's dict → the '## Market
-    Calendar' system-prompt block (verbatim app.py:468-510 port)."""
+    Calendar' system-prompt block (verbatim port from the removed app.py)."""
     holiday_lines = []
     for xcode, holidays in mkt.get("holidays_by_exchange", {}).items():
         name = _EXCHANGE_LABELS.get(xcode, xcode)
