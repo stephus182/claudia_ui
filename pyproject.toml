@@ -37,6 +37,12 @@ dev = [
     "pytest-mock>=3.12",
     "mypy>=1.8",
     "ruff>=0.3",
+    # Direct test dependency, not transitive: tests/test_proposal_tools.py imports
+    # jsonschema itself to validate claudia/proposal_tools.py's strict tool schemas
+    # locally. It resolved for a while only because mcp requires it — an mcp release
+    # that dropped or vendored that dependency would have broken the suite at import
+    # time. Test-only: the Anthropic API is what enforces these schemas in production.
+    "jsonschema>=4.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -46,6 +52,7 @@ include = ["claudia*"]
 [tool.pytest.ini_options]
 markers = [
     "integration: requires live IBKR gateway and credentials",
+    "live_api: requires a live Anthropic API call and an API key; opt-in via CLAUDIA_LIVE_SCHEMA_CHECK=1",
     "real_flex_sync: test exercises the real Flex-sync decision function (autouse seam disabled)",
     "real_tv_connect: test exercises the real TradingView connect function (autouse seam disabled)",
 ]
@@ -112,6 +119,9 @@ show_error_codes = true
 #   pandas          — ships no py.typed and pandas-stubs is not installed (verified
 #                     2026-07-24, Task 10.1). claudia/panel_chart.py types the cache
 #                     DataFrame it charts; the fixture DataFrames in tests do too.
+#   jsonschema      — ships no py.typed and types-jsonschema is not installed (verified
+#                     2026-07-27). Test-only import: tests/test_proposal_tools.py
+#                     validates the strict proposal schemas locally.
 [[tool.mypy.overrides]]
-module = ["googleapiclient.*", "pandas", "pandas.*"]
+module = ["googleapiclient.*", "pandas", "pandas.*", "jsonschema", "jsonschema.*"]
 ignore_missing_imports = true
