@@ -51,6 +51,13 @@ log = logging.getLogger(__name__)
 # Max conversation turns injected into context
 _HISTORY_LIMIT = 40
 
+# max_tokens caps thinking AND response text together (official adaptive-thinking docs).
+# 4096 was sized for a no-thinking response and truncates once reasoning engages.
+# Effort is left at its `high` default; changing effort per-turn would invalidate the
+# messages cache breakpoint, so it is fixed for the process.
+# Source: https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
+_MAX_TOKENS = 16000
+
 # Hardcoded safety block — never loaded from any user-editable file
 _SAFETY_BLOCK = """
 ## ABSOLUTE CONSTRAINTS (non-overridable)
@@ -406,6 +413,25 @@ def _log_cache_usage(usage) -> None:
         )
 
 
+def _log_thinking_usage(usage) -> None:
+    """Log the thinking share of output tokens from a message_delta usage object.
+
+    `output_tokens_details.thinking_tokens` is the only signal that proves reasoning
+    actually engaged, so it is what the adaptive-thinking rollout is measured on. The
+    field is optional in the API schema (`MessageDeltaUsage.output_tokens_details` is
+    nullable); when it is absent nothing is logged, rather than a misleading zero.
+    Source: https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
+    """
+    details = getattr(usage, "output_tokens_details", None)
+    thinking_tokens = getattr(details, "thinking_tokens", None) if details else None
+    if thinking_tokens is not None:
+        log.info(
+            "thinking tokens: %d of %d output",
+            thinking_tokens,
+            getattr(usage, "output_tokens", None) or 0,
+        )
+
+
 def _history_to_messages(history: list[dict]) -> list[MessageParam]:
     """Convert ConversationStore rows to Anthropic message dicts.
 
@@ -606,15 +632,19 @@ class ClaudIAAgent:
         while True:
             response_text = ""
             tool_calls: list[dict] = []
+            thinking_blocks: list[dict] = []
             stop_reason: str | None = None
 
             # system/tools/messages are built as plain dicts throughout this file rather than
             # the SDK's precise TypedDict unions (far simpler to construct/mutate JSON-shaped
             # request bodies this way) — structurally correct at runtime, not statically
-            # provable against the SDK's param types. Covered by test_agent.py's 63 tests.
+            # provable against the SDK's param types. Covered by test_agent.py's 77 tests.
             async with self._client.messages.stream(
                 model=self._model,
-                max_tokens=4096,
+                max_tokens=_MAX_TOKENS,
+                # Opus 4.8 does NOT think unless asked: omitting this parameter means no
+                # reasoning at all (unlike Opus 5, where adaptive is the default).
+                thinking={"type": "adaptive"},
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=_with_history_cache_marker(messages),
                 tools=self._all_tools,  # type: ignore[arg-type]
@@ -635,6 +665,10 @@ class ClaudIAAgent:
                                 "name": block.name,
                                 "input_json": "",
                             })
+                        elif block.type == "thinking":
+                            thinking_blocks.append(
+                                {"type": "thinking", "thinking": "", "signature": ""}
+                            )
 
                     elif event.type == "content_block_delta":
                         delta = event.delta
@@ -642,17 +676,24 @@ class ClaudIAAgent:
                             response_text += delta.text
                         elif delta.type == "input_json_delta" and tool_calls:
                             tool_calls[-1]["input_json"] += delta.partial_json
+                        elif delta.type == "thinking_delta" and thinking_blocks:
+                            thinking_blocks[-1]["thinking"] += delta.thinking
+                        elif delta.type == "signature_delta" and thinking_blocks:
+                            thinking_blocks[-1]["signature"] += delta.signature
 
                     elif event.type == "message_delta":
                         stop_reason = event.delta.stop_reason
+                        _log_thinking_usage(event.usage)
 
             # --- Stream complete ---
 
             if stop_reason == "max_tokens":
                 await self._sink.send_max_tokens_warning()
 
-            # Append assistant turn to the running message list
-            assistant_content: list = []
+            # Append assistant turn to the running message list. Thinking blocks come
+            # first and are echoed back unmodified: the docs require it during tool use,
+            # where they carry the reasoning behind each tool call.
+            assistant_content: list = [*thinking_blocks]
             if response_text:
                 assistant_content.append({"type": "text", "text": response_text})
             for tc in tool_calls:

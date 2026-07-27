@@ -1,5 +1,6 @@
 """Tests for the ClaudIAAgent — order proposal parsing, decision extraction."""
 
+import asyncio
 import json
 import logging
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from claudia.agent import (
     _build_version_note,
     _history_to_messages,
     _log_cache_usage,
+    _log_thinking_usage,
     _make_block_stripper,
     _strip_order_cancel_proposal,
     _strip_order_modify_proposal,
@@ -743,6 +745,17 @@ class _FakeStream:
             yield event
 
 
+def _message_delta(stop_reason: str, thinking_tokens: int | None = None):
+    """A message_delta event. `usage` is always present on the real event; its
+    output_tokens_details is None whenever no reasoning was produced."""
+    details = SimpleNamespace(thinking_tokens=thinking_tokens) if thinking_tokens else None
+    return SimpleNamespace(
+        type="message_delta",
+        delta=SimpleNamespace(stop_reason=stop_reason),
+        usage=SimpleNamespace(output_tokens=1400, output_tokens_details=details),
+    )
+
+
 def _text_response_events(text: str, stop_reason: str = "end_turn"):
     return [
         SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
@@ -750,7 +763,7 @@ def _text_response_events(text: str, stop_reason: str = "end_turn"):
             type="content_block_delta",
             delta=SimpleNamespace(type="text_delta", text=text),
         ),
-        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason=stop_reason)),
+        _message_delta(stop_reason),
     ]
 
 
@@ -813,7 +826,7 @@ async def test_handle_message_tool_call_uses_sink_tool_step():
             type="content_block_delta",
             delta=SimpleNamespace(type="input_json_delta", partial_json="{}"),
         ),
-        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="tool_use")),
+        _message_delta("tool_use"),
     ]
     agent._client.messages.stream = MagicMock(
         side_effect=[
@@ -885,3 +898,167 @@ async def test_handle_message_modify_proposal_dispatches_to_sink():
     )
     await agent.handle_message("Modify it")
     sink.send_modify_proposal.assert_awaited_once_with(proposal)
+
+
+# ── Adaptive thinking: request config + thinking-block round trip (G2) ───────
+
+def _thinking_then_tool_events(thinking: str, signature: str, tool_id: str):
+    """Stream events for a turn that reasons first, then calls a tool.
+
+    Mirrors the real event order for adaptive thinking: the thinking block opens and is
+    filled by thinking_delta/signature_delta, then the tool_use block follows.
+    """
+    return [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
+        SimpleNamespace(
+            type="content_block_start",
+            content_block=SimpleNamespace(type="thinking"),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="thinking_delta", thinking=thinking),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="signature_delta", signature=signature),
+        ),
+        SimpleNamespace(
+            type="content_block_start",
+            content_block=SimpleNamespace(type="tool_use", id=tool_id, name="get_positions"),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="input_json_delta", partial_json="{}"),
+        ),
+        _message_delta("tool_use", thinking_tokens=900),
+    ]
+
+
+def _wire_tool_execution(agent, sink):
+    """Give an agent from _make_agent_with_sink() a working tool_step + toolkit.execute."""
+    step_cm = MagicMock()
+    step_cm.__aenter__ = AsyncMock(return_value=MagicMock(input="", output=""))
+    step_cm.__aexit__ = AsyncMock(return_value=False)
+    sink.tool_step = MagicMock(return_value=step_cm)
+    agent._toolkit.execute = MagicMock(return_value=("100 AAPL", None))
+
+
+@pytest.fixture
+def agent_with_fake_client():
+    """An agent that has already completed one plain-text turn.
+
+    Sync fixture driving the async entry point through asyncio.run so the request-config
+    assertions below stay plain functions: the API call is over before they run, and
+    `last_stream_kwargs` is what the SDK was actually handed.
+    """
+    agent, _sink = _make_agent_with_sink()
+    stream = MagicMock(return_value=_FakeStream(_text_response_events("Hello there.")))
+    agent._client.messages.stream = stream
+    asyncio.run(agent.handle_message("Hi"))
+    return SimpleNamespace(agent=agent, last_stream_kwargs=stream.call_args_list[-1].kwargs)
+
+
+@pytest.fixture
+def agent_with_thinking_then_tool():
+    """An agent that has completed a reason → call-tool → answer turn.
+
+    `messages_sent` is the message list of the *final* request, so `[-2]` is the
+    reconstructed assistant turn the tool_result replies to.
+    """
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    stream = MagicMock(side_effect=[
+        _FakeStream(_thinking_then_tool_events("Check positions first.", "sig-abc", "t1")),
+        _FakeStream(_text_response_events("You hold 100 AAPL.")),
+    ])
+    agent._client.messages.stream = stream
+    asyncio.run(agent.handle_message("What are my positions?"))
+    return SimpleNamespace(agent=agent, messages_sent=stream.call_args_list[-1].kwargs["messages"])
+
+
+def test_stream_call_enables_adaptive_thinking(agent_with_fake_client):
+    """Opus 4.8 runs WITHOUT thinking when the param is omitted — it must be explicit."""
+    kwargs = agent_with_fake_client.last_stream_kwargs
+    assert kwargs["thinking"] == {"type": "adaptive"}
+
+
+def test_max_tokens_leaves_room_for_thinking(agent_with_fake_client):
+    """max_tokens caps thinking + text together; 4096 truncates once thinking engages."""
+    assert agent_with_fake_client.last_stream_kwargs["max_tokens"] >= 16000
+
+
+def test_thinking_blocks_are_echoed_back_in_the_tool_loop(agent_with_thinking_then_tool):
+    """Docs: pass thinking blocks back unmodified, particularly during tool use."""
+    assistant_turn = agent_with_thinking_then_tool.messages_sent[-2]
+    kinds = [b["type"] for b in assistant_turn["content"]]
+    assert kinds[0] == "thinking"
+    assert "tool_use" in kinds
+
+
+def test_echoed_thinking_block_carries_text_and_signature_unmodified(
+    agent_with_thinking_then_tool,
+):
+    """"Unmodified" means the accumulated deltas, signature included — the signature is
+    what the API verifies the reasoning against, so an empty one is worse than useless."""
+    block = agent_with_thinking_then_tool.messages_sent[-2]["content"][0]
+    assert block == {
+        "type": "thinking",
+        "thinking": "Check positions first.",
+        "signature": "sig-abc",
+    }
+
+
+def test_thinking_blocks_reset_between_tool_loop_iterations():
+    """Each assistant turn echoes only its own reasoning.
+
+    A missed per-iteration reset would replay turn 1's thinking inside turn 2's message,
+    silently attributing the wrong reasoning to the second tool call.
+    """
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    stream = MagicMock(side_effect=[
+        _FakeStream(_thinking_then_tool_events("First.", "sig-1", "t1")),
+        _FakeStream(_thinking_then_tool_events("Second.", "sig-2", "t2")),
+        _FakeStream(_text_response_events("Done.")),
+    ])
+    agent._client.messages.stream = stream
+    asyncio.run(agent.handle_message("What are my positions?"))
+
+    # final request: [user, assistant(turn 1), tool_results, assistant(turn 2), tool_results]
+    turn_two = stream.call_args_list[-1].kwargs["messages"][-2]
+    thinking = [b["thinking"] for b in turn_two["content"] if b["type"] == "thinking"]
+    assert thinking == ["Second."]
+
+
+def test_log_thinking_usage_reports_thinking_share_of_output(caplog):
+    # thinking_tokens is the only proof reasoning actually engaged — without it the
+    # effect of enabling adaptive thinking cannot be measured against the baseline.
+    usage = SimpleNamespace(
+        output_tokens=1400,
+        output_tokens_details=SimpleNamespace(thinking_tokens=900),
+    )
+    with caplog.at_level(logging.INFO, logger="claudia.agent"):
+        _log_thinking_usage(usage)
+    assert "900" in caplog.text
+    assert "1400" in caplog.text
+
+
+def test_thinking_token_spend_is_logged_from_the_stream(caplog):
+    """The measurement hook has to actually run inside the loop, not merely exist."""
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    agent._client.messages.stream = MagicMock(side_effect=[
+        _FakeStream(_thinking_then_tool_events("Check positions first.", "sig-abc", "t1")),
+        _FakeStream(_text_response_events("You hold 100 AAPL.")),
+    ])
+    with caplog.at_level(logging.INFO, logger="claudia.agent"):
+        asyncio.run(agent.handle_message("What are my positions?"))
+    assert "thinking tokens: 900 of 1400" in caplog.text
+
+
+def test_log_thinking_usage_silent_when_details_absent(caplog):
+    # Non-final message_delta events and non-thinking models omit the field — must
+    # neither raise nor claim zero thinking happened.
+    with caplog.at_level(logging.INFO, logger="claudia.agent"):
+        _log_thinking_usage(SimpleNamespace(output_tokens=1400))
+    assert caplog.text == ""
