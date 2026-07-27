@@ -638,7 +638,7 @@ class ClaudIAAgent:
             # system/tools/messages are built as plain dicts throughout this file rather than
             # the SDK's precise TypedDict unions (far simpler to construct/mutate JSON-shaped
             # request bodies this way) — structurally correct at runtime, not statically
-            # provable against the SDK's param types. Covered by test_agent.py's 77 tests.
+            # provable against the SDK's param types. Covered by test_agent.py's 78 tests.
             async with self._client.messages.stream(
                 model=self._model,
                 max_tokens=_MAX_TOKENS,
@@ -668,6 +668,17 @@ class ClaudIAAgent:
                         elif block.type == "thinking":
                             thinking_blocks.append(
                                 {"type": "thinking", "thinking": "", "signature": ""}
+                            )
+                        elif block.type == "redacted_thinking":
+                            # Carried through for the same reason as thinking blocks, and
+                            # in the same list so the API's block order is preserved.
+                            # Dropping it while echoing its siblings is a documented 400
+                            # ("...blocks in the latest assistant message cannot be
+                            # modified"), raised exactly when a rebuilt assistant turn
+                            # filters content blocks by type.
+                            # https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+                            thinking_blocks.append(
+                                {"type": "redacted_thinking", "data": block.data}
                             )
 
                     elif event.type == "content_block_delta":

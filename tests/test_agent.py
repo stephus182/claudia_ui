@@ -1030,6 +1030,35 @@ def test_thinking_blocks_reset_between_tool_loop_iterations():
     assert thinking == ["Second."]
 
 
+def test_redacted_thinking_blocks_survive_the_echo():
+    """Dropping redacted_thinking while echoing its siblings is a documented 400.
+
+    "`thinking` or `redacted_thinking` blocks in the latest assistant message cannot be
+    modified" — raised precisely when code "filters content blocks by type and drops
+    redacted_thinking blocks", which is what rebuilding the assistant turn does unless
+    the block is carried through. Order matters too: it must stay where the API put it.
+    Source: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+    """
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    events = _thinking_then_tool_events("Check positions first.", "sig-abc", "t1")
+    events.insert(4, SimpleNamespace(
+        type="content_block_start",
+        content_block=SimpleNamespace(type="redacted_thinking", data="EncRypTed=="),
+    ))
+    agent._client.messages.stream = MagicMock(side_effect=[
+        _FakeStream(events),
+        _FakeStream(_text_response_events("You hold 100 AAPL.")),
+    ])
+    asyncio.run(agent.handle_message("What are my positions?"))
+
+    content = agent._client.messages.stream.call_args_list[-1].kwargs["messages"][-2]["content"]
+    assert content[:2] == [
+        {"type": "thinking", "thinking": "Check positions first.", "signature": "sig-abc"},
+        {"type": "redacted_thinking", "data": "EncRypTed=="},
+    ]
+
+
 def test_log_thinking_usage_reports_thinking_share_of_output(caplog):
     # thinking_tokens is the only proof reasoning actually engaged — without it the
     # effect of enabling adaptive thinking cannot be measured against the baseline.
