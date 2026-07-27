@@ -14,7 +14,7 @@
 | `IBKR_SQLITE_PATH` | optional | ibkr_core_mcp SQLite store path (default: `~/.ibkr_core/store.db`) |
 | `IBKR_FLEX_TOKEN` | optional | For full trade history sync |
 | `IBKR_FLEX_QUERY_ID` | optional | For full trade history sync |
-| `CLAUDIA_MODEL` | optional | Claude model (default: `claude-opus-4-8`) |
+| `CLAUDIA_MODEL` | optional | Claude model (default: `claude-opus-4-8`). Must support **adaptive thinking** — `agent.py` sends `thinking={"type": "adaptive"}` unconditionally, and extended-thinking-only models (`claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-opus-4-5`) reject it with a 400 on every message. `claude-sonnet-4-6` is the supported alternative. [Per-model table](https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting) |
 | `CLAUDIA_DOCS_PATH` | optional | Path to context.md / principles.md (default: `docs/`) |
 | `CLAUDIA_DB_PATH` | optional | ClaudIA SQLite DB path (default: `data/claudia.db`) |
 | `CLAUDIA_VOICE_ENABLED` | optional | Reserved — TTS output not yet implemented |
