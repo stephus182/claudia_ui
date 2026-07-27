@@ -747,8 +747,16 @@ class _FakeStream:
 
 def _message_delta(stop_reason: str, thinking_tokens: int | None = None):
     """A message_delta event. `usage` is always present on the real event; its
-    output_tokens_details is None whenever no reasoning was produced."""
-    details = SimpleNamespace(thinking_tokens=thinking_tokens) if thinking_tokens else None
+    output_tokens_details is absent unless the breakdown was reported.
+
+    `is not None`, not truthiness: thinking_tokens is a required int on
+    OutputTokensDetails, so "details present, count 0" is a real and distinct API state —
+    it is the diagnostic for reaching the API configured for thinking and the model
+    choosing not to think.
+    """
+    details = (
+        SimpleNamespace(thinking_tokens=thinking_tokens) if thinking_tokens is not None else None
+    )
     return SimpleNamespace(
         type="message_delta",
         delta=SimpleNamespace(stop_reason=stop_reason),
@@ -1006,6 +1014,48 @@ def test_echoed_thinking_block_carries_text_and_signature_unmodified(
         "thinking": "Check positions first.",
         "signature": "sig-abc",
     }
+
+
+def test_signature_only_thinking_block_is_echoed_with_empty_text():
+    """The actual production shape on claude-opus-4-8, where `display` defaults to omitted.
+
+    "On models where display defaults to omitted, including claude-opus-4-8, the
+    `thinking` field otherwise comes back as an empty string with only the `signature`
+    populated. Either way, echo the content array back unchanged." No thinking_delta is
+    streamed at all in that mode — the block opens, one signature_delta closes it — so
+    this, not the populated-text case above, is the path every live turn takes.
+    Source: https://platform.claude.com/docs/en/build-with-claude/thinking-tool-workflows
+    """
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    events = [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
+        SimpleNamespace(
+            type="content_block_start", content_block=SimpleNamespace(type="thinking")
+        ),
+        # no thinking_delta: the server skips streaming thinking tokens entirely
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="signature_delta", signature="sig-abc"),
+        ),
+        SimpleNamespace(
+            type="content_block_start",
+            content_block=SimpleNamespace(type="tool_use", id="t1", name="get_positions"),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="input_json_delta", partial_json="{}"),
+        ),
+        _message_delta("tool_use", thinking_tokens=900),
+    ]
+    agent._client.messages.stream = MagicMock(side_effect=[
+        _FakeStream(events),
+        _FakeStream(_text_response_events("You hold 100 AAPL.")),
+    ])
+    asyncio.run(agent.handle_message("What are my positions?"))
+
+    content = agent._client.messages.stream.call_args_list[-1].kwargs["messages"][-2]["content"]
+    assert content[0] == {"type": "thinking", "thinking": "", "signature": "sig-abc"}
 
 
 def test_thinking_blocks_reset_between_tool_loop_iterations():

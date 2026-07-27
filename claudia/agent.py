@@ -53,8 +53,6 @@ _HISTORY_LIMIT = 40
 
 # max_tokens caps thinking AND response text together (official adaptive-thinking docs).
 # 4096 was sized for a no-thinking response and truncates once reasoning engages.
-# Effort is left at its `high` default; changing effort per-turn would invalidate the
-# messages cache breakpoint, so it is fixed for the process.
 # Source: https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
 _MAX_TOKENS = 16000
 
@@ -417,9 +415,9 @@ def _log_thinking_usage(usage) -> None:
     """Log the thinking share of output tokens from a message_delta usage object.
 
     `output_tokens_details.thinking_tokens` is the only signal that proves reasoning
-    actually engaged, so it is what the adaptive-thinking rollout is measured on. The
-    field is optional in the API schema (`MessageDeltaUsage.output_tokens_details` is
-    nullable); when it is absent nothing is logged, rather than a misleading zero.
+    actually engaged, so it is what the adaptive-thinking rollout is measured on. "When
+    streaming, this breakdown appears only on the final `message_delta` event" — so when
+    it is absent nothing is logged, rather than a misleading zero.
     Source: https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
     """
     details = getattr(usage, "output_tokens_details", None)
@@ -638,12 +636,22 @@ class ClaudIAAgent:
             # system/tools/messages are built as plain dicts throughout this file rather than
             # the SDK's precise TypedDict unions (far simpler to construct/mutate JSON-shaped
             # request bodies this way) — structurally correct at runtime, not statically
-            # provable against the SDK's param types. Covered by test_agent.py's 78 tests.
+            # provable against the SDK's param types. Covered by test_agent.py's 79 tests.
             async with self._client.messages.stream(
                 model=self._model,
                 max_tokens=_MAX_TOKENS,
                 # Opus 4.8 does NOT think unless asked: omitting this parameter means no
-                # reasoning at all (unlike Opus 5, where adaptive is the default).
+                # reasoning at all (unlike Opus 5, where adaptive is the default). Both
+                # sub-settings stay at their defaults, fixed for the process:
+                #   effort (high) — changing it between requests invalidates the messages
+                #     cache breakpoint, "and can invalidate tool and system-prompt
+                #     breakpoints too, depending on where the model renders the
+                #     configuration". Steer per-turn depth by prompting, never by effort.
+                #     https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+                #   display (omitted on this model) — we never surface reasoning text, so
+                #     blocks arrive with an empty `thinking` field and only `signature`
+                #     populated. They are echoed back unchanged either way.
+                #     https://platform.claude.com/docs/en/build-with-claude/thinking-tool-workflows
                 thinking={"type": "adaptive"},
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=_with_history_cache_marker(messages),
@@ -671,11 +679,12 @@ class ClaudIAAgent:
                             )
                         elif block.type == "redacted_thinking":
                             # Carried through for the same reason as thinking blocks, and
-                            # in the same list so the API's block order is preserved.
-                            # Dropping it while echoing its siblings is a documented 400
-                            # ("...blocks in the latest assistant message cannot be
-                            # modified"), raised exactly when a rebuilt assistant turn
-                            # filters content blocks by type.
+                            # in the same list so their relative order is preserved (the
+                            # turn as a whole is normalized — see the reconstruction
+                            # below). Dropping it while echoing its siblings is a
+                            # documented 400 ("...blocks in the latest assistant message
+                            # cannot be modified"), raised exactly when a rebuilt
+                            # assistant turn filters content blocks by type.
                             # https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
                             thinking_blocks.append(
                                 {"type": "redacted_thinking", "data": block.data}
@@ -687,6 +696,13 @@ class ClaudIAAgent:
                             response_text += delta.text
                         elif delta.type == "input_json_delta" and tool_calls:
                             tool_calls[-1]["input_json"] += delta.partial_json
+                        # A delta always belongs to the most recently opened block and
+                        # redacted_thinking blocks carry none, so `[-1]` is necessarily a
+                        # `thinking` dict here and both keys exist. Deliberately not
+                        # guarded by block type: if that invariant ever broke, dropping a
+                        # signature fragment would echo back a silently truncated
+                        # signature, which the API rejects as modified — or worse, does
+                        # not. A KeyError surfacing in the chat feed is the safer failure.
                         elif delta.type == "thinking_delta" and thinking_blocks:
                             thinking_blocks[-1]["thinking"] += delta.thinking
                         elif delta.type == "signature_delta" and thinking_blocks:
@@ -704,6 +720,15 @@ class ClaudIAAgent:
             # Append assistant turn to the running message list. Thinking blocks come
             # first and are echoed back unmodified: the docs require it during tool use,
             # where they carry the reasoning behind each tool call.
+            #
+            # This rebuild normalizes block order to thinking → text → tool_use, which is
+            # a no-op against the documented shape of a single response rather than a
+            # reordering: the worked tool-use round trip returns exactly that order, and
+            # interleaved thinking opens a NEW thinking block at the start of the *next*
+            # response — one more pass of this loop — instead of splitting the tool_use
+            # blocks inside one response. Order among the thinking/redacted_thinking
+            # blocks themselves is preserved as streamed.
+            # https://platform.claude.com/docs/en/build-with-claude/thinking-tool-workflows
             assistant_content: list = [*thinking_blocks]
             if response_text:
                 assistant_content.append({"type": "text", "text": response_text})
