@@ -4,7 +4,7 @@ framework.
 ClaudIAAgent depends only on the MessageSink protocol below, not on the UI framework
 directly — the concrete sink constructed at session start is the only thing that knows
 the framework, not the safety-critical loop itself (streaming, tool routing, the
-hardcoded safety block, order-proposal parsing). The live implementation is
+hardcoded safety block, the `propose_*` tool handlers). The live implementation is
 claudia/panel_sink.py's PanelMessageSink, which duck-types this protocol.
 """
 

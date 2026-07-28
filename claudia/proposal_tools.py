@@ -54,10 +54,10 @@ rejection was always a handler obligation (below).
 
 Handler obligations — what this schema does NOT enforce
 --------------------------------------------------------------------------------------
-Task 3 retires `claudia/order_proposal_schema.py` and makes this schema the single source
-of the contract. These checks are guaranteed by `validate_order_proposal` /
-`validate_amend_proposal` today and are NOT expressible here, so the render-path handler
-must carry them or they are silently lost:
+The hand validator `claudia/order_proposal_schema.py` has been retired and this schema is
+now the single declaration of the contract. Four checks it guaranteed are NOT expressible
+here, so `agent.py`'s `_proposal_defect()` carries them explicitly — without it they would
+have been silently lost:
 
 1. `quantity > 0` — `0` and `-5` both validate (`exclusiveMinimum` is a 400).
 2. `symbol` non-blank — `""` and `"   "` both validate.
