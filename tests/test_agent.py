@@ -23,6 +23,7 @@ from claudia.agent import (
     _with_cache_marker,
     _with_history_cache_marker,
 )
+from claudia.conversation_store import RENDERED_PROPOSAL_TYPES
 from tests.fixtures.failing_transcripts import DEFENDED_CLAIM_588, FAILED_437, INNOCENT
 
 
@@ -106,6 +107,7 @@ def _make_agent():
     store = MagicMock()
     store.list_doc_versions.return_value = []
     store.get_doc_version.return_value = None
+    store.get_rendered_proposals.return_value = []
     loader = MagicMock()
     with patch("claudia.agent.AsyncAnthropic"):
         return ClaudIAAgent(
@@ -663,6 +665,7 @@ def _make_agent_with_sink(sink=None):
     store.list_doc_versions.return_value = []
     store.get_doc_version.return_value = None
     store.get_history.return_value = []
+    store.get_rendered_proposals.return_value = []
     loader = MagicMock()
     loader.reload_count = 0
     loader.load_system_prompt.return_value = "# Role\nStub.\n\n# Principles\nStub."
@@ -1361,6 +1364,16 @@ class _FakeStore:
     def get_decisions(self, session_id: str) -> list[dict]:
         return [d for d in self.decisions if d["session_id"] == session_id]
 
+    def get_rendered_proposals(self, session_id: str) -> list[dict]:
+        """Mirrors the real query's two filters — allowlist + message_id. The SQL itself is
+        pinned in tests/test_conversation_store.py; this double must not drift from it."""
+        return [
+            d for d in self.decisions
+            if d["session_id"] == session_id
+            and d.get("decision_type") in RENDERED_PROPOSAL_TYPES
+            and d.get("message_id") is not None
+        ]
+
     def list_doc_versions(self) -> list[dict]:
         return []
 
@@ -1605,7 +1618,7 @@ def test_operator_note_extends_the_prefix_instead_of_editing_it():
     baseline = _history_to_messages(history)
     with_note = _history_to_messages(history)
     agent._pending_operator_notes.append("note")
-    agent._append_operator_notes(with_note)
+    agent._append_operator_message(with_note)
 
     assert with_note[: len(baseline)] == baseline
     assert with_note[-1] == {"role": "system", "content": "note"}
@@ -1634,7 +1647,7 @@ def test_operator_note_is_dropped_rather_than_misplaced(caplog):
     agent._pending_operator_notes.append("note")
     messages = [{"role": "assistant", "content": "hi"}]
     with caplog.at_level(logging.ERROR, logger="claudia.agent"):
-        agent._append_operator_notes(messages)
+        agent._append_operator_message(messages)
 
     assert messages == [{"role": "assistant", "content": "hi"}]
     assert agent._pending_operator_notes == []
@@ -1650,6 +1663,244 @@ def test_guardrail_notice_never_claims_something_was_staged():
     assert "nothing has been staged and no order exists" in lowered
     assert "may have" not in lowered
     assert "might" not in lowered
+
+
+# ── L3: emission records in replayed history ─────────────────────────────────
+#
+# `_history_to_messages` drops tool rows, so after the tool migration the model still had
+# no cross-turn evidence it had ever proposed anything: on turn N+1 its only trace of turn
+# N's propose_order was its own prose. That is what let it defend "the modify proposal is
+# staged above" and, eventually, quote an order id it had invented. The emission records
+# put the evidence back — as `role: "system"`, which the model cannot forge, and as
+# identity only, so nothing in them can be copied into a later proposal.
+
+# Synthetic throughout (tests/fixtures/failing_transcripts.py sets the precedent): no real
+# order ids, and deliberately distinctive numbers so "did a price leak into the record?"
+# is decidable by substring.
+SYNTHETIC_ORDER = {
+    "symbol": "ZZZ", "action": "BUY", "quantity": 7, "order_type": "LMT",
+    "limit_price": 333.25, "stop_price": None, "tif": "DAY", "sec_type": "STK",
+    "conid": None, "reason": "synthetic breakout",
+}
+SYNTHETIC_CANCEL = {
+    "order_id": "9990001111", "symbol": "YYY", "action": "SELL", "quantity": 8,
+    "order_type": "LMT", "limit_price": 444.5, "stop_price": None, "tif": "GTC",
+    "reason": "synthetic cleanup",
+}
+SYNTHETIC_MODIFY = {
+    "order_id": "8880002222", "conid": 111222, "symbol": "XXX", "action": "BUY",
+    "quantity": 9, "order_type": "LMT", "limit_price": 555.75, "stop_price": None,
+    "tif": "GTC", "sec_type": "STK", "reason": "synthetic bump",
+    "changes": [{"field": "limit_price", "previous_value": 550.0}],
+}
+
+
+def _seed_rendered(agent, decision_type: str, payload: dict) -> None:
+    """Record a proposal exactly as a *successful* render does — via _log_proposal's shape."""
+    agent._store.add_decision(
+        session_id="test-session", decision_type=decision_type, summary_text="seeded",
+        symbol=payload.get("symbol"), message_id=1, metadata={"order": payload},
+    )
+
+
+def _operator_message(agent) -> str:
+    """The single operator-channel system message the agent would append this turn."""
+    messages = [{"role": "user", "content": "and now?"}]
+    agent._append_operator_message(messages)
+    texts = _system_texts(messages)
+    return texts[0] if texts else ""
+
+
+def test_emission_record_names_the_tool_and_the_order_id():
+    """The order id is the whole point: it is the one fact the model most needs returned
+    and the one it invented when it was not."""
+    agent, _sink = _make_agent_recording()
+    _seed_rendered(agent, "trade_cancel_proposed", SYNTHETIC_CANCEL)
+    body = _operator_message(agent)
+
+    assert "propose_cancel" in body
+    assert "9990001111" in body
+    assert "YYY" in body
+
+
+def test_emission_record_covers_all_three_proposal_kinds():
+    agent, _sink = _make_agent_recording()
+    _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
+    _seed_rendered(agent, "trade_cancel_proposed", SYNTHETIC_CANCEL)
+    _seed_rendered(agent, "trade_modify_proposed", SYNTHETIC_MODIFY)
+    body = _operator_message(agent)
+
+    assert "propose_order for ZZZ" in body
+    assert "propose_cancel for order 9990001111 (YYY)" in body
+    assert "propose_modify for order 8880002222 (XXX)" in body
+    # Emission order is the order they were emitted in.
+    assert body.index("propose_order") < body.index("propose_cancel") < body.index("propose_modify")
+
+
+def test_emission_record_carries_no_pricing():
+    """Identity only. Anything copyable into a later proposal is a fabrication surface —
+    the record answers "what did you do", never "what were the values"."""
+    agent, _sink = _make_agent_recording()
+    _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
+    _seed_rendered(agent, "trade_cancel_proposed", SYNTHETIC_CANCEL)
+    _seed_rendered(agent, "trade_modify_proposed", SYNTHETIC_MODIFY)
+    body = _operator_message(agent)
+
+    assert "$" not in body
+    assert "limit" not in body.lower()
+    assert "quantity" not in body.lower()
+    # Order ids are the one number allowed through; strip them, then no digits may remain.
+    stripped = body.replace("9990001111", "").replace("8880002222", "")
+    assert not any(ch.isdigit() for ch in stripped)
+    for value in ("7", "333.25", "8", "444.5", "9", "555.75", "550.0", "111222"):
+        assert value not in stripped
+    # And no free-text reason, which the model writes and could seed anything into.
+    assert "synthetic" not in body.lower()
+
+
+def test_no_proposals_produces_no_system_message():
+    """An empty record block would be a message asserting nothing, on a channel whose
+    value is that everything on it is load-bearing."""
+    agent, _sink = _make_agent_recording()
+    messages = [{"role": "user", "content": "hello"}]
+    agent._append_operator_message(messages)
+
+    assert messages == [{"role": "user", "content": "hello"}]
+    assert agent._emission_records() == ""
+
+
+async def test_render_failure_is_never_replayed_as_an_emission_record():
+    """The critical negative. A `proposal_render_failed` row means no button exists;
+    replaying it as an emission record would re-state, on the non-spoofable channel, the
+    precise false claim this whole guardrail was built to delete."""
+    agent, _sink = _make_agent_recording(RuntimeError("boom"))
+    stream = MagicMock(side_effect=[
+        *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
+        _FakeStream(_text_response_events("Nothing is staged.")),
+    ])
+    agent._client.messages.stream = stream
+
+    await agent.handle_message("stage it")
+    await agent.handle_message("is it staged?")
+
+    types = [d["decision_type"] for d in agent._store.get_decisions("test-session")]
+    assert types == ["proposal_render_failed"]
+    body = "".join(_system_texts(stream.call_args_list[-1].kwargs["messages"]))
+    assert "failed to render" in body            # the Task 5 note is there
+    assert "propose_order" not in body           # but no emission record is
+    assert "already emitted" not in body
+
+
+async def test_rendered_proposal_reappears_as_an_emission_record_next_turn():
+    """The behaviour the task exists for: turn N's proposal is visible on turn N+1."""
+    agent, _sink = _make_agent_recording()
+    stream = MagicMock(side_effect=[
+        *_proposal_turn("propose_cancel", VALID_CANCEL, "Button's up."),
+        _FakeStream(_text_response_events("Still waiting on you.")),
+    ])
+    agent._client.messages.stream = stream
+
+    await agent.handle_message("cancel it")
+    # Turn 1 must NOT carry its own record: it is built from history before the proposal
+    # is made, and claiming a button before rendering one is the failure being closed.
+    assert _system_texts(stream.call_args_list[0].kwargs["messages"]) == []
+
+    await agent.handle_message("is the button there?")
+    body = "".join(_system_texts(stream.call_args_list[-1].kwargs["messages"]))
+    assert f"propose_cancel for order {VALID_CANCEL['order_id']}" in body
+
+
+def test_emission_records_are_byte_stable_across_calls():
+    """Rebuilt from persisted rows every turn, so any instability would rewrite the
+    request body turn after turn and thrash the prompt cache."""
+    agent, _sink = _make_agent_recording()
+    _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
+    _seed_rendered(agent, "trade_modify_proposed", SYNTHETIC_MODIFY)
+
+    first = agent._emission_records()
+    assert first != ""
+    assert [agent._emission_records() for _ in range(5)] == [first] * 5
+    assert _operator_message(agent) == _operator_message(agent)
+
+
+def test_emission_record_message_follows_a_user_turn_and_is_not_first():
+    """The API's placement rule: a system message may not be messages[0] and must follow a
+    user turn. The plan's original design (one record after each assistant turn) is a 400."""
+    agent, _sink = _make_agent_recording()
+    _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
+    messages = _history_to_messages([
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "and now?"},
+    ])
+    agent._append_operator_message(messages)
+
+    idx = next(i for i, m in enumerate(messages) if m["role"] == "system")
+    assert idx > 0
+    assert messages[idx - 1]["role"] == "user"
+    assert idx == len(messages) - 1
+
+
+def test_emission_records_extend_the_prefix_instead_of_editing_it():
+    """Records are appended after the current user turn, never woven into the replayed
+    history — so the messages-level cache breakpoint cannot be invalidated by them."""
+    agent, _sink = _make_agent_recording()
+    _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
+    history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "and now?"},
+    ]
+    baseline = _history_to_messages(history)
+    extended = _history_to_messages(history)
+    agent._append_operator_message(extended)
+
+    assert extended[: len(baseline)] == baseline
+    assert len(extended) == len(baseline) + 1
+
+
+async def test_a_note_and_records_share_one_system_message():
+    """Two consecutive system messages would put the second after a system turn rather
+    than a user turn — outside the probed placement rule. One message, both payloads."""
+    agent, sink = _make_agent_recording()
+    stream = MagicMock(side_effect=[
+        *_proposal_turn("propose_order", VALID_ORDER, "Button's up."),      # renders
+        *_proposal_turn("propose_cancel", VALID_CANCEL, DEFENDED_CLAIM_588),  # fails
+        _FakeStream(_text_response_events("Understood.")),
+    ])
+    agent._client.messages.stream = stream
+
+    await agent.handle_message("buy it")
+    sink._error = RuntimeError("boom")
+    await agent.handle_message("cancel it")
+    await agent.handle_message("where do we stand?")
+
+    texts = _system_texts(stream.call_args_list[-1].kwargs["messages"])
+    assert len(texts) == 1
+    assert "propose_order for AAPL" in texts[0]   # the rendered one
+    assert "failed to render" in texts[0]         # the Task 5 note
+    assert "propose_cancel" not in texts[0]       # the failed one is not an emission
+
+
+def test_emission_record_tools_cover_exactly_the_store_allowlist():
+    """Drift guard: a fourth rendered type added to the store must not be silently dropped
+    from the records, and a type removed there must not linger here."""
+    from claudia.agent import _PROPOSAL_DECISION_TOOLS, _PROPOSAL_KINDS
+
+    assert set(_PROPOSAL_DECISION_TOOLS) == set(RENDERED_PROPOSAL_TYPES)
+    assert set(_PROPOSAL_DECISION_TOOLS.values()) == set(_PROPOSAL_KINDS)
+
+
+def test_emission_record_header_never_claims_a_pending_or_staged_order():
+    """The record says a button was drawn. It must not drift into implying the user acted
+    on it, or it becomes the next generation of the same false claim."""
+    from claudia.agent import _EMISSION_RECORD_HEADER
+
+    lowered = _EMISSION_RECORD_HEADER.lower()
+    assert "staging button" in lowered
+    assert "staged" not in lowered.replace("staging", "")
+    assert "order exists" not in lowered
+    assert "pending" not in lowered
 
 
 @pytest.mark.live_api
@@ -1678,7 +1929,7 @@ def test_live_api_accepts_mid_conversation_system_message():
     rule and shape 3's tail:
 
       - a system message at `messages[0]` → 400, "use the top-level 'system' parameter for
-        the initial system prompt". `_append_operator_notes`' user-turn guard makes this
+        the initial system prompt". `_append_operator_message`' user-turn guard makes this
         unreachable.
       - a list *ending* on an assistant turn → 400, "This model does not support assistant
         message prefill". Unrelated to the system role, but it is why shape 3 carries the
@@ -1729,3 +1980,90 @@ def test_live_api_accepts_mid_conversation_system_message():
             )
         except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
             pytest.fail(f"live API rejected the operator channel ({label}) on {model}: {exc}")
+
+
+@pytest.mark.live_api
+@pytest.mark.skipif(
+    os.environ.get("CLAUDIA_LIVE_SCHEMA_CHECK") != "1",
+    reason="live API check is opt-in: set CLAUDIA_LIVE_SCHEMA_CHECK=1",
+)
+def test_live_api_accepts_the_emission_record_channel():
+    """Prove the *combined* operator message is accepted by the real API.
+
+    This check is not optional diligence. The plan's own design for this task —
+    `role: "system"` inserted directly after each assistant turn that produced a proposal —
+    was probed against the live API on 2026-07-27 and rejected in every shape tried:
+
+        400  user, assistant, system(record), user        <- the plan's exact replay shape
+        400  two records across two turns
+        400  record last, no following user turn
+             -> messages.2: role 'system' must follow a 'user' message or an
+                'assistant' message ending in a server tool result
+
+    That is why records are consolidated into one message appended after the *current* user
+    turn instead. Local tests cannot distinguish the two — both are well-formed dicts — and
+    two schema defects earlier in this plan reached a fully green suite for exactly that
+    reason.
+
+    The body probed is the real one: built by `_emission_records()` from seeded decision
+    rows and joined with a genuine `_OPERATOR_NOTE`, i.e. the production string, not a
+    hand-written stand-in. Three shapes, all of which the agent really produces:
+      1. the combined message last, straight after the user turn (first request of a turn)
+      2. the same carrying the messages-level prompt-cache breakpoint
+      3. the same mid-list, followed by the assistant/tool_result round trip of a proposal
+         tool call (every later pass of the tool loop)
+
+    Opt-in — it costs real API calls:
+
+        CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
+    """
+    import anthropic
+    from dotenv import load_dotenv
+
+    from claudia.agent import _OPERATOR_NOTE, _with_cache_marker, _with_history_cache_marker
+    from claudia.proposal_tools import PROPOSAL_TOOLS
+
+    load_dotenv(override=False)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+
+    agent, _sink = _make_agent_recording()
+    _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
+    _seed_rendered(agent, "trade_modify_proposed", SYNTHETIC_MODIFY)
+    agent._pending_operator_notes.append(_OPERATOR_NOTE.format(kind="cancel"))
+    combined = {"role": "system", "content": _operator_message(agent)}
+    assert "propose_order" in combined["content"] and "failed to render" in combined["content"]
+
+    model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
+    three_turns = [
+        {"role": "user", "content": "Buy 1 ZZZ at 250."},
+        {"role": "assistant", "content": "Proposal is up — the staging button is below."},
+        {"role": "user", "content": "Now cancel order 8880002222."},
+        {"role": "assistant", "content": DEFENDED_CLAIM_588},
+        {"role": "user", "content": "So what have you actually proposed so far?"},
+    ]
+    tool_round_trip = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_probe2", "name": "propose_order",
+             "input": SYNTHETIC_ORDER},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_probe2", "content": "Proposal accepted."},
+        ]},
+    ]
+    shapes = {
+        "records+note last": [*three_turns, combined],
+        "records+note last, cache-marked": _with_history_cache_marker([*three_turns, combined]),
+        "records+note before a tool round trip": [*three_turns, combined, *tool_round_trip],
+    }
+    client = anthropic.Anthropic()
+    for label, messages in shapes.items():
+        try:
+            client.messages.create(
+                model=model,
+                max_tokens=1,
+                messages=messages,  # type: ignore[arg-type]
+                tools=_with_cache_marker(PROPOSAL_TOOLS),  # type: ignore[arg-type]
+            )
+        except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
+            pytest.fail(f"live API rejected the emission-record channel ({label}) on {model}: {exc}")

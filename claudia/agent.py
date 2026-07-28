@@ -183,7 +183,30 @@ _OPERATOR_NOTE = (
     "The {kind} proposal in the preceding turn was accepted but failed to render. "
     "No staging button exists and nothing was staged. Do not tell the user it was staged."
 )
-"""Operator-channel body for a failed render — see `_append_operator_notes` for the why."""
+"""Operator-channel body for a failed render — see `_append_operator_message` for the why."""
+
+
+_PROPOSAL_DECISION_TOOLS: dict[str, str] = {
+    "trade_proposed": "propose_order",
+    "trade_cancel_proposed": "propose_cancel",
+    "trade_modify_proposed": "propose_modify",
+}
+"""Rendered-proposal decision type -> the tool call that produced it.
+
+Keys mirror `conversation_store.RENDERED_PROPOSAL_TYPES` (the store owns the decision
+vocabulary; naming the *tool* is a message-construction concern and belongs here). Pinned
+to each other by test_emission_record_tools_cover_exactly_the_store_allowlist, so a fourth
+rendered type cannot be added on one side and silently dropped on the other.
+"""
+
+
+_EMISSION_RECORD_HEADER = (
+    "Proposals you have already emitted in this session. Each one rendered as a staging "
+    "button for the user. This list is complete: if a proposal is not named here, you did "
+    "not emit it and no button for it exists. Identities only — the parameters you "
+    "proposed are not repeated here, so never restate any of them from this list."
+)
+"""Header of the replayed emission-record block. See `_emission_records` for the why."""
 
 
 def _proposal_defect(kind: str, inputs: dict) -> str | None:
@@ -547,7 +570,7 @@ class ClaudIAAgent:
         # _record_proposal, cleared at the top of every handle_message.
         self._pending_proposal: tuple[str, dict] | None = None
         # Operator-channel notes awaiting delivery as `role: "system"` messages. Written
-        # only by _emit_guardrail_notice, drained by _append_operator_notes on the next
+        # only by _emit_guardrail_notice, drained by _append_operator_message on the next
         # turn — deliberately NOT cleared per turn like _pending_proposal, since a note
         # queued by a turn that then raised must still reach the model.
         self._pending_operator_notes: list[str] = []
@@ -646,7 +669,7 @@ class ClaudIAAgent:
                 messages[-1] = {"role": "user", "content": content}
 
         # After the images, so the current user turn is still `messages[-1]` above.
-        self._append_operator_notes(messages)
+        self._append_operator_message(messages)
 
         system_blocks = self._get_system_blocks()
 
@@ -903,42 +926,115 @@ class ClaudIAAgent:
         self._pending_operator_notes.append(_OPERATOR_NOTE.format(kind=kind))
         await self._sink.send_message(_GUARDRAIL_NOTICE)
 
-    def _append_operator_notes(self, messages: list) -> None:
-        """Deliver queued operator notes as `role: "system"` messages, then clear them.
+    def _emission_records(self) -> str:
+        """Return this session's proposal-emission record block, or "" when there is none.
 
-        Why the system role: anything the model can write, it can forge, so a note placed
-        in a user or assistant turn would be indistinguishable from a model-emitted
+        `_history_to_messages` drops tool rows, so from turn N+1 the model has no evidence
+        it ever called `propose_order` on turn N — nothing but its own prose to reason from.
+        That blindness is what let it insist "the order-modify-proposal is already staged in
+        my earlier message — it's sitting in front of you", and eventually quote an order id
+        it had invented. This block is the missing evidence, rebuilt from persisted rows on
+        every turn.
+
+        Only rendered proposals qualify: the rows come from
+        `ConversationStore.get_rendered_proposals`, whose allowlist excludes
+        `proposal_render_failed`. Replaying a failed render as an emission record would
+        assert, on the channel the model cannot forge, the exact falsehood this guardrail
+        removes.
+
+        Identity only — tool, order id, symbol. No prices, quantities, order types, TIFs or
+        the model's own free-text `reason`. The record answers "what did you do", never
+        "what were the values": anything copyable into a later proposal is a fabrication
+        surface, and order parameters are immutable, so a remembered-looking value is worse
+        than no value. The order id is the one number allowed through, because returning a
+        real, verified id is precisely what removes the pressure to invent one.
+
+        Byte-stable across calls: `get_rendered_proposals` orders by `id`, and every field
+        used here is copied verbatim from the row. An unstable block would rewrite the
+        request body every turn for no reason.
+
+        Returns:
+            The header plus one line per emission, or "" when the session has emitted none —
+            never an empty header. A message asserting nothing devalues a channel whose
+            worth is that everything on it is load-bearing.
+        """
+        lines = []
+        for row in self._store.get_rendered_proposals(self._session_id):
+            tool = _PROPOSAL_DECISION_TOOLS.get(row.get("decision_type") or "")
+            if tool is None:
+                # Defence in depth: the store already allowlists. If a type ever reaches
+                # here unmapped, dropping it under-reports; guessing a tool name would put
+                # a fabricated call in front of the model, which is the failure class itself.
+                log.warning("Unmapped rendered-proposal type %r", row.get("decision_type"))
+                continue
+            symbol = (row.get("symbol") or "").strip()
+            order = (row.get("metadata") or {}).get("order") or {}
+            order_id = str(order.get("order_id") or "").strip()
+            if order_id:
+                # cancel/modify: the id is the identity; the symbol only disambiguates.
+                lines.append(f"  - {tool} for order {order_id}" + (f" ({symbol})" if symbol else ""))
+            else:
+                # A new-order proposal has no order id — the order does not exist until the
+                # user clicks through both gates. The symbol is all the identity there is.
+                lines.append(f"  - {tool} for {symbol}" if symbol else f"  - {tool}")
+        if not lines:
+            return ""
+        return "\n".join([_EMISSION_RECORD_HEADER, *lines])
+
+    def _append_operator_message(self, messages: list) -> None:
+        """Deliver the operator channel as one `role: "system"` message after the user turn.
+
+        Two payloads share it: the emission records (`_emission_records`, derived from
+        persisted rows and rebuilt every turn) and any queued render-failure notes
+        (`_pending_operator_notes`, transient — queued once, delivered once, cleared). They
+        are separate *sources* on purpose, since re-deriving records is what makes them
+        cross-turn evidence while a note must not re-announce a failure already handled, but
+        they share one *message* because the API's placement rule allows only one here.
+
+        Why the system role: anything the model can write, it can forge, so this content
+        placed in a user or assistant turn would be indistinguishable from a model-emitted
         look-alike — and the failure being corrected is precisely a model asserting
         something untrue about its own output. A mid-conversation system message cannot be
         spoofed from model output. Supported on claude-opus-4-8 with no beta header.
         Source: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 
-        Placement: appended after the current user turn, so a note is last in `messages` on
-        the turn's first request and is followed by an assistant turn on every later
-        tool-loop pass — both accepted (live-probed 2026-07-27, together with the
+        Placement: appended after the current user turn, so the message is last in
+        `messages` on the turn's first request and is followed by an assistant turn on every
+        later tool-loop pass — both accepted (live-probed 2026-07-27, together with the
         cache-marked form). A system message may not be `messages[0]`; the API rejects that
         with "use the top-level 'system' parameter for the initial system prompt" (same
-        probe), which the user-turn guard below makes unreachable. Covered by
-        tests/test_agent.py::test_live_api_accepts_mid_conversation_system_message.
+        probe), which the user-turn guard below makes unreachable. The L3 plan called for a
+        record after *each* assistant turn that produced a proposal; that shape is a 400
+        ("role 'system' must follow a 'user' message or an 'assistant' message ending in a
+        server tool result", probed 2026-07-27) and consolidating here is what replaces it.
+        Covered by tests/test_agent.py::test_live_api_accepts_mid_conversation_system_message
+        and ::test_live_api_accepts_the_emission_record_channel.
 
-        Prompt caching: the note lands *after* the replayed history, never inside it, so
-        the cached prefix is extended rather than invalidated. It is also not replayed on
-        later turns — it is delivered once and cleared — so it never becomes part of a
-        prefix that a later turn has to match.
+        Prompt caching: everything here lands *after* the replayed history, never inside it,
+        so the cached prefix is extended rather than invalidated — which is what makes it
+        safe to rebuild the records on every turn even though their content grows.
 
-        Delivered once, best-effort: if the request carrying a note fails outright the note
+        Notes are delivered once, best-effort: if the request carrying one fails outright it
         is not re-queued. Accepted, because it is the non-spoofable channel and not the only
         one — `_emit_guardrail_notice` also persists the notice as an assistant row, which
-        `_history_to_messages` replays on every subsequent turn.
+        `_history_to_messages` replays on every subsequent turn. Records need no such
+        fallback: they are re-derived from the store next turn regardless.
 
         Args:
             messages: This turn's message list, ending in the current user turn. Mutated
                 in place.
         """
-        if not self._pending_operator_notes:
+        parts: list[str] = []
+        records = self._emission_records()
+        if records:
+            parts.append(records)
+        # Notes last: a note contradicts the turn immediately preceding this one and is the
+        # more urgent of the two, so it sits closest to where generation resumes.
+        parts.extend(self._pending_operator_notes)
+        if not parts:
             return
         if messages and messages[-1]["role"] == "user":
-            # One message however many notes are queued: two consecutive system messages
+            # One message however many payloads there are: two consecutive system messages
             # would put the second one after a system turn rather than a user turn, which
             # is outside the probed placement rule. Joining is never worse and keeps the
             # shape identical to the one the live check covers.
@@ -947,14 +1043,13 @@ class ClaudIAAgent:
             # system message has no MessageParam literal — the SDK's param types model only
             # user/assistant. The role is correct on the wire (probed 2026-07-27); this
             # file builds every request body as plain dicts for that reason.
-            messages.append(
-                {"role": "system", "content": "\n\n".join(self._pending_operator_notes)}
-            )
+            messages.append({"role": "system", "content": "\n\n".join(parts)})
         else:
             # Unreachable: handle_message persists the user turn before reading history, so
             # it is always the last row. Dropped rather than misplaced anyway, because a
             # system message in the wrong position is a 400 that takes down the whole turn
-            # — and the notice has already reached the user and the decisions table.
+            # — and the notice has already reached the user and the decisions table, while
+            # the records are re-derived from the store on the next turn.
             log.error(
                 "Operator note dropped: last message is %r, not a user turn",
                 messages[-1]["role"] if messages else None,

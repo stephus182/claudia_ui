@@ -25,6 +25,25 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+RENDERED_PROPOSAL_TYPES: tuple[str, ...] = (
+    "trade_proposed",
+    "trade_cancel_proposed",
+    "trade_modify_proposed",
+)
+"""The decision types that mean **a staging button reached the user**.
+
+Deliberately an allowlist rather than "everything except `proposal_render_failed`". A
+denylist admits every future decision type by default, and the one thing
+`get_rendered_proposals` must never do is report a proposal as emitted when no button
+exists — that is the false claim the whole guardrail was built to remove. A new type has
+to be added here consciously.
+
+`claudia/agent.py` maps these onto the `propose_*` tool names for the replayed record; the
+two are pinned to each other by
+tests/test_agent.py::test_emission_record_tools_cover_exactly_the_store_allowlist.
+"""
+
+
 def _utcnow() -> str:
     """Current UTC time as an ISO-8601 string — the storage format for every timestamp."""
     return datetime.now(UTC).isoformat()
@@ -425,6 +444,61 @@ class ConversationStore:
                 (session_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_rendered_proposals(self, session_id: str) -> list[dict]:
+        """Return the session's proposals that really rendered a staging button, oldest first.
+
+        The source for the proposal-emission records `claudia/agent.py` replays on the
+        operator channel. `_history_to_messages` drops tool rows, so from turn N+1 the model
+        has no evidence it ever called `propose_order` on turn N — the blindness behind
+        ClaudIA telling a user a modify proposal was "sitting in front of you" when no
+        button had ever been rendered.
+
+        Two filters, both load-bearing:
+
+        - `decision_type IN RENDERED_PROPOSAL_TYPES` — an allowlist. `proposal_render_failed`
+          means "accepted but **no** button reached the user", so replaying one as an
+          emission record would assert the exact falsehood the guardrail removes. Pinned by
+          test_get_rendered_proposals_never_returns_a_render_failure.
+        - `message_id IS NOT NULL` — the emission is only meaningful as something a
+          specific assistant turn produced.
+
+        Ordered by `id`, not `created_at`: two rows written in the same turn can share a
+        timestamp, and the replayed record has to be byte-identical across calls or it
+        would thrash the request body turn after turn.
+
+        Returns:
+            Row dicts with `metadata_json` **decoded** into a `metadata` dict — unlike
+            `get_decisions`, which returns the raw column. Callers here read
+            `metadata["order"]["order_id"]`, and every one of them would otherwise repeat
+            the same parse. A row whose JSON does not parse yields `{}` rather than raising:
+            one malformed row must not take down a turn, and the record simply loses its
+            order id (it never gains a wrong one).
+        """
+        placeholders = ",".join("?" * len(RENDERED_PROPOSAL_TYPES))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM decisions
+                    WHERE session_id=? AND message_id IS NOT NULL
+                      AND decision_type IN ({placeholders})
+                    ORDER BY id""",
+                (session_id, *RENDERED_PROPOSAL_TYPES),
+            ).fetchall()
+        out = []
+        for row in rows:
+            record = dict(row)
+            raw = record.pop("metadata_json", None)
+            try:
+                parsed = json.loads(raw) if raw else {}
+            except (TypeError, ValueError):
+                log.warning(
+                    "decision %s has unparseable metadata_json; emission record will carry "
+                    "no order id", record.get("id"),
+                )
+                parsed = {}
+            record["metadata"] = parsed if isinstance(parsed, dict) else {}
+            out.append(record)
+        return out
 
     def get_decisions_for_symbol(self, symbol: str, limit: int = 10) -> list[dict]:
         """Return decisions for a symbol ordered newest first, joined with the doc_version active at the time."""

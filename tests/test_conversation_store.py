@@ -297,3 +297,94 @@ def test_migration_keeps_relationships_table_with_data(tmp_path):
     rows = conn.execute("SELECT symbol FROM relationships").fetchall()
     conn.close()
     assert rows == [("TSLA",)]
+
+
+# ── L3: rendered-proposal records for the operator channel ───────────────────
+#
+# `_history_to_messages` drops tool rows, so the replayed transcript carries no evidence
+# that a proposal was ever emitted. `get_rendered_proposals` is the source of that
+# evidence. Its whole value rests on one property: a row it returns means a staging
+# button really reached the user. `proposal_render_failed` means the exact opposite and
+# must never come back from it — replaying one as evidence of a button would re-create the
+# false claim the guardrail exists to remove.
+
+_SYNTHETIC_CANCEL = {
+    "order_id": "9990001111", "symbol": "ZZZ", "action": "BUY", "quantity": 7,
+    "order_type": "LMT", "limit_price": 333.25, "tif": "GTC", "reason": "synthetic",
+}
+
+
+def test_get_rendered_proposals_returns_the_three_rendered_types_oldest_first(store):
+    store.create_session("sess-l3")
+    msg = store.add_message("sess-l3", "assistant", "proposed")
+    for dtype in ("trade_proposed", "trade_cancel_proposed", "trade_modify_proposed"):
+        store.add_decision(
+            session_id="sess-l3", decision_type=dtype, summary_text=dtype,
+            symbol="ZZZ", message_id=msg, metadata={"order": _SYNTHETIC_CANCEL},
+        )
+    rows = store.get_rendered_proposals("sess-l3")
+    assert [r["decision_type"] for r in rows] == [
+        "trade_proposed", "trade_cancel_proposed", "trade_modify_proposed",
+    ]
+    assert rows[0]["metadata"] == {"order": _SYNTHETIC_CANCEL}  # decoded, not raw JSON
+
+
+def test_get_rendered_proposals_never_returns_a_render_failure(store):
+    """The critical negative. `proposal_render_failed` means "accepted but NO button
+    reached the user"; returning one here would put "you emitted a staging button" in
+    front of the model for a turn where none exists."""
+    store.create_session("sess-l3-fail")
+    msg = store.add_message("sess-l3-fail", "assistant", "claimed a button")
+    store.add_decision(
+        session_id="sess-l3-fail", decision_type="proposal_render_failed",
+        summary_text="order proposal accepted but not rendered — nothing staged",
+        message_id=msg, metadata={"kind": "order"},
+    )
+    assert store.get_rendered_proposals("sess-l3-fail") == []
+
+
+def test_get_rendered_proposals_excludes_post_click_and_unrelated_types(store):
+    """An allowlist, not a denylist: only the three "a button was shown" types qualify."""
+    store.create_session("sess-l3-mix")
+    msg = store.add_message("sess-l3-mix", "assistant", "text")
+    for dtype in ("trade_staged", "trade_cancelled", "trade_modified", "backtest_run"):
+        store.add_decision(
+            session_id="sess-l3-mix", decision_type=dtype, summary_text=dtype, message_id=msg,
+        )
+    assert store.get_rendered_proposals("sess-l3-mix") == []
+
+
+def test_get_rendered_proposals_requires_a_message_id(store):
+    """No message_id means no assistant turn to attach the emission to."""
+    store.create_session("sess-l3-nomsg")
+    store.add_decision(
+        session_id="sess-l3-nomsg", decision_type="trade_proposed",
+        summary_text="orphan", symbol="ZZZ",
+    )
+    assert store.get_rendered_proposals("sess-l3-nomsg") == []
+
+
+def test_get_rendered_proposals_is_scoped_to_one_session(store):
+    store.create_session("sess-l3-a")
+    store.create_session("sess-l3-b")
+    msg = store.add_message("sess-l3-a", "assistant", "proposed")
+    store.add_decision(
+        session_id="sess-l3-a", decision_type="trade_proposed", summary_text="a",
+        symbol="ZZZ", message_id=msg,
+    )
+    assert len(store.get_rendered_proposals("sess-l3-a")) == 1
+    assert store.get_rendered_proposals("sess-l3-b") == []
+
+
+def test_get_rendered_proposals_tolerates_unparseable_metadata(store):
+    """A row written before/outside add_decision must not take down the whole turn."""
+    store.create_session("sess-l3-bad")
+    msg = store.add_message("sess-l3-bad", "assistant", "proposed")
+    store.add_decision(
+        session_id="sess-l3-bad", decision_type="trade_proposed", summary_text="x",
+        symbol="ZZZ", message_id=msg,
+    )
+    with store._conn() as conn:
+        conn.execute("UPDATE decisions SET metadata_json='{not json'")
+    rows = store.get_rendered_proposals("sess-l3-bad")
+    assert rows[0]["metadata"] == {}
