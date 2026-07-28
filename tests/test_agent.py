@@ -18,60 +18,16 @@ from claudia.agent import (
     _history_to_messages,
     _log_cache_usage,
     _log_thinking_usage,
-    _make_block_stripper,
-    _strip_order_cancel_proposal,
-    _strip_order_modify_proposal,
-    _strip_order_proposal,
     _system_blocks,
     _with_cache_marker,
     _with_history_cache_marker,
 )
 
 
-def test_strip_order_proposal_found():
-    proposal = {
-        "symbol": "AAPL",
-        "action": "BUY",
-        "quantity": 50,
-        "order_type": "LMT",
-        "limit_price": 185.0,
-        "reason": "Breakout above resistance",
-    }
-    text = (
-        "Here is my analysis.\n\n"
-        "```order-proposal\n"
-        f"{json.dumps(proposal, indent=2)}\n"
-        "```\n\n"
-        "Let me know if you want to proceed."
-    )
-    clean, parsed = _strip_order_proposal(text)
-    assert "order-proposal" not in clean
-    assert "```" not in clean
-    assert parsed is not None
-    assert parsed["symbol"] == "AAPL"
-    assert parsed["quantity"] == 50
-    assert "Here is my analysis" in clean
-    assert "Let me know" in clean
-
-
-def test_strip_order_proposal_not_found():
-    text = "Here is a regular response with no order proposal."
-    clean, parsed = _strip_order_proposal(text)
-    assert clean == text
-    assert parsed is None
-
-
-def test_strip_order_proposal_malformed_json():
-    text = "Some text.\n```order-proposal\n{not valid json}\n```\nEnd."
-    _clean, parsed = _strip_order_proposal(text)
-    # Malformed JSON: block not stripped, proposal is None
-    assert parsed is None
-
-
 def test_build_system_prompt_contains_safety():
     prompt = _build_system_prompt("# Role\nI am a trader assistant.\n\n# Principles\nRisk first.")
     assert "cannot place" in prompt.lower() or "CANNOT place" in prompt
-    assert "order-proposal" in prompt
+    assert "propose_order" in prompt
     assert "financial advisor" in prompt.lower()
 
 
@@ -80,91 +36,6 @@ def test_build_system_prompt_contains_context():
     prompt = _build_system_prompt(context)
     assert "ClaudIA" in prompt
     assert "No YOLO trades" in prompt
-
-
-def test_order_proposal_all_order_types():
-    for otype in ["MKT", "LMT", "STP"]:
-        proposal = {
-            "symbol": "TSLA",
-            "action": "SELL",
-            "quantity": 10,
-            "order_type": otype,
-            "limit_price": None,
-            "stop_price": None,
-            "reason": "Test",
-        }
-        text = f"Analysis.\n```order-proposal\n{json.dumps(proposal)}\n```"
-        clean, parsed = _strip_order_proposal(text)
-        assert parsed["order_type"] == otype
-        assert "order-proposal" not in clean
-
-
-# ── _make_block_stripper / cancel & modify proposal stripping ───────────────
-
-def test_make_block_stripper_builds_working_stripper_for_arbitrary_tag():
-    """The factory isn't hardcoded to order tags — it works for any fenced tag."""
-    strip = _make_block_stripper("test-block")
-    text = 'Before.\n```test-block\n{"a": 1}\n```\nAfter.'
-    clean, parsed = strip(text)
-    assert parsed == {"a": 1}
-    assert "test-block" not in clean
-    assert "Before." in clean and "After." in clean
-
-
-def test_strip_order_cancel_proposal_found():
-    proposal = {"order_id": "242538143", "symbol": "AAPL", "action": "BUY", "quantity": 1}
-    text = f"Sure, let's cancel it.\n```order-cancel-proposal\n{json.dumps(proposal)}\n```"
-    clean, parsed = _strip_order_cancel_proposal(text)
-    assert "order-cancel-proposal" not in clean
-    assert parsed["order_id"] == "242538143"
-    assert "Sure, let's cancel it" in clean
-
-
-def test_strip_order_cancel_proposal_not_found():
-    text = "No cancellation here."
-    clean, parsed = _strip_order_cancel_proposal(text)
-    assert clean == text
-    assert parsed is None
-
-
-def test_strip_order_cancel_proposal_malformed_json():
-    text = "Text.\n```order-cancel-proposal\n{not json}\n```\nEnd."
-    _clean, parsed = _strip_order_cancel_proposal(text)
-    assert parsed is None
-
-
-def test_strip_order_modify_proposal_found():
-    proposal = {
-        "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
-        "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
-        "tif": "GTC", "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
-    }
-    text = f"Here's the modification.\n```order-modify-proposal\n{json.dumps(proposal)}\n```"
-    clean, parsed = _strip_order_modify_proposal(text)
-    assert "order-modify-proposal" not in clean
-    assert parsed["conid"] == 265598
-    assert parsed["_changed_fields"] == ["limit_price"]
-
-
-def test_strip_order_modify_proposal_not_found():
-    text = "No modification here."
-    clean, parsed = _strip_order_modify_proposal(text)
-    assert clean == text
-    assert parsed is None
-
-
-def test_strip_order_modify_proposal_malformed_json():
-    text = "Text.\n```order-modify-proposal\n{not json}\n```\nEnd."
-    _clean, parsed = _strip_order_modify_proposal(text)
-    assert parsed is None
-
-
-def test_strip_order_proposal_unaffected_by_cancel_modify_tags():
-    """The three strippers only match their own exact tag — no cross-matching."""
-    cancel_text = '```order-cancel-proposal\n{"order_id": "1"}\n```'
-    assert _strip_order_proposal(cancel_text) == (cancel_text, None)
-    modify_text = '```order-modify-proposal\n{"order_id": "1", "conid": 1}\n```'
-    assert _strip_order_proposal(modify_text) == (modify_text, None)
 
 
 # ── Hard Rule 1 regression (CLAUDE.md) ───────────────────────────────────────
@@ -179,10 +50,10 @@ def test_local_tool_names_excludes_order_write_tools():
 
 # ── Safety block: order cancel/modify rules ──────────────────────────────────
 
-def test_safety_block_documents_cancel_and_modify_proposal_formats():
+def test_safety_block_documents_cancel_and_modify_proposal_tools():
     prompt = _build_system_prompt("# Role\nI am ClaudIA.")
-    assert "order-cancel-proposal" in prompt
-    assert "order-modify-proposal" in prompt
+    assert "propose_cancel" in prompt
+    assert "propose_modify" in prompt
 
 
 def test_safety_block_requires_order_id_provenance():
@@ -857,57 +728,6 @@ async def test_handle_message_tool_call_uses_sink_tool_step():
     sink.send_message.assert_awaited_once_with("You hold 100 AAPL.")
 
 
-# ── handle_message() → proposal dispatch (Task 3.1) ──────────────────────────
-
-@pytest.mark.asyncio
-async def test_handle_message_order_proposal_dispatches_to_sink():
-    agent, sink = _make_agent_with_sink()
-    proposal = {
-        "symbol": "AAPL", "action": "BUY", "quantity": 10,
-        "order_type": "MKT", "limit_price": None, "stop_price": None,
-        "tif": "DAY", "sec_type": "STK", "conid": None, "reason": "Test",
-    }
-    text = f"Here's my proposal.\n```order-proposal\n{json.dumps(proposal)}\n```"
-    agent._client.messages.stream = MagicMock(
-        return_value=_FakeStream(_text_response_events(text))
-    )
-    await agent.handle_message("Propose a trade")
-    sink.send_order_proposal.assert_awaited_once_with(proposal)
-
-
-@pytest.mark.asyncio
-async def test_handle_message_cancel_proposal_dispatches_to_sink():
-    agent, sink = _make_agent_with_sink()
-    proposal = {
-        "order_id": "242538143", "symbol": "AAPL", "action": "BUY",
-        "quantity": 1, "order_type": "LMT", "limit_price": 100.0,
-        "tif": "GTC", "reason": "Test",
-    }
-    text = f"Cancelling.\n```order-cancel-proposal\n{json.dumps(proposal)}\n```"
-    agent._client.messages.stream = MagicMock(
-        return_value=_FakeStream(_text_response_events(text))
-    )
-    await agent.handle_message("Cancel it")
-    sink.send_cancel_proposal.assert_awaited_once_with(proposal)
-
-
-@pytest.mark.asyncio
-async def test_handle_message_modify_proposal_dispatches_to_sink():
-    agent, sink = _make_agent_with_sink()
-    proposal = {
-        "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
-        "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
-        "tif": "GTC", "sec_type": "STK",
-        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
-    }
-    text = f"Modifying.\n```order-modify-proposal\n{json.dumps(proposal)}\n```"
-    agent._client.messages.stream = MagicMock(
-        return_value=_FakeStream(_text_response_events(text))
-    )
-    await agent.handle_message("Modify it")
-    sink.send_modify_proposal.assert_awaited_once_with(proposal)
-
-
 # ── Adaptive thinking: request config + thinking-block round trip (G2) ───────
 
 def _thinking_then_tool_events(thinking: str, signature: str, tool_id: str):
@@ -1141,3 +961,293 @@ def test_log_thinking_usage_silent_when_details_absent(caplog):
     with caplog.at_level(logging.INFO, logger="claudia.agent"):
         _log_thinking_usage(SimpleNamespace(output_tokens=1400))
     assert caplog.text == ""
+
+
+# ── Order proposals as strict tool calls (Task 3) ────────────────────────────
+#
+# The fenced ```order-proposal block is gone. A proposal is now a tool call whose
+# input the API has already validated against a strict schema; agent.py only records
+# it. These tests cover the wiring, the four guarantees the schema cannot express,
+# and the per-turn lifecycle of the recorded proposal.
+
+VALID_ORDER = {
+    "symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "LMT",
+    "limit_price": 185.0, "stop_price": None, "tif": "DAY", "sec_type": "STK",
+    "conid": None, "reason": "Breakout above resistance",
+}
+
+VALID_CANCEL = {
+    "order_id": "242538143", "symbol": "AAPL", "action": "BUY", "quantity": 1,
+    "order_type": "LMT", "limit_price": 100.0, "stop_price": None, "tif": "GTC",
+    "reason": "Closing the test order",
+}
+
+VALID_MODIFY = {
+    "order_id": "242538143", "conid": 265598, "symbol": "AAPL", "action": "BUY",
+    "quantity": 1, "order_type": "LMT", "limit_price": 105.0, "stop_price": None,
+    "tif": "GTC", "sec_type": "STK", "reason": "Bumping the limit",
+    "changes": [{"field": "limit_price", "previous_value": 100.0}],
+}
+
+
+@pytest.fixture
+def agent():
+    """A ClaudIAAgent with every dependency mocked — the same build as _make_agent()."""
+    return _make_agent()
+
+
+def test_propose_order_records_and_reports_acceptance(agent):
+    result = agent._handle_local_tool("propose_order", VALID_ORDER)
+    assert agent._pending_proposal == ("order", VALID_ORDER)
+    assert "accepted" in result.lower()
+    # The handler cannot know the render succeeded. Claiming it did would recreate the
+    # false-confirmation failure one layer down.
+    assert "displayed" not in result.lower()
+    assert "rendered as a staging button" not in result.lower()
+
+
+def test_propose_cancel_records_a_cancel_proposal(agent):
+    result = agent._handle_local_tool("propose_cancel", VALID_CANCEL)
+    assert agent._pending_proposal == ("cancel", VALID_CANCEL)
+    assert "accepted" in result.lower()
+
+
+def test_propose_modify_records_a_modify_proposal(agent):
+    result = agent._handle_local_tool("propose_modify", VALID_MODIFY)
+    assert agent._pending_proposal == ("modify", VALID_MODIFY)
+    assert "accepted" in result.lower()
+
+
+def test_proposal_handlers_cannot_reach_execution(agent):
+    """CLAUDE.md Hard Rule 1 — the proposal tools declare, they never execute."""
+    from pathlib import Path
+
+    import claudia.proposal_tools as pt
+    src = Path(pt.__file__).read_text()
+    for forbidden in ("IBKRClient", "ClaudeToolkit", "place_order", "cancel_order"):
+        assert forbidden not in src
+
+
+def test_block_stripper_is_gone():
+    import claudia.agent as a
+    assert not hasattr(a, "_strip_order_proposal")
+    assert not hasattr(a, "_make_block_stripper")
+
+
+def test_order_proposal_schema_module_is_gone():
+    """The hand validator is retired — the JSON Schema plus the handler are the contract."""
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("claudia.order_proposal_schema")
+
+
+def test_proposal_tools_are_registered_in_the_tool_list(agent):
+    names = {t["name"] for t in agent._all_tools}
+    assert {"propose_order", "propose_cancel", "propose_modify"} <= names
+
+
+def test_locally_handled_tools_exclude_order_write_tools():
+    """Hard Rule 1 again, over the full set the agent dispatches locally — the proposal
+    tools widen that set, so the guard must widen with it."""
+    from claudia.agent import _LOCALLY_HANDLED
+    assert {"place_order", "modify_order", "cancel_order", "reply_order"} & _LOCALLY_HANDLED == set()
+
+
+# ── The four guarantees strict mode cannot express (proposal_tools.py) ───────
+
+@pytest.mark.parametrize("quantity", [0, -5])
+def test_non_positive_quantity_is_rejected(agent, quantity):
+    """exclusiveMinimum is a hard 400 on the tools endpoint, so the bound lives here."""
+    result = agent._handle_local_tool("propose_order", {**VALID_ORDER, "quantity": quantity})
+    assert agent._pending_proposal is None
+    assert "rejected" in result.lower()
+    assert "no staging button" in result.lower()
+
+
+@pytest.mark.parametrize("symbol", ["", "   "])
+def test_blank_symbol_is_rejected(agent, symbol):
+    """minLength is deliberately not used, and `"   "` would satisfy it anyway."""
+    result = agent._handle_local_tool("propose_order", {**VALID_ORDER, "symbol": symbol})
+    assert agent._pending_proposal is None
+    assert "rejected" in result.lower()
+
+
+@pytest.mark.parametrize("tool,payload", [
+    ("propose_cancel", VALID_CANCEL),
+    ("propose_modify", VALID_MODIFY),
+])
+@pytest.mark.parametrize("order_id", ["", "   "])
+def test_blank_order_id_is_rejected(agent, tool, payload, order_id):
+    """Acting on the wrong (or no) order is the failure mode for cancel and modify."""
+    result = agent._handle_local_tool(tool, {**payload, "order_id": order_id})
+    assert agent._pending_proposal is None
+    assert "rejected" in result.lower()
+
+
+def test_duplicate_changes_entries_are_rejected(agent):
+    """uniqueItems is unsupported, so two entries for one field are schema-valid."""
+    result = agent._handle_local_tool("propose_modify", {**VALID_MODIFY, "changes": [
+        {"field": "limit_price", "previous_value": 100.0},
+        {"field": "limit_price", "previous_value": 99.0},
+    ]})
+    assert agent._pending_proposal is None
+    assert "rejected" in result.lower()
+    assert "limit_price" in result
+
+
+def test_rejection_never_repairs_the_proposal(agent):
+    """Order parameters are immutable: a bad proposal is rejected whole, never normalised."""
+    import copy
+
+    payload = {**VALID_ORDER, "quantity": 0}
+    before = copy.deepcopy(payload)
+    agent._handle_local_tool("propose_order", payload)
+    assert payload == before
+
+
+# ── One proposal per turn ────────────────────────────────────────────────────
+
+def test_second_proposal_in_one_turn_is_refused_and_the_first_survives(agent):
+    agent._handle_local_tool("propose_order", VALID_ORDER)
+    result = agent._handle_local_tool("propose_cancel", VALID_CANCEL)
+    assert agent._pending_proposal == ("order", VALID_ORDER)
+    assert "already" in result.lower()
+
+
+# ── Per-turn lifecycle ───────────────────────────────────────────────────────
+
+def _proposal_tool_events(name: str, payload: dict, tool_id: str = "p1"):
+    """Stream events for a turn whose only content block is a proposal tool call."""
+    return [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
+        SimpleNamespace(
+            type="content_block_start",
+            content_block=SimpleNamespace(type="tool_use", id=tool_id, name=name),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="input_json_delta", partial_json=json.dumps(payload)),
+        ),
+        _message_delta("tool_use"),
+    ]
+
+
+async def test_handle_message_order_proposal_dispatches_to_sink():
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    agent._client.messages.stream = MagicMock(side_effect=[
+        _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
+        _FakeStream(_text_response_events("Ready when you are.")),
+    ])
+    await agent.handle_message("Buy 10 AAPL at 185")
+    sink.send_order_proposal.assert_awaited_once_with(VALID_ORDER)
+
+
+async def test_handle_message_cancel_proposal_dispatches_to_sink():
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    agent._client.messages.stream = MagicMock(side_effect=[
+        _FakeStream(_proposal_tool_events("propose_cancel", VALID_CANCEL)),
+        _FakeStream(_text_response_events("Ready when you are.")),
+    ])
+    await agent.handle_message("Cancel it")
+    sink.send_cancel_proposal.assert_awaited_once_with(VALID_CANCEL)
+
+
+async def test_handle_message_modify_proposal_dispatches_to_sink():
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    agent._client.messages.stream = MagicMock(side_effect=[
+        _FakeStream(_proposal_tool_events("propose_modify", VALID_MODIFY)),
+        _FakeStream(_text_response_events("Ready when you are.")),
+    ])
+    await agent.handle_message("Move the limit to 105")
+    sink.send_modify_proposal.assert_awaited_once_with(VALID_MODIFY)
+
+
+async def test_proposal_tool_result_is_fed_back_to_the_model():
+    """The model must see a tool_result for its own act — that feedback gap is what let
+    it defend a claim that a button existed when none did."""
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    stream = MagicMock(side_effect=[
+        _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
+        _FakeStream(_text_response_events("Ready when you are.")),
+    ])
+    agent._client.messages.stream = stream
+    await agent.handle_message("Buy 10 AAPL at 185")
+    tool_results = stream.call_args_list[-1].kwargs["messages"][-1]["content"]
+    assert tool_results[0]["type"] == "tool_result"
+    assert "accepted" in tool_results[0]["content"].lower()
+
+
+async def test_rejected_proposal_renders_no_button_and_tells_the_model_why():
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    stream = MagicMock(side_effect=[
+        _FakeStream(_proposal_tool_events("propose_order", {**VALID_ORDER, "quantity": 0})),
+        _FakeStream(_text_response_events("That quantity is not valid.")),
+    ])
+    agent._client.messages.stream = stream
+    await agent.handle_message("Buy 0 AAPL")
+    sink.send_order_proposal.assert_not_awaited()
+    tool_results = stream.call_args_list[-1].kwargs["messages"][-1]["content"]
+    assert "rejected" in tool_results[0]["content"].lower()
+
+
+async def test_pending_proposal_is_cleared_at_the_start_of_each_turn():
+    """Reset at the TOP of handle_message: a turn that raised must not leak a stale
+    proposal into the next one, where it would render a button nobody asked for."""
+    agent, sink = _make_agent_with_sink()
+    agent._pending_proposal = ("order", VALID_ORDER)
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events("Nothing to propose."))
+    )
+    await agent.handle_message("Just chatting")
+    sink.send_order_proposal.assert_not_awaited()
+    assert agent._pending_proposal is None
+
+
+async def test_a_turn_that_raises_does_not_leak_its_proposal_into_the_next_turn():
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    agent._client.messages.stream = MagicMock(side_effect=[
+        _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
+        RuntimeError("stream blew up after the proposal was recorded"),
+        _FakeStream(_text_response_events("Hello again.")),
+    ])
+    with pytest.raises(RuntimeError):
+        await agent.handle_message("Buy 10 AAPL at 185")
+    assert agent._pending_proposal == ("order", VALID_ORDER)  # leaked from the failed turn
+
+    await agent.handle_message("Never mind, how are you?")
+    sink.send_order_proposal.assert_not_awaited()
+
+
+async def test_proposal_is_logged_as_a_decision():
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    agent._client.messages.stream = MagicMock(side_effect=[
+        _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
+        _FakeStream(_text_response_events("Ready when you are.")),
+    ])
+    await agent.handle_message("Buy 10 AAPL at 185")
+    kinds = [c.kwargs["decision_type"] for c in agent._store.add_decision.call_args_list]
+    assert kinds == ["trade_proposed"]
+
+
+# ── The system prompt points at the tools, not a text format ─────────────────
+
+def test_safety_block_names_the_proposal_tools():
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    for tool in ("propose_order", "propose_cancel", "propose_modify"):
+        assert tool in prompt
+
+
+def test_safety_block_has_no_fenced_proposal_format_left():
+    """Prose about a proposal creates no button — the format sections must be gone."""
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    assert "```order-proposal" not in prompt
+    assert "```order-cancel-proposal" not in prompt
+    assert "```order-modify-proposal" not in prompt

@@ -547,56 +547,103 @@ def test_version_snapshot_is_chmod_600(tmp_path, monkeypatch):
         assert mode == oct(0o600), f"{name} permissions {mode} != 0o600"
 
 
-# ── M-1 — order proposals must be schema-checked before rendering or staging ─────────────
+# ── M-1 — order proposals must be validated before rendering or staging ──────────────────
+#
+# The invariant is unchanged since the 2026-07-25 audit: a proposal the model was not
+# permitted to emit must never reach the staging button. What moved is the enforcement.
+# `order_proposal_schema.py` (a hand validator over a fenced JSON block) is retired; the
+# contract is now the strict tool schema in claudia/proposal_tools.py — which the API
+# enforces before agent.py ever sees the input — plus `_proposal_defect` for the four
+# guarantees that schema provably cannot express (probed 2026-07-27).
+#
+# Cases that were rejected by the old validator and are now structurally impossible are
+# asserted against the schema in tests/test_proposal_tools.py, not here.
 
-@pytest.mark.parametrize("proposal,reason", [
-    ({"symbol": "AAPL", "action": "HODL", "quantity": 1}, "action outside {BUY, SELL}"),
-    ({"symbol": "AAPL", "action": "BUY", "quantity": -5}, "negative quantity"),
-    ({"symbol": "AAPL", "action": "BUY", "quantity": 0}, "zero quantity"),
-    ({"symbol": "AAPL", "action": "BUY", "quantity": True}, "bool quantity"),
-    ({"symbol": "AAPL", "action": "BUY", "quantity": "10"}, "string quantity"),
-    ({"symbol": "   ", "action": "BUY", "quantity": 1}, "blank symbol"),
-    ({"action": "BUY", "quantity": 1}, "missing symbol"),
-    ({"symbol": "A", "action": "BUY", "quantity": 1, "order_type": "YOLO"}, "bad order_type"),
-    ({"symbol": "A", "action": "BUY", "quantity": 1, "tif": "FOREVER"}, "bad tif"),
-    ({"symbol": "A", "action": "BUY", "quantity": 1, "sec_type": "CRYPTO"}, "bad sec_type"),
+_M1_ORDER = {
+    "symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "LMT",
+    "limit_price": 185.0, "stop_price": None, "tif": "DAY", "sec_type": "STK",
+    "conid": None, "reason": "M-1 regression fixture",
+}
+_M1_MODIFY = {
+    "order_id": "242538143", "conid": 265598, "symbol": "AAPL", "action": "BUY",
+    "quantity": 1, "order_type": "LMT", "limit_price": 105.0, "stop_price": None,
+    "tif": "GTC", "sec_type": "STK", "reason": "M-1 regression fixture",
+    "changes": [{"field": "limit_price", "previous_value": 100.0}],
+}
+
+
+def _m1_agent():
+    """A ClaudIAAgent with every dependency mocked — proposal handling touches none of them."""
+    from unittest.mock import MagicMock, patch
+
+    from claudia.agent import ClaudIAAgent
+
+    toolkit = MagicMock()
+    toolkit.tools = []
+    with patch("claudia.agent.AsyncAnthropic"):
+        return ClaudIAAgent(
+            toolkit=toolkit, store=MagicMock(), context_loader=MagicMock(),
+            session_id="m1", sink=MagicMock(),
+        )
+
+
+@pytest.mark.parametrize("tool,payload,reason", [
+    ("propose_order", {**_M1_ORDER, "quantity": -5}, "negative quantity"),
+    ("propose_order", {**_M1_ORDER, "quantity": 0}, "zero quantity"),
+    ("propose_order", {**_M1_ORDER, "quantity": True}, "bool quantity"),
+    ("propose_order", {**_M1_ORDER, "quantity": "10"}, "string quantity"),
+    ("propose_order", {**_M1_ORDER, "symbol": "   "}, "blank symbol"),
+    ("propose_order", {k: v for k, v in _M1_ORDER.items() if k != "symbol"}, "missing symbol"),
+    ("propose_modify", {**_M1_MODIFY, "order_id": "  "}, "blank order_id"),
+    ("propose_modify", {**_M1_MODIFY, "changes": [
+        {"field": "limit_price", "previous_value": 100.0},
+        {"field": "limit_price", "previous_value": 99.0},
+    ]}, "duplicate changes entries"),
 ])
-def test_malformed_order_proposal_is_rejected(proposal, reason):
+def test_malformed_order_proposal_is_rejected(tool, payload, reason):
     """A proposal the model was not permitted to emit must never reach the staging button (M-1)."""
-    from claudia.order_proposal_schema import ProposalValidationError, validate_order_proposal
+    agent = _m1_agent()
+    result = agent._handle_local_tool(tool, payload)
+    assert agent._pending_proposal is None, f"{reason} was recorded for rendering"
+    assert "REJECTED" in result
+    assert "no staging button" in result.lower()
 
-    with pytest.raises(ProposalValidationError):
-        validate_order_proposal(proposal)
-    assert reason  # label only — keeps parametrize ids readable
 
-
-@pytest.mark.parametrize("proposal", [
-    {"symbol": "AAPL", "action": "BUY", "quantity": 1},
-    {"symbol": "AAPL", "action": "buy", "quantity": 2, "order_type": "lmt", "limit_price": 1.0},
+@pytest.mark.parametrize("payload", [
+    _M1_ORDER,
     # The live-proven ES order (716373691) that cleared the full gate chain on 2026-07-24.
     {"symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "LMT",
-     "limit_price": 6100.0, "sec_type": "FUT", "conid": 730283085, "tif": "GTC"},
-    {"symbol": "EUR.USD", "action": "SELL", "quantity": 1000.5, "sec_type": "CASH"},
+     "limit_price": 6100.0, "stop_price": None, "sec_type": "FUT", "conid": 730283085,
+     "tif": "GTC", "reason": "Live-proven shape"},
 ])
-def test_valid_order_proposal_is_accepted(proposal):
-    """Real proposal shapes must still pass — the validator rejects, it must not over-reject (M-1)."""
-    from claudia.order_proposal_schema import validate_order_proposal
-
-    validate_order_proposal(proposal)
+def test_valid_order_proposal_is_accepted(payload):
+    """Real proposal shapes must still pass — validation rejects, it must not over-reject (M-1)."""
+    agent = _m1_agent()
+    result = agent._handle_local_tool("propose_order", payload)
+    assert agent._pending_proposal == ("order", payload)
+    assert "accepted" in result.lower()
 
 
 def test_validator_never_mutates_the_proposal():
     """Order parameters are immutable — validation must reject, never repair (M-1).
 
-    A validator that silently normalised action/quantity/price would violate the rule
+    A handler that silently normalised action/quantity/price would violate the rule
     enforced in _SAFETY_BLOCK (feedback-order-parameter-immutability).
     """
     import copy
 
-    from claudia.order_proposal_schema import validate_order_proposal
+    agent = _m1_agent()
+    payload = {**_M1_ORDER, "quantity": 0}
+    before = copy.deepcopy(payload)
+    agent._handle_local_tool("propose_order", payload)
+    assert payload == before, "handler mutated the proposal"
 
-    proposal = {"symbol": "aapl", "action": "buy", "quantity": 3, "order_type": "lmt",
-                "limit_price": 100.0, "tif": "gtc"}
-    before = copy.deepcopy(proposal)
-    validate_order_proposal(proposal)
-    assert proposal == before, "validator mutated the proposal"
+
+def test_accepted_proposal_is_recorded_by_reference_not_reshaped():
+    """The dict handed to the render path must be exactly what the model emitted — any
+    reshaping in the handler would be a mutation of an order proposal en route to Gate 2."""
+    agent = _m1_agent()
+    payload = dict(_M1_MODIFY)
+    agent._handle_local_tool("propose_modify", payload)
+    assert agent._pending_proposal is not None
+    assert agent._pending_proposal[1] is payload

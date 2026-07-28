@@ -56,8 +56,9 @@ class MessageSink(Protocol):
     # Gate 2 (the AppKit confirmation dialog). A sink that acted on a proposal directly
     # would defeat the single most important safety property in the system.
     #
-    # `proposal` arrives already schema-checked by agent.py against
-    # order_proposal_schema — a sink must still never repair or normalise its values, since
+    # `proposal` is a `propose_*` tool's input (claudia/proposal_tools.py): validated by
+    # the API against a strict schema, then checked by agent.py for the few guarantees that
+    # schema cannot express. A sink must still never repair or normalise its values, since
     # order parameters are immutable.
 
     async def send_order_proposal(self, proposal: dict) -> None:
@@ -85,9 +86,8 @@ class MessageSink(Protocol):
 
         Args:
             proposal: The **full replacement order** (IBKR requires the complete order, not
-                a diff), keyed by `order_id`. Two private keys drive the displayed diff:
-                `_changed_fields` (list of field names the LLM says it is changing) and
-                `_previous_values` (dict of those fields' prior values). Both are
-                LLM-authored — the diff is presentation, not a verified before/after.
+                a diff), keyed by `order_id`. `changes` drives the displayed diff — one
+                `{"field", "previous_value"}` entry per field being changed. It is
+                LLM-authored, so the diff is presentation, not a verified before/after.
         """
         ...

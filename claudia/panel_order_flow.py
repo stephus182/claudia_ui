@@ -168,10 +168,10 @@ async def render_modify_proposal(
 ) -> None:
     """Render a modify proposal as a chat message with a modify button.
 
-    The summary shows a field-by-field diff built from the LLM-supplied `_changed_fields`
-    and `_previous_values` keys — i.e. the "before" column is authored by the same party
-    proposing the change. Gate 2 re-renders the real order for confirmation, so the
-    authoritative view is the AppKit dialog, not this summary.
+    The summary shows a field-by-field diff built from the LLM-supplied `changes` array —
+    i.e. the "before" column is authored by the same party proposing the change. Gate 2
+    re-renders the real order for confirmation, so the authoritative view is the AppKit
+    dialog, not this summary.
 
     Args:
         chat: The session's ChatInterface. Also the target for status messages.

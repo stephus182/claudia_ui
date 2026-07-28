@@ -244,10 +244,11 @@ PROPOSE_MODIFY: dict[str, object] = {
             "tif": _TIF,
             "sec_type": _SEC_TYPE,
             "reason": {"type": "string"},
-            # order_flow._format_modify_summary still consumes the flattened private pair
-            # `_changed_fields` (list) + `_previous_values` (dict). Task 3's handler owns
-            # the adapter: field names -> _changed_fields, {field: previous_value} ->
-            # _previous_values.
+            # Task 3 resolved the adapter question by deleting the adapter:
+            # order_flow._format_modify_summary now reads `changes` directly, so the dict
+            # that reaches the render path, the execution core and the decisions table is
+            # byte-identical to what the model emitted. Reshaping it in the handler would
+            # have put a mutation of an order proposal on the path to Gate 2.
             "changes": _CHANGES,
         },
         "required": [

@@ -234,9 +234,17 @@ def test_live_api_accepts_proposal_tools() -> None:
 
     This is a schema-acceptance probe only, not a behavioural test: max_tokens=1, a
     throwaway prompt, and no assertion about what the model says.
+
+    Sent through `_with_cache_marker`, which is how `agent.py` actually ships them: the
+    last tool in the array — `propose_modify`, since Task 3 appends PROPOSAL_TOOLS last —
+    carries the prompt-cache breakpoint. `strict: true` alongside `cache_control` on one
+    tool is its own untested combination, and a rejection there would be the same
+    registration-time 400 that fails every request. Probed together, 2026-07-27: accepted.
     """
     import anthropic
     from dotenv import load_dotenv
+
+    from claudia.agent import _with_cache_marker
 
     # Same credential resolution the app uses (order_flow.py): the key lives in .env, not
     # in the ambient environment. Never logged or interpolated anywhere.
@@ -249,7 +257,7 @@ def test_live_api_accepts_proposal_tools() -> None:
         anthropic.Anthropic().messages.create(
             model=model,
             max_tokens=1,
-            tools=PROPOSAL_TOOLS,  # type: ignore[arg-type]
+            tools=_with_cache_marker(PROPOSAL_TOOLS),  # type: ignore[arg-type]
             messages=[{"role": "user", "content": "ping"}],
         )
     except anthropic.BadRequestError as exc:  # pragma: no cover - only on schema breakage

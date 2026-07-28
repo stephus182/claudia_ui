@@ -3,9 +3,11 @@
 Builds the system prompt, loads conversation history, streams Claude responses
 with multi-turn tool use, and persists every interaction to ConversationStore.
 
-Order proposals: ClaudIA embeds a fenced ```order-proposal block in its response
-when it wants to suggest a staged trade. agent.py strips the block from the
-displayed text and passes the parsed JSON to order_flow for button rendering.
+Order proposals: ClaudIA calls one of the three `propose_*` tools (see
+claudia/proposal_tools.py) when it wants to suggest a staged trade. Their handlers
+here record the tool input — which the API has already validated against a strict
+schema — and the recorded dict is handed to the MessageSink for button rendering
+after the tool loop finishes. The handlers reach nothing: no IBKR call, no execution.
 
 Anthropic SDK: anthropic.AsyncAnthropic with client.messages.stream() for
 server-sent event streaming. Tool use follows the multi-turn loop pattern:
@@ -24,19 +26,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from typing import TYPE_CHECKING
 
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
-# Dependency-free schema check for the proposal blocks declared in _SAFETY_BLOCK below.
-# Importing it does not couple agent.py to the order-execution layer — see that module.
-from claudia.order_proposal_schema import (
-    ProposalValidationError,
-    validate_amend_proposal,
-    validate_order_proposal,
-)
+# Declaration-only tool schemas. Importing them does not couple agent.py to the
+# order-execution layer — that module reaches nothing (CLAUDE.md Hard Rule 1).
+from claudia.proposal_tools import PROPOSAL_TOOL_NAMES, PROPOSAL_TOOLS
 
 if TYPE_CHECKING:
     from ibkr_core_mcp import ClaudeToolkit
@@ -89,27 +86,12 @@ remembered or plausible-sounding values.
 If you are uncertain whether a data point came from a tool call or from your training: treat
 it as invented and do not state it. Call the relevant tool instead.
 
-## ORDER PROPOSAL FORMAT
+## ORDER PROPOSAL — USE THE TOOLS, NEVER PROSE
 
-When suggesting a specific trade, include exactly one fenced block using this format:
-
-```order-proposal
-{
-  "symbol": "TICKER",
-  "action": "BUY" or "SELL",
-  "quantity": <integer>,
-  "order_type": "MKT" or "LMT" or "STP" or "STOP_LIMIT",
-  "limit_price": <float or null>,
-  "stop_price": <float or null>,
-  "tif": "DAY" or "GTC" or "IOC" or "OPG",
-  "sec_type": "STK" or "FUT" or "OPT" or "FOP" or "CASH",
-  "conid": <integer or null>,
-  "reason": "<one-line rationale>"
-}
-```
-
-The block will be rendered as a confirmation button for the user to review and stage.
-Do NOT include multiple order proposals in a single message.
+To propose a trade action, call the matching tool: `propose_order` (new),
+`propose_cancel`, or `propose_modify`. There is no text format for proposals — writing
+about a proposal without calling the tool means no button is created and nothing is staged.
+Call at most one proposal tool per response.
 
 ## ORDER PARAMETER IMMUTABILITY — NON-OVERRIDABLE
 
@@ -123,47 +105,6 @@ The user decides. You propose, they confirm.
 
 You MUST NEVER change a user-specified order parameter without the user explicitly approving
 the new value in a follow-up message. This includes price, quantity, symbol, order type, and TIF.
-
-## ORDER CANCEL / MODIFY FORMAT
-
-To cancel an existing order, include exactly one fenced block:
-
-```order-cancel-proposal
-{
-  "order_id": "<string, from a real get_live_orders/get_order_status/diagnose_orders call>",
-  "symbol": "TICKER",
-  "action": "BUY" or "SELL",
-  "quantity": <integer>,
-  "order_type": "MKT" or "LMT" or "STP" or "STOP_LIMIT",
-  "limit_price": <float or null>,
-  "stop_price": <float or null>,
-  "tif": "DAY" or "GTC" or "IOC" or "OPG",
-  "reason": "<one-line rationale>"
-}
-```
-
-To modify an existing order, include exactly one fenced block:
-
-```order-modify-proposal
-{
-  "order_id": "<string, from a real get_order_status call>",
-  "conid": <integer, from the same get_order_status call — required, no fallback resolution>,
-  "symbol": "TICKER",
-  "action": "BUY" or "SELL",
-  "quantity": <integer>,
-  "order_type": "MKT" or "LMT" or "STP" or "STOP_LIMIT",
-  "limit_price": <float or null>,
-  "stop_price": <float or null>,
-  "tif": "DAY" or "GTC" or "IOC" or "OPG",
-  "sec_type": "STK" or "FUT" or "OPT" or "FOP" or "CASH",
-  "reason": "<one-line rationale>",
-  "_changed_fields": ["<field name(s) actually being changed>"],
-  "_previous_values": {"<field name>": "<previous value>"}
-}
-```
-
-Include at most ONE proposal block total per message — order-proposal, order-cancel-proposal,
-or order-modify-proposal. Never combine two in the same response.
 
 ## ORDER CANCEL / MODIFY RULES — NON-OVERRIDABLE
 
@@ -179,15 +120,15 @@ or order-modify-proposal. Never combine two in the same response.
     — do not propose the action anyway.
 - A modify proposal REQUIRES calling `get_order_status(order_id)` first — it returns the
   contract id (`conid`) and full current field set that `get_live_orders` does not expose.
-  Never build an order-modify-proposal from `get_live_orders` data alone.
+  Never build a `propose_modify` call from `get_live_orders` data alone.
 
 ## MODIFY PARAMETER IMMUTABILITY — NON-OVERRIDABLE
 
-Every field in an order-modify-proposal that the user did NOT ask to change must be copied
+Every field in a `propose_modify` call that the user did NOT ask to change must be copied
 byte-for-byte (the exact value) from the latest `get_order_status` result for that order. Only
-the specific field(s) the user asked to change may differ. List every changed field in
-`_changed_fields` and its prior value in `_previous_values` so the confirmation dialog can show
-a clear before/after diff.
+the specific field(s) the user asked to change may differ. Give `changes` one entry per changed
+field, carrying that field's prior value, so the confirmation dialog can show a clear
+before/after diff.
 
 You MUST NEVER change an unrequested order field when building a modify proposal. This mirrors
 the ORDER PARAMETER IMMUTABILITY rule above — the user decides, you propose, they confirm.
@@ -214,39 +155,74 @@ in the current turn, stop and make the tool call first.
 """
 
 
-def _make_block_stripper(tag: str):
-    """Build a function that extracts and removes a fenced ```{tag} block from text.
+_PROPOSAL_KINDS: dict[str, str] = {
+    "propose_order": "order",
+    "propose_cancel": "cancel",
+    "propose_modify": "modify",
+}
+"""Tool name -> the proposal kind recorded in `_pending_proposal` and dispatched on."""
 
-    Shared by order-proposal, order-cancel-proposal, and order-modify-proposal — each is
-    a single JSON block the LLM emits in place of calling an order-execution tool directly
-    (see Hard Rule 1 in CLAUDE.md); a human later approves it via a physical button click.
+
+def _proposal_defect(kind: str, inputs: dict) -> str | None:
+    """Return why a proposal must be rejected, or None when it carries no defect.
+
+    `strict: true` already guarantees the types, enums, required keys and closed objects of
+    `proposal_tools.py`'s schemas, so nothing here re-checks those. Four things it cannot
+    express are checked here instead, because retiring `order_proposal_schema.py` would
+    otherwise drop each guarantee silently. All four apply to every proposal kind that
+    declares the field — the schemas share `_QUANTITY` across all three tools:
+
+    1. `quantity > 0` — `exclusiveMinimum` is a hard 400 on the tools endpoint (probed
+       2026-07-27), so the bound lives only in the field's description: guidance, not
+       enforcement.
+    2. `symbol` non-blank — `minLength` is deliberately unused (see that module's
+       "Deliberate omissions"), and `"   "` would satisfy it anyway.
+    3. `order_id` non-blank on cancel/modify — same, and acting on the wrong or no order is
+       the failure mode for both.
+    4. No duplicate `changes` entries — two entries for one field would render a
+       contradictory before/after diff. Unlike 1-3 this rests on the published unsupported
+       list rather than a probe: `uniqueItems` was never sent, because a rejected keyword
+       is a registration-time 400 on every request and adding it to find out is the risk
+       this handler exists to avoid.
+
+    The type checks below are belt-and-braces against a caller that is not the strict tool
+    loop (tests, a future non-API path); they are not a claim that the schema fails.
+
+    Args:
+        kind: "order", "cancel", or "modify".
+        inputs: The tool_use.input dict, **never mutated** — order parameters are immutable,
+            so a defective proposal is rejected whole, never repaired.
+
+    Returns:
+        A one-line reason suitable for a tool_result, or None if the proposal is acceptable.
     """
-    pattern = re.compile(rf"```{re.escape(tag)}\s*\n(.*?)\n```", re.DOTALL)
+    quantity = inputs.get("quantity")
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+        return f"quantity={quantity!r} must be a whole number greater than 0"
 
-    def _strip(text: str) -> tuple[str, dict | None]:
-        """Split `text` into (text without the block, parsed block or None).
+    symbol = inputs.get("symbol")
+    if not isinstance(symbol, str) or not symbol.strip():
+        return f"symbol={symbol!r} is blank"
 
-        Malformed JSON degrades to `(text, None)` and a warning rather than raising —
-        a bad block must never break the response, and dropping it fails safe: no
-        proposal is rendered, so nothing can be staged.
-        """
-        m = pattern.search(text)
-        if not m:
-            return text, None
-        try:
-            proposal = json.loads(m.group(1))
-        except json.JSONDecodeError:
-            log.warning("Malformed %s JSON in response", tag)
-            return text, None
-        clean = pattern.sub("", text).strip()
-        return clean, proposal
+    if kind in ("cancel", "modify"):
+        order_id = inputs.get("order_id")
+        if not isinstance(order_id, str) or not order_id.strip():
+            return f"order_id={order_id!r} is blank"
 
-    return _strip
+    if kind == "modify":
+        changes = inputs.get("changes")
+        if not isinstance(changes, list) or not changes:
+            return f"changes={changes!r} must list at least one changed field"
+        fields: list[str] = []
+        for entry in changes:
+            if not isinstance(entry, dict) or not isinstance(entry.get("field"), str):
+                return f"changes entry {entry!r} is not a {{field, previous_value}} object"
+            fields.append(entry["field"])
+        duplicated = sorted({f for f in fields if fields.count(f) > 1})
+        if duplicated:
+            return f"changes names {', '.join(duplicated)} more than once"
 
-
-_strip_order_proposal = _make_block_stripper("order-proposal")
-_strip_order_cancel_proposal = _make_block_stripper("order-cancel-proposal")
-_strip_order_modify_proposal = _make_block_stripper("order-modify-proposal")
+    return None
 
 
 _LOCAL_TOOLS: list[dict] = [
@@ -330,6 +306,14 @@ _LOCAL_TOOLS: list[dict] = [
 ]
 
 _LOCAL_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in _LOCAL_TOOLS)
+
+_LOCALLY_HANDLED: frozenset[str] = _LOCAL_TOOL_NAMES | PROPOSAL_TOOL_NAMES
+"""Every tool the agent executes itself rather than routing to the toolkit or TradingView.
+
+Hard Rule 1 (CLAUDE.md) applies to this whole set, not just `_LOCAL_TOOL_NAMES`: none of
+these may place, modify, cancel, or reply to an order. The `propose_*` handlers record a
+proposal for the render path and reach nothing.
+"""
 
 
 def _with_cache_marker(tools: list[dict]) -> list[dict]:
@@ -536,6 +520,9 @@ class ClaudIAAgent:
         self._client = AsyncAnthropic()
         self._system_blocks_cache: list[dict] | None = None
         self._system_reload_seen: int = -1
+        # (kind, tool_use.input) for the one proposal this turn may make. Written only by
+        # _record_proposal, cleared at the top of every handle_message.
+        self._pending_proposal: tuple[str, dict] | None = None
 
     def set_tv_bridge(self, bridge: TradingViewBridge, tools: list[dict]) -> None:
         """Update the TradingView connection mid-session, after a successful launch.
@@ -577,18 +564,22 @@ class ClaudIAAgent:
     def _all_tools(self) -> list[dict]:
         """The full tool list for the Anthropic `tools=` parameter.
 
-        Order is toolkit (42 IBKR tools) + TradingView extras + `_LOCAL_TOOLS`, and is
-        stable across turns because the cache marker is applied to the final entry —
-        reordering would invalidate the tools cache breakpoint on every request.
+        Order is toolkit (42 IBKR tools) + TradingView extras + `_LOCAL_TOOLS` +
+        `PROPOSAL_TOOLS`, and is stable across turns because the cache marker is applied to
+        the final entry — reordering would invalidate the tools cache breakpoint on every
+        request. The proposal tools go last for that reason: appending is the only way to
+        add tools without moving the ones already cached ahead of them.
         """
-        return _with_cache_marker(self._toolkit.tools + self._extra_tools + _LOCAL_TOOLS)
+        return _with_cache_marker(
+            self._toolkit.tools + self._extra_tools + _LOCAL_TOOLS + PROPOSAL_TOOLS
+        )
 
     async def handle_message(self, user_text: str, images: list[dict] | None = None) -> None:
         """Process one user message end to end.
 
         Streams Claude's response, runs the multi-turn tool loop (stream → collect
-        `tool_use` → execute → append `tool_result` → stream again), validates and renders
-        any proposal block, and persists every message and decision.
+        `tool_use` → execute → append `tool_result` → stream again), renders whichever
+        proposal tool the model called, and persists every message and decision.
 
         Args:
             user_text: The user's message, persisted before the first API call so it
@@ -596,14 +587,19 @@ class ClaudIAAgent:
             images: Optional Anthropic image content blocks (screenshot uploads,
                 TradingView captures) appended to this turn's user message.
 
-        Persists: the user message, the final assistant text (with proposal blocks
-        stripped), and any proposal as a decision row.
+        Persists: the user message, the final assistant text, and any proposal as a
+        decision row.
 
         Exceptions from the API or a tool are **not** caught here — they propagate to the
         Panel callback, which surfaces them in the chat feed
         (`ChatInterface.callback_exception="summary"`). Tool-level errors that the toolkit
         turns into strings are fed back to the model instead, so the loop continues.
         """
+        # Cleared FIRST, before anything can raise: a turn that dies mid-loop leaves its
+        # recorded proposal behind, and a stale one would render a staging button the user
+        # never asked for in the next turn.
+        self._clear_pending_proposal()
+
         # Persist user message
         self._store.add_message(self._session_id, "user", user_text)
 
@@ -625,7 +621,6 @@ class ClaudIAAgent:
 
         # Multi-turn tool loop
         full_response_text = ""
-        order_proposal: dict | None = None
 
         while True:
             response_text = ""
@@ -759,7 +754,7 @@ class ClaudIAAgent:
             for tc in tool_calls:
                 async with self._sink.tool_step(tc["name"]) as step:
                     step.input = json.dumps(tc["input"], indent=2)
-                    if tc["name"] in _LOCAL_TOOL_NAMES:
+                    if tc["name"] in _LOCALLY_HANDLED:
                         result_text = self._handle_local_tool(tc["name"], tc["input"])
                     elif tc["name"] in self._tv_tool_names and self._tv_bridge is not None:
                         result_text = await self._tv_bridge.execute(tc["name"], tc["input"])
@@ -786,36 +781,11 @@ class ClaudIAAgent:
             messages.append({"role": "user", "content": tool_results})  # type: ignore[typeddict-item]
 
         # --- Final response ---
-        display_text, order_proposal = _strip_order_proposal(full_response_text)
-        display_text, cancel_proposal = _strip_order_cancel_proposal(display_text)
-        display_text, modify_proposal = _strip_order_modify_proposal(display_text)
-
-        # Schema-check before anything is rendered: a proposal that fails is dropped, so no
-        # staging button is ever built from values the model was not permitted to emit
-        # (security-audit-2026-07-25.md, M-1). Rejection is reported to the user rather than
-        # swallowed — silently dropping would worsen the known failure mode where ClaudIA
-        # claims an order was staged without emitting a usable block
-        # (finding-llm-proposal-block-emission).
-        rejections: list[str] = []
-        if order_proposal:
-            try:
-                validate_order_proposal(order_proposal)
-            except ProposalValidationError as exc:
-                log.warning("Rejected malformed order-proposal: %s", exc)
-                rejections.append(f"order proposal ({exc})")
-                order_proposal = None
-        for name, prop in (("cancel", cancel_proposal), ("modify", modify_proposal)):
-            if not prop:
-                continue
-            try:
-                validate_amend_proposal(prop, name)
-            except ProposalValidationError as exc:
-                log.warning("Rejected malformed %s-proposal: %s", name, exc)
-                rejections.append(f"{name} proposal ({exc})")
-                if name == "cancel":
-                    cancel_proposal = None
-                else:
-                    modify_proposal = None
+        # Nothing is parsed out of the text any more: a proposal is a tool call the API
+        # already validated, recorded by _record_proposal during the loop above. At most
+        # one exists per turn — the second call is refused there, not silently dropped.
+        display_text = full_response_text.strip()
+        kind, proposal = self._pending_proposal or (None, None)
 
         # Persist final assistant message
         msg_id = self._store.add_message(
@@ -826,44 +796,97 @@ class ClaudIAAgent:
         if display_text:
             await self._sink.send_message(display_text)
 
-        # Surface any rejection so the user never believes a dropped proposal was staged.
-        if rejections:
-            await self._sink.send_message(
-                "⚠️ **Proposal rejected — nothing was staged.** ClaudIA emitted a malformed "
-                + ", ".join(rejections)
-                + ". Re-state the order explicitly and it will be re-proposed."
-            )
-
-        # Render a proposal button if present — at most one type per message.
-        # The system prompt instructs at most one proposal block per response; if the
-        # LLM ever violates that, only order_proposal renders — log so it's not silent.
-        proposal_count = sum(1 for p in (order_proposal, cancel_proposal, modify_proposal) if p)
-        if proposal_count > 1:
-            log.warning(
-                "Multiple proposal blocks in one response (order=%s cancel=%s modify=%s) — "
-                "only the highest-priority one is rendered/logged",
-                bool(order_proposal), bool(cancel_proposal), bool(modify_proposal),
-            )
-        if order_proposal:
-            await self._sink.send_order_proposal(order_proposal)
-        elif cancel_proposal:
-            await self._sink.send_cancel_proposal(cancel_proposal)
-        elif modify_proposal:
-            await self._sink.send_modify_proposal(modify_proposal)
+        # Render the staging button for whichever proposal was recorded.
+        if proposal is not None:
+            if kind == "order":
+                await self._sink.send_order_proposal(proposal)
+            elif kind == "cancel":
+                await self._sink.send_cancel_proposal(proposal)
+            elif kind == "modify":
+                await self._sink.send_modify_proposal(proposal)
 
         # Log any user-directed trade proposal for future recall
         self._log_proposal(
-            display_text, order_proposal, msg_id,
-            cancel_proposal=cancel_proposal, modify_proposal=modify_proposal,
+            display_text,
+            proposal if kind == "order" else None,
+            msg_id,
+            cancel_proposal=proposal if kind == "cancel" else None,
+            modify_proposal=proposal if kind == "modify" else None,
+        )
+
+    def _clear_pending_proposal(self) -> None:
+        """Discard any proposal left over from an earlier turn.
+
+        A method rather than an inline `self._pending_proposal = None`, deliberately: mypy
+        narrows an attribute to `None` at the point of assignment and does not widen it
+        again across the `_handle_local_tool` call that reassigns it, so inlining this makes
+        the whole render dispatch below statically unreachable. Assigning inside a method
+        keeps the declared type in force at the read site, where the value really can be a
+        recorded proposal.
+        """
+        self._pending_proposal = None
+
+    def _record_proposal(self, name: str, inputs: dict) -> str:
+        """Record one `propose_*` call for the render path. Executes nothing.
+
+        CLAUDE.md Hard Rule 1: this reaches no IBKR API, directly or indirectly. It stores
+        the tool input and returns a string; the staging button, Gate 1 (Touch ID) and
+        Gate 2 (the AppKit dialog) all still stand between it and a live order.
+
+        The returned `tool_result` is the point of the whole change — before it, the model
+        had no feedback on whether its proposal had landed, and defended claims that a
+        button existed when none did (finding-llm-proposal-block-emission). So it reports
+        exactly what this method knows and nothing more: that the proposal was recorded, or
+        precisely why it was refused. It cannot know the render later succeeded, and must
+        never imply it did.
+
+        Args:
+            name: One of `_PROPOSAL_KINDS`' keys.
+            inputs: `tool_use.input`, already schema-valid. Stored by reference and never
+                mutated — order parameters are immutable, so a defective proposal is
+                rejected whole and re-proposed, never silently corrected.
+
+        Returns:
+            An acceptance or refusal string for the model. On refusal `_pending_proposal`
+            is left untouched, so nothing is rendered and nothing is staged.
+        """
+        kind = _PROPOSAL_KINDS[name]
+
+        if self._pending_proposal is not None:
+            log.warning("Second proposal in one turn (%s); keeping the first", name)
+            return (
+                "REJECTED — a proposal is already pending for this turn, and only one may "
+                "be proposed. No staging button was created for this call; the first "
+                "proposal stands."
+            )
+
+        defect = _proposal_defect(kind, inputs)
+        if defect is not None:
+            log.warning("Rejected %s proposal: %s", name, defect)
+            return (
+                f"REJECTED — {defect}. No staging button was created and nothing was "
+                "staged. Tell the user plainly what was wrong; do not substitute a "
+                "corrected value for any order parameter they specified."
+            )
+
+        self._pending_proposal = (kind, inputs)
+        return (
+            "Proposal accepted. A staging button will be rendered for the user; "
+            "nothing is staged or sent to IBKR until they click it and pass Touch ID "
+            "and the confirmation dialog."
         )
 
     def _handle_local_tool(self, name: str, inputs: dict) -> str:
-        """Dispatch the five locally-implemented tools and return a string result.
+        """Dispatch every locally-executed tool and return a string result.
 
-        Local tools (list_doc_versions, get_doc_version, search_past_conversations,
-        fetch_web_page, get_live_pnl) are defined in TOOL_DEFINITIONS but executed here
-        rather than via toolkit.execute(). They always return a string — never raise.
+        Two groups, both listed in `_LOCALLY_HANDLED`: the three `propose_*` tools, which
+        only record a proposal (`_record_proposal`), and the five utility tools
+        (list_doc_versions, get_doc_version, search_past_conversations, fetch_web_page,
+        get_live_pnl) that are declared alongside the toolkit's but executed here rather
+        than via toolkit.execute(). They always return a string — never raise.
         """
+        if name in PROPOSAL_TOOL_NAMES:
+            return self._record_proposal(name, inputs)
         if name == "list_doc_versions":
             versions = self._store.list_doc_versions()
             if not versions:

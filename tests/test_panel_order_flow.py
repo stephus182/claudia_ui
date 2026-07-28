@@ -126,7 +126,7 @@ async def test_render_modify_proposal_sends_message_with_two_buttons():
     proposal = {
         "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
         "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
-        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+        "changes": [{"field": "limit_price", "previous_value": 100.0}],
     }
     await render_modify_proposal(chat, proposal, session_id="s1", store=None)
     column = chat.send.call_args.args[0]
@@ -141,7 +141,7 @@ async def test_render_modify_proposal_confirm_click_calls_modify_core():
     proposal = {
         "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
         "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
-        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+        "changes": [{"field": "limit_price", "previous_value": 100.0}],
     }
     ibkr_mod, client = _make_ibkr_mock()
     await render_modify_proposal(chat, proposal, session_id="s1", store=None)

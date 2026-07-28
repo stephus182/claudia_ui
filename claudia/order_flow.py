@@ -1,8 +1,9 @@
 """Human-initiated order staging for ClaudIA — the framework-agnostic execution core.
 
 The LLM never calls this code directly. Flow:
-  1. ClaudIA embeds an order-proposal block in its response text.
-  2. agent.py parses it and hands the dict to the MessageSink
+  1. ClaudIA calls the `propose_order` tool (claudia/proposal_tools.py), which records a
+     proposal and reaches nothing.
+  2. agent.py hands the recorded dict to the MessageSink
      (send_order_proposal), which the Panel sink routes to
      panel_order_flow.render_order_proposal() — a message with a "Stage this
      order" button.
@@ -520,17 +521,19 @@ async def _execute_cancel_order_core(
 def _format_modify_summary(proposal: dict) -> str:
     """Build the human-approval text for modifying a live order, as a field-by-field diff.
 
-    The only consumer of the two private keys the LLM supplies alongside the replacement
-    order:
+    The only consumer of `changes`, the array `propose_modify` carries alongside the
+    replacement order (claudia/proposal_tools.py). Each entry is
+    ``{"field": <name>, "previous_value": <prior>}`` and renders as
+    ``field: <previous_value> → <proposal[field]>``.
 
-    - `_changed_fields`: list of field names the model says it is changing.
-    - `_previous_values`: dict mapping those names to their prior values.
-
-    For each entry the line reads ``field: <_previous_values[field]> → <proposal[field]>``.
-    Both keys are LLM-authored, so the "before" column is a claim, not a verified read of
+    `changes` is LLM-authored, so the "before" column is a claim, not a verified read of
     the resting order — Gate 2 re-renders the actual order, and that is the authoritative
-    view. Falls back to "(no changed fields listed)" when `_changed_fields` is absent or
-    empty.
+    view. Falls back to "(no changed fields listed)" when `changes` is absent or empty.
+
+    **Total by construction**: it renders a malformed entry rather than raising. A render
+    that dies is precisely how a proposal disappeared while the model went on to describe
+    a button that was never created (finding-llm-proposal-block-emission), so this last
+    step before the human sees anything must not be the thing that fails.
 
     Args:
         proposal: Schema-checked modify-proposal dict — the full replacement order.
@@ -540,16 +543,19 @@ def _format_modify_summary(proposal: dict) -> str:
     """
     order_id = proposal.get("order_id", "?")
     symbol = proposal.get("symbol", "?")
-    changed = proposal.get("_changed_fields") or []
-    previous = proposal.get("_previous_values") or {}
+    changes = proposal.get("changes") or []
     reason = proposal.get("reason", "")
 
     lines = [f"**MODIFY order {order_id}: {symbol}**"]
-    if changed:
-        for field in changed:
-            old = previous.get(field)
-            new = proposal.get(field)
-            lines.append(f"- {field}: {old} → {new}")
+    if changes:
+        for change in changes:
+            if not isinstance(change, dict):
+                lines.append(f"- (malformed change entry: {change!r})")
+                continue
+            field = change.get("field")
+            lines.append(
+                f"- {field}: {change.get('previous_value')} → {proposal.get(field)}"
+            )
     else:
         lines.append("(no changed fields listed)")
     if reason:

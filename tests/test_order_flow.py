@@ -207,8 +207,8 @@ def test_format_cancel_summary_shows_stop_price():
 def test_format_modify_summary_shows_changed_fields():
     proposal = {
         "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
-        "limit_price": 105.0, "_changed_fields": ["limit_price"],
-        "_previous_values": {"limit_price": 100.0},
+        "limit_price": 105.0,
+        "changes": [{"field": "limit_price", "previous_value": 100.0}],
     }
     summary = _format_modify_summary(proposal)
     assert "242538143" in summary
@@ -218,16 +218,41 @@ def test_format_modify_summary_shows_changed_fields():
     assert "Touch ID" in summary
 
 
+def test_format_modify_summary_shows_every_changed_field():
+    """One line per entry — a multi-field modify must not show only the first."""
+    proposal = {
+        "order_id": "1", "conid": 1, "symbol": "AAPL", "limit_price": 105.0, "quantity": 3,
+        "changes": [
+            {"field": "limit_price", "previous_value": 100.0},
+            {"field": "quantity", "previous_value": 1},
+        ],
+    }
+    summary = _format_modify_summary(proposal)
+    assert "limit_price: 100.0 → 105.0" in summary
+    assert "quantity: 1 → 3" in summary
+
+
 def test_format_modify_summary_no_changed_fields_noted():
-    proposal = {"order_id": "1", "conid": 1, "symbol": "AAPL", "_changed_fields": [], "_previous_values": {}}
+    proposal = {"order_id": "1", "conid": 1, "symbol": "AAPL", "changes": []}
     summary = _format_modify_summary(proposal)
     assert "AAPL" in summary
+    assert "no changed fields listed" in summary
+
+
+def test_format_modify_summary_renders_a_malformed_entry_instead_of_raising():
+    """The last step before the human sees the proposal must not be the thing that fails —
+    a render that dies is how a button silently failed to appear
+    (finding-llm-proposal-block-emission)."""
+    proposal = {"order_id": "1", "conid": 1, "symbol": "AAPL", "changes": ["limit_price"]}
+    summary = _format_modify_summary(proposal)
+    assert "malformed" in summary
+    assert "limit_price" in summary
 
 
 def test_format_modify_summary_shows_reason():
     proposal = {
-        "order_id": "1", "conid": 1, "symbol": "AAPL",
-        "_changed_fields": ["tif"], "_previous_values": {"tif": "DAY"}, "tif": "GTC",
+        "order_id": "1", "conid": 1, "symbol": "AAPL", "tif": "GTC",
+        "changes": [{"field": "tif", "previous_value": "DAY"}],
         "reason": "Extending time in force",
     }
     summary = _format_modify_summary(proposal)
@@ -299,7 +324,7 @@ def _make_modify_action(payload=None):
             "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
             "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
             "tif": "GTC", "sec_type": "STK",
-            "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+            "changes": [{"field": "limit_price", "previous_value": 100.0}],
         }
     action = MagicMock()
     action.payload = {"order": json.dumps(payload)}
@@ -906,14 +931,13 @@ async def test_execute_modify_order_calls_client_with_account_order_id_and_body(
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_builds_fresh_body_not_raw_proposal():
-    """Display-only proposal fields (_changed_fields, _previous_values) must never
-    reach the IBKR request body — modify_order() does no _-prefix stripping."""
+    """Display-only proposal fields (`changes`, `reason`) must never reach the IBKR
+    request body — modify_order() does no stripping of its own."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action()
     await _run_modify(action, ibkr_mod)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
-    assert "_changed_fields" not in order_body
-    assert "_previous_values" not in order_body
+    assert "changes" not in order_body
     assert "reason" not in order_body
 
 
@@ -1080,14 +1104,13 @@ async def test_execute_modify_order_core_builds_fresh_body_not_raw_proposal():
         "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
         "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
         "tif": "GTC", "sec_type": "STK",
-        "_changed_fields": ["limit_price"], "_previous_values": {"limit_price": 100.0},
+        "changes": [{"field": "limit_price", "previous_value": 100.0}],
     }
     send_status, _calls = _make_send_status_recorder()
     with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
         await _execute_modify_order_core(proposal, send_status, session_id="s1", store=None)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
-    assert "_changed_fields" not in order_body
-    assert "_previous_values" not in order_body
+    assert "changes" not in order_body
 
 
 def test_execute_modify_order_core_never_touches_action_or_removes_anything():
