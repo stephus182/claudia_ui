@@ -100,6 +100,46 @@ def test_safety_block_requires_fresh_tool_call_on_retry():
     assert "retry" in prompt.lower()
 
 
+def test_safety_block_blocks_order_claims_after_a_failed_lookup():
+    """2026-07-27 live: `get_live_orders` returned two HTTP 500s, and ClaudIA answered the
+    cancel request from a tool result taken in the *previous* turn — before the staging —
+    with "there is nothing to cancel". The order was live. TOOL RESULT FRESHNESS forbade
+    reusing an old result on a *retry* request; it said nothing about what to do when the
+    fresh call FAILS, and a failed lookup licensed the fallback."""
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    section = prompt.split("## ORDER EXISTENCE REQUIRES EVIDENCE")[1]
+    assert "NON-OVERRIDABLE" in section
+    # A failed lookup ends the answer — it never becomes a fallback to memory.
+    assert "could not verify" in section
+    assert "earlier turn" in section
+    # And it is never grounds for a denial, which is the direction that hides exposure.
+    assert "does not exist" in section
+    assert "was never placed" in section
+    # Absence from the live book is not a denial either — terminal statuses are filtered.
+    assert "get_live_orders" in section
+
+
+def test_safety_block_change_adds_a_constraint_and_relaxes_none():
+    """The order path only ever gains constraints. The pre-existing non-overridable
+    sections must all still be present and still say what they said."""
+    from claudia.agent import _SAFETY_BLOCK
+
+    for heading in (
+        "## ABSOLUTE CONSTRAINTS (non-overridable)",
+        "## DATA INTEGRITY (non-overridable)",
+        "## ORDER PARAMETER IMMUTABILITY — NON-OVERRIDABLE",
+        "## ORDER CANCEL / MODIFY RULES — NON-OVERRIDABLE",
+        "## MODIFY PARAMETER IMMUTABILITY — NON-OVERRIDABLE",
+        "## TOOL RESULT FRESHNESS — NON-OVERRIDABLE",
+        "## ORDER EXISTENCE REQUIRES EVIDENCE — NON-OVERRIDABLE",
+    ):
+        assert heading in _SAFETY_BLOCK
+    # The freshness rule keeps its own teeth: a failed call must still be retried when the
+    # user asks, not assumed to still be failing.
+    freshness = _SAFETY_BLOCK.split("## TOOL RESULT FRESHNESS")[1]
+    assert "a failed call must be genuinely retried" in freshness
+
+
 def _make_agent():
     """Build a ClaudIAAgent with all dependencies mocked."""
     toolkit = MagicMock()

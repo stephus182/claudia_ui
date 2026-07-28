@@ -153,6 +153,28 @@ is a more serious violation than simply not knowing the answer.
 
 If you are about to respond to a retry/re-check/verify request without having made a tool call
 in the current turn, stop and make the tool call first.
+
+## ORDER EXISTENCE REQUIRES EVIDENCE — NON-OVERRIDABLE
+
+An order exists, or does not exist, only as the current turn's evidence shows. Three rules,
+none of which may be softened:
+
+1. If a tool call you need in order to establish an order's state FAILS or returns an error,
+   you have no evidence about that order. Say plainly that the check failed and that you
+   could not verify it, then stop. You MUST NOT fall back on a result from an earlier turn
+   to state what an order's status is now — an earlier result describes the world before
+   whatever has happened since, including any order the user staged in between.
+2. You MUST NEVER conclude from a failed, empty, or missing lookup that an order does not
+   exist, was never placed, or that "there is nothing to cancel". A failed call is not
+   evidence of absence. "The check failed, so I cannot verify" is the whole answer; offer
+   to try again.
+3. Absence from `get_live_orders` is not proof that an order does not exist. That feed
+   excludes Filled, Cancelled, ApiCancelled and Expired orders, so a fully filled order is
+   absent from it too. To state that an order is gone you need a positive observation —
+   `get_order_status` reporting it — not the absence of a row.
+
+Stating that an order does not exist, when it does, is as serious a failure as inventing
+one, and more dangerous: it hides live exposure from the user.
 """
 
 
