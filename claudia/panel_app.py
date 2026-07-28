@@ -1102,6 +1102,12 @@ def main() -> None:
     runs after pn.serve returns — V5 contract.
     """
     _configure_logging()
+    # The only "server is up" signal. pn.serve(show=False) opens no browser, and
+    # _configure_logging pins bokeh to WARNING, which suppresses its own
+    # "Bokeh app running at" banner — so without this line a correctly-started
+    # ClaudIA looks identical to one that failed to start. Logged by us rather than
+    # left to bokeh so it cannot be silenced by a third-party logger setting.
+    log.info("ClaudIA serving on http://localhost:%d (Ctrl-C to stop)", _PANEL_PORT)
     # Panel installs its SIGINT handler inside pn.serve; translating SIGTERM to
     # SIGINT routes both through the same io_loop.stop() → serve-returns path.
     # Empirically verified in this task's smoke step (V5 proved only SIGINT).

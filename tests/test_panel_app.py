@@ -2039,3 +2039,22 @@ def test_configure_logging_honours_claudia_log_level(_restore_root_logging):
 
     assert not logging.getLogger("claudia.agent").isEnabledFor(logging.INFO)
     assert logging.getLogger("claudia.agent").isEnabledFor(logging.WARNING)
+
+
+def test_main_logs_a_startup_banner(_restore_root_logging, caplog):
+    """The only 'server is up' signal: show=False opens no browser and bokeh is pinned
+    to WARNING, so without this a healthy start looks identical to a failed one."""
+    from claudia import panel_app
+
+    with (
+        patch("claudia.panel_app.pn.serve") as mock_serve,
+        patch("claudia.panel_app.signal.signal"),
+        patch("claudia.panel_app._gdrive_sync", None),
+        caplog.at_level(logging.INFO, logger="claudia.panel_app"),
+    ):
+        panel_app.main()
+
+    assert mock_serve.called, "pn.serve was not reached"
+    banner = [r.getMessage() for r in caplog.records if "ClaudIA serving on" in r.getMessage()]
+    assert banner, f"no startup banner logged; got {[r.getMessage() for r in caplog.records]}"
+    assert "http://localhost:" in banner[0]
