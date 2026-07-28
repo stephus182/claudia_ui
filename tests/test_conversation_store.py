@@ -343,6 +343,21 @@ def test_get_rendered_proposals_never_returns_a_render_failure(store):
     assert store.get_rendered_proposals("sess-l3-fail") == []
 
 
+def test_get_rendered_proposals_never_returns_an_unbacked_claim(store):
+    """Same critical negative for the never-called case. `proposal_claim_unbacked` means
+    no proposal tool ran at all; replaying one as an emission record would hand the model
+    non-forgeable "evidence" of the button it only narrated."""
+    store.create_session("sess-l4-claim")
+    msg = store.add_message("sess-l4-claim", "assistant", "narrated a button")
+    store.add_decision(
+        session_id="sess-l4-claim", decision_type="proposal_claim_unbacked",
+        summary_text="claimed a completed order action but no proposal tool was called",
+        message_id=msg,
+    )
+    assert store.get_rendered_proposals("sess-l4-claim") == []
+    assert store.get_completed_order_actions("sess-l4-claim") == []
+
+
 def test_get_rendered_proposals_excludes_post_click_and_unrelated_types(store):
     """An allowlist, not a denylist: only the three "a button was shown" types qualify."""
     store.create_session("sess-l3-mix")
@@ -439,7 +454,7 @@ def test_get_completed_order_actions_excludes_proposals_and_unrelated_types(stor
     store.create_session("sess-l4-mix")
     msg = store.add_message("sess-l4-mix", "assistant", "text")
     for dtype in ("trade_proposed", "trade_cancel_proposed", "trade_modify_proposed",
-                  "proposal_render_failed", "backtest_run"):
+                  "proposal_render_failed", "proposal_claim_unbacked", "backtest_run"):
         store.add_decision(
             session_id="sess-l4-mix", decision_type=dtype, summary_text=dtype, message_id=msg,
         )

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from anthropic import AsyncAnthropic
@@ -262,6 +263,156 @@ _COMPLETED_ORDER_HEADER = (
     "observed states only, so never restate an order parameter from this list."
 )
 """Header of the replayed completed-action block. See `_completed_order_records`."""
+
+
+_UNBACKED_CLAIM_NOTICE = (
+    "⚠️ **That message described an order action that never happened.** No proposal tool "
+    "was called, so **no staging button was created, nothing has been staged and no order "
+    "exists**. Ask again and it will be proposed for real."
+)
+"""Shown, persisted and mirrored to the model when a staging claim has no tool call behind it.
+
+Unhedged for the same reason as `_GUARDRAIL_NOTICE`: it exists to contradict a claim the
+transcript already carries, and "may not have been created" would leave that claim standing.
+Its own wording must never trip `_claims_completed_proposal` — pinned by
+tests/test_agent.py::test_the_guardrails_own_texts_never_trip_the_detector.
+"""
+
+
+_UNBACKED_CLAIM_OPERATOR_NOTE = (
+    "Your preceding message told the user an order action was completed, but you called no "
+    "proposal tool in that turn: no staging button was created and nothing was staged. The "
+    "user has been told. Do not repeat or defend that claim. Writing about a proposal is "
+    "not proposing — call `propose_order`, `propose_cancel` or `propose_modify` if you "
+    "intend one."
+)
+"""Operator-channel body for a narrated action nothing backs. See `_append_operator_message`."""
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])(?=\s|[A-Z])|\n+")
+"""Sentence boundary: terminal punctuation followed by whitespace or a capital, or a newline.
+
+The capital-letter branch is not cosmetic — streamed replies routinely arrive with the space
+eaten ("…stays untouched.Cancel staged — …"), and without it the claim and its surrounding
+prose stay in one span. Requiring whitespace-or-capital is also what keeps "$6,500.00" and
+"1.5" intact, since a digit follows those periods.
+"""
+
+_MARKUP = re.compile(r"[*_`>#|]+")
+"""Markdown that can sit anywhere inside a claim ("the **button**'s above") and must not
+break the match. Replaced with a space, never deleted, so table cells do not fuse into words.
+"""
+
+# Curly apostrophes and dashes are spelled as `\uXXXX` escapes throughout these patterns:
+# in a character class an en dash and a hyphen are indistinguishable on screen, and getting
+# that wrong silently changes what the guardrail matches. `re` resolves the escapes itself.
+_BUTTON_IS_HERE = re.compile(
+    r"\bbuttons?\b['\u2019]?s?"
+    r"(?:\s+(?:is|are|was|were))?"
+    r"(?:\s+(?:now|live|up|right|just|sitting|waiting|there|ready))*"
+    r"\s+(?:above|below|up top)\b",
+    re.I,
+)
+"""Claim shape 1: a staging button is asserted to exist *here*, in this message.
+
+The deictic locator is the whole point. "button" alone is the single most common word in
+ClaudIA's honest staging talk — explanations, warnings, recaps and the self-correction all
+use it — and a detector keyed on the noun is the one that measured 81% false positives. What
+no innocent sentence does is point at a button in the message being written. The permitted
+gap between the noun and the locator is a fixed handful of copulas and adverbs, which is what
+keeps "produced no button — the only real cancel proposal is item 3 above" out: 40-odd
+characters of unrelated clause sit between its two words.
+"""
+
+_ACTION_DONE = re.compile(
+    r"^(?:(?:done|ok|okay|alright)\s*[\u2014\u2013:,-]\s*)?"
+    r"(?:(?:the\s+)?(?:cancel|modify|order|trade)\s+)?"
+    r"(?:re-?)?(?:staged|proposed)\b"
+    r"(?=\s*(?:[\u2014\u2013,.;:!-]|$)"
+    r"|\s+(?:the|a|an|your|this|that|it|one|for|on|at|with)\b)",
+    re.I,
+)
+"""Claim shape 2: the sentence *opens* with a completed proposal act ("Cancel staged — …").
+
+Sentence-initial only, deliberately. A participle that opens the sentence is the predicate;
+the same word later in the sentence is almost always attributive or historical — "your test
+order, staged through ClaudIA", "both were staged through me", "| … | ClaudIA-staged |".
+
+The lookahead separates the two readings that share the opening slot. Punctuation or a
+determiner/preposition after the participle makes it a verb ("Staged — the button's above",
+"Done — re-staged with your new value"); a bare noun after it makes it a compound modifier
+("Staged button ≠ live order"). That single distinction is what keeps the honest sentence out
+while keeping the failure in.
+
+First person is deliberately absent. "I proposed a cancel earlier" and "I staged that
+yesterday" are recaps of previous turns, which this check has no evidence about — L3's
+emission records are the channel for those. Only claims about *this* turn belong here.
+"""
+
+_GOVERNING_OPERATOR = re.compile(
+    r"\b(?:no|not|never|without|n't|cannot|if|whether|would|will|shall|"
+    r"described|describing|claimed|claiming|pretend|pretending|wrote|writing|"
+    r"want me to|say the word|once you|when you)\b",
+    re.I,
+)
+"""Negation, condition and meta-report — the three ways a staging phrase is not a claim.
+
+Checked **only to the left of the match**, because in English an operator governs what
+follows it. That asymmetry is load-bearing in both directions: it vetoes "No button was
+produced above" and "I described staging a cancel…", and it does *not* veto the trailing
+reassurance ClaudIA appends to every genuine staging line ("…— nothing is live until you
+click it", "…and nothing will reach IBKR until you confirm"), which a sentence-wide negation
+or future-tense veto would silently swallow.
+"""
+
+
+def _claims_completed_proposal(text: str) -> str | None:
+    """Return the sentence claiming a completed order action, or None if there is none.
+
+    Anthropic's "Reduce hallucinations" guidance lists four basic techniques; `_SAFETY_BLOCK`
+    implements three. The fourth is *"have Claude verify each claim by finding a supporting
+    quote after it generates a response — if it can't find a quote, it must retract the
+    claim"* (https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-hallucinations).
+    This is that check with one deliberate divergence: the doc has the model audit itself,
+    which is worthless here, because the model that narrated a phantom cancel is exactly the
+    one that would be asked whether it made one. **The trigger is textual; the verdict is
+    evidence.** This function only decides that a claim was made — whether it is true is
+    settled by `_pending_proposal` at the call site, and by nothing else.
+
+    Precision is the entire design constraint. A detector that fires on ClaudIA's own honest
+    self-correction is worse than no detector: it teaches the user to ignore the one signal
+    that would have exposed the original defect. Measured against the whole assistant corpus
+    of the live store (166 messages, 47 carrying staging vocabulary, 34 of those with no
+    proposal recorded): the shapes matched 6 messages, the evidence check cleared the 5 that
+    really had proposed, and the single remaining fire is the 2026-07-28 failure itself.
+    **Zero false positives; precision 1/1.** The dropped 2026-07-27 detector measured 81%
+    false positives on the same corpus by keying on vocabulary rather than on claims.
+
+    What it gives up for that, knowingly:
+      - claims about *earlier* turns ("it's already staged in my earlier message") — no
+        evidence about those exists here; that is L3's channel.
+      - claims about non-proposal tools ("Confirmed against the live book"), which were part
+        of the same live failure. A general "I checked X" detector has no reliable shape.
+      - a bare "Cancel staged." with no locator and no sentence-initial position.
+
+    Args:
+        text: The assistant text about to be, or already, shown to the user.
+
+    Returns:
+        The offending sentence — for the log line only, never for storage: it is live
+        conversation text and the decision row must stay free of it.
+    """
+    for sentence in _SENTENCE_SPLIT.split(_MARKUP.sub(" ", text)):
+        sentence = sentence.strip()
+        # A question proposes nothing. "Want me to stage the cancel now?" is the single most
+        # common staging sentence ClaudIA writes.
+        if not sentence or sentence.endswith("?"):
+            continue
+        for shape in (_ACTION_DONE, _BUTTON_IS_HERE):
+            hit = shape.search(sentence)
+            if hit is not None and not _GOVERNING_OPERATOR.search(sentence[: hit.start()]):
+                return sentence
+    return None
 
 
 def _proposal_defect(kind: str, inputs: dict) -> str | None:
@@ -945,6 +1096,48 @@ class ClaudIAAgent:
                     cancel_proposal=proposal if kind == "cancel" else None,
                     modify_proposal=proposal if kind == "modify" else None,
                 )
+        elif display_text:
+            # Nothing was recorded this turn, so the invariant above had nothing to assert —
+            # which is precisely how the 2026-07-28 failure passed it. That turn called no
+            # tool at all and still told the user "Cancel staged — button's above". The
+            # claim is textual and the verdict is `proposal is None`; see
+            # `_claims_completed_proposal` for the shapes and the corpus measurement.
+            claim = _claims_completed_proposal(display_text)
+            if claim is not None:
+                await self._emit_unbacked_claim_notice(msg_id, claim)
+
+    async def _emit_unbacked_claim_notice(self, msg_id: int, claim: str) -> None:
+        """Contradict a staging claim that no tool call backs, on all three surfaces.
+
+        The sibling of `_emit_guardrail_notice`, and deliberately not merged with it: that
+        one means "accepted but not rendered" and this one means "never proposed at all".
+        They need different words to the user, a different decision type, and a different
+        operator note, and a turn can only ever be in one of the two states — a recorded
+        proposal takes the render path, so this branch runs only when none exists.
+
+        Same surface order and same reasoning: persist, record, queue, then display. The
+        store has shown no fault; the sink is the surface that can fail, and if it does the
+        exception reaches the chat feed while the record survives.
+
+        Args:
+            msg_id: The assistant message whose text carries the unbacked claim.
+            claim: The offending sentence. **Logged only.** It is live conversation text, so
+                it stays out of the decision row, out of the session report and out of any
+                surface that leaves this machine.
+        """
+        log.warning("Unbacked staging claim, no proposal tool called: %r", claim)
+        self._store.add_message(self._session_id, "assistant", _UNBACKED_CLAIM_NOTICE)
+        self._store.add_decision(
+            session_id=self._session_id,
+            decision_type="proposal_claim_unbacked",
+            summary_text=(
+                "assistant text claimed a completed order action but no proposal tool was "
+                "called — nothing staged"
+            ),
+            message_id=msg_id,
+        )
+        self._pending_operator_notes.append(_UNBACKED_CLAIM_OPERATOR_NOTE)
+        await self._sink.send_message(_UNBACKED_CLAIM_NOTICE)
 
     async def _emit_guardrail_notice(self, kind: str, msg_id: int) -> None:
         """Contradict a claim the transcript already carries, on every surface that matters.

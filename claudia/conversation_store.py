@@ -425,6 +425,9 @@ class ConversationStore:
           - ``trade_modify_proposed`` — a modify staging button was rendered
           - ``proposal_render_failed`` — a proposal was accepted but **no button reached
             the user**; nothing was staged and no order exists
+          - ``proposal_claim_unbacked`` — the assistant text claimed a completed order
+            action while **no proposal tool was called at all**; nothing was staged and no
+            order exists
 
         From `claudia/order_flow.py` — the user clicked and both gates passed:
           - ``trade_staged`` / ``trade_cancelled`` / ``trade_modified`` — the write reached
@@ -433,15 +436,21 @@ class ConversationStore:
             `readback_confirmed` and `readback_order_status`, and the record is only as
             honest as those three fields.
 
-        ``proposal_render_failed`` is deliberately its own type rather than a flag on the
+        The two failure types are deliberately their own types rather than flags on the
         three proposal types: those must keep meaning "a button was shown", or every
-        historical row and every regression baseline silently changes meaning. It is
-        written by `ClaudIAAgent._emit_guardrail_notice`, which closes the 2026-07-17 /
-        2026-07-24 failures where a parsed proposal produced no button and no row at all.
+        historical row and every regression baseline silently changes meaning. They are
+        also distinct from each other, because they describe opposite states of the tool
+        loop and neither query nor report may conflate them:
+        `ClaudIAAgent._emit_guardrail_notice` writes `proposal_render_failed` (accepted,
+        never drawn — the 2026-07-17 / 2026-07-24 failures), and
+        `ClaudIAAgent._emit_unbacked_claim_notice` writes `proposal_claim_unbacked` (never
+        proposed, only narrated — the 2026-07-28 failure). Both are excluded from every
+        allowlist here: replaying either as evidence would assert, on the channel the model
+        cannot forge, the exact falsehood the notice removes.
 
         message_id should be the id returned by add_message() for the assistant turn that
-        surfaced the proposal — for `proposal_render_failed`, the turn carrying the claim
-        the notice contradicts.
+        surfaced the proposal — for both failure types, the turn carrying the claim the
+        notice contradicts.
         """
         with self._conn() as conn:
             cur = conn.execute(

@@ -24,7 +24,13 @@ from claudia.agent import (
     _with_history_cache_marker,
 )
 from claudia.conversation_store import COMPLETED_ORDER_ACTION_TYPES, RENDERED_PROPOSAL_TYPES
-from tests.fixtures.failing_transcripts import DEFENDED_CLAIM_588, FAILED_437, INNOCENT
+from tests.fixtures.failing_transcripts import (
+    DEFENDED_CLAIM_588,
+    FAILED_437,
+    HONEST_STAGING_TALK,
+    INNOCENT,
+    NARRATED_STAGING,
+)
 
 
 def test_build_system_prompt_contains_safety():
@@ -2163,6 +2169,206 @@ def test_emission_record_header_never_claims_a_pending_or_staged_order():
     assert "staged" not in lowered.replace("staging", "")
     assert "order exists" not in lowered
     assert "pending" not in lowered
+
+
+# ── L4: a narrated staging action nothing backs (gap #3) ─────────────────────
+#
+# L1 asserts parsed ⇒ rendered. This asserts claimed ⇒ called. The two are disjoint: L1
+# needs a recorded proposal to have anything to assert, so a turn that never called a
+# proposal tool is structurally invisible to it. Every test below runs with
+# `_pending_proposal is None`, which is the whole trigger condition.
+
+
+@pytest.mark.parametrize("text", NARRATED_STAGING)
+def test_claim_detector_fires_on_a_completed_action_claim(text):
+    from claudia.agent import _claims_completed_proposal
+
+    assert _claims_completed_proposal(text) is not None
+
+
+@pytest.mark.parametrize("text", HONEST_STAGING_TALK + INNOCENT)
+def test_claim_detector_is_silent_on_honest_staging_talk(text):
+    """The trap, and the reason the 2026-07-27 prose detector was dropped at 81% false
+    positives. Two of these are ClaudIA owning this very failure; firing on them would
+    train the user to ignore the guardrail, which is how the original defect stayed
+    invisible for two sessions."""
+    from claudia.agent import _claims_completed_proposal
+
+    assert _claims_completed_proposal(text) is None
+
+
+def test_the_guardrails_own_texts_never_trip_the_detector():
+    """Recursion guard. Every string this agent writes about staging is persisted as an
+    assistant row or replayed on the operator channel; any of them matching would make the
+    guardrail fire on its own output."""
+    from claudia.agent import (
+        _COMPLETED_ORDER_HEADER,
+        _EMISSION_RECORD_HEADER,
+        _GUARDRAIL_NOTICE,
+        _OPERATOR_NOTE,
+        _UNBACKED_CLAIM_NOTICE,
+        _UNBACKED_CLAIM_OPERATOR_NOTE,
+        _claims_completed_proposal,
+    )
+
+    for text in (
+        _GUARDRAIL_NOTICE,
+        _OPERATOR_NOTE.format(kind="cancel"),
+        _EMISSION_RECORD_HEADER,
+        _COMPLETED_ORDER_HEADER,
+        _UNBACKED_CLAIM_NOTICE,
+        _UNBACKED_CLAIM_OPERATOR_NOTE,
+    ):
+        assert _claims_completed_proposal(text) is None, text[:60]
+
+
+def test_replayed_record_lines_never_trip_the_detector():
+    """The operator channel's rendered lines, not just their headers."""
+    from claudia.agent import _claims_completed_proposal
+
+    agent, _sink = _make_agent_recording()
+    for decision_type in RENDERED_PROPOSAL_TYPES:
+        agent._store.add_decision(
+            session_id="test-session", decision_type=decision_type, symbol="ZZZ",
+            message_id=1, metadata={"order": {"order_id": "9000001"}},
+        )
+    for decision_type in COMPLETED_ORDER_ACTION_TYPES:
+        agent._store.add_decision(
+            session_id="test-session", decision_type=decision_type, symbol="ZZZ",
+            metadata={"ibkr_order_id": "9000001", "readback_confirmed": True,
+                      "readback_order_status": "Submitted"},
+        )
+    assert _claims_completed_proposal(agent._emission_records()) is None
+    assert _claims_completed_proposal(agent._completed_order_records()) is None
+
+
+async def test_narrated_staging_produces_an_honest_notice():
+    """The user is told, in the same feed that carries the claim, that it did not happen."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_STAGING[0]))
+    )
+    await agent.handle_message("cancel that one")
+
+    assert sink.messages[0] == NARRATED_STAGING[0]  # the claim still stands, uncensored
+    notice = sink.messages[-1].lower()
+    assert "no staging button" in notice
+    assert "nothing has been staged" in notice
+    assert sink.proposals == []
+
+
+async def test_narrated_staging_writes_its_own_decision_type():
+    """Deliberately not `proposal_render_failed`: nothing was accepted, so nothing could
+    fail to render. Conflating them would make that type stop meaning what every historical
+    row means."""
+    agent, _sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_STAGING[0]))
+    )
+    await agent.handle_message("cancel that one")
+
+    rows = agent._store.get_decisions("test-session")
+    assert [r["decision_type"] for r in rows] == ["proposal_claim_unbacked"]
+    # Anchored to the assistant row carrying the claim (user turn is 1), so the session
+    # report and the FTS index can find the message the notice is about.
+    assert rows[0]["message_id"] == 2
+    assert "no proposal tool was called" in rows[0]["summary_text"].lower()
+    # The offending sentence is live conversation text: logged, never stored.
+    assert NARRATED_STAGING[0][:20] not in json.dumps(rows[0], default=str)
+
+
+async def test_narrated_staging_notice_is_persisted_not_only_displayed():
+    """session_reporter, the FTS index and the next turn's replayed history all read the
+    transcript, not the sink."""
+    agent, _sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_STAGING[1]))
+    )
+    await agent.handle_message("cancel it")
+
+    stored = [m["content"] for m in agent._store.messages if m["role"] == "assistant"]
+    assert any("no staging button was created" in text.lower() for text in stored)
+
+
+async def test_narrated_staging_uses_the_operator_channel():
+    """The model must not carry the claim into the next turn and defend it — the 2026-07-24
+    failure. A model-authored correction would be forgeable; `role: "system"` is not."""
+    agent, _sink = _make_agent_recording()
+    stream = MagicMock(side_effect=[
+        _FakeStream(_text_response_events(NARRATED_STAGING[0])),
+        _FakeStream(_text_response_events("Understood — nothing was staged.")),
+    ])
+    agent._client.messages.stream = stream
+
+    await agent.handle_message("cancel that one")
+    await agent.handle_message("is it staged?")
+
+    notes = _system_texts(stream.call_args_list[-1].kwargs["messages"])
+    assert len(notes) == 1
+    assert "no proposal tool" in notes[0].lower()
+    assert "propose_cancel" in notes[0]
+
+
+async def test_evidence_beats_the_text_when_a_proposal_really_was_recorded():
+    """The verdict is the tool call, never the prose. The same sentence that fires above is
+    correct here, and must pass silently."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn("propose_cancel", VALID_CANCEL, NARRATED_STAGING[0])
+    )
+    await agent.handle_message("cancel it")
+
+    assert sink.proposals == [("cancel", VALID_CANCEL)]
+    assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
+        "trade_cancel_proposed"
+    ]
+    assert not any("no staging button" in m.lower() for m in sink.messages)
+    assert agent._pending_operator_notes == []
+
+
+async def test_a_render_failure_raises_exactly_one_notice():
+    """A recorded-but-unrendered proposal is L1's case. The claim detector must stay out of
+    it, or the user gets two contradictory corrections for one failure."""
+    agent, _sink = _make_agent_recording(RuntimeError("boom"))
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn("propose_cancel", VALID_CANCEL, NARRATED_STAGING[0])
+    )
+    await agent.handle_message("cancel it")
+
+    assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
+        "proposal_render_failed"
+    ]
+    assert len(agent._pending_operator_notes) == 1
+
+
+async def test_a_rejected_proposal_still_reaches_the_claim_detector():
+    """`_record_proposal` refuses a defective proposal and leaves `_pending_proposal` unset,
+    so no button exists. If the model then narrates one anyway, that is exactly this
+    failure and the notice must fire — the refusal string reaches the user only through the
+    tool-step pane."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn(
+            "propose_cancel", {**VALID_CANCEL, "order_id": "  "}, NARRATED_STAGING[0]
+        )
+    )
+    await agent.handle_message("cancel it")
+
+    assert sink.proposals == []
+    assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
+        "proposal_claim_unbacked"
+    ]
+
+
+def test_unbacked_claim_notice_never_implies_something_was_staged():
+    """Wording guard, same as the render-failure notice: this text exists to contradict a
+    claim the transcript already carries, so a hedge would leave the claim standing."""
+    from claudia.agent import _UNBACKED_CLAIM_NOTICE
+
+    lowered = _UNBACKED_CLAIM_NOTICE.lower()
+    assert "nothing has been staged" in lowered
+    assert "no staging button" in lowered
+    assert "may " not in lowered and "might" not in lowered
 
 
 @pytest.mark.live_api
