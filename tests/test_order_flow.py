@@ -324,8 +324,22 @@ def _make_ibkr_mock():
     ]
     client.get_accounts.return_value = [{"accountId": "U12345"}]
     client.place_order_and_confirm.return_value = [{"orderId": "999"}]
+    # Absent from the live book by default, so the existing place tests keep exercising
+    # the get_order_status fall-through. Absence is never evidence either way — the tests
+    # below that assert on presence set it explicitly (`_set_live_book`).
+    client.get_live_orders.return_value = []
     _set_readback(client)
     return mod, client
+
+
+def _set_live_book(client, *orders):
+    """Give a mocked IBKRClient a `get_live_orders` payload for the placement check.
+
+    Field names are IBKR's own Live Orders fields (`orderId`, `status`) as returned by
+    `IBKRClient.get_live_orders`. Synthetic order ids only — never live account data.
+    """
+    client.get_live_orders.return_value = list(orders)
+    return client
 
 
 async def _run(action, ibkr_mod, store=None, session_id="test-session"):
@@ -1300,6 +1314,192 @@ async def test_place_without_an_order_id_says_it_could_not_verify():
     assert any("could not be verified" in c for c in contents)
     assert not any("Verified via get_order_status" in c for c in contents)
     client.get_order_status.assert_not_called()
+    client.get_live_orders.assert_not_called()
+
+
+# ── place: presence in the live book ─────────────────────────────────────────
+#
+# User rule, 2026-07-27: "each action must be validated by evidence: when placing an
+# order, check live orders to validate its presence."
+#
+# The asymmetry that governs every test below — get_live_orders filters _TERMINAL_STATUSES
+# (Filled, Cancelled, ApiCancelled, Expired) out of the feed, so:
+#   resting order   -> present  -> the strongest positive evidence there is
+#   filled order    -> absent   -> absence is EXPECTED, not a failure
+#   cancelled order -> absent   -> indistinguishable from never-existed
+# Presence is proof; absence never is.
+
+LIVE_ORDER = {"orderId": "999", "status": "Submitted", "ticker": "AAPL"}
+
+
+@pytest.mark.asyncio
+async def test_presence_in_the_live_book_confirms_the_placement():
+    """The positive case the user's rule is about: the order is in the live book, so it
+    exists and is working — and no second call is needed to say so."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _set_live_book(client, LIVE_ORDER)
+    store = MagicMock()
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod, store=store, session_id="s1"))
+
+    assert any("Verified via get_live_orders" in c and "Submitted" in c for c in contents)
+    assert any("present in the live order book" in c for c in contents)
+    client.get_order_status.assert_not_called()
+    meta = store.add_decision.call_args.kwargs["metadata"]
+    assert meta["readback_confirmed"] is True
+    assert meta["readback_order_status"] == "Submitted"
+
+
+@pytest.mark.asyncio
+async def test_presence_is_matched_on_the_order_id_not_on_any_order_being_there():
+    """Someone else's resting order is not evidence about this one."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _set_live_book(client, {"orderId": "111222333", "status": "Submitted"})
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod))
+
+    assert not any("Verified via get_live_orders" in c for c in contents)
+    client.get_order_status.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row", [
+    {"order_id": "999", "status": "Submitted"},   # snake_case spelling
+    {"orderId": 999, "status": "Submitted"},      # int, as IBKR sometimes returns
+])
+async def test_presence_accepts_both_id_spellings_and_numeric_ids(row):
+    """Both spellings occur across IBKR order responses (see `_extract_order_id`), and a
+    missed match here would be reported as an absence — the dangerous direction."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _set_live_book(client, row)
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod))
+
+    assert any("Verified via get_live_orders" in c for c in contents)
+    client.get_order_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_present_but_not_working_says_the_order_exists_without_confirming_it():
+    """Presence proves existence; the row's own status decides whether it is working.
+    PendingSubmit is present in the feed but is not a working order — both facts must be
+    stated, because either one alone misleads."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _set_live_book(client, {"orderId": "999", "status": "PendingSubmit"})
+    store = MagicMock()
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod, store=store, session_id="s1"))
+
+    assert any("present in the live order book" in c and "PendingSubmit" in c for c in contents)
+    assert any("not confirmed" in c for c in contents)
+    assert not any("Verified via get_live_orders" in c for c in contents)
+    meta = store.add_decision.call_args.kwargs["metadata"]
+    assert meta["readback_confirmed"] is False
+    assert meta["readback_order_status"] == "PendingSubmit"
+
+
+@pytest.mark.asyncio
+async def test_absence_falls_through_to_the_status_endpoint_and_a_fill_still_confirms():
+    """A filled order is absent from the live book by design. Treating that absence as a
+    failure would report a real fill as a non-placement."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _set_live_book(client)  # empty book
+    _set_readback(client, order_status="Filled", order_status_description="completely filled")
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod))
+
+    assert any("Verified via get_order_status" in c and "Filled" in c for c in contents)
+    client.get_live_orders.assert_called_once()
+    client.get_order_status.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_absence_is_never_reported_as_success_or_as_failure():
+    """The whole rule in one test: absent from the book AND the status read failed. The
+    only honest output is "could not verify" — never "the order is not there"."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _set_live_book(client)
+    client.get_order_status.side_effect = RuntimeError("500 Internal Server Error")
+    store = MagicMock()
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod, store=store, session_id="s1"))
+    joined = " ".join(contents)
+
+    assert "could not be verified" in joined
+    assert "NOT evidence" in joined                 # absence is named as non-evidence
+    assert "Verified via get_live_orders" not in joined
+    assert "does not exist" not in joined
+    assert "was not placed" not in joined
+    assert "Order not placed" not in joined
+    assert store.add_decision.call_args.kwargs["metadata"]["readback_confirmed"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_live_book_call_is_not_an_absence():
+    """get_live_orders returning 500 says nothing about the order — which is exactly the
+    call that failed on 2026-07-27. It must fall through to the status endpoint, and the
+    failure must be named, never silently rendered as "not in the book"."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_live_orders.side_effect = RuntimeError("500 Internal Server Error")
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod))
+    joined = " ".join(contents)
+
+    assert "live order book could not be read" in joined
+    assert "500" in joined
+    assert "not in the live order book" not in joined
+    client.get_order_status.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_degenerate_live_book_shape_is_not_an_absence():
+    """Fail safe on a shape that is not a list — no invented absence."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_live_orders.return_value = {"orders": "nonsense"}
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod))
+
+    assert any("live order book could not be read" in c for c in contents)
+    client.get_order_status.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_the_live_book_is_read_after_the_wait_and_after_the_dispatch():
+    """The wait comes first (a book read taken too early sees a not-yet-populated view),
+    and the whole check follows the POST."""
+    ibkr_mod, client = _make_ibkr_mock()
+    seen = []
+    client.place_order_and_confirm.side_effect = lambda *_a, **_kw: (
+        seen.append("dispatch") or [{"order_id": "999"}]
+    )
+    client.get_live_orders.side_effect = lambda: seen.append("live_orders") or [LIVE_ORDER]
+    send_status, _calls = _make_send_status_recorder()
+
+    async def _fake_sleep(seconds):
+        seen.append(("sleep", seconds))
+
+    proposal = json.loads(_make_action().payload["order"])
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), \
+            patch.object(order_flow.asyncio, "sleep", _fake_sleep):
+        await _execute_staged_order_core(proposal, send_status)
+
+    assert seen == ["dispatch", ("sleep", _READBACK_DELAY_S), "live_orders"]
+
+
+@pytest.mark.asyncio
+async def test_the_cancel_path_does_not_use_the_live_book_as_evidence():
+    """Disappearance from the live book cannot prove a cancel: Cancelled is one of the
+    statuses that feed filters out, so a cancelled order and one that never existed look
+    identical there. A cancellation still requires get_order_status == Cancelled."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    _set_readback(client, order_status="Cancelled", order_status_description="d")
+    contents = _sent_contents(await _run_cancel(_make_cancel_action(), ibkr_mod))
+
+    client.get_live_orders.assert_not_called()
+    assert any("Verified via get_order_status" in c and "Cancelled" in c for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_the_modify_path_does_not_use_the_live_book_as_evidence():
+    """get_live_orders exposes neither the conid nor the full field set the modify
+    comparison needs — the per-order endpoint stays the only evidence there."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    await _run_modify(_make_modify_action(), ibkr_mod)
+
+    client.get_live_orders.assert_not_called()
+    client.get_order_status.assert_called_once()
 
 
 # ── cancel ───────────────────────────────────────────────────────────────────

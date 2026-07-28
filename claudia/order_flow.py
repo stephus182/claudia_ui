@@ -16,9 +16,12 @@ The LLM never calls this code directly. Flow:
        Gate 2 — AppKit colored dialog, green/BUY or red/SELL (order_confirm)
        Any chained IBKR reply prompts are resolved in a loop, each re-running
        Gate 1 + Gate 2 with the real IBKR warning text, until a terminal response.
-  6. **L2 read-back** (_read_back): the dispatch response only proves the request was
-     received, so each core then reads the order's real state via get_order_status and
-     reports what it observed. Evidence is the only source of truth for orders.
+  6. **L2 read-back**: the dispatch response only proves the request was received, so each
+     core then reads the order's real state and reports what it observed. Evidence is the
+     only source of truth for orders. A placement is validated by *presence in the live
+     order book* (_read_back_place) — the strongest evidence available, and absence is
+     never evidence; a cancel or modify by get_order_status (_read_back), because Cancelled
+     is filtered out of the live book and disappearance there proves nothing.
   7. The result is logged to ConversationStore.decisions (if store is wired), recording
      the observed state — including "not observed" when nothing could be read.
 
@@ -228,7 +231,14 @@ _READBACK_DELAY_S = 2.0
 warmup, short enough not to stall the human after a live money action. A latency choice,
 not a correctness one — whatever is observed is reported honestly, including a pending
 state. Deliberately NOT a poll loop: a retry state machine is complexity that can itself
-fail (user direction 2026-07-27)."""
+fail (user direction 2026-07-27).
+
+Still 2.0 s after the placement path started leading with get_live_orders (2026-07-28).
+That endpoint's documented two-call warmup — `?force=true`, `time.sleep(1)`, then the data
+call — happens *inside* `IBKRClient.get_live_orders`, so it consumes none of this budget
+and instead adds ~1 s after it: the live book is read ≈3 s post-dispatch, strictly later
+than the 2 s the status read had. Raising this constant would only stall the human further
+for no extra evidence."""
 
 _CONFIRMED = {
     # "accepted and is working at the destination" (Submitted), "accepted by the system
@@ -281,26 +291,40 @@ def _extract_order_id(result: object) -> str | None:
 
 
 async def _read_back(ibkr: Any, order_id: str, action: str) -> tuple[bool, str, dict | None]:
-    """Observe the order's real state. Returns (confirmed, human-readable line, status).
+    """Wait, then observe the order's state via get_order_status. See `_read_order_status`.
+
+    The evidence rule for **cancel** and **modify**, and the fall-through for **place**
+    (which leads with the live book — see `_read_back_place`).
+
+    Absence from get_live_orders is NOT evidence: _TERMINAL_STATUSES filters Cancelled
+    out, so a cancelled order and one that never existed look identical there. That is why
+    a cancellation is only ever confirmed by this endpoint reporting `Cancelled`, and why
+    disappearance from the live book proves nothing about one.
+
+    Runs on the event loop that the dispatch already blocked (Known Gap #15); this adds
+    one ~2 s call, not a loop.
+    """
+    await asyncio.sleep(_READBACK_DELAY_S)
+    return await _read_order_status(ibkr, order_id, action)
+
+
+async def _read_order_status(ibkr: Any, order_id: str, action: str) -> tuple[bool, str, dict | None]:
+    """Read the per-order status endpoint. Returns (confirmed, human line, status dict).
+
+    No wait of its own — callers own the settle delay, so a path that has already waited
+    (the place read-back, which leads with the live book) does not wait twice.
 
     The third element is the raw observed status dict (None when nothing was observed),
     so callers can record what was seen and — for modify — compare the returned fields
     against what was requested, without spending a second live call.
-
-    Absence from get_live_orders is NOT evidence: _TERMINAL_STATUSES filters Cancelled
-    out, so a cancelled order and one that never existed look identical. Hence the
-    per-order status endpoint, which reports the state directly.
 
     Every failure path returns confirmed=False. A read that fails is an absence of
     evidence and can never be upgraded into a confirmation — notably the documented 503,
     which IBKR returns by design for orders cancelled or filled before the active
     session, and for FA/linked accounts without an account switch.
 
-    Runs on the event loop that the dispatch already blocked (Known Gap #15); this adds
-    one ~2 s call, not a loop. The read itself goes through asyncio.to_thread because
-    IBKRClient is synchronous.
+    The read goes through asyncio.to_thread because IBKRClient is synchronous.
     """
-    await asyncio.sleep(_READBACK_DELAY_S)
     try:
         status = await asyncio.to_thread(ibkr.get_order_status, order_id)
     except Exception as exc:
@@ -329,6 +353,124 @@ async def _read_back(ibkr: Any, order_id: str, action: str) -> tuple[bool, str, 
             "request is pending."
         ), status
     return False, f"⚠️ Order {order_id} reads **{state}** ({desc}) — not confirmed.", status
+
+
+async def _live_book_presence(ibkr: Any, order_id: str) -> tuple[str, dict | None, str]:
+    """Look for `order_id` in the live order book. Returns (verdict, row, detail).
+
+    verdict is one of:
+      "present"     — the order is in the book; `row` is its entry. Positive evidence.
+      "absent"      — the book was read and does not contain it. **Not evidence.**
+      "unavailable" — the book could not be read at all; `detail` says why. Not evidence
+                      either, and specifically not an absence: the call that failed on
+                      2026-07-27 (two HTTP 500s) is this one, and rendering that failure
+                      as "not in the book" is the defect this module exists to prevent.
+
+    Matched on the order id alone, in both spellings IBKR uses across order responses
+    (see `_extract_order_id`) and compared as trimmed strings because ids arrive as both
+    ints and strings. "Some order is in the book" is not evidence about this one.
+
+    `get_live_orders` performs its own documented two-call subscription warmup
+    (?force=true, a 1 s sleep, then the data call), so this costs ~1 s plus two round
+    trips on top of the caller's settle delay. Synchronous client, hence to_thread.
+
+    Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#live-orders
+    """
+    try:
+        orders = await asyncio.to_thread(ibkr.get_live_orders)
+    except Exception as exc:
+        log.warning("Live-order check failed for order %s: %s", order_id, exc)
+        return "unavailable", None, str(exc)
+    if not isinstance(orders, list):
+        log.warning("Live-order check returned %r", type(orders).__name__)
+        return "unavailable", None, f"unexpected shape ({type(orders).__name__})"
+    wanted = str(order_id).strip()
+    for entry in orders:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("orderId", "order_id"):
+            value = entry.get(key)
+            if value is not None and str(value).strip() == wanted:
+                return "present", entry, ""
+    return "absent", None, ""
+
+
+_LIVE_BOOK_ABSENCE_NOTE = (
+    "🔎 Order {order_id} is **not in the live order book**. That is **NOT evidence** "
+    "either way: get_live_orders filters out Filled, Cancelled, ApiCancelled and Expired "
+    "orders, so a fully filled order is absent from it too. Checking the per-order status "
+    "endpoint…"
+)
+"""Absence is the one outcome that proves nothing — it must never read as a failure."""
+
+_LIVE_BOOK_UNAVAILABLE_NOTE = (
+    "⚠️ The live order book could not be read ({detail}) — **no evidence either way**, and "
+    "specifically not an absence. Checking the per-order status endpoint…"
+)
+"""The 2026-07-27 shape: get_live_orders 500s. A failed lookup is not a missing order."""
+
+
+async def _read_back_place(ibkr: Any, order_id: str) -> tuple[bool, str, dict | None]:
+    """Validate a placement by presence in the live order book. Returns `_read_back`'s tuple.
+
+    User rule, 2026-07-27: "each action must be validated by evidence: when placing an
+    order, check live orders to validate its presence."
+
+    The asymmetry that shapes this, from `IBKRClient.get_live_orders` filtering
+    `_TERMINAL_STATUSES` (Filled, Cancelled, ApiCancelled, Expired):
+
+      | resting order      | present | ✅ the strongest positive evidence available |
+      | immediately filled | absent  | absence is EXPECTED here, not a failure      |
+      | cancelled          | absent  | indistinguishable from never-existed         |
+
+    **Presence is proof; absence never is.** So the book is checked first and a match
+    confirms outright; anything else falls through to the per-order status endpoint, which
+    is what distinguishes a fill from an order that never made it. Absence alone is
+    reported as neither success nor failure — that is the whole point of the fall-through.
+
+    Presence proves the order *exists*. Whether it is *working* is a separate question,
+    answered by the row's own status against `_CONFIRMED["place"]` — a `PendingSubmit` row
+    is in the book but is not a working order, and both facts are stated, because either
+    one alone misleads.
+
+    Cost: one settle delay, then get_live_orders (~1 s of internal warmup + two round
+    trips), then at most one status read. No poll loop, no retry state machine (user
+    direction 2026-07-27). It runs on the event loop the dispatch already blocked
+    (Known Gap #15).
+
+    Returns:
+        (confirmed, human-readable line, observed dict). On presence the observed dict is
+        `{"order_status": ..., "readback_source": "get_live_orders", "live_order": <row>}`
+        — the status copied under the key every caller already records, with its provenance
+        and the untouched row alongside it.
+    """
+    await asyncio.sleep(_READBACK_DELAY_S)
+    verdict, row, detail = await _live_book_presence(ibkr, order_id)
+
+    if verdict == "present" and row is not None:
+        state = str(row.get("status") or "").strip() or "unknown"
+        observed = {
+            "order_status": state,
+            "readback_source": "get_live_orders",
+            "live_order": row,
+        }
+        if state in _CONFIRMED["place"]:
+            return True, (
+                f"✅ Verified via get_live_orders: order {order_id} is **present in the "
+                f"live order book** — **{state}**. The order exists at IBKR and is working."
+            ), observed
+        return False, (
+            f"⚠️ Order {order_id} is **present in the live order book** — so it exists at "
+            f"IBKR — but reads **{state}**, which is not a working order: **not "
+            f"confirmed**. Check IBKR directly."
+        ), observed
+
+    note = (
+        _LIVE_BOOK_ABSENCE_NOTE.format(order_id=order_id) if verdict == "absent"
+        else _LIVE_BOOK_UNAVAILABLE_NOTE.format(detail=detail)
+    )
+    confirmed, line, status = await _read_order_status(ibkr, order_id, "place")
+    return confirmed, f"{note}\n{line}", status
 
 
 _MODIFY_READBACK_FIELDS = (
@@ -641,7 +783,7 @@ async def _execute_staged_order_core(
                 ),
                 "System",
             )
-            confirmed, readback_line, observed = await _read_back(ibkr, ibkr_order_id, "place")
+            confirmed, readback_line, observed = await _read_back_place(ibkr, ibkr_order_id)
             await send_status(readback_line, "System")
 
         if store and session_id:
