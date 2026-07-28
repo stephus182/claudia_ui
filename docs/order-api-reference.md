@@ -144,8 +144,10 @@ All nine keys are `required` and no others are accepted — note there is no `se
 `order_id` drives the call; the rest are display fields ClaudIA copies verbatim from a real
 `get_live_orders`/`get_order_status`/`diagnose_orders` call earlier in the conversation — never
 invented (enforced by the ORDER CANCEL / MODIFY RULES section of `_SAFETY_BLOCK`, and by
-`_proposal_defect()`'s non-blank `order_id` check). A successful cancel logs
-`decision_type="trade_cancelled"` to `ConversationStore`.
+`_proposal_defect()`'s non-blank `order_id` check). Every dispatched cancel logs
+`decision_type="trade_cancelled"` to `ConversationStore`, carrying the state the read-back
+observed (see § Post-dispatch read-back) — `CANCELLED:` in the summary only when
+`get_order_status` actually read back `Cancelled`.
 
 **Live-verified 2026-07-10**: button click → Touch ID → Gate 2 → `cancel_order` fired on a
 disposable AAPL order (orderId `567317535`), confirmed gone from `get_live_orders` on the next
@@ -247,8 +249,10 @@ Calls `IBKRClient.modify_order_and_confirm(account_id, order_id, order_body)` �
 variant (same loop as `place_order_and_confirm()`). **Live-verified 2026-07-10**: a clean,
 button-click-only send → modify → cancel cycle on a disposable AAPL order (orderId `567317535`,
 limit $100.00 → $105.00), zero manual reply-chain intervention at any step — see Live Test Log
-in `docs/project-status.md`. A successful modify logs `decision_type="trade_modified"` to
-`ConversationStore`.
+in `docs/project-status.md`. Every dispatched modify logs `decision_type="trade_modified"` to
+`ConversationStore`, carrying the state the read-back observed (see § Post-dispatch read-back) —
+`MODIFIED:` in the summary only when the status read back as working **and** the read-back's
+fields matched the request.
 
 **Order-origin labeling fixed (2026-07-10):** `get_live_orders`/`diagnose_orders` now check
 `order_ref` (IBKR's actual Live Orders field, snake_case) first, with `orderRef`/`cOID`/
@@ -259,3 +263,73 @@ just-placed order per its hard rule, requiring a manual gate confirmation instea
 proposal. Empirically the mislabel itself was cosmetic (IBKR accepted the modify regardless), but
 the usability regression was real. See the resolved Known Gaps entry in `docs/project-status.md`
 for commit references and a known residual edge case.
+
+## Post-dispatch read-back (L2)
+
+**Evidence is the only source of truth for orders, no assumptions.** A dispatch response
+proves the request was *received* and nothing more, so no core claims an outcome from it.
+Added 2026-07-27 (`_read_back` in `claudia/order_flow.py`).
+
+IBKR says this itself for cancels: the `{"msg": "Request was submitted"}` body "indicates our
+request to cancel order 987654 was received, **but not that the order ticket itself has been
+canceled**"
+(<https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md>). Before this change
+`_execute_cancel_order_core` printed `**Order cancelled:** order {id}` having observed nothing
+about the order's actual state.
+
+Each core now emits two separate things:
+
+1. **What is known** — `Dispatch accepted by IBKR — order {id}. Verifying live state…`, with
+   the raw response. Never "successfully"; that word no longer appears on any of these paths.
+2. **What is observed** — one `get_order_status` read after a single fixed `_READBACK_DELAY_S`
+   (2.0 s, above `client.py`'s 1 s subscription warmup). Deliberately **not** a poll loop: a
+   retry state machine is complexity that can itself fail.
+
+Confirmation sets, from IBKR's documented `order_status` values
+(<https://ibkrcampus.com/docs/web-api/web-api-v-1-0-documentation/endpoints/order-monitoring/order-status-value.md>):
+
+| Action | Confirms on | Notably excluded |
+|---|---|---|
+| place / modify | `Submitted`, `PreSubmitted`, `Filled` | `PendingSubmit` ("have not yet received confirmation that it has been accepted by the order destination"), `Inactive`, `WarnState` |
+| cancel | `Cancelled` ("the balance of your order has been confirmed canceled") | `PendingCancel`, `PreCancelled` — reported with IBKR's own warning that you may still receive an execution while a cancellation request is pending |
+
+`ApiCancelled` is deliberately **not** in the cancel set: `client.py` lists it in
+`_TERMINAL_STATUSES` for filtering the live-orders feed, but it is not a documented value of
+this endpoint's `order_status` — an undocumented state is never treated as proof.
+
+Absence from `get_live_orders` is not usable as evidence either: `_TERMINAL_STATUSES` filters
+`Cancelled` out, so a cancelled order and one that never existed look identical.
+
+**A failed read is an absence of evidence, never a confirmation.** `get_order_status` returns
+**503 by design** for orders cancelled or filled before the active session, and for FA/linked
+accounts without an account switch
+(<https://ibkrcampus.com/docs/web-api/web-api-v-1-0-documentation/endpoints/order-monitoring/order-status.md>).
+That path reports "could not be verified … do not assume this order is working", and so does a
+placement whose response carries no order id.
+
+**Modify additionally compares fields**, because a modify that silently did not apply still
+reads `Submitted` — the status only proves the order exists. `_compare_modify_readback` checks
+`quantity`→`total_size` (not `size`, which is only the unfilled remainder), `orderType`→
+`order_type`, `tif`→`tif`, `side`→`side`, numerically first so IBKR returning `"3.0"` for a
+requested `3` is a match. A missing or blank read-back field counts as *not comparable*, never
+as disagreement — a false alarm is what teaches a user to ignore the real ones.
+**Price is not machine-verifiable here**: the documented order-status response has no discrete
+limit/stop price field (`average_price` is the average price of *execution*). Rather than parse
+it out of `order_description` — a string heuristic dressed as a fact — a price modify says
+plainly that the price could not be verified and quotes IBKR's own `order_description` so the
+human can read the resting price.
+
+`_is_ibkr_rejection` is retained and its role narrowed: it can no longer authorise a success
+claim, only a failure one. It remains the sole detector of a dispatch that never became an
+order, and its evidence — the POST body's error text — is unrecoverable afterwards, since a
+rejected order has no id to read back.
+
+An exception raised *after* the dispatch call returns (surfacing the result, the read-back,
+writing the decision row) reports "**The order WAS dispatched to IBKR** — this failure happened
+afterwards"; "Order not placed" is reserved for failures that occur before the write reaches
+IBKR.
+
+Both human gates are untouched: Gate 1 (Touch ID) and Gate 2 (AppKit dialog) run in
+`ibkr_core_mcp` before any write, and the read-back happens strictly after a dispatch that
+already passed both. The read runs on the already-blocked event loop via `asyncio.to_thread` —
+one ~2 s call, not a loop (Known Gap #15 is unchanged and out of scope).

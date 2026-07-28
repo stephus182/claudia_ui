@@ -16,7 +16,11 @@ The LLM never calls this code directly. Flow:
        Gate 2 — AppKit colored dialog, green/BUY or red/SELL (order_confirm)
        Any chained IBKR reply prompts are resolved in a loop, each re-running
        Gate 1 + Gate 2 with the real IBKR warning text, until a terminal response.
-  6. On success, result is logged to ConversationStore.decisions (if store is wired).
+  6. **L2 read-back** (_read_back): the dispatch response only proves the request was
+     received, so each core then reads the order's real state via get_order_status and
+     reports what it observed. Evidence is the only source of truth for orders.
+  7. The result is logged to ConversationStore.decisions (if store is wired), recording
+     the observed state — including "not observed" when nothing could be read.
 
 No order can be placed without steps 3–5 happening via physical user interaction.
 ClaudIA must never modify any user-specified order parameter (price, qty, symbol, type, TIF).
@@ -24,12 +28,13 @@ ClaudIA must never modify any user-specified order parameter (price, qty, symbol
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
@@ -92,6 +97,22 @@ def _format_order_summary(proposal: dict) -> str:
     return "\n".join(lines)
 
 
+def _post_dispatch_failure_text(exc: Exception, noun: str) -> str:
+    """The failure message for an exception raised *after* the IBKR write returned.
+
+    Once the dispatch call has returned, the write reached IBKR. Anything that fails
+    afterwards — surfacing the result, reading the state back, writing the decision row —
+    is a reporting failure, not a placement failure. Telling the user "Order not placed"
+    there would be the same assert-without-evidence defect this module's read-back exists
+    to close, only pointed the other way.
+    """
+    return (
+        f"⚠️ **The {noun} WAS dispatched to IBKR** — this failure happened afterwards, "
+        f"while reporting or recording it: {_classify_execution_error(exc)}. "
+        f"Its live state is unknown from here — check IBKR directly."
+    )
+
+
 def _classify_execution_error(exc: Exception) -> str:
     """Map an exception from a Gate 1/2-guarded IBKR call to a user-facing message.
 
@@ -137,12 +158,26 @@ def _resolve_account_id(accounts: list[dict]) -> str:
 def _is_ibkr_rejection(result: object) -> bool:
     """True when an order-endpoint response is an IBKR rejection payload.
 
+    ## Role after the L2 read-back (2026-07-27)
+
+    This classifier no longer authorises a success claim — only `_read_back` does that,
+    and only from an observed order state. What it still does, and nothing else can, is
+    detect a *dispatch that never became an order*. Its evidence is the POST body's own
+    error text ("Can not contain field # 8089"), and that text is unrecoverable
+    afterwards: a rejected order has no order id, so there is nothing to read back. Drop
+    this and a rejection would degrade into "dispatch accepted, could not verify" — which
+    would be strictly worse, implying acceptance where IBKR explicitly refused and
+    discarding the reason. The two are complementary evidence sources, not duplicates:
+    a rejection payload is positive evidence of failure; a non-rejection payload is only
+    the absence of evidence of failure, which is no longer sufficient to claim anything.
+
     IBKR returns order rejections as an HTTP 200 payload — no exception raised —
     proven live 2026-07-23 on a FUT order (see
     docs/2026-07-23-futures-order-field-8089-bug.md). The rejection entry carries
     ``"action": "order_submit_issue"``, an ``"error"`` string, and
-    ``order_id: "0"`` inside ``cqe.post_payload``. Without classification, the
-    callers below would label any such rejection "staged successfully".
+    ``order_id: "0"`` inside ``cqe.post_payload``. Historically, without this
+    classification the callers labelled such a rejection "staged successfully" — that
+    wording is gone from every path, but the rejection still has to be named as one.
 
     Accepts both response shapes: place_order_and_confirm() returns a list of
     dicts; modify_order_and_confirm() and cancel_order() return a single dict.
@@ -175,6 +210,227 @@ def _is_ibkr_rejection(result: object) -> bool:
     return not has_order_status and order_id in ("0", 0, None)
 
 
+# ── L2 — post-dispatch read-back ─────────────────────────────────────────────
+#
+# The rule this section exists to enforce: evidence is the only source of truth for
+# orders, no assumptions. A dispatch response proves the request was received and
+# nothing more. IBKR says so itself for cancels — the {"msg": "Request was submitted"}
+# body "indicates our request to cancel order 987654 was received, but not that the
+# order ticket itself has been canceled".
+#
+# Sources (verified 2026-07-27):
+#   https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md
+#   https://ibkrcampus.com/docs/web-api/web-api-v-1-0-documentation/endpoints/order-monitoring/order-status-value.md
+#   https://ibkrcampus.com/docs/web-api/web-api-v-1-0-documentation/endpoints/order-monitoring/order-status.md
+
+_READBACK_DELAY_S = 2.0
+"""Single fixed delay before the confirming read. Above client.py's 1 s subscription
+warmup, short enough not to stall the human after a live money action. A latency choice,
+not a correctness one — whatever is observed is reported honestly, including a pending
+state. Deliberately NOT a poll loop: a retry state machine is complexity that can itself
+fail (user direction 2026-07-27)."""
+
+_CONFIRMED = {
+    # "accepted and is working at the destination" (Submitted), "accepted by the system
+    # ... yet to be elected" (PreSubmitted), "completely filled" (Filled). PendingSubmit
+    # is excluded by its own definition: "transmitted your order, but have not yet
+    # received confirmation that it has been accepted by the order destination".
+    "place": frozenset({"Submitted", "PreSubmitted", "Filled"}),
+    "modify": frozenset({"Submitted", "PreSubmitted", "Filled"}),
+    # "Indicates that the balance of your order has been confirmed canceled by the
+    # system" — the only documented value that is evidence of a cancellation.
+    # "ApiCancelled" is deliberately absent: client.py lists it in _TERMINAL_STATUSES for
+    # filtering the *live-orders* feed, but it is not a documented value of this
+    # endpoint's order_status field, and an undocumented state must never be treated as
+    # proof (never invent an order state).
+    "cancel": frozenset({"Cancelled"}),
+}
+
+_PENDING_CANCEL = ("PendingCancel", "PreCancelled")
+"""PendingCancel: "sent a request to cancel the order but have not yet received cancel
+confirmation from the order destination". PreCancelled: "a cancellation request has been
+accepted by the system but ... the request is not being recognized". Neither is a
+cancellation, and IBKR warns an execution can still arrive while one is pending."""
+
+
+def _extract_order_id(result: object) -> str | None:
+    """The order id from a dispatch response, or None when there is not a usable one.
+
+    Accepts both response shapes (place returns list[dict]; modify/cancel return a bare
+    dict) and both key spellings, which vary across IBKR responses. Last-write-wins
+    across entries, matching `_is_ibkr_rejection`'s reasoning: the reply-chain terminal
+    entry is last, so it is the authoritative one.
+
+    Returns a `str` because `IBKRClient.get_order_status` validates its argument against
+    a numeric-string pattern. `"0"` is IBKR's not-an-order placeholder (it is what a
+    rejection carries), so it is treated as no id — never as something to read back.
+    """
+    entries = result if isinstance(result, list) else [result]
+    found: str | None = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("order_id", "orderId"):
+            value = entry.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text and text != "0":
+                found = text
+    return found
+
+
+async def _read_back(ibkr: Any, order_id: str, action: str) -> tuple[bool, str, dict | None]:
+    """Observe the order's real state. Returns (confirmed, human-readable line, status).
+
+    The third element is the raw observed status dict (None when nothing was observed),
+    so callers can record what was seen and — for modify — compare the returned fields
+    against what was requested, without spending a second live call.
+
+    Absence from get_live_orders is NOT evidence: _TERMINAL_STATUSES filters Cancelled
+    out, so a cancelled order and one that never existed look identical. Hence the
+    per-order status endpoint, which reports the state directly.
+
+    Every failure path returns confirmed=False. A read that fails is an absence of
+    evidence and can never be upgraded into a confirmation — notably the documented 503,
+    which IBKR returns by design for orders cancelled or filled before the active
+    session, and for FA/linked accounts without an account switch.
+
+    Runs on the event loop that the dispatch already blocked (Known Gap #15); this adds
+    one ~2 s call, not a loop. The read itself goes through asyncio.to_thread because
+    IBKRClient is synchronous.
+    """
+    await asyncio.sleep(_READBACK_DELAY_S)
+    try:
+        status = await asyncio.to_thread(ibkr.get_order_status, order_id)
+    except Exception as exc:
+        log.warning("Read-back failed for order %s: %s", order_id, exc)
+        return False, (
+            f"⚠️ Dispatch accepted, but the live state of order {order_id} **could not be "
+            f"verified** ({exc}). Do not assume this order is working — check IBKR directly."
+        ), None
+
+    if not isinstance(status, dict):
+        log.warning("Read-back for order %s returned %r", order_id, type(status).__name__)
+        return False, (
+            f"⚠️ The read-back for order {order_id} returned an unexpected shape "
+            f"({type(status).__name__}) — **not confirmed**. Check IBKR directly."
+        ), None
+
+    state = status.get("order_status") or "unknown"
+    desc = status.get("order_status_description", "")
+    # .get, not [], so an unknown action can never confirm — the fail-safe direction.
+    if state in _CONFIRMED.get(action, frozenset()):
+        return True, f"✅ Verified via get_order_status: **{state}** ({desc})", status
+    if state in _PENDING_CANCEL:
+        return False, (
+            f"⚠️ Order {order_id} is **{state}** — the cancel is **not confirmed**. "
+            "IBKR documents that you may still receive an execution while a cancellation "
+            "request is pending."
+        ), status
+    return False, f"⚠️ Order {order_id} reads **{state}** ({desc}) — not confirmed.", status
+
+
+_MODIFY_READBACK_FIELDS = (
+    # (key in the dispatched order body, field in the read-back, human label)
+    # `total_size` is "Total quantity of the order"; `size` is only "Remainder of order
+    # to be filled", so a partial fill would make `size` disagree with a correctly
+    # applied modify. Compare against total_size.
+    ("quantity", "total_size", "quantity"),
+    ("orderType", "order_type", "order type"),
+    ("tif", "tif", "time in force"),
+    ("side", "side", "side"),
+)
+"""The fields IBKR's order-status response exposes discretely AND that a modify sets.
+
+Price is absent on purpose: the documented response has no limit/stop price field —
+`average_price` is "the average price of execution", not the resting price — so a price
+change is not machine-verifiable here. It is reported as such rather than parsed out of
+`order_description`, which would be a string heuristic dressed as a fact."""
+
+
+def _values_match(requested: object, observed: object) -> bool:
+    """Compare a requested order field against IBKR's read-back of it.
+
+    Numeric first (IBKR may return "3.0" where the request had 3), falling back to a
+    case-folded string compare (side/tif/order type). Both directions of failure matter:
+    a comparison that cries mismatch on a formatting difference trains the user to ignore
+    the warning, and one that shrugs off a real difference defeats the read-back.
+    """
+    try:
+        return float(requested) == float(observed)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return str(requested).strip().casefold() == str(observed).strip().casefold()
+
+
+def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]:
+    """Check the read-back's fields against the modify that was requested.
+
+    A modify that silently did not apply still reads "Submitted" — the status proves the
+    order exists, not that the change landed. Returns (fields_agree, line).
+
+    Three outcomes, deliberately distinct:
+      - any comparable field disagrees → not confirmed, naming the field and both values
+      - all comparable fields agree, at least one was comparable → confirmed
+      - nothing was comparable → not confirmed ("no comparable fields"), because
+        agreement was never observed. Absent fields alone never *cause* a mismatch, so a
+        sparse response cannot manufacture a false alarm.
+
+    A price in the request always adds an explicit caveat that the price was not
+    verified, with IBKR's own `order_description` quoted so the human can read the
+    resting price themselves.
+    """
+    matched: list[str] = []
+    mismatched: list[str] = []
+    for req_key, obs_key, label in _MODIFY_READBACK_FIELDS:
+        if req_key not in order_body:
+            continue
+        observed_value = status.get(obs_key)
+        # A missing or blank read-back field is an absence of information, not a
+        # disagreement — reporting it as a mismatch would be a false alarm, and false
+        # alarms are what teach a user to ignore the real ones. (An explicit 0 is a
+        # value, not a blank, so it is still compared.)
+        if observed_value is None or not str(observed_value).strip():
+            continue
+        if _values_match(order_body[req_key], observed_value):
+            matched.append(f"{label} {order_body[req_key]}")
+        else:
+            mismatched.append(
+                f"{label}: requested {order_body[req_key]!r}, IBKR reports {observed_value!r}"
+            )
+
+    if mismatched:
+        line = (
+            "⚠️ The read-back **does NOT match the request** — the modification is "
+            "**not confirmed**: " + "; ".join(mismatched) + "."
+        )
+        agree = False
+    elif matched:
+        line = "✅ Read-back matches the request: " + ", ".join(matched) + "."
+        agree = True
+    else:
+        line = (
+            "⚠️ The read-back carried **no comparable fields**, so the modification is "
+            "**not confirmed** — nothing was observed to compare against the request."
+        )
+        agree = False
+
+    if "price" in order_body or "auxPrice" in order_body:
+        description = status.get("order_description")
+        evidence = (
+            f"IBKR's own description of the order now resting: `{description}` — read the "
+            "price there."
+            if description
+            else "and the response carried no `order_description` to read it from."
+        )
+        line += (
+            "\n⚠️ The **price could not be verified**: IBKR's order-status response has no "
+            "discrete limit/stop price field (`average_price` is the average price of "
+            f"execution, not the resting price). {evidence}"
+        )
+    return agree, line
+
+
 async def _execute_staged_order_core(
     proposal: dict,
     send_status: SendStatus,
@@ -190,6 +446,7 @@ async def _execute_staged_order_core(
     otype = proposal.get("order_type", "MKT")
     limit_price = proposal.get("limit_price")
     sec_type = proposal.get("sec_type", "STK").upper()
+    dispatched = False  # flips once the IBKR write has returned — see the except block
 
     await send_status(
         (
@@ -340,6 +597,7 @@ async def _execute_staged_order_core(
         order_body["acctId"] = account_id
         log.info("Placing order: %s", {k: v for k, v in order_body.items() if not k.startswith("_")})
         result = ibkr.place_order_and_confirm(account_id, order_body)
+        dispatched = True
 
         # IBKR returns rejections as HTTP 200 payloads — no exception — so the
         # result must be classified before claiming success (proven live 2026-07-23;
@@ -356,38 +614,66 @@ async def _execute_staged_order_core(
             # No decision logged — matches the other failure paths in this module.
             return
 
-        success_text = (
-            f"**Order staged successfully:** {action_str} {qty} {symbol} ({otype})\n"
-            f"IBKR response: {json.dumps(result, indent=2)}"
-        )
-        await send_status(success_text, "ClaudIA")
+        # Everything below reports only what is known or observed. The dispatch being
+        # accepted is known; that the order is working is not, until it is read back.
+        ibkr_order_id = _extract_order_id(result)
+        response_json = json.dumps(result, indent=2)
+
+        if ibkr_order_id is None:
+            # A placement that yields no order id is unverifiable. Say so — never
+            # silence, and never a claim of success.
+            confirmed, observed = False, None
+            await send_status(
+                (
+                    f"**Dispatch accepted by IBKR** — {action_str} {qty} {symbol} ({otype}) — "
+                    f"but the response carried no order id, so the live state of this order "
+                    f"**could not be verified**. Do not assume it is working — check IBKR "
+                    f"directly.\nIBKR response: {response_json}"
+                ),
+                "System",
+            )
+        else:
+            await send_status(
+                (
+                    f"**Dispatch accepted by IBKR — order {ibkr_order_id}** "
+                    f"({action_str} {qty} {symbol}, {otype}). Verifying live state…\n"
+                    f"IBKR response: {response_json}"
+                ),
+                "System",
+            )
+            confirmed, readback_line, observed = await _read_back(ibkr, ibkr_order_id, "place")
+            await send_status(readback_line, "System")
 
         if store and session_id:
-            # Extract IBKR orderId from response for future cross-referencing.
-            # place_order_and_confirm() is declared -> list[dict[str, Any]] and always
-            # normalizes to a list internally (_as_reply_list) — never a bare dict.
-            ibkr_order_id = None
-            if result:
-                # Both key spellings occur across IBKR responses — the live-verified
-                # success shape uses snake_case order_id (see _is_ibkr_rejection).
-                ibkr_order_id = result[0].get("order_id", result[0].get("orderId"))
+            # The dispatch happened either way, so the decision row is always written —
+            # it records the state that was observed, not the one that was hoped for.
+            observed_state = (observed or {}).get("order_status")
             store.add_decision(
                 session_id=session_id,
                 decision_type="trade_staged",
-                summary_text=f"STAGED: {action_str} {qty} {symbol} ({otype})",
+                summary_text=(
+                    f"{'STAGED' if confirmed else 'DISPATCHED (UNVERIFIED)'}: "
+                    f"{action_str} {qty} {symbol} ({otype}) — "
+                    f"observed state: {observed_state or 'not observed'}"
+                ),
                 symbol=symbol,
                 metadata={
                     "proposal": proposal,
                     "ibkr_response": result,
                     "ibkr_order_id": ibkr_order_id,
                     "claudia_ref": claudia_ref,
+                    "readback_confirmed": confirmed,
+                    "readback_order_status": observed_state,
+                    "readback_response": observed,
                 },
             )
 
     except Exception as exc:
         log.exception("Order staging failed for %s", symbol)
-        display_error = _classify_execution_error(exc)
-        await send_status(f"**Order not placed:** {display_error}", "System")
+        if dispatched:
+            await send_status(_post_dispatch_failure_text(exc, "order"), "System")
+        else:
+            await send_status(f"**Order not placed:** {_classify_execution_error(exc)}", "System")
 
 
 # ── Order cancellation ───────────────────────────────────────────────────────
@@ -444,6 +730,7 @@ async def _execute_cancel_order_core(
     send_status callback supplied by the UI layer."""
     order_id = proposal.get("order_id")
     symbol = proposal.get("symbol", "?")
+    dispatched = False  # flips once the IBKR write has returned — see the except block
 
     if not order_id:
         await send_status(
@@ -476,6 +763,7 @@ async def _execute_cancel_order_core(
 
         log.info("Cancelling order %s (%s)", order_id, symbol)
         result = ibkr.cancel_order(account_id, order_id, order_details=proposal)
+        dispatched = True
 
         # Same 200-with-rejection classification as the place path — cancel_order
         # returns the parsed JSON unconditionally, no exception on a rejection.
@@ -491,29 +779,50 @@ async def _execute_cancel_order_core(
             # No decision logged — matches the other failure paths in this module.
             return
 
-        success_text = (
-            f"**Order cancelled:** order {order_id} ({symbol})\n"
-            f"IBKR response: {json.dumps(result, indent=2)}"
+        # IBKR is explicit that this response body "indicates our request to cancel
+        # order 987654 was received, but not that the order ticket itself has been
+        # canceled" — so it is reported as exactly that, and nothing more, until the
+        # read-back observes the order's real state.
+        # Source: https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md
+        await send_status(
+            (
+                f"**Cancel request accepted by IBKR — order {order_id}** ({symbol}). "
+                f"IBKR documents that this confirms the request was received, "
+                f"not that the order ticket has been cancelled. Verifying live state…\n"
+                f"IBKR response: {json.dumps(result, indent=2)}"
+            ),
+            "System",
         )
-        await send_status(success_text, "ClaudIA")
+        confirmed, readback_line, observed = await _read_back(ibkr, str(order_id), "cancel")
+        await send_status(readback_line, "System")
 
         if store and session_id:
+            observed_state = (observed or {}).get("order_status")
             store.add_decision(
                 session_id=session_id,
                 decision_type="trade_cancelled",
-                summary_text=f"CANCELLED: order {order_id} ({symbol})",
+                summary_text=(
+                    f"{'CANCELLED' if confirmed else 'CANCEL DISPATCHED (UNVERIFIED)'}: "
+                    f"order {order_id} ({symbol}) — "
+                    f"observed state: {observed_state or 'not observed'}"
+                ),
                 symbol=symbol,
                 metadata={
                     "proposal": proposal,
                     "ibkr_response": result,
                     "ibkr_order_id": order_id,
+                    "readback_confirmed": confirmed,
+                    "readback_order_status": observed_state,
+                    "readback_response": observed,
                 },
             )
 
     except Exception as exc:
         log.exception("Order cancellation failed for order %s", order_id)
-        display_error = _classify_execution_error(exc)
-        await send_status(f"**Order not cancelled:** {display_error}", "System")
+        if dispatched:
+            await send_status(_post_dispatch_failure_text(exc, "cancel request"), "System")
+        else:
+            await send_status(f"**Order not cancelled:** {_classify_execution_error(exc)}", "System")
 
 
 # ── Order modification ───────────────────────────────────────────────────────
@@ -579,6 +888,7 @@ async def _execute_modify_order_core(
     order_id = proposal.get("order_id")
     conid = proposal.get("conid")
     symbol = proposal.get("symbol", "?")
+    dispatched = False  # flips once the IBKR write has returned — see the except block
 
     if not order_id:
         await send_status(
@@ -656,6 +966,7 @@ async def _execute_modify_order_core(
 
         log.info("Modifying order %s: %s", order_id, order_body)
         result = ibkr.modify_order_and_confirm(account_id, order_id, order_body)
+        dispatched = True
 
         # Same 200-with-rejection classification as the place path — modify hits the
         # same order-submission machinery and can return the same rejection shape.
@@ -671,26 +982,51 @@ async def _execute_modify_order_core(
             # No decision logged — matches the other failure paths in this module.
             return
 
-        success_text = (
-            f"**Order modified:** order {order_id} ({symbol})\n"
-            f"IBKR response: {json.dumps(result, indent=2)}"
+        await send_status(
+            (
+                f"**Modify request accepted by IBKR — order {order_id}** ({symbol}). "
+                f"Verifying live state…\n"
+                f"IBKR response: {json.dumps(result, indent=2)}"
+            ),
+            "System",
         )
-        await send_status(success_text, "ClaudIA")
+        confirmed, readback_line, observed = await _read_back(ibkr, str(order_id), "modify")
+        await send_status(readback_line, "System")
+
+        # A working status only proves the order exists. Whether the *modification*
+        # landed is a separate question, answered by comparing the read-back's fields
+        # against the body that was dispatched.
+        fields_agree = False
+        if observed is not None:
+            fields_agree, comparison_line = _compare_modify_readback(order_body, observed)
+            await send_status(comparison_line, "System")
+        confirmed = confirmed and fields_agree
 
         if store and session_id:
+            observed_state = (observed or {}).get("order_status")
             store.add_decision(
                 session_id=session_id,
                 decision_type="trade_modified",
-                summary_text=f"MODIFIED: order {order_id} ({symbol})",
+                summary_text=(
+                    f"{'MODIFIED' if confirmed else 'MODIFY DISPATCHED (UNVERIFIED)'}: "
+                    f"order {order_id} ({symbol}) — "
+                    f"observed state: {observed_state or 'not observed'}"
+                ),
                 symbol=symbol,
                 metadata={
                     "proposal": proposal,
                     "ibkr_response": result,
                     "ibkr_order_id": order_id,
+                    "readback_confirmed": confirmed,
+                    "readback_order_status": observed_state,
+                    "readback_fields_match": fields_agree,
+                    "readback_response": observed,
                 },
             )
 
     except Exception as exc:
         log.exception("Order modification failed for order %s", order_id)
-        display_error = _classify_execution_error(exc)
-        await send_status(f"**Order not modified:** {display_error}", "System")
+        if dispatched:
+            await send_status(_post_dispatch_failure_text(exc, "modify request"), "System")
+        else:
+            await send_status(f"**Order not modified:** {_classify_execution_error(exc)}", "System")
