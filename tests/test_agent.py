@@ -27,8 +27,10 @@ from claudia.conversation_store import COMPLETED_ORDER_ACTION_TYPES, RENDERED_PR
 from tests.fixtures.failing_transcripts import (
     DEFENDED_CLAIM_588,
     FAILED_437,
+    HONEST_BOOK_TALK,
     HONEST_STAGING_TALK,
     INNOCENT,
+    NARRATED_BOOK_CHECK,
     NARRATED_STAGING,
 )
 
@@ -2206,9 +2208,12 @@ def test_the_guardrails_own_texts_never_trip_the_detector():
         _EMISSION_RECORD_HEADER,
         _GUARDRAIL_NOTICE,
         _OPERATOR_NOTE,
+        _STALE_BOOK_CLAIM_NOTICE,
+        _STALE_BOOK_CLAIM_OPERATOR_NOTE,
         _UNBACKED_CLAIM_NOTICE,
         _UNBACKED_CLAIM_OPERATOR_NOTE,
         _claims_completed_proposal,
+        _claims_fresh_book_check,
     )
 
     for text in (
@@ -2218,13 +2223,16 @@ def test_the_guardrails_own_texts_never_trip_the_detector():
         _COMPLETED_ORDER_HEADER,
         _UNBACKED_CLAIM_NOTICE,
         _UNBACKED_CLAIM_OPERATOR_NOTE,
+        _STALE_BOOK_CLAIM_NOTICE,
+        _STALE_BOOK_CLAIM_OPERATOR_NOTE,
     ):
         assert _claims_completed_proposal(text) is None, text[:60]
+        assert _claims_fresh_book_check(text) is None, text[:60]
 
 
 def test_replayed_record_lines_never_trip_the_detector():
     """The operator channel's rendered lines, not just their headers."""
-    from claudia.agent import _claims_completed_proposal
+    from claudia.agent import _claims_completed_proposal, _claims_fresh_book_check
 
     agent, _sink = _make_agent_recording()
     for decision_type in RENDERED_PROPOSAL_TYPES:
@@ -2240,6 +2248,8 @@ def test_replayed_record_lines_never_trip_the_detector():
         )
     assert _claims_completed_proposal(agent._emission_records()) is None
     assert _claims_completed_proposal(agent._completed_order_records()) is None
+    assert _claims_fresh_book_check(agent._emission_records()) is None
+    assert _claims_fresh_book_check(agent._completed_order_records()) is None
 
 
 async def test_narrated_staging_produces_an_honest_notice():
@@ -2358,6 +2368,189 @@ async def test_a_rejected_proposal_still_reaches_the_claim_detector():
     assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
         "proposal_claim_unbacked"
     ]
+
+
+# ── L5: a narrated order-book lookup nothing backs (gap #3, freshness half) ──
+#
+# L4 asserts *claimed a proposal ⇒ called a proposal tool*. This asserts *claimed a lookup ⇒
+# called a lookup tool*. The 2026-07-28 message did both in one turn, and neither check can
+# see the other's half — so unlike L1/L4 these two are not mutually exclusive.
+
+
+def _tool_then_text(tool_name: str, reply: str, tool_result: str = "{}") -> list:
+    """The two streams of one turn: a real tool call, then the reply text."""
+    return [
+        _FakeStream([
+            SimpleNamespace(
+                type="message_start", message=SimpleNamespace(usage=SimpleNamespace())
+            ),
+            SimpleNamespace(
+                type="content_block_start",
+                content_block=SimpleNamespace(type="tool_use", id="t1", name=tool_name),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="input_json_delta", partial_json="{}"),
+            ),
+            _message_delta("tool_use"),
+        ]),
+        _FakeStream(_text_response_events(reply)),
+    ]
+
+
+@pytest.mark.parametrize("text", NARRATED_BOOK_CHECK)
+def test_book_check_detector_fires_on_a_claimed_lookup(text):
+    from claudia.agent import _claims_fresh_book_check
+
+    assert _claims_fresh_book_check(text) is not None
+
+
+@pytest.mark.parametrize("text", HONEST_BOOK_TALK + HONEST_STAGING_TALK + INNOCENT)
+def test_book_check_detector_is_silent_on_everything_else(text):
+    """The same trap that retired the 2026-07-27 detector, aimed at this shape. A
+    verification verb and a book noun are both present somewhere in 76 of the live store's
+    169 assistant messages; firing on co-presence rather than on a claim is what measured
+    81% false positives."""
+    from claudia.agent import _claims_fresh_book_check
+
+    assert _claims_fresh_book_check(text) is None
+
+
+def test_book_check_detector_ignores_the_adjectival_reading():
+    """The one false-positive class the live corpus does not contain, so it is excluded by
+    construction instead of by measurement: an adjective takes a determiner, and neither
+    alternative of the shape can follow one."""
+    from claudia.agent import _claims_fresh_book_check
+
+    assert _claims_fresh_book_check("A confirmed live order needs a click.") is None
+    assert _claims_fresh_book_check("Confirmed the live orders.") is not None
+
+
+def test_book_reading_tools_match_the_toolkits_order_surface():
+    """Drift guard. A new order-reading tool in ibkr_core_mcp that is not added here would
+    silently make this guardrail fire on honest messages — the failure mode a guardrail can
+    least afford. `preview_order` is excluded deliberately: it prices a hypothetical order
+    and reads no existing one."""
+    from ibkr_core_mcp.claude_tools import TOOL_DEFINITIONS
+
+    from claudia.agent import _BOOK_READING_TOOLS
+
+    order_tools = {t["name"] for t in TOOL_DEFINITIONS if "order" in t["name"]}
+    assert order_tools == _BOOK_READING_TOOLS | {"preview_order"}
+
+
+async def test_narrated_book_check_produces_an_honest_notice():
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_BOOK_CHECK[0]))
+    )
+    await agent.handle_message("what's working?")
+
+    assert sink.messages[0] == NARRATED_BOOK_CHECK[0]  # the claim still stands, uncensored
+    notice = sink.messages[-1].lower()
+    assert "never ran" in notice
+    assert "came from memory" in notice
+
+    rows = agent._store.get_decisions("test-session")
+    assert [r["decision_type"] for r in rows] == ["book_claim_unverified"]
+    assert rows[0]["message_id"] == 2
+    # The offending sentence is live conversation text: logged, never stored.
+    assert NARRATED_BOOK_CHECK[0][:20] not in json.dumps(rows[0], default=str)
+
+
+@pytest.mark.parametrize("tool_name", ["get_live_orders", "get_order_status", "diagnose_orders"])
+async def test_a_real_lookup_clears_the_claim(tool_name):
+    """The verdict is the tool call, never the prose. Each of the three book readers must
+    clear the same sentence that fires without one."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        side_effect=_tool_then_text(tool_name, NARRATED_BOOK_CHECK[0])
+    )
+    agent._toolkit.execute = MagicMock(return_value=("[]", None))
+
+    await agent.handle_message("what's working?")
+
+    assert not any("never ran" in m.lower() for m in sink.messages)
+    assert agent._store.get_decisions("test-session") == []
+    assert agent._pending_operator_notes == []
+
+
+async def test_an_unrelated_tool_does_not_clear_the_claim():
+    """`get_positions` is a real IBKR read and still says nothing about the order book —
+    the distinction the evidence set exists to make."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        side_effect=_tool_then_text("get_positions", NARRATED_BOOK_CHECK[0])
+    )
+    agent._toolkit.execute = MagicMock(return_value=("[]", None))
+
+    await agent.handle_message("what's working?")
+
+    assert any("never ran" in m.lower() for m in sink.messages)
+
+
+async def test_a_lookup_in_an_earlier_round_of_the_same_turn_still_counts():
+    """`tool_calls` is cleared on every pass of the loop, so a book read followed by two
+    more tool rounds must still count as evidence. Accumulating per-turn is the whole point
+    of `called_tools`."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(side_effect=[
+        _tool_then_text("get_live_orders", "")[0],
+        _tool_then_text("get_positions", "")[0],
+        _FakeStream(_text_response_events(NARRATED_BOOK_CHECK[0])),
+    ])
+    agent._toolkit.execute = MagicMock(return_value=("[]", None))
+
+    await agent.handle_message("what's working?")
+
+    assert not any("never ran" in m.lower() for m in sink.messages)
+
+
+async def test_narrated_book_check_uses_the_operator_channel():
+    """The model must not carry an unverified order state into the next turn."""
+    agent, _sink = _make_agent_recording()
+    stream = MagicMock(side_effect=[
+        _FakeStream(_text_response_events(NARRATED_BOOK_CHECK[0])),
+        _FakeStream(_text_response_events("Understood — I will check for real.")),
+    ])
+    agent._client.messages.stream = stream
+
+    await agent.handle_message("what's working?")
+    await agent.handle_message("and now?")
+
+    notes = _system_texts(stream.call_args_list[-1].kwargs["messages"])
+    assert len(notes) == 1
+    assert "no order-book tool ran" in notes[0].lower()
+    assert "get_live_orders" in notes[0]
+
+
+async def test_one_message_can_earn_both_corrections():
+    """The 2026-07-28 message itself: it narrated a lookup *and* a staging, and neither was
+    real. Unlike L1 and L4 these two are not mutually exclusive, so the user is owed both."""
+    agent, _sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(
+            f"{NARRATED_BOOK_CHECK[0]}\n\n{NARRATED_STAGING[0]}"
+        ))
+    )
+    await agent.handle_message("check the book and cancel it")
+
+    assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
+        "proposal_claim_unbacked",
+        "book_claim_unverified",
+    ]
+    assert len(agent._pending_operator_notes) == 2
+
+
+def test_stale_book_notice_never_implies_the_state_was_verified():
+    """Wording guard: this text exists to contradict a claim the transcript already
+    carries, so a hedge would leave that claim standing."""
+    from claudia.agent import _STALE_BOOK_CLAIM_NOTICE
+
+    lowered = _STALE_BOOK_CLAIM_NOTICE.lower()
+    assert "never ran" in lowered
+    assert "came from memory" in lowered
+    assert "may " not in lowered and "might" not in lowered
 
 
 def test_unbacked_claim_notice_never_implies_something_was_staged():

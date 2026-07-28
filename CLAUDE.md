@@ -86,7 +86,7 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ## Testing
 
 ```bash
-pytest        # full suite — all unit, no IBKR gateway needed (634 tests as of 2026-07-28)
+pytest        # full suite — all unit, no IBKR gateway needed (757 tests as of 2026-07-28)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (3 tests):

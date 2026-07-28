@@ -428,6 +428,9 @@ class ConversationStore:
           - ``proposal_claim_unbacked`` — the assistant text claimed a completed order
             action while **no proposal tool was called at all**; nothing was staged and no
             order exists
+          - ``book_claim_unverified`` — the assistant text claimed a check of the live
+            order book while **no order-book tool was called**; whatever order state that
+            message stated is unverified
 
         From `claudia/order_flow.py` — the user clicked and both gates passed:
           - ``trade_staged`` / ``trade_cancelled`` / ``trade_modified`` — the write reached
@@ -436,17 +439,20 @@ class ConversationStore:
             `readback_confirmed` and `readback_order_status`, and the record is only as
             honest as those three fields.
 
-        The two failure types are deliberately their own types rather than flags on the
+        The three failure types are deliberately their own types rather than flags on the
         three proposal types: those must keep meaning "a button was shown", or every
         historical row and every regression baseline silently changes meaning. They are
-        also distinct from each other, because they describe opposite states of the tool
-        loop and neither query nor report may conflate them:
+        also distinct from each other, because they describe different states of the tool
+        loop and no query or report may conflate them:
         `ClaudIAAgent._emit_guardrail_notice` writes `proposal_render_failed` (accepted,
-        never drawn — the 2026-07-17 / 2026-07-24 failures), and
+        never drawn — the 2026-07-17 / 2026-07-24 failures),
         `ClaudIAAgent._emit_unbacked_claim_notice` writes `proposal_claim_unbacked` (never
-        proposed, only narrated — the 2026-07-28 failure). Both are excluded from every
-        allowlist here: replaying either as evidence would assert, on the channel the model
-        cannot forge, the exact falsehood the notice removes.
+        proposed, only narrated), and `ClaudIAAgent._emit_stale_book_claim_notice` writes
+        `book_claim_unverified` (never looked, only narrated) — the last two are the two
+        halves of the single 2026-07-28 failure message, and one turn can earn both. All
+        three are excluded from every allowlist here: replaying any of them as evidence
+        would assert, on the channel the model cannot forge, the exact falsehood the notice
+        removes.
 
         message_id should be the id returned by add_message() for the assistant turn that
         surfaced the proposal — for both failure types, the turn carrying the claim the

@@ -289,6 +289,38 @@ _UNBACKED_CLAIM_OPERATOR_NOTE = (
 """Operator-channel body for a narrated action nothing backs. See `_append_operator_message`."""
 
 
+_STALE_BOOK_CLAIM_NOTICE = (
+    "⚠️ **That message described a check of your live orders that never ran.** No "
+    "order-book tool was called in that turn, so **any order state it stated came from "
+    "memory, not from IBKR**. Ask again and the book will be read for real."
+)
+"""Shown, persisted and mirrored to the model when a book-check claim has no tool call.
+
+Unhedged for the same reason as its two siblings, and worded to trip neither detector —
+pinned by tests/test_agent.py::test_the_guardrails_own_texts_never_trip_the_detector.
+"""
+
+
+_STALE_BOOK_CLAIM_OPERATOR_NOTE = (
+    "Your preceding message told the user you had checked their live orders, but no "
+    "order-book tool ran in that turn. The user has been told. Do not repeat or defend "
+    "that claim, and do not restate any order's status from it. Call `get_live_orders`, "
+    "`get_order_status` or `diagnose_orders` before describing what any order is doing now."
+)
+"""Operator-channel body for an unverified book check. See `_append_operator_message`."""
+
+
+_BOOK_READING_TOOLS = frozenset({"get_live_orders", "get_order_status", "diagnose_orders"})
+"""The tools whose results are evidence about the current order book.
+
+Enumerated from ibkr_core_mcp's declarations, not from memory: those three plus
+`preview_order` are the toolkit's entire order surface, and `preview_order` is deliberately
+absent — it prices a hypothetical order and reads no existing one, so treating it as
+evidence would clear exactly the claim this check exists to catch. Drift is pinned by
+tests/test_agent.py::test_book_reading_tools_match_the_toolkits_order_surface.
+"""
+
+
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])(?=\s|[A-Z])|\n+")
 """Sentence boundary: terminal punctuation followed by whitespace or a capital, or a newline.
 
@@ -412,6 +444,102 @@ def _claims_completed_proposal(text: str) -> str | None:
             hit = shape.search(sentence)
             if hit is not None and not _GOVERNING_OPERATOR.search(sentence[: hit.start()]):
                 return sentence
+    return None
+
+
+_BOOK = (
+    r"(?:live\s+book|order\s+book|the\s+book|live\s+orders?|open\s+orders?|"
+    r"working\s+orders?|order\s+status|your\s+orders?)"
+)
+"""The order book, by every name ClaudIA calls it.
+
+Deliberately excludes "IBKR" on its own. "Confirmed against IBKR" can honestly follow
+`get_positions` or `get_account_summary`, and a noun that broad would make the evidence
+gate below answer a different question than the sentence asked.
+"""
+
+_BOOK_VERB = r"(?:re-?)?(?:confirmed|checked|verified|pulled)"
+"""Past tense only. That single restriction is what carries every offer and intention —
+"let me check the book", "I'll pull the live orders", "should I check?" — without a veto
+term, because none of them claims anything happened."""
+
+_BOOK_LINK = (
+    r"(?:\s+(?:against|with|in|on|via|at|from|the|your|our|both|all|that|it|current|full))*"
+)
+"""The only words permitted between the verb and the noun. Adjacency is what separates this
+from the 81%-false-positive shape: in this corpus a verification verb and a book noun are
+merely co-present in 76 of 169 messages, and adjacent in 2."""
+
+# Verbal use only. An adjective takes a determiner ("a confirmed live order", "the checked
+# open orders"), so neither alternative below can reach one — the false-positive class this
+# corpus happens not to contain, which is exactly why it is excluded by construction.
+_BOOK_CLAIM = re.compile(
+    r"(?:^(?:just\s+)?" + _BOOK_VERB
+    # `\u2019` (curly apostrophe) per this file's convention: a curly and a straight
+    # apostrophe are indistinguishable on screen inside a character class.
+    + r"|\bI(?:['\u2019]ve|\s+have|\s+just|\s+already|\s+also)*\s+" + _BOOK_VERB
+    + r")\b" + _BOOK_LINK + r"\s+" + _BOOK,
+    re.I,
+)
+"""Claim shape: "I looked at the order book", asserted about *this* turn."""
+
+_PAST_TURN = re.compile(
+    r"\b(?:earlier|before|previously|ago|last\s+time|last\s+turn|yesterday|"
+    r"above|already|at\s+the\s+start|when\s+I\s+(?:first|last))\b",
+    re.I,
+)
+"""A check attributed to an earlier turn, which this function has no evidence about.
+
+Sentence-wide, unlike `_GOVERNING_OPERATOR`: a time adverb binds from either side ("Earlier
+I pulled the book", "I pulled the book earlier"). Note "above" means the opposite here than
+it does in `_BUTTON_IS_HERE` — there it points at a button in *this* message, here it points
+at a lookup in a previous one.
+"""
+
+
+def _claims_fresh_book_check(text: str) -> str | None:
+    """Return the sentence claiming a just-performed order-book check, or None.
+
+    The freshness half of the 2026-07-28 failure, and the sibling of
+    `_claims_completed_proposal`: that one asserts *claimed a proposal ⇒ called a proposal
+    tool*, this one asserts *claimed a lookup ⇒ called a lookup tool*. The same message
+    committed both, and neither check can see the other's half.
+
+    Architecture is identical and deliberate — **the trigger is textual, the verdict is
+    evidence**. This function decides only that a check was claimed; whether one happened is
+    settled at the call site by `_BOOK_READING_TOOLS`, and by nothing else.
+
+    Measured the same way, against the same live store (169 assistant messages). A verb from
+    this family and a book noun are both present somewhere in 76 of them — the shape the
+    dropped 2026-07-27 detector would have keyed on, and a 45% fire rate. Requiring them
+    adjacent and the verb verbal leaves 2 matches: one cleared by evidence, and one fire,
+    which is the 2026-07-28 failure itself. **Zero false positives.**
+
+    What it gives up for that, knowingly:
+      - claims of having checked *something else* ("confirmed against IBKR"), where the
+        evidence set to check against is genuinely ambiguous.
+      - a check that ran and failed. `get_live_orders` returning HTTP 500 still counts as
+        evidence here, because sniffing a tool result for error-ness is a heuristic dressed
+        as a fact. That case is the `_SAFETY_BLOCK`'s ORDER EXISTENCE section, which forbids
+        concluding anything from a failed call, and it held live on 2026-07-28.
+      - claims with no book noun at all ("Confirmed — two orders working").
+
+    Args:
+        text: The assistant text about to be, or already, shown to the user.
+
+    Returns:
+        The offending sentence — for the log line only, never for storage: it is live
+        conversation text and the decision row must stay free of it.
+    """
+    for sentence in _SENTENCE_SPLIT.split(_MARKUP.sub(" ", text)):
+        sentence = sentence.strip()
+        if not sentence or sentence.endswith("?"):
+            continue
+        hit = _BOOK_CLAIM.search(sentence)
+        if hit is None or _PAST_TURN.search(sentence):
+            continue
+        if not _GOVERNING_OPERATOR.search(sentence[: hit.start()]):
+            return sentence
     return None
 
 
@@ -881,6 +1009,10 @@ class ClaudIAAgent:
 
         # Multi-turn tool loop
         full_response_text = ""
+        # Every tool that actually ran this turn. `tool_calls` below is per-iteration and is
+        # cleared on each pass, so it cannot answer "did a lookup happen anywhere in this
+        # turn?" — which is the whole question `_claims_fresh_book_check` is checked against.
+        called_tools: set[str] = set()
 
         while True:
             response_text = ""
@@ -1024,6 +1156,7 @@ class ClaudIAAgent:
                         )
                     step.output = result_text
 
+                called_tools.add(tc["name"])
                 self._store.add_message(
                     self._session_id,
                     "tool",
@@ -1105,6 +1238,47 @@ class ClaudIAAgent:
             claim = _claims_completed_proposal(display_text)
             if claim is not None:
                 await self._emit_unbacked_claim_notice(msg_id, claim)
+
+        # Outside the proposal branches on purpose: claiming a lookup and claiming a
+        # proposal are independent acts, and the 2026-07-28 turn committed both in one
+        # message. A turn can also propose perfectly and still describe a book check it
+        # never made, which neither branch above would ever look at.
+        if display_text and not (called_tools & _BOOK_READING_TOOLS):
+            stale = _claims_fresh_book_check(display_text)
+            if stale is not None:
+                await self._emit_stale_book_claim_notice(msg_id, stale)
+
+    async def _emit_stale_book_claim_notice(self, msg_id: int, claim: str) -> None:
+        """Contradict a claimed order-book check that no tool call backs.
+
+        The third member of the family, kept separate from the other two for the same
+        reason they are separate from each other: this one means "the lookup never ran",
+        which needs its own words to the user, its own decision type and its own operator
+        note. Unlike those two it is not mutually exclusive with them — a single message can
+        both narrate a staging and narrate the lookup that supposedly justified it, and
+        each false claim gets its own correction rather than one covering for the other.
+
+        Same surface order and same reasoning as its siblings: persist, record, queue, then
+        display, so a failing sink cannot cost the record.
+
+        Args:
+            msg_id: The assistant message whose text carries the unverified claim.
+            claim: The offending sentence. **Logged only** — live conversation text, kept
+                out of the decision row and every surface that leaves this machine.
+        """
+        log.warning("Book-check claim with no order-book tool called: %r", claim)
+        self._store.add_message(self._session_id, "assistant", _STALE_BOOK_CLAIM_NOTICE)
+        self._store.add_decision(
+            session_id=self._session_id,
+            decision_type="book_claim_unverified",
+            summary_text=(
+                "assistant text claimed a live-order check but no order-book tool was "
+                "called — the stated order state is unverified"
+            ),
+            message_id=msg_id,
+        )
+        self._pending_operator_notes.append(_STALE_BOOK_CLAIM_OPERATOR_NOTE)
+        await self._sink.send_message(_STALE_BOOK_CLAIM_NOTICE)
 
     async def _emit_unbacked_claim_notice(self, msg_id: int, claim: str) -> None:
         """Contradict a staging claim that no tool call backs, on all three surfaces.
