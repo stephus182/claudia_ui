@@ -105,6 +105,7 @@ claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_f
 claudia/panel_pinescript.py — ```pine copy (real clipboard) / inject buttons
 claudia/panel_chart.py      — external Bokeh candlestick chart pane (STK, cache-backed)
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching
+claudia/proposal_tools.py   — strict-schema propose_order/cancel/modify declarations (no execution)
 claudia/message_sink.py     — MessageSink protocol (the UI-decoupling seam)
 claudia/order_flow.py       — framework-agnostic order-execution cores → biometric gates
 claudia/opening_status.py   — UI-free opening-status builders
@@ -127,11 +128,13 @@ IBKR Client Portal Gateway
 
 ## Order Staging
 
-ClaudIA proposes trades; you approve them through two physical gates. The LLM has **no** order-execution tools.
+ClaudIA proposes trades; you approve them through two physical gates. Proposing is a tool
+call that records a proposal and returns a result — it reaches no IBKR API. The LLM has
+**no** order-execution tools.
 
 ```
-ClaudIA response → order-proposal block
-    ↓ agent.py strips block → MessageSink.send_order_proposal()
+ClaudIA calls propose_order (strict-schema tool — records, executes nothing)
+    ↓ agent.py hands the validated input → MessageSink.send_order_proposal()
     ↓ panel_order_flow.render_order_proposal() → button: "Stage this order"
     ↓ User clicks → order_flow._execute_staged_order_core()
     ↓ Gate 1 — Touch ID (macOS LocalAuthentication)
@@ -149,7 +152,8 @@ ClaudIA response → order-proposal block
 
 The Gate 2 dialog shows correct futures notional: `price × qty × multiplier` (multiplier fetched from `/trsrv/futures`).
 
-Full field spec and immutability rule: [`CLAUDE.md → Order Staging Flow`](CLAUDE.md#order-staging-flow).
+Full field spec and immutability rule: [`docs/order-api-reference.md`](docs/order-api-reference.md),
+summarized in [`CLAUDE.md`](CLAUDE.md) § Order Staging.
 
 ---
 

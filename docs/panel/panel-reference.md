@@ -141,8 +141,8 @@ side-by-side-vs-tabs are explicitly deferred restyle decisions
 
 ## 5. The MessageSink seam
 
-The safety-critical agent loop — streaming, tool routing, the hardcoded safety block,
-order-proposal parsing — knows nothing about Panel.
+The safety-critical agent loop — streaming, tool routing, the hardcoded safety block, the
+`propose_*` tool handlers — knows nothing about Panel.
 
 [`claudia/message_sink.py`](../../claudia/message_sink.py) is a pure `typing.Protocol` module
 with **zero Panel imports**, defining `ToolStepHandle` (mutable `input`/`output` +
@@ -150,9 +150,9 @@ with **zero Panel imports**, defining `ToolStepHandle` (mutable `input`/`output`
 `send_max_tokens_warning`, `send_order_proposal`, `send_cancel_proposal`,
 `send_modify_proposal`).
 
-`claudia/agent.py` imports it **only under `TYPE_CHECKING`** (`agent.py:39`), takes it as a
-constructor parameter (`agent.py:461`), and touches it at exactly six call sites:
-`agent.py:595, 626, 666, 679, 681, 683`. Swapping UI frameworks means writing one new sink.
+`claudia/agent.py` imports it **only under `TYPE_CHECKING`** (`agent.py:43`), takes it as a
+constructor parameter (`agent.py:494`), and touches it at exactly six call sites:
+`agent.py:714, 756, 798, 803, 805, 807`. Swapping UI frameworks means writing one new sink.
 
 [`PanelMessageSink`](../../claudia/panel_sink.py#L77) **duck-types** the protocol (no explicit
 inheritance). Notable behavior:

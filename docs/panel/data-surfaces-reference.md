@@ -373,8 +373,8 @@ The shipped architecture already contains the right seam. `agent.py` imports **n
 and touches the sink at exactly six call sites (`panel-reference.md` §5) **[C]**, and there are
 two working precedents for UI actions that originate in the model's output:
 
-- **Order proposals** — the agent emits a JSON block, `agent.py` strips it and hands the dict to
-  `MessageSink.send_order_proposal` **[C]**
+- **Order proposals** — the agent calls a strict-schema `propose_*` tool, and `agent.py` hands
+  the validated `tool_use.input` to `MessageSink.send_order_proposal` **[C]**
 - **PineScript blocks** — detection lives **entirely in the sink** (`panel_sink.py:94-102`), so
   `agent.py` was not modified at all **[C]**
 

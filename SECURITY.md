@@ -29,7 +29,10 @@ ClaudIA has **zero** tools for order execution. This is the most critical securi
 
 ### What the LLM can do
 - Call any of the 42 read-only `ClaudeToolkit` tools (positions, PnL, market data, backtests, etc.)
-- Output an `order-proposal` JSON block as text in its response
+- Call `propose_order` / `propose_cancel` / `propose_modify` (`claudia/proposal_tools.py`).
+  These are declaration-only: the handler records the proposal for the UI to render and
+  returns a `tool_result`. They open no socket and touch no IBKR API — see CLAUDE.md Hard
+  Rule 1, which forbids *staging* as an LLM capability, not *proposing*
 - Call `preview_order` (whatif — read-only, no execution)
 
 ### What the LLM cannot do
@@ -38,15 +41,21 @@ ClaudIA has **zero** tools for order execution. This is the most critical securi
 - Access `IBKRClient` directly (only `ClaudeToolkit.execute()` is exposed to the agent loop)
 
 ### Order staging flow (human-in-the-loop)
-1. ClaudIA outputs a text `order-proposal` block — this is just text, no side effects
-2. `agent.py` parses it, schema-checks it via `order_proposal_schema.validate_order_proposal()`
-   (rejects an action outside `{BUY, SELL}`, a non-positive or non-numeric quantity, a blank
-   symbol, or an `order_type`/`tif`/`sec_type` outside the declared enums), then hands the
-   dict to the `MessageSink` (`send_order_proposal`). `PanelMessageSink` routes it to
+1. ClaudIA calls a `propose_*` tool — this records a proposal and returns a `tool_result`, no
+   side effects. The tools are declared with `strict: true`, so the **API itself** guarantees
+   `tool_use.input` matches the schema in `claudia/proposal_tools.py` before the handler ever
+   runs: `action` within `{BUY, SELL}`, `order_type`/`tif`/`sec_type` within their declared
+   enums, `quantity` a true integer, prices numeric-or-null, no unknown keys, no missing keys
+2. `agent.py`'s `_proposal_defect()` then checks the four contract terms a strict JSON Schema
+   **cannot** express — `quantity > 0` (`exclusiveMinimum` is rejected by the tools endpoint),
+   non-blank `symbol`, non-blank `order_id` on cancel/modify, and no duplicate `changes`
+   entries. Only after both layers pass is the dict handed to the `MessageSink`
+   (`send_order_proposal`); `PanelMessageSink` routes it to
    `panel_order_flow.render_order_proposal()`, which renders the button. A rejected proposal
-   is dropped and reported in chat — never silently, so ClaudIA cannot appear to have staged
-   an order it did not. **Validation rejects; it never repairs** — order parameters are
-   immutable
+   creates no button and returns an explicit `REJECTED — <reason>` `tool_result` stating that
+   no button was created, so ClaudIA cannot appear to have staged an order it did not. **Both
+   layers reject; neither repairs** — order parameters are immutable. At most one proposal is
+   accepted per turn; a second is refused, not silently dropped
 3. **Human physically clicks the button** — this is the first human gate
 4. `IBKRClient.place_order_and_confirm()` fires:
    - **Gate 1:** Apple `LocalAuthentication` biometric (Touch ID, Face ID) — no password fallback
@@ -112,7 +121,7 @@ content could influence future responses.
 
 ## 5. Hardcoded Safety Block
 
-`_SAFETY_BLOCK` (`claudia/agent.py:48-202`) is embedded directly in code and appended to
+`_SAFETY_BLOCK` (`claudia/agent.py:57-156`) is embedded directly in code and appended to
 every system prompt. It is **not** loaded from any user-editable file and cannot be
 overridden by `context.md` or `principles.md`. Modifications require a code change — a
 deliberate developer action, not a document edit (CLAUDE.md Hard Rule 3).
@@ -120,8 +129,8 @@ deliberate developer action, not a document edit (CLAUDE.md Hard Rule 3).
 **This section intentionally does not quote the block verbatim** — a byte-for-byte copy
 here would duplicate content that changes whenever the prompt is tuned, and would go
 stale exactly the way the previous version of this section did (it quoted only the first
-of what are now 8 non-overridable subsections, and had never been updated to reflect the
-other 7). Read `claudia/agent.py:48-202` directly for the authoritative current text. As
+of what are now 7 non-overridable subsections, and had never been updated to reflect the
+other 6). Read `claudia/agent.py:57-156` directly for the authoritative current text. As
 of this writing, the block's non-overridable subsections are:
 
 - **ABSOLUTE CONSTRAINTS** — no order execution, no financial-advisor claims, principles
@@ -130,8 +139,10 @@ of this writing, the block's non-overridable subsections are:
   contract ID, etc.) must originate from a tool result or user-provided content in *this*
   conversation; inventing, guessing, or carrying over a plausible-looking value is
   explicitly prohibited, and uncertainty about a value's origin means treating it as invented
-- **ORDER PROPOSAL FORMAT** / **ORDER CANCEL / MODIFY FORMAT** — the exact JSON schemas
-  ClaudIA must use; at most one proposal block per message
+- **ORDER PROPOSAL — USE THE TOOLS, NEVER PROSE** — a trade action is proposed by calling
+  `propose_order`/`propose_cancel`/`propose_modify`; there is no text format, and writing
+  *about* a proposal without calling the tool creates no button. At most one proposal tool
+  call per response
 - **ORDER PARAMETER IMMUTABILITY** / **MODIFY PARAMETER IMMUTABILITY** — user-specified
   order fields must be copied byte-for-byte, never rounded or "helpfully" adjusted; changing
   a field requires explicit user approval in a follow-up message (see §2/CLAUDE.md)

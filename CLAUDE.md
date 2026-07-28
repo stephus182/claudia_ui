@@ -15,6 +15,7 @@ claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_f
 claudia/panel_pinescript.py — ```pine copy (real client-side clipboard) / inject buttons
 claudia/panel_chart.py      — external Bokeh candlestick chart pane (STK, cache-backed)
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching (UI-agnostic via MessageSink)
+claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
 claudia/order_flow.py       — framework-agnostic order-execution cores → ibkr_core_mcp biometric gates
 claudia/opening_status.py   — UI-free opening-status builders
@@ -123,8 +124,11 @@ that repo.
 
 These rules must never be violated when extending ClaudIA:
 
-1. **Never add a tool that calls `place_order`, `modify_order`, `cancel_order`, or `reply_order`.**
-   Order staging is a UI-layer action triggered by a physical button click, not an LLM tool call.
+1. **Never add a tool that calls `place_order`, `modify_order`, `cancel_order`, or
+   `reply_order`.** *Proposing* is a tool call (`propose_order` / `propose_cancel` /
+   `propose_modify` — schema-validated, local handlers, no IBKR reachability). *Staging* is
+   a UI-layer action triggered by a physical button click. The rule forbids the second as an
+   LLM capability, not the first.
 2. **Never log or expose `ANTHROPIC_API_KEY`** in UI output, logs, or error messages.
 3. **Never modify the hardcoded safety block** in `claudia/agent.py` to weaken constraints.
 4. **Never inject conversation history directly into the system prompt.** History must be
@@ -137,8 +141,10 @@ These rules must never be violated when extending ClaudIA:
 ## Order Staging (safety-critical — summary only, full spec: `docs/order-api-reference.md`)
 
 ClaudIA **cannot** place, modify, or cancel orders autonomously:
-1. ClaudIA embeds an `order-proposal` JSON block in its response.
-2. `agent.py` strips it and hands the parsed dict to the `MessageSink`
+1. ClaudIA calls `propose_order` (or `propose_cancel` / `propose_modify`) — a `strict: true`
+   tool declared in `claudia/proposal_tools.py`. It reaches nothing: the handler records the
+   proposal and returns a `tool_result`. There is no text format for a proposal.
+2. `agent.py` hands the recorded `tool_use.input` to the `MessageSink`
    (`send_order_proposal`); `PanelMessageSink` routes it to
    `panel_order_flow.render_order_proposal()` → a Panel message with a
    **"Stage this order"** button.
@@ -153,8 +159,15 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   explicit user approval in a follow-up message. Enforced in `claudia/agent.py` system
   prompt and in memory (`feedback-order-parameter-immutability.md`).
 - Modify requests require the **full original order**, not a diff (IBKR API requirement).
+  `propose_modify` carries the replacement order in its top-level fields plus a `changes`
+  array of `{field, previous_value}` objects, used only to render the before/after diff.
 - FUT/FOP require `conid` pre-resolved via `get_option_chain`/`get_futures` — no fallback
   symbol-based resolution for modify/cancel.
+- `strict: true` enforces types, `enum`s, required keys and closed objects at the API
+  boundary. Four guarantees it cannot express — positive quantity, non-blank `symbol`,
+  non-blank `order_id`, no duplicate `changes` entries — are checked by `_proposal_defect()`
+  in `claudia/agent.py`. A defective proposal is **rejected whole and never repaired**: the
+  model gets an honest `tool_result` saying no button was created.
 
 ---
 
@@ -163,9 +176,14 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
 Local editable install: see Dev Setup step 3 above for the exact command (strict editable
 mode required for `mypy` to resolve it) — re-run after ibkr_core_mcp adds new tools. No
 Panel restart needed for tool definition changes; restart required for Python module
-changes. Full tool catalog (40 core + 2 optional web-scraper = 42 total, matching
-`self._all_tools` in `claudia/agent.py`): `ibkr_core_mcp/docs/tools-reference.md` —
-check there before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.md`.
+changes. Full tool catalog (40 core + 2 optional web-scraper = 42 total, verified against
+`ClaudeToolkit.tools` 2026-07-27): `ibkr_core_mcp/docs/tools-reference.md` — check there
+before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.md`.
+
+`self._all_tools` in `claudia/agent.py` is **not** just that catalog: it is the toolkit's 42,
+plus the TradingView extras when the sidecar is up (16 curated), plus 5 local utility tools
+(`_LOCAL_TOOLS`) and the 3 `PROPOSAL_TOOLS`, both declared in claudia_ui. The proposal tools
+are appended last so the tools cache breakpoint on the final entry stays stable.
 
 No extras (e.g. `[server]`) are needed for the install above. `websockets` — the sole
 runtime dependency of `IBKRWebSocket`, which `claudia/execution_listener.py` uses

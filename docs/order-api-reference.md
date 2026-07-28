@@ -1,10 +1,36 @@
 # Order API Reference
 
 Full detail behind the summary in CLAUDE.md § Order Staging. Pull this in when actually
-touching `order_flow.py`, `claudia/agent.py`'s order-proposal handling, or debugging an
-order-related issue.
+touching `order_flow.py`, `claudia/proposal_tools.py`, `claudia/agent.py`'s proposal-tool
+handling, or debugging an order-related issue.
 
-## Order proposal format
+## How a proposal is made
+
+A proposal is a **tool call**, not text. ClaudIA calls `propose_order`, `propose_cancel`, or
+`propose_modify` — declared in `claudia/proposal_tools.py` with `strict: true`, so the
+Anthropic API validates `tool_use.input` against the schema before the handler in
+`claudia/agent.py` ever sees it. The handler records the input and returns a `tool_result`;
+it reaches no IBKR API. There is no fenced text format — the `order-proposal` /
+`order-cancel-proposal` blocks and their hand-written validator (`order_proposal_schema.py`)
+were retired 2026-07-27.
+
+Two enforcement layers, and the split matters:
+
+| Layer | Enforces |
+|---|---|
+| `strict: true` JSON Schema (API boundary) | Types, `enum` membership, every `required` key present, `additionalProperties: false`, `minItems: 1` on `changes` |
+| `agent.py:_proposal_defect()` | The four terms a strict schema cannot express: `quantity > 0`, non-blank `symbol`, non-blank `order_id` (cancel/modify), no duplicate `changes` entries |
+
+Neither layer repairs a value. A defect rejects the whole proposal, creates no button, and
+returns a `REJECTED — <reason>` `tool_result` that says so — order parameters are immutable
+(CLAUDE.md § Order Staging). At most one proposal is accepted per turn.
+
+`exclusiveMinimum` and free-form `additionalProperties: true` maps are hard 400s on the tools
+endpoint (probed 2026-07-27); `proposal_tools.py`'s module docstring is the single record of
+what the API actually accepts. Do not add a schema keyword without probing it — an
+unsupported keyword fails **every** request, not just a malformed one.
+
+## `propose_order` input
 
 ```json
 {
@@ -21,12 +47,23 @@ order-related issue.
 }
 ```
 
-`sec_type` values: `STK` (default), `FUT`, `OPT`, `FOP`, `CASH`.
-`order_type` values: `MKT`, `LMT`, `STP`, `STOP_LIMIT`, `MIDPRICE`, `TRAIL`, `TRAILLMT`.
-`tif` values: `DAY`, `GTC`, `OPG`, `IOC`.
-`conid` (optional): a pre-resolved IBKR contract ID. **Required** for `FOP` (options-chain
-conid resolution isn't inferable from symbol alone); accepted as an override for any
-`sec_type` — when set, it skips `search_contract()`/`get_futures()` resolution entirely.
+All ten keys are `required` and no others are accepted — nullable fields carry an explicit
+`null` rather than being omitted.
+
+`sec_type` values: `STK`, `FUT`, `OPT`, `FOP`, `CASH`.
+`order_type` values: `MKT`, `LMT`, `STP`, `STOP_LIMIT`. This is deliberately **narrower than
+the IBKR request body** (below), which also accepts `MIDPRICE`, `TRAIL` and `TRAILLMT`:
+`order_flow.py` populates `price`/`auxPrice` only for `LMT`/`STP`/`STOP_LIMIT`, so widening
+the enum without widening both execute paths would send a trailing order with no price. See
+Known Gaps #6 in `docs/project-status.md`.
+`tif` values: `DAY`, `GTC`, `IOC`, `OPG`.
+`quantity` is `"type": "integer"` — a fractional value is rejected at the API boundary rather
+than silently truncated by `int(qty)` in `order_flow.py`. Positivity is *not* schema-enforced
+(`exclusiveMinimum` is a 400); `_proposal_defect()` carries it.
+`conid`: a pre-resolved IBKR contract ID, nullable here. **Required non-null** for `FOP`
+(options-chain conid resolution isn't inferable from symbol alone) — enforced by
+`order_flow.py`, not by the schema; accepted as an override for any `sec_type`, and when set
+it skips `search_contract()`/`get_futures()` resolution entirely.
 
 ## Order body field spec (from IBKR CP API docs, verified 2026-07-02)
 
@@ -81,7 +118,7 @@ Source (536-B requirement): https://www.interactivebrokers.com/campus/ibkr-api-p
 
 ## Order Cancellation
 
-Mirrors the placement flow exactly: ClaudIA emits an `order-cancel-proposal` JSON block →
+Mirrors the placement flow exactly: ClaudIA calls `propose_cancel` →
 `panel_order_flow.render_cancel_proposal()` shows a "Cancel this order" / "Keep order" button pair →
 `_execute_cancel_order_core()` calls `IBKRClient.cancel_order(account_id, order_id)` behind the same
 Gate 1 (Touch ID) + Gate 2 (AppKit dialog) pair used by placement — the gates fire inside
@@ -89,20 +126,26 @@ Gate 1 (Touch ID) + Gate 2 (AppKit dialog) pair used by placement — the gates 
 
 ```json
 {
-  "order_id": "242538143",
+  "order_id": "1234567890",
   "symbol": "AAPL",
   "action": "BUY",
   "quantity": 1,
   "order_type": "LMT",
   "limit_price": 100.00,
+  "stop_price": null,
   "tif": "GTC",
   "reason": "Closing out the disposable test order"
 }
 ```
 
-`order_id` is required; the rest are display-only fields ClaudIA copies verbatim from a real
+All nine keys are `required` and no others are accepted — note there is no `sec_type` or
+`conid` on cancel, since `cancel_order()` takes only `(account_id, order_id)`.
+
+`order_id` drives the call; the rest are display fields ClaudIA copies verbatim from a real
 `get_live_orders`/`get_order_status`/`diagnose_orders` call earlier in the conversation — never
-invented. A successful cancel logs `decision_type="trade_cancelled"` to `ConversationStore`.
+invented (enforced by the ORDER CANCEL / MODIFY RULES section of `_SAFETY_BLOCK`, and by
+`_proposal_defect()`'s non-blank `order_id` check). A successful cancel logs
+`decision_type="trade_cancelled"` to `ConversationStore`.
 
 **Live-verified 2026-07-10**: button click → Touch ID → Gate 2 → `cancel_order` fired on a
 disposable AAPL order (orderId `567317535`), confirmed gone from `get_live_orders` on the next
@@ -134,7 +177,7 @@ Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#modify
 
 ```json
 {
-  "order_id": "242538143",
+  "order_id": "1234567890",
   "conid": 265598,
   "symbol": "AAPL",
   "action": "BUY",
@@ -145,16 +188,41 @@ Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#modify
   "tif": "GTC",
   "sec_type": "STK",
   "reason": "Bumping the limit a few dollars, staying unfillable",
-  "_changed_fields": ["limit_price"],
-  "_previous_values": {"limit_price": 100.00}
+  "changes": [{"field": "limit_price", "previous_value": 100.00}]
 }
 ```
 
-`order_id` and `conid` are both required — **no fallback resolution** for `conid` (re-resolving
-from `symbol` risks silently picking a different contract). A modify proposal requires ClaudIA
-to have called `get_order_status(order_id)` first — richer detail than `get_live_orders`
-exposes, including `conid`. `_changed_fields`/`_previous_values` are display-only, used by the
-Gate 2 dialog to show a before/after diff.
+All twelve keys are `required` and no others are accepted. The top-level fields carry the
+**full replacement order**; `changes` carries only the prior values, for display.
+
+`order_id` and `conid` are both required, and `conid` is the file's one deliberately
+non-nullable `conid` — **no fallback resolution** (re-resolving from `symbol` risks silently
+picking a different contract). A modify proposal requires ClaudIA to have called
+`get_order_status(order_id)` first — richer detail than `get_live_orders` exposes, including
+`conid`.
+
+**`changes` replaced the `_changed_fields` / `_previous_values` pair (2026-07-27).** It is an
+array of `{field, previous_value}` objects, `minItems: 1`, where `field` is an `enum` of the
+five modifiable fields — `limit_price`, `stop_price`, `quantity`, `order_type`, `tif` — so the
+model cannot invent a field name. One array rather than two parallel structures, because two
+structures describing one fact can disagree; and a free-form `previous_values` map is
+inexpressible anyway (strict mode's mandatory `additionalProperties: false` makes a closed
+object with no declared properties hold nothing).
+
+`order_flow._format_modify_summary()` reads `changes` directly and renders each entry as
+`field: <previous_value> → <proposal[field]>`. **There is no adapter**: the dict that reaches
+the render path, the execution core and the `decisions` table is byte-identical to what the
+model emitted — reshaping it in the handler would put a mutation of an order proposal on the
+path to Gate 2. Two consequences worth knowing:
+
+- The "before" column is an LLM-authored **claim**, not a verified read of the resting order.
+  Gate 2 re-renders the actual order and is the authoritative view.
+- `_format_modify_summary()` is total by construction — a malformed entry renders as
+  `(malformed change entry: …)` rather than raising. A render that dies is exactly how a
+  proposal once vanished while the model went on to describe a button that never existed.
+
+`_proposal_defect()` rejects duplicate `field` entries (`uniqueItems` is unsupported), which
+would otherwise render a contradictory before/after diff.
 
 **Field-casing gotcha (verified live 2026-07-08 against the CP API reference):** `get_order_status`'s
 response uses **snake_case** (`order_id`, `order_type`, `order_status`, `tif`, `conid`, `sec_type`,
@@ -163,9 +231,11 @@ response uses **snake_case** (`order_id`, `order_type`, `order_status`, `tif`, `
 `timeInForce`, `status`, `remainingQuantity`). Neither matches the modify/place request body's
 own camelCase field names (`orderType`, `tif`, `quantity`, `price`, `auxPrice`). `_execute_modify_order_core()`
 therefore builds a **fresh** order body from the proposal's typed fields (mirroring
-`_execute_staged_order_core()`) rather than forwarding anything from `get_order_status` verbatim —
-`modify_order()` does no `_`-prefix stripping (unlike `place_order()`), so display-only proposal
-fields (`_changed_fields`, `_previous_values`, `reason`) must never reach the request body.
+`_execute_staged_order_core()`) rather than forwarding anything from `get_order_status` verbatim.
+`modify_order()` does no `_`-prefix stripping (unlike `place_order()`), so the body is an explicit
+whitelist — `conid`, `orderType`, `side`, `tif`, `quantity`, `ticker`, plus `price`/`auxPrice` by
+order type and `manualIndicator` for FUT/FOP. The display-only proposal fields (`changes`,
+`reason`) are never copied in, so they cannot reach the request body.
 Sources: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#order-status ,
 https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#live-orders
 
