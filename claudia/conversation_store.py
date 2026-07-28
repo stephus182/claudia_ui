@@ -376,10 +376,28 @@ class ConversationStore:
     ) -> int:
         """Record a trade proposal and return its primary key.
 
-        decision_type is a free-form label (e.g. "order_proposal", "alert"); it
-        is not validated by a CHECK constraint so callers must use consistent
-        values. message_id should be the id returned by add_message() for the
-        assistant turn that surfaced the proposal.
+        decision_type is a free-form label; it is not validated by a CHECK constraint, so
+        callers must use consistent values. Every value claudia writes today:
+
+        From `claudia/agent.py` — a proposal was *surfaced* (the user has not decided yet):
+          - ``trade_proposed`` — a new-order staging button was rendered for the user
+          - ``trade_cancel_proposed`` — a cancel staging button was rendered
+          - ``trade_modify_proposed`` — a modify staging button was rendered
+          - ``proposal_render_failed`` — a proposal was accepted but **no button reached
+            the user**; nothing was staged and no order exists
+
+        From `claudia/order_flow.py` — the user clicked and both gates passed:
+          - ``trade_staged`` / ``trade_cancelled`` / ``trade_modified``
+
+        ``proposal_render_failed`` is deliberately its own type rather than a flag on the
+        three proposal types: those must keep meaning "a button was shown", or every
+        historical row and every regression baseline silently changes meaning. It is
+        written by `ClaudIAAgent._emit_guardrail_notice`, which closes the 2026-07-17 /
+        2026-07-24 failures where a parsed proposal produced no button and no row at all.
+
+        message_id should be the id returned by add_message() for the assistant turn that
+        surfaced the proposal — for `proposal_render_failed`, the turn carrying the claim
+        the notice contradicts.
         """
         with self._conn() as conn:
             cur = conn.execute(

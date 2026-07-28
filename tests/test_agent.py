@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +23,7 @@ from claudia.agent import (
     _with_cache_marker,
     _with_history_cache_marker,
 )
+from tests.fixtures.failing_transcripts import DEFENDED_CLAIM_588, FAILED_437, INNOCENT
 
 
 def test_build_system_prompt_contains_safety():
@@ -1276,3 +1278,454 @@ def test_absolute_constraints_still_route_trades_through_the_tools():
     assert "no tools for order execution" in constraints
     assert "propose_order" in constraints
     assert "must explicitly click" in constraints
+
+
+# ── L1: render-completion invariant (Task 5) ─────────────────────────────────
+#
+# On 2026-07-17 and 2026-07-24 ClaudIA told the user a staging button existed when none
+# did. The model had emitted a valid, parsed proposal in 5 of 5 inspectable failures —
+# the render path discarded it between persisting the reply text and writing the decision
+# row, and nothing ever told the model. Task 3 made the four *parsing* crash vectors
+# impossible; it did not make rendering reliable. These tests pin the guarantee that a
+# parsed proposal implies a rendered button, or ClaudIA says so plainly.
+
+
+class _RecordingSink:
+    """A MessageSink stand-in that records what actually reached the user.
+
+    `proposal_error` makes all three proposal renderers raise, standing in for a sink that
+    blows up mid-render (the 2026-07-17 shape). With it unset the sink renders normally
+    and records the proposal, so the same class covers the success path.
+    """
+
+    def __init__(self, proposal_error: Exception | None = None) -> None:
+        self.messages: list[str] = []
+        self.proposals: list[tuple[str, dict]] = []
+        self._error = proposal_error
+
+    async def send_message(self, text: str) -> None:
+        self.messages.append(text)
+
+    async def send_max_tokens_warning(self) -> None:
+        self.messages.append("[max tokens]")
+
+    def tool_step(self, name: str):
+        step = MagicMock()
+        step.__aenter__ = AsyncMock(return_value=MagicMock(input="", output=""))
+        step.__aexit__ = AsyncMock(return_value=False)
+        return step
+
+    async def _render(self, kind: str, proposal: dict) -> None:
+        if self._error is not None:
+            raise self._error
+        self.proposals.append((kind, proposal))
+
+    async def send_order_proposal(self, proposal: dict) -> None:
+        await self._render("order", proposal)
+
+    async def send_cancel_proposal(self, proposal: dict) -> None:
+        await self._render("cancel", proposal)
+
+    async def send_modify_proposal(self, proposal: dict) -> None:
+        await self._render("modify", proposal)
+
+
+class _FakeStore:
+    """A ConversationStore stand-in that really records what it is given.
+
+    MagicMock cannot answer `get_decisions()` with what `add_decision()` was called with,
+    and the invariant under test is precisely a claim about what ends up in the transcript
+    and the decisions table. `get_history` replays what was stored, so the operator-channel
+    tests see a realistic message list rather than an empty one.
+    """
+
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+        self.decisions: list[dict] = []
+
+    def add_message(self, session_id: str, role: str, content: str = "", **kwargs) -> int:
+        self.messages.append({"session_id": session_id, "role": role, "content": content})
+        return len(self.messages)
+
+    def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
+        return [
+            {"role": m["role"], "content": m["content"]}
+            for m in self.messages
+            if m["session_id"] == session_id
+        ][-limit:]
+
+    def add_decision(self, **kwargs) -> int:
+        self.decisions.append(kwargs)
+        return len(self.decisions)
+
+    def get_decisions(self, session_id: str) -> list[dict]:
+        return [d for d in self.decisions if d["session_id"] == session_id]
+
+    def list_doc_versions(self) -> list[dict]:
+        return []
+
+
+def _make_agent_recording(proposal_error: Exception | None = None):
+    """An agent wired to a recording sink and a recording store."""
+    sink = _RecordingSink(proposal_error)
+    toolkit = MagicMock()
+    toolkit.tools = []
+    loader = MagicMock()
+    loader.reload_count = 0
+    loader.load_system_prompt.return_value = "# Role\nStub.\n\n# Principles\nStub."
+    with patch("claudia.agent.AsyncAnthropic"):
+        agent = ClaudIAAgent(
+            toolkit=toolkit, store=_FakeStore(), context_loader=loader,
+            session_id="test-session", sink=sink,
+        )
+    return agent, sink
+
+
+def _proposal_turn(name: str, payload: dict, reply: str) -> list:
+    """The two streams of one turn: the proposal tool call, then the reply text."""
+    return [
+        _FakeStream(_proposal_tool_events(name, payload)),
+        _FakeStream(_text_response_events(reply)),
+    ]
+
+
+def _system_texts(messages: list) -> list[str]:
+    """Every `role: "system"` message body, whether plain string or marked text blocks."""
+    out = []
+    for m in messages:
+        if m["role"] != "system":
+            continue
+        content = m["content"]
+        out.append(content if isinstance(content, str) else "".join(b["text"] for b in content))
+    return out
+
+
+async def test_render_failure_produces_an_honest_notice():
+    """The user must be told, in the same feed carrying the model's claim."""
+    agent, sink = _make_agent_recording(RuntimeError("sink blew up mid-render"))
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn("propose_order", VALID_ORDER, FAILED_437)
+    )
+    await agent.handle_message("stage it")
+
+    assert sink.messages[0] == FAILED_437  # the claim still stands in the transcript
+    notice = sink.messages[-1]
+    assert "no staging button" in notice.lower()
+    assert "nothing has been staged" in notice.lower()
+
+
+async def test_render_failure_writes_the_new_decision_type():
+    """Deliberately NOT trade_proposed — that type must keep meaning 'a button was shown'."""
+    agent, _sink = _make_agent_recording(RuntimeError("boom"))
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn("propose_order", VALID_ORDER, FAILED_437)
+    )
+    await agent.handle_message("stage it")
+
+    decisions = agent._store.get_decisions("test-session")
+    types = [d["decision_type"] for d in decisions]
+    assert "proposal_render_failed" in types
+    assert "trade_proposed" not in types
+    row = next(d for d in decisions if d["decision_type"] == "proposal_render_failed")
+    assert row["metadata"] == {"kind": "order"}
+    assert "nothing staged" in row["summary_text"]
+
+
+async def test_render_failure_notice_is_persisted_not_only_displayed():
+    """The transcript is what the FTS tool, the session report and the next turn read."""
+    agent, _sink = _make_agent_recording(RuntimeError("boom"))
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn("propose_order", VALID_ORDER, FAILED_437)
+    )
+    await agent.handle_message("stage it")
+
+    stored = [m["content"] for m in agent._store.messages if m["role"] == "assistant"]
+    assert any("No staging button was created" in text for text in stored)
+
+
+async def test_silent_skip_also_trips_the_invariant():
+    """Vector 4: no exception, nothing rendered. A try/except alone cannot catch this.
+
+    The original defect was a *falsy parsed value* that skipped the render with no
+    exception at all. Its post-Task-3 equivalent is a recorded proposal whose kind routes
+    to no renderer: every dispatch branch is skipped and nothing raises. An implementation
+    that sets its `rendered` flag after the branch chain rather than inside the branch that
+    awaited would call that a success — which is exactly the bug.
+    """
+    import claudia.agent as agent_mod
+
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn("propose_order", VALID_ORDER, FAILED_437)
+    )
+    with patch.dict(agent_mod._PROPOSAL_KINDS, {"propose_order": "no_such_kind"}):
+        await agent.handle_message("stage it")
+
+    assert sink.proposals == []  # no renderer ran — and none raised either
+    assert "no staging button" in sink.messages[-1].lower()
+    types = [d["decision_type"] for d in agent._store.get_decisions("test-session")]
+    assert types == ["proposal_render_failed"]
+
+
+async def test_notice_uses_the_operator_channel():
+    """A model-authored look-alike would be indistinguishable; role:"system" cannot be forged."""
+    agent, _sink = _make_agent_recording(RuntimeError("boom"))
+    stream = MagicMock(side_effect=[
+        *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
+        _FakeStream(_text_response_events("Nothing is staged.")),
+    ])
+    agent._client.messages.stream = stream
+
+    await agent.handle_message("stage it")          # render fails, note queued
+    await agent.handle_message("is it staged?")     # note delivered to the model
+
+    messages = stream.call_args_list[-1].kwargs["messages"]
+    notes = _system_texts(messages)
+    assert len(notes) == 1
+    assert "failed to render" in notes[0]
+    assert "Do not tell the user it was staged" in notes[0]
+
+
+async def test_operator_note_placement_satisfies_the_api_rule():
+    """A system message may not be messages[0]; it must follow a user turn."""
+    agent, _sink = _make_agent_recording(RuntimeError("boom"))
+    stream = MagicMock(side_effect=[
+        *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
+        _FakeStream(_text_response_events("Nothing is staged.")),
+    ])
+    agent._client.messages.stream = stream
+
+    await agent.handle_message("stage it")
+    await agent.handle_message("is it staged?")
+
+    messages = stream.call_args_list[-1].kwargs["messages"]
+    idx = next(i for i, m in enumerate(messages) if m["role"] == "system")
+    assert idx > 0
+    assert messages[idx - 1]["role"] == "user"
+
+
+async def test_operator_note_is_sent_once_then_cleared():
+    """Otherwise every later turn would keep re-announcing a failure already handled."""
+    agent, _sink = _make_agent_recording(RuntimeError("boom"))
+    stream = MagicMock(side_effect=[
+        *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
+        _FakeStream(_text_response_events("Nothing is staged.")),
+        _FakeStream(_text_response_events("Understood.")),
+    ])
+    agent._client.messages.stream = stream
+
+    await agent.handle_message("stage it")
+    await agent.handle_message("is it staged?")
+    await agent.handle_message("ok, moving on")
+
+    assert _system_texts(stream.call_args_list[-1].kwargs["messages"]) == []
+    assert agent._pending_operator_notes == []
+
+
+async def test_successful_render_still_logs_trade_proposed():
+    """No regression: a rendered button logs exactly what it always logged."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn("propose_order", VALID_ORDER, "Ready when you are.")
+    )
+    await agent.handle_message("Buy 10 AAPL at 185")
+
+    assert sink.proposals == [("order", VALID_ORDER)]
+    types = [d["decision_type"] for d in agent._store.get_decisions("test-session")]
+    assert types == ["trade_proposed"]
+    assert not any("no staging button" in m.lower() for m in sink.messages)
+    assert agent._pending_operator_notes == []
+
+
+@pytest.mark.parametrize("kind,tool,payload", [
+    ("cancel", "propose_cancel", VALID_CANCEL),
+    ("modify", "propose_modify", VALID_MODIFY),
+])
+async def test_cancel_and_modify_render_failures_trip_the_invariant(kind, tool, payload):
+    agent, sink = _make_agent_recording(RuntimeError("boom"))
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn(tool, payload, DEFENDED_CLAIM_588)
+    )
+    await agent.handle_message("do it")
+
+    assert "no staging button" in sink.messages[-1].lower()
+    row = agent._store.get_decisions("test-session")[0]
+    assert row["decision_type"] == "proposal_render_failed"
+    assert row["metadata"] == {"kind": kind}
+
+
+@pytest.mark.parametrize("text", INNOCENT)
+async def test_innocent_messages_never_trip_the_guardrail(text):
+    """Staging vocabulary with no proposal must stay untouched — the guardrail keys on
+    the recorded proposal, never on prose (the dropped prose detector was 81% false
+    positives)."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(text))
+    )
+    await agent.handle_message("what's the status?")
+
+    assert sink.messages == [text]
+    assert agent._store.get_decisions("test-session") == []
+    assert agent._pending_operator_notes == []
+
+
+async def test_rejected_proposal_does_not_raise_the_render_guardrail():
+    """A refusal is not a render failure, and must not be dressed as one.
+
+    `_proposal_defect` refuses before the model writes its user-facing text, so the model
+    can still say what went wrong. The guardrail notice would claim the proposal "was
+    accepted but could not be rendered" — false here — and `proposal_render_failed` would
+    stop meaning "accepted but not rendered". See `_record_proposal`'s docstring.
+    """
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        side_effect=_proposal_turn(
+            "propose_order", {**VALID_ORDER, "quantity": 0}, "That quantity is not valid."
+        )
+    )
+    await agent.handle_message("Buy 0 AAPL")
+
+    assert sink.proposals == []
+    assert not any("no staging button" in m.lower() for m in sink.messages)
+    assert agent._store.get_decisions("test-session") == []
+    assert agent._pending_operator_notes == []
+
+
+def test_operator_note_extends_the_prefix_instead_of_editing_it():
+    """A note inserted *into* the replayed history would invalidate the messages cache
+    breakpoint on every turn thereafter. It is appended after it, so the replayed prefix
+    stays byte-identical and the cache is extended rather than rebuilt."""
+    agent, _sink = _make_agent_recording()
+    history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "stage it"},
+    ]
+    baseline = _history_to_messages(history)
+    with_note = _history_to_messages(history)
+    agent._pending_operator_notes.append("note")
+    agent._append_operator_notes(with_note)
+
+    assert with_note[: len(baseline)] == baseline
+    assert with_note[-1] == {"role": "system", "content": "note"}
+
+
+def test_cache_breakpoint_lands_on_the_operator_note_when_it_is_last():
+    """Documents the coupling the live check covers.
+
+    On a turn's first request the note IS the last message, so the messages-level
+    breakpoint is placed on the note's own text block. That marked-system-message shape
+    therefore has to be accepted by the API — see
+    test_live_api_accepts_mid_conversation_system_message, shape 2.
+    """
+    marked = _with_history_cache_marker([
+        {"role": "user", "content": "stage it"},
+        {"role": "system", "content": "note"},
+    ])
+    assert marked[-1]["role"] == "system"
+    assert marked[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_operator_note_is_dropped_rather_than_misplaced(caplog):
+    """Defensive branch: a system message that does not follow a user turn is a 400 that
+    kills the whole turn, and the notice has already reached the user and the DB."""
+    agent, _sink = _make_agent_recording()
+    agent._pending_operator_notes.append("note")
+    messages = [{"role": "assistant", "content": "hi"}]
+    with caplog.at_level(logging.ERROR, logger="claudia.agent"):
+        agent._append_operator_notes(messages)
+
+    assert messages == [{"role": "assistant", "content": "hi"}]
+    assert agent._pending_operator_notes == []
+    assert "Operator note dropped" in caplog.text
+
+
+def test_guardrail_notice_never_claims_something_was_staged():
+    """The notice contradicts a claim; wording that hedges would leave it standing."""
+    from claudia.agent import _GUARDRAIL_NOTICE
+
+    lowered = _GUARDRAIL_NOTICE.lower()
+    assert "no staging button was created" in lowered
+    assert "nothing has been staged and no order exists" in lowered
+    assert "may have" not in lowered
+    assert "might" not in lowered
+
+
+@pytest.mark.live_api
+@pytest.mark.skipif(
+    os.environ.get("CLAUDIA_LIVE_SCHEMA_CHECK") != "1",
+    reason="live API check is opt-in: set CLAUDIA_LIVE_SCHEMA_CHECK=1",
+)
+def test_live_api_accepts_mid_conversation_system_message():
+    """Prove the operator channel is accepted by the real API, in its production shape.
+
+    Local validation cannot prove API acceptance — two schema defects earlier in this plan
+    reached a fully green suite because of exactly that gap, both registration-time 400s
+    that would have failed every request in production. The message-role shape carries the
+    same risk: `role: "system"` inside `messages` is model-gated, and an unsupported model
+    returns `role 'system' is not supported on this model`.
+
+    Three shapes are probed, all of which the agent really produces:
+      1. the note last in `messages`, straight after the user turn (first request of a turn)
+      2. the same note carrying the messages-level prompt-cache breakpoint, which is what
+         `_with_history_cache_marker` builds when the note is the final message
+      3. the note mid-list, followed by the assistant/tool_result round trip of a proposal
+         tool call (every later pass of the tool loop)
+
+    All three probed ACCEPTED on claude-opus-4-8, 2026-07-27, with no beta header. Two
+    neighbouring rejections were probed in the same run and are what shape the placement
+    rule and shape 3's tail:
+
+      - a system message at `messages[0]` → 400, "use the top-level 'system' parameter for
+        the initial system prompt". `_append_operator_notes`' user-turn guard makes this
+        unreachable.
+      - a list *ending* on an assistant turn → 400, "This model does not support assistant
+        message prefill". Unrelated to the system role, but it is why shape 3 carries the
+        tool_result turn rather than stopping at the assistant message.
+
+    Opt-in — it costs real API calls:
+
+        CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
+    """
+    import anthropic
+    from dotenv import load_dotenv
+
+    from claudia.agent import _GUARDRAIL_NOTICE, _with_cache_marker, _with_history_cache_marker
+    from claudia.proposal_tools import PROPOSAL_TOOLS
+
+    load_dotenv(override=False)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+
+    model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
+    note = {"role": "system", "content": _GUARDRAIL_NOTICE}
+    two_turns = [
+        {"role": "user", "content": "Buy 1 AAPL at 250."},
+        {"role": "assistant", "content": FAILED_437},
+        {"role": "user", "content": "Is it staged?"},
+    ]
+    tool_round_trip = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_probe1", "name": "propose_order", "input": VALID_ORDER},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_probe1", "content": "Proposal accepted."},
+        ]},
+    ]
+    shapes = {
+        "note last": [*two_turns, note],
+        "note last, cache-marked": _with_history_cache_marker([*two_turns, note]),
+        "note before a tool round trip": [*two_turns, note, *tool_round_trip],
+    }
+    client = anthropic.Anthropic()
+    for label, messages in shapes.items():
+        try:
+            client.messages.create(
+                model=model,
+                max_tokens=1,
+                messages=messages,  # type: ignore[arg-type]
+                tools=_with_cache_marker(PROPOSAL_TOOLS),  # type: ignore[arg-type]
+            )
+        except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
+            pytest.fail(f"live API rejected the operator channel ({label}) on {model}: {exc}")

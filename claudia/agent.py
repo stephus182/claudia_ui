@@ -164,6 +164,28 @@ _PROPOSAL_KINDS: dict[str, str] = {
 """Tool name -> the proposal kind recorded in `_pending_proposal` and dispatched on."""
 
 
+_GUARDRAIL_NOTICE = (
+    "⚠️ **No staging button was created for that message.** ClaudIA accepted the "
+    "proposal but it could not be rendered, so **nothing has been staged and no order "
+    "exists**. Ask again and it will be re-proposed."
+)
+"""Shown, persisted, and mirrored to the model whenever a proposal fails to render.
+
+Deliberately unhedged. It exists to contradict a claim the transcript already carries —
+on 2026-07-17 and 2026-07-24 ClaudIA told the user a staging button had been created when
+none had, and in a later turn defended the claim ("it's sitting in front of you") because
+nothing had ever told it otherwise. Wording like "may not have been created" would leave
+that claim standing.
+"""
+
+
+_OPERATOR_NOTE = (
+    "The {kind} proposal in the preceding turn was accepted but failed to render. "
+    "No staging button exists and nothing was staged. Do not tell the user it was staged."
+)
+"""Operator-channel body for a failed render — see `_append_operator_notes` for the why."""
+
+
 def _proposal_defect(kind: str, inputs: dict) -> str | None:
     """Return why a proposal must be rejected, or None when it carries no defect.
 
@@ -524,6 +546,11 @@ class ClaudIAAgent:
         # (kind, tool_use.input) for the one proposal this turn may make. Written only by
         # _record_proposal, cleared at the top of every handle_message.
         self._pending_proposal: tuple[str, dict] | None = None
+        # Operator-channel notes awaiting delivery as `role: "system"` messages. Written
+        # only by _emit_guardrail_notice, drained by _append_operator_notes on the next
+        # turn — deliberately NOT cleared per turn like _pending_proposal, since a note
+        # queued by a turn that then raised must still reach the model.
+        self._pending_operator_notes: list[str] = []
 
     def set_tv_bridge(self, bridge: TradingViewBridge, tools: list[dict]) -> None:
         """Update the TradingView connection mid-session, after a successful launch.
@@ -617,6 +644,9 @@ class ClaudIAAgent:
                     content = [{"type": "text", "text": content}]
                 content = list(content) + images  # type: ignore[operator]
                 messages[-1] = {"role": "user", "content": content}
+
+        # After the images, so the current user turn is still `messages[-1]` above.
+        self._append_operator_notes(messages)
 
         system_blocks = self._get_system_blocks()
 
@@ -797,23 +827,139 @@ class ClaudIAAgent:
         if display_text:
             await self._sink.send_message(display_text)
 
-        # Render the staging button for whichever proposal was recorded.
+        # Render the staging button for whichever proposal was recorded — then assert it
+        # happened. `rendered` is set on the line *after* a specific await returns, never
+        # after the dispatch as a whole, because the failure this closes was a silent skip:
+        # a falsy parsed value matched no branch, raised nothing, and left the model's
+        # "here's your button" standing with no button and no decision row. A try/except is
+        # necessary but not sufficient — the guarantee has to be a positive assertion.
         if proposal is not None:
-            if kind == "order":
-                await self._sink.send_order_proposal(proposal)
-            elif kind == "cancel":
-                await self._sink.send_cancel_proposal(proposal)
-            elif kind == "modify":
-                await self._sink.send_modify_proposal(proposal)
+            render = {
+                "order": self._sink.send_order_proposal,
+                "cancel": self._sink.send_cancel_proposal,
+                "modify": self._sink.send_modify_proposal,
+            }.get(kind or "")
+            rendered = False
+            if render is None:
+                log.error(
+                    "Proposal kind %r routes to no renderer — nothing was rendered", kind
+                )
+            else:
+                try:
+                    await render(proposal)
+                    rendered = True
+                except Exception:
+                    log.exception(
+                        "Proposal render failed (kind=%s, session=%s)", kind, self._session_id
+                    )
 
-        # Log any user-directed trade proposal for future recall
-        self._log_proposal(
-            display_text,
-            proposal if kind == "order" else None,
-            msg_id,
-            cancel_proposal=proposal if kind == "cancel" else None,
-            modify_proposal=proposal if kind == "modify" else None,
+            if not rendered:
+                await self._emit_guardrail_notice(kind or "unknown", msg_id)
+            else:
+                # Log the user-directed trade proposal for future recall. Only on a real
+                # render: `trade_proposed` and its siblings must keep meaning "a button was
+                # shown", or every historical row and regression baseline silently changes
+                # meaning. A failure gets `proposal_render_failed` instead.
+                self._log_proposal(
+                    display_text,
+                    proposal if kind == "order" else None,
+                    msg_id,
+                    cancel_proposal=proposal if kind == "cancel" else None,
+                    modify_proposal=proposal if kind == "modify" else None,
+                )
+
+    async def _emit_guardrail_notice(self, kind: str, msg_id: int) -> None:
+        """Contradict a claim the transcript already carries, on every surface that matters.
+
+        Three surfaces, because the 2026-07-17 and 2026-07-24 failures were invisible on
+        all three: the user saw prose describing a button and no button, the DB recorded
+        nothing at all, and the model went into the next turn still believing it had
+        staged something.
+
+        Persistence comes first and the sink call last, deliberately. The sink is the
+        component just demonstrated broken in this very turn; the store has shown no fault.
+        If `send_message` also raises, the exception surfaces in the chat feed
+        (`ChatInterface.callback_exception="summary"`) and the record survives — the reverse
+        order would lose the record to protect a surface that fails loudly anyway.
+
+        Args:
+            kind: "order", "cancel", or "modify" — the proposal that did not render.
+            msg_id: The assistant message whose text carries the unbacked claim.
+        """
+        # Persisted, not just displayed. session_reporter's anomaly scan reads tool rows
+        # only, so an assistant-side failure can never surface there — and with no decision
+        # row either, three consecutive 2026-07-17 failures produced a clean session report.
+        # The decision row below is what puts this in the report's Decisions section; the
+        # message row puts it in the FTS index and in the next turn's replayed history.
+        self._store.add_message(self._session_id, "assistant", _GUARDRAIL_NOTICE)
+        self._store.add_decision(
+            session_id=self._session_id,
+            decision_type="proposal_render_failed",
+            summary_text=f"{kind} proposal accepted but not rendered — nothing staged",
+            message_id=msg_id,
+            metadata={"kind": kind},
         )
+        # Operator channel: the model must not keep defending a dead claim next turn.
+        self._pending_operator_notes.append(_OPERATOR_NOTE.format(kind=kind))
+        await self._sink.send_message(_GUARDRAIL_NOTICE)
+
+    def _append_operator_notes(self, messages: list) -> None:
+        """Deliver queued operator notes as `role: "system"` messages, then clear them.
+
+        Why the system role: anything the model can write, it can forge, so a note placed
+        in a user or assistant turn would be indistinguishable from a model-emitted
+        look-alike — and the failure being corrected is precisely a model asserting
+        something untrue about its own output. A mid-conversation system message cannot be
+        spoofed from model output. Supported on claude-opus-4-8 with no beta header.
+        Source: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+
+        Placement: appended after the current user turn, so a note is last in `messages` on
+        the turn's first request and is followed by an assistant turn on every later
+        tool-loop pass — both accepted (live-probed 2026-07-27, together with the
+        cache-marked form). A system message may not be `messages[0]`; the API rejects that
+        with "use the top-level 'system' parameter for the initial system prompt" (same
+        probe), which the user-turn guard below makes unreachable. Covered by
+        tests/test_agent.py::test_live_api_accepts_mid_conversation_system_message.
+
+        Prompt caching: the note lands *after* the replayed history, never inside it, so
+        the cached prefix is extended rather than invalidated. It is also not replayed on
+        later turns — it is delivered once and cleared — so it never becomes part of a
+        prefix that a later turn has to match.
+
+        Delivered once, best-effort: if the request carrying a note fails outright the note
+        is not re-queued. Accepted, because it is the non-spoofable channel and not the only
+        one — `_emit_guardrail_notice` also persists the notice as an assistant row, which
+        `_history_to_messages` replays on every subsequent turn.
+
+        Args:
+            messages: This turn's message list, ending in the current user turn. Mutated
+                in place.
+        """
+        if not self._pending_operator_notes:
+            return
+        if messages and messages[-1]["role"] == "user":
+            # One message however many notes are queued: two consecutive system messages
+            # would put the second one after a system turn rather than a user turn, which
+            # is outside the probed placement rule. Joining is never worse and keeps the
+            # shape identical to the one the live check covers.
+            #
+            # `messages` is annotated bare (as in _with_history_cache_marker) because a
+            # system message has no MessageParam literal — the SDK's param types model only
+            # user/assistant. The role is correct on the wire (probed 2026-07-27); this
+            # file builds every request body as plain dicts for that reason.
+            messages.append(
+                {"role": "system", "content": "\n\n".join(self._pending_operator_notes)}
+            )
+        else:
+            # Unreachable: handle_message persists the user turn before reading history, so
+            # it is always the last row. Dropped rather than misplaced anyway, because a
+            # system message in the wrong position is a 400 that takes down the whole turn
+            # — and the notice has already reached the user and the decisions table.
+            log.error(
+                "Operator note dropped: last message is %r, not a user turn",
+                messages[-1]["role"] if messages else None,
+            )
+        self._pending_operator_notes.clear()
 
     def _clear_pending_proposal(self) -> None:
         """Discard any proposal left over from an earlier turn.
@@ -840,6 +986,18 @@ class ClaudIAAgent:
         exactly what this method knows and nothing more: that the proposal was recorded, or
         precisely why it was refused. It cannot know the render later succeeded, and must
         never imply it did.
+
+        A refusal here deliberately does **not** raise the render-completion guardrail
+        notice (`_emit_guardrail_notice`), for three reasons. Its text — "ClaudIA accepted
+        the proposal but it could not be rendered" — would be false, and shipping a false
+        correction is the very defect class this guardrail exists to remove. Its decision
+        type, `proposal_render_failed`, means "accepted but not rendered" and would stop
+        meaning that. And the timing is structurally different: a refusal is returned
+        *before* the model writes its user-facing text, so the model can and must say what
+        went wrong (the string below tells it to), whereas a render failure happens *after*
+        that text is already on screen and can only be contradicted. Pinned by
+        tests/test_agent.py::test_rejected_proposal_does_not_raise_the_render_guardrail.
+        Residual, accepted: a refusal reaches the user only through the tool-step pane.
 
         Args:
             name: One of `_PROPOSAL_KINDS`' keys.
