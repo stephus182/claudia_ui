@@ -1975,3 +1975,67 @@ async def test_chat_interface_installs_the_safe_markdown_renderer():
     assert safe_markdown in chat.renderers, (
         f"safe_markdown missing from ChatInterface.renderers: {chat.renderers!r}"
     )
+
+
+# ── Logging configuration ─────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def _restore_root_logging():
+    """Save/restore root logger state — _configure_logging mutates global state."""
+    root = logging.getLogger()
+    saved = (root.level, list(root.handlers))
+    saved_children = {
+        name: logging.getLogger(name).level
+        for name in ("httpx", "anthropic", "bokeh", "claudia.agent")
+    }
+    yield
+    root.level, root.handlers[:] = saved[0], saved[1]
+    for name, lvl in saved_children.items():
+        logging.getLogger(name).setLevel(lvl)
+
+
+def test_importing_panel_app_does_not_configure_logging():
+    """Import must stay side-effect free: tests and embedders own their logging."""
+    assert logging.getLogger().handlers == [] or not any(
+        getattr(h, "_claudia_configured", False) for h in logging.getLogger().handlers
+    )
+
+
+def test_configure_logging_makes_info_actually_emitted(_restore_root_logging):
+    """Without this, `log.info` is discarded and Task 1's whole measurement is invisible.
+
+    pn.serve does not configure logging (only bokeh's `panel serve` CLI does), so with
+    no root handler Python falls back to logging.lastResort, which emits WARNING+ only.
+    _log_thinking_usage and _log_cache_usage both log at INFO.
+    """
+    from claudia.panel_app import _configure_logging
+
+    logging.getLogger().handlers.clear()
+    _configure_logging()
+
+    assert logging.getLogger("claudia.agent").isEnabledFor(logging.INFO)
+    assert logging.getLogger().handlers, "no root handler installed"
+
+
+def test_configure_logging_keeps_third_party_quiet(_restore_root_logging):
+    """httpx/anthropic per-request lines would log request URLs; keeping them at
+    WARNING means no credential can reach the log via that route (Hard Rule 2)."""
+    from claudia.panel_app import _configure_logging
+
+    logging.getLogger().handlers.clear()
+    _configure_logging()
+
+    for noisy in ("httpx", "anthropic", "bokeh"):
+        assert not logging.getLogger(noisy).isEnabledFor(logging.INFO), noisy
+
+
+def test_configure_logging_honours_claudia_log_level(_restore_root_logging):
+    from claudia.panel_app import _configure_logging
+
+    logging.getLogger().handlers.clear()
+    with patch.dict(os.environ, {"CLAUDIA_LOG_LEVEL": "WARNING"}):
+        _configure_logging()
+
+    assert not logging.getLogger("claudia.agent").isEnabledFor(logging.INFO)
+    assert logging.getLogger("claudia.agent").isEnabledFor(logging.WARNING)

@@ -1060,6 +1060,35 @@ def _build_session_root() -> pn.Row:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
+def _configure_logging() -> None:
+    """Install a root log handler so `log.info` is actually emitted.
+
+    Nothing else in the process does this. `pn.serve` does not configure logging —
+    only bokeh's `bokeh serve` / `panel serve` CLI calls `bokeh.util.logconfig.basicConfig`,
+    and ClaudIA serves natively (Panel-native serving rule, 2026-07-24). With no root
+    handler, Python falls back to `logging.lastResort`, which emits WARNING and above
+    only, so every `log.info` in this package was silently discarded — including
+    `_log_thinking_usage`'s thinking-token line and `_log_cache_usage`'s prompt-cache
+    numbers, i.e. exactly the telemetry those functions exist to produce.
+
+    Third-party loggers stay at WARNING. That keeps httpx/anthropic per-request lines
+    out of the log, which also means no request URL or header can carry a credential
+    into it (Hard Rule 2 — never log ANTHROPIC_API_KEY).
+
+    Called only from main(); importing this module configures nothing, so tests and
+    embedders keep control of their own logging.
+    """
+    level = os.environ.get("CLAUDIA_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    for noisy in ("httpx", "httpcore", "anthropic", "urllib3", "googleapiclient",
+                  "google_auth_httplib2", "bokeh", "tornado", "markdown_it"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
 def main() -> None:
     """Serve ClaudIA on Panel's native Tornado server (design principle 2026-07-24:
     Panel-native serving, no workarounds — pn.serve(callable) invokes
@@ -1072,6 +1101,7 @@ def main() -> None:
     launchd/scripts reach the same clean-stop path; the final claudia.db upload
     runs after pn.serve returns — V5 contract.
     """
+    _configure_logging()
     # Panel installs its SIGINT handler inside pn.serve; translating SIGTERM to
     # SIGINT routes both through the same io_loop.stop() → serve-returns path.
     # Empirically verified in this task's smoke step (V5 proved only SIGINT).
