@@ -190,7 +190,7 @@ currently parked on the account for next-session checks.
 
 ---
 
-## Current Work Plan (2026-07-24)
+## Current Work Plan (2026-07-28)
 
 Full executable detail (protocols, design questions, preconditions):
 `docs/plans/2026-07-24-post-migration-work-order.md` (local archive). Pick the track by
@@ -198,7 +198,42 @@ gateway availability at session start. Priority stance per user direction: fix m
 features and known bugs first; price alerts are lowest priority (blocked on an IBKR
 entitlement, not engineering).
 
-**Track A — anti-fabrication guardrail (no gateway needed; the top open defect):**
+### ▶ NEXT SESSION — start here
+
+Three items carried forward from 2026-07-28. Ordered by what actually bites first, not by
+where they sit in the gap table.
+
+1. **🔴 IGV cross-listing bug (`ibkr_core_mcp`) — do this first.** Ranked as cross-repo item
+   #11(0), but it deserves attention sooner than that ranking suggests. `fetch_market_data`
+   returned IGV priced in **pesos on the Mexican cross-listing** with no exchange or currency
+   filter. The danger is not that the data is wrong — it is that the data is *plausible*: the
+   series is internally consistent, and every band, level and indicator computed off it is
+   wrong by an FX rate. **It was only caught because a USD position mark happened to
+   contradict it.** Ask about a symbol you do not hold and there is nothing to catch it. Fix:
+   filter resolution by exchange/currency **and** return the resolved exchange + currency in
+   the tool result so a mismatch is visible rather than inferred.
+
+2. **Cancel read-back — the `PendingCancel` path.** The one L2 branch never exercised live,
+   and the one where IBKR's docs are most emphatic: a cancel POST *"indicates our request to
+   cancel was received, **but not that the order ticket itself has been canceled**"*, and
+   `PendingCancel` means *"you may still receive an execution while your cancellation request
+   is pending."* Untested by decision — ES order `237433551` (BUY 1 @ 6450 GTC) was left
+   resting. **It will be exercised the next time anything is cancelled**; no special setup is
+   needed, just watch whether the banner reports the observed state rather than asserting
+   success.
+
+3. **L1's failure branch and L3 in isolation — accepted as unforceable.** L1's
+   "no staging button was created" notice is unit-tested including the silent-skip case (the
+   one a bare `try/except` misses), but a render failure cannot be induced in production. L3's
+   emission records were present during B5 and ClaudIA's phrasing matched them, but it also
+   had its own visible text to draw on, so the channel is not independently proven live.
+   **Not defects — untested paths.** Record them as such rather than re-litigating; they close
+   only if a real failure ever occurs.
+
+---
+
+**Track A — anti-fabrication guardrail — ✅ COMPLETE 2026-07-28** (merged to `main`,
+504→634 tests, B5 + B6 live-verified):
 
 - [x] **A1 — Design doc + user sign-off** — DONE 2026-07-27
       (`docs/plans/2026-07-27-anti-fabrication-guardrail-design.md`, local). The premise did not
@@ -211,14 +246,23 @@ entitlement, not engineering).
       loop (single `get_order_status` read-back; IBKR documents that a cancel POST does *not*
       mean cancelled), **L3** emission record in replayed history. L1/L3 use the `role: "system"`
       operator channel, not user/assistant text. Response policy: honest notice, **no model retry**.
-- [ ] **A2 — TDD implementation** (subagent-driven, spec + quality reviews). Suggested order:
+- [x] **A2 — TDD implementation** — DONE 2026-07-28, 16 commits. Shipped in order G2 → L0 →
+      L1 → L3 → L2, each with spec + quality review. **Three plan defects were caught only by
+      probing the live API** (`exclusiveMinimum` and `additionalProperties: true` each 400 on
+      every request; the L3 record placement after an assistant turn is rejected outright) —
+      none was catchable by the test suite, which is why the `live_api` marker now exists.
+      Two unplanned defects surfaced en route and were fixed: `log.info` was discarded
+      process-wide (`pn.serve` configures no logging), and a post-dispatch failure reported
+      "Order not placed" for an order that *was* placed. Original plan text below.
+- [x] ~~**A2 — TDD implementation** (subagent-driven, spec + quality reviews). Suggested order:
       **G2 first** (one-line `thinking={"type":"adaptive"}` — independent, and gives a clean
       baseline to measure L0 against), then L0 → L1 → L3 → L2. `CLAUDE.md` Hard Rule 1 must be
       clarified in the same change as L0 (proposing ≠ staging). Fixtures use sanitised real
       failing transcripts plus innocent look-alikes; live acceptance (the ES-modify recipe)
-      rides the next gateway session.
+      rides the next gateway session.~~
 
-**Track B — authenticated-gateway live batch:** items B1–B4 above (see Outstanding Live Tests).
+**Track B — authenticated-gateway live batch:** B1, B5 and B6 PASSED 2026-07-27/28; B2 and B3
+remain (see Outstanding Live Tests).
 
 **Track C — small-fix batch (fill-in, independent, no gateway):** chart "No data"
 IBKR-offline-vs-unknown-symbol honesty (verify `execute()`'s real return shape first);

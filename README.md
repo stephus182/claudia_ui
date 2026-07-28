@@ -286,9 +286,16 @@ ClaudIA is designed to run on any machine — all persistent state lives in a si
 ## Testing
 
 ```bash
-pytest                                        # full suite — 451 unit tests, no IBKR gateway needed
+pytest                                        # full suite — 634 unit tests, no IBKR gateway needed
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates
+
+CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api   # opt-in; bills real Anthropic API calls
 ```
+
+The `live_api` tests are skipped by default. They exist because a local schema validator
+cannot prove the API accepts a request — three defects that would have returned a 400 on
+every call once passed both a documentation review and a green suite. Probe the live API
+before adding a JSON Schema keyword or changing a message-role placement.
 
 Live IBKR verification (order staging, gateway flows) is done manually and recorded in
 [`docs/project-status.md`](docs/project-status.md) § Live Test Log.

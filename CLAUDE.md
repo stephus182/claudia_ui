@@ -86,12 +86,25 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ## Testing
 
 ```bash
-pytest        # full suite — all unit, no IBKR gateway needed (451 tests as of 2026-07-24)
+pytest        # full suite — all unit, no IBKR gateway needed (634 tests as of 2026-07-28)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
+
+# Opt-in only — bills real Anthropic API calls, skipped by default (3 tests):
+CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
 ```
 
-No test in this repo carries the `integration` marker (it stays registered in
-`pyproject.toml` for future use) — live IBKR verification is done manually and recorded in
+**The `live_api` marker exists because local validation cannot prove API acceptance.** During
+the 2026-07-27 guardrail work, three separate defects passed a docs read *and* a green suite
+and would each have returned a 400 on every request: `exclusiveMinimum` and
+`additionalProperties: true` in the tool schemas, and a `role: "system"` message placed after
+an assistant turn. `jsonschema` validates that our schema is valid JSON Schema; it says
+nothing about what the endpoint accepts. **Probe the live API before adding any JSON Schema
+keyword or changing a message-role placement** — the published support list has been wrong in
+both directions (`minLength` is accepted despite being documented as unsupported). Evidence
+table: `claudia/proposal_tools.py` module docstring.
+
+No test carries the `integration` marker (registered in `pyproject.toml`, meaning "live IBKR
+gateway") — live IBKR verification is done manually and recorded in
 `docs/project-status.md` § Live Test Log. ibkr_core_mcp's own integration suite lives in
 that repo.
 
