@@ -1251,3 +1251,28 @@ def test_safety_block_has_no_fenced_proposal_format_left():
     assert "```order-proposal" not in prompt
     assert "```order-cancel-proposal" not in prompt
     assert "```order-modify-proposal" not in prompt
+
+
+def test_safety_block_has_no_stale_fenced_block_instruction():
+    """ABSOLUTE CONSTRAINTS must not still point the model at the retired text protocol.
+
+    It read "output an order-proposal block (see format below)" while the section below
+    now says there is no text format. A system prompt that contradicts itself on this
+    exact point is what the 2026-07-17 / 2026-07-24 failures looked like from the
+    model's side, so the contradiction is not cosmetic.
+    """
+    from claudia.agent import _SAFETY_BLOCK
+
+    assert "order-proposal block" not in _SAFETY_BLOCK
+    assert "see format below" not in _SAFETY_BLOCK
+
+
+def test_absolute_constraints_still_route_trades_through_the_tools():
+    """The constraint itself must survive the rewording — no execution, human clicks."""
+    from claudia.agent import _SAFETY_BLOCK
+
+    constraints = _SAFETY_BLOCK.split("## ABSOLUTE CONSTRAINTS")[1].split("## DATA INTEGRITY")[0]
+    assert "CANNOT place, modify, or cancel any order" in constraints
+    assert "no tools for order execution" in constraints
+    assert "propose_order" in constraints
+    assert "must explicitly click" in constraints
