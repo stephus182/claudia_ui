@@ -388,3 +388,93 @@ def test_get_rendered_proposals_tolerates_unparseable_metadata(store):
         conn.execute("UPDATE decisions SET metadata_json='{not json'")
     rows = store.get_rendered_proposals("sess-l3-bad")
     assert rows[0]["metadata"] == {}
+
+
+# ── completed order actions (post-click) for the operator channel ────────────
+#
+# 2026-07-27, live: an ES order was staged through both gates and confirmed Submitted at
+# IBKR. Minutes later get_live_orders returned two HTTP 500s and ClaudIA told the user
+# "there is nothing to cancel — the order was only ever a staged button". The staging is a
+# *button click*: no tool call, no assistant message, nothing in the replayed transcript.
+# `get_completed_order_actions` is the evidence that it happened. Synthetic ids only.
+
+_SYNTHETIC_STAGED_META = {
+    "proposal": {"symbol": "ZZZ", "quantity": 7, "limit_price": 333.25},
+    "ibkr_order_id": "1230000456",
+    "readback_confirmed": True,
+    "readback_order_status": "Submitted",
+}
+
+
+def test_get_completed_order_actions_returns_the_three_post_click_types_oldest_first(store):
+    store.create_session("sess-l4")
+    for dtype in ("trade_staged", "trade_cancelled", "trade_modified"):
+        store.add_decision(
+            session_id="sess-l4", decision_type=dtype, summary_text=dtype,
+            symbol="ZZZ", metadata=_SYNTHETIC_STAGED_META,
+        )
+    rows = store.get_completed_order_actions("sess-l4")
+    assert [r["decision_type"] for r in rows] == [
+        "trade_staged", "trade_cancelled", "trade_modified",
+    ]
+    assert rows[0]["metadata"] == _SYNTHETIC_STAGED_META  # decoded, not raw JSON
+
+
+def test_get_completed_order_actions_does_not_require_a_message_id(store):
+    """The load-bearing difference from `get_rendered_proposals`. A staging is produced by
+    a button click, not by an assistant turn — `order_flow` writes these rows with no
+    message_id at all. Requiring one would return nothing and re-create the blindness."""
+    store.create_session("sess-l4-nomsg")
+    store.add_decision(
+        session_id="sess-l4-nomsg", decision_type="trade_staged",
+        summary_text="STAGED", symbol="ZZZ", metadata=_SYNTHETIC_STAGED_META,
+    )
+    rows = store.get_completed_order_actions("sess-l4-nomsg")
+    assert len(rows) == 1
+    assert rows[0]["metadata"]["ibkr_order_id"] == "1230000456"
+
+
+def test_get_completed_order_actions_excludes_proposals_and_unrelated_types(store):
+    """An allowlist, like the proposal query: a proposal is a button, not an order."""
+    store.create_session("sess-l4-mix")
+    msg = store.add_message("sess-l4-mix", "assistant", "text")
+    for dtype in ("trade_proposed", "trade_cancel_proposed", "trade_modify_proposed",
+                  "proposal_render_failed", "backtest_run"):
+        store.add_decision(
+            session_id="sess-l4-mix", decision_type=dtype, summary_text=dtype, message_id=msg,
+        )
+    assert store.get_completed_order_actions("sess-l4-mix") == []
+
+
+def test_get_completed_order_actions_is_scoped_to_one_session(store):
+    store.create_session("sess-l4-a")
+    store.create_session("sess-l4-b")
+    store.add_decision(
+        session_id="sess-l4-a", decision_type="trade_staged", summary_text="a", symbol="ZZZ",
+    )
+    assert len(store.get_completed_order_actions("sess-l4-a")) == 1
+    assert store.get_completed_order_actions("sess-l4-b") == []
+
+
+def test_get_completed_order_actions_tolerates_unparseable_metadata(store):
+    """One malformed row must not take down a turn — the record loses its order id rather
+    than gaining a wrong one."""
+    store.create_session("sess-l4-bad")
+    store.add_decision(
+        session_id="sess-l4-bad", decision_type="trade_staged", summary_text="x", symbol="ZZZ",
+    )
+    with store._conn() as conn:
+        conn.execute("UPDATE decisions SET metadata_json='{not json'")
+    rows = store.get_completed_order_actions("sess-l4-bad")
+    assert rows[0]["metadata"] == {}
+
+
+def test_completed_and_rendered_allowlists_are_disjoint():
+    """A decision type is either "a button was drawn" or "the button was clicked and it
+    reached IBKR". One type meaning both would make the two records contradict each other."""
+    from claudia.conversation_store import (
+        COMPLETED_ORDER_ACTION_TYPES,
+        RENDERED_PROPOSAL_TYPES,
+    )
+
+    assert not set(COMPLETED_ORDER_ACTION_TYPES) & set(RENDERED_PROPOSAL_TYPES)

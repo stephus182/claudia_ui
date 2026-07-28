@@ -209,6 +209,39 @@ _EMISSION_RECORD_HEADER = (
 """Header of the replayed emission-record block. See `_emission_records` for the why."""
 
 
+_COMPLETED_ACTION_VERBS: dict[str, str] = {
+    "trade_staged": "PLACED",
+    "trade_cancelled": "CANCEL SENT for",
+    "trade_modified": "MODIFY SENT for",
+}
+"""Completed-action decision type -> how the record names what reached IBKR.
+
+Keys mirror `conversation_store.COMPLETED_ORDER_ACTION_TYPES` (the store owns the decision
+vocabulary; wording is a message-construction concern and belongs here). Pinned by
+test_completed_action_verbs_cover_exactly_the_store_allowlist, so a fourth post-click type
+cannot be added on one side and silently dropped on the other.
+
+The verbs name the *dispatch*, not the outcome — "PLACED" is followed on every line by what
+the read-back actually observed. A verb that implied the outcome ("CANCELLED") would assert
+more than the row knows.
+"""
+
+
+_COMPLETED_ORDER_HEADER = (
+    "Order actions completed in this session. Each one is a button click by the user that "
+    "passed both confirmation gates and was DISPATCHED TO IBKR. A button click produces no "
+    "tool call and no message, so nothing else in this conversation records that it "
+    "happened — this list is your only evidence of it.\n"
+    "Every action below reached IBKR. What each line states is what was observed "
+    "immediately afterwards, and it was true at that moment only: never present it as the "
+    "order's current state, and never conclude from this list — or from a lookup that "
+    "failed, errored, or returned nothing — that an order does not exist or was never "
+    "placed. To state an order's current state you must call a tool now. Identities and "
+    "observed states only, so never restate an order parameter from this list."
+)
+"""Header of the replayed completed-action block. See `_completed_order_records`."""
+
+
 def _proposal_defect(kind: str, inputs: dict) -> str | None:
     """Return why a proposal must be rejected, or None when it carries no defect.
 
@@ -981,15 +1014,90 @@ class ClaudIAAgent:
             return ""
         return "\n".join([_EMISSION_RECORD_HEADER, *lines])
 
+    def _completed_order_records(self) -> str:
+        """Return this session's completed-order-action block, or "" when there is none.
+
+        The staging path leaves *nothing* in the transcript: the user clicks a button, the
+        gates fire, `order_flow` writes a decision row — no tool call, no assistant message,
+        so `_history_to_messages` has nothing to replay. On 2026-07-27 an ES order was
+        staged and read back as `Submitted`; minutes later `get_live_orders` failed twice
+        with HTTP 500 and ClaudIA, seeing no evidence of the staging anywhere, told the user
+        "there is nothing to cancel — the ES order was only ever a staged button". The order
+        was live. This block is that missing evidence.
+
+        A record here is a strictly stronger fact than an emission record: a proposal says
+        "you offered a button", a completed action says "this write reached IBKR". Both live
+        in the same operator message, in separate labelled sections, because they must never
+        be read as the same claim.
+
+        Each line carries the read-back verdict verbatim, and the two verdicts are worded to
+        fail in opposite directions:
+
+        - `readback_confirmed: true` — CONFIRMED, with the state observed. The line that
+          contradicts a denial.
+        - `readback_confirmed: false` — the dispatch still reached IBKR (the row exists only
+          because the dispatch call returned), so the line says so, states what was observed
+          or that nothing was, and says the order may be live and must be verified. Calling
+          it confirmed would invent a working order; leaving it out would re-create the
+          denial this whole change exists to stop. It is neither.
+
+        Identity and observed state only — no prices, quantities, order types or TIFs, even
+        though `metadata["proposal"]` holds all of them. Same reasoning as `_emission_records`:
+        anything copyable into a later proposal is a fabrication surface.
+
+        Byte-stable across calls: rows come back ordered by `id` and every field is copied
+        verbatim from the row.
+
+        Returns:
+            The header plus one line per completed action, or "" when there are none.
+        """
+        lines = []
+        for row in self._store.get_completed_order_actions(self._session_id):
+            verb = _COMPLETED_ACTION_VERBS.get(row.get("decision_type") or "")
+            if verb is None:
+                # Defence in depth: the store already allowlists. Dropping an unmapped type
+                # under-reports; guessing a verb would put a fabricated action in front of
+                # the model, which is the failure class itself.
+                log.warning("Unmapped completed order action %r", row.get("decision_type"))
+                continue
+            meta = row.get("metadata") or {}
+            order_id = str(meta.get("ibkr_order_id") or "").strip()
+            symbol = (row.get("symbol") or "").strip()
+            # No id is the least verifiable outcome there is, and the one where silence
+            # would be most dangerous — it is named, not skipped.
+            identity = f"order {order_id}" if order_id else "an order for which IBKR returned no order id"
+            if symbol:
+                identity += f" ({symbol})"
+            state = str(meta.get("readback_order_status") or "").strip()
+            if meta.get("readback_confirmed") is True:
+                lines.append(
+                    f"  - {verb} {identity} — reached IBKR and the read-back CONFIRMED it; "
+                    f"observed status {state or 'unrecorded'}."
+                )
+            else:
+                lines.append(
+                    f"  - {verb} {identity} — reached IBKR, but the read-back did NOT "
+                    f"confirm it; "
+                    f"{f'observed status {state}' if state else 'nothing was observed'}. "
+                    f"This order may be live: verify it with a fresh tool call, and never "
+                    f"tell the user it does not exist."
+                )
+        if not lines:
+            return ""
+        return "\n".join([_COMPLETED_ORDER_HEADER, *lines])
+
     def _append_operator_message(self, messages: list) -> None:
         """Deliver the operator channel as one `role: "system"` message after the user turn.
 
-        Two payloads share it: the emission records (`_emission_records`, derived from
-        persisted rows and rebuilt every turn) and any queued render-failure notes
-        (`_pending_operator_notes`, transient — queued once, delivered once, cleared). They
+        Three payloads share it: the proposal-emission records (`_emission_records`), the
+        completed-order-action records (`_completed_order_records`) — both derived from
+        persisted rows and rebuilt every turn — and any queued render-failure notes
+        (`_pending_operator_notes`, transient: queued once, delivered once, cleared). They
         are separate *sources* on purpose, since re-deriving records is what makes them
-        cross-turn evidence while a note must not re-announce a failure already handled, but
-        they share one *message* because the API's placement rule allows only one here.
+        cross-turn evidence while a note must not re-announce a failure already handled, and
+        separate *sections* because "a button was drawn" and "this write reached IBKR" are
+        different facts. They share one *message* because the API's placement rule allows
+        only one here.
 
         Why the system role: anything the model can write, it can forge, so this content
         placed in a user or assistant turn would be indistinguishable from a model-emitted
@@ -1028,8 +1136,14 @@ class ClaudIAAgent:
         records = self._emission_records()
         if records:
             parts.append(records)
+        # After the proposals, deliberately: a completed action is the stronger fact of the
+        # two ("this reached IBKR" vs "a button was drawn"), and the later a section sits,
+        # the closer it is to where generation resumes.
+        completed = self._completed_order_records()
+        if completed:
+            parts.append(completed)
         # Notes last: a note contradicts the turn immediately preceding this one and is the
-        # more urgent of the two, so it sits closest to where generation resumes.
+        # most urgent of the three, so it sits closest to where generation resumes.
         parts.extend(self._pending_operator_notes)
         if not parts:
             return

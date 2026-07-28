@@ -44,6 +44,27 @@ tests/test_agent.py::test_emission_record_tools_cover_exactly_the_store_allowlis
 """
 
 
+COMPLETED_ORDER_ACTION_TYPES: tuple[str, ...] = (
+    "trade_staged",
+    "trade_cancelled",
+    "trade_modified",
+)
+"""The decision types that mean **a write really reached IBKR**.
+
+Written only by `claudia/order_flow.py`, after a physical button click has passed Gate 1
+(Touch ID) and Gate 2 (the AppKit dialog) and the dispatch call has returned. They are a
+strictly stronger fact than `RENDERED_PROPOSAL_TYPES` — which say only that a button was
+drawn — and the two allowlists are deliberately disjoint (pinned by
+tests/test_conversation_store.py::test_completed_and_rendered_allowlists_are_disjoint).
+
+Why they have to be replayed to the model: a click produces no tool call and no assistant
+message, so a completed staging leaves *no* trace in the transcript `_history_to_messages`
+rebuilds. On 2026-07-27 that blindness let ClaudIA tell the user "there is nothing to
+cancel — the order was only ever a staged button" minutes after an ES order had been
+staged, confirmed `Submitted`, and recorded here.
+"""
+
+
 def _utcnow() -> str:
     """Current UTC time as an ISO-8601 string — the storage format for every timestamp."""
     return datetime.now(UTC).isoformat()
@@ -406,7 +427,11 @@ class ConversationStore:
             the user**; nothing was staged and no order exists
 
         From `claudia/order_flow.py` — the user clicked and both gates passed:
-          - ``trade_staged`` / ``trade_cancelled`` / ``trade_modified``
+          - ``trade_staged`` / ``trade_cancelled`` / ``trade_modified`` — the write reached
+            IBKR. These are `COMPLETED_ORDER_ACTION_TYPES`, replayed to the model by
+            `get_completed_order_actions`; their `metadata` carries `ibkr_order_id`,
+            `readback_confirmed` and `readback_order_status`, and the record is only as
+            honest as those three fields.
 
         ``proposal_render_failed`` is deliberately its own type rather than a flag on the
         three proposal types: those must keep meaning "a button was shown", or every
@@ -463,26 +488,70 @@ class ConversationStore:
         - `message_id IS NOT NULL` — the emission is only meaningful as something a
           specific assistant turn produced.
 
-        Ordered by `id`, not `created_at`: two rows written in the same turn can share a
-        timestamp, and the replayed record has to be byte-identical across calls or it
-        would thrash the request body turn after turn.
-
         Returns:
             Row dicts with `metadata_json` **decoded** into a `metadata` dict — unlike
             `get_decisions`, which returns the raw column. Callers here read
             `metadata["order"]["order_id"]`, and every one of them would otherwise repeat
-            the same parse. A row whose JSON does not parse yields `{}` rather than raising:
-            one malformed row must not take down a turn, and the record simply loses its
-            order id (it never gains a wrong one).
+            the same parse. Ordering and malformed-metadata handling are
+            `_decisions_of_types`'.
         """
-        placeholders = ",".join("?" * len(RENDERED_PROPOSAL_TYPES))
+        return self._decisions_of_types(
+            session_id, RENDERED_PROPOSAL_TYPES, require_message_id=True,
+        )
+
+    def get_completed_order_actions(self, session_id: str) -> list[dict]:
+        """Return the session's order writes that really reached IBKR, oldest first.
+
+        The source for the completed-action records `claudia/agent.py` replays on the
+        operator channel, alongside the proposal records. Staging happens by *button
+        click* — no tool call, no assistant message — so a completed order is invisible in
+        the replayed transcript. That is what let ClaudIA state, minutes after an ES order
+        was staged and confirmed `Submitted`, that "there is nothing to cancel"
+        (2026-07-27, live).
+
+        Two deliberate differences from `get_rendered_proposals`:
+
+        - The allowlist is `COMPLETED_ORDER_ACTION_TYPES` — the post-click types only.
+        - **No `message_id` filter.** `order_flow` writes these rows without one, because a
+          click belongs to no assistant turn. Requiring one here would return nothing and
+          leave the model exactly as blind as it was during the incident. Pinned by
+          test_get_completed_order_actions_does_not_require_a_message_id.
+
+        Returns:
+            Row dicts with `metadata_json` decoded into `metadata` (see
+            `get_rendered_proposals` for the same contract). Callers read
+            `metadata["ibkr_order_id"]`, `["readback_confirmed"]` and
+            `["readback_order_status"]`.
+        """
+        return self._decisions_of_types(
+            session_id, COMPLETED_ORDER_ACTION_TYPES, require_message_id=False,
+        )
+
+    def _decisions_of_types(
+        self, session_id: str, types: tuple[str, ...], *, require_message_id: bool,
+    ) -> list[dict]:
+        """Decision rows of the given types for one session, oldest first, metadata decoded.
+
+        Shared by the two operator-channel queries above, which differ only in their
+        allowlist and in whether a `message_id` is required — see each for why.
+
+        Ordered by `id`, not `created_at`: two rows written in the same turn can share a
+        timestamp, and the replayed record has to be byte-identical across calls or it
+        would thrash the request body turn after turn.
+
+        A row whose `metadata_json` does not parse yields `{}` rather than raising: one
+        malformed row must not take down a turn, and the record simply loses its order id
+        (it never gains a wrong one).
+        """
+        placeholders = ",".join("?" * len(types))
+        message_id_clause = "AND message_id IS NOT NULL" if require_message_id else ""
         with self._conn() as conn:
             rows = conn.execute(
                 f"""SELECT * FROM decisions
-                    WHERE session_id=? AND message_id IS NOT NULL
+                    WHERE session_id=? {message_id_clause}
                       AND decision_type IN ({placeholders})
                     ORDER BY id""",
-                (session_id, *RENDERED_PROPOSAL_TYPES),
+                (session_id, *types),
             ).fetchall()
         out = []
         for row in rows:
@@ -492,8 +561,8 @@ class ConversationStore:
                 parsed = json.loads(raw) if raw else {}
             except (TypeError, ValueError):
                 log.warning(
-                    "decision %s has unparseable metadata_json; emission record will carry "
-                    "no order id", record.get("id"),
+                    "decision %s has unparseable metadata_json; operator-channel record "
+                    "will carry no order id", record.get("id"),
                 )
                 parsed = {}
             record["metadata"] = parsed if isinstance(parsed, dict) else {}

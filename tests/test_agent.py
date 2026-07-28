@@ -23,7 +23,7 @@ from claudia.agent import (
     _with_cache_marker,
     _with_history_cache_marker,
 )
-from claudia.conversation_store import RENDERED_PROPOSAL_TYPES
+from claudia.conversation_store import COMPLETED_ORDER_ACTION_TYPES, RENDERED_PROPOSAL_TYPES
 from tests.fixtures.failing_transcripts import DEFENDED_CLAIM_588, FAILED_437, INNOCENT
 
 
@@ -108,6 +108,7 @@ def _make_agent():
     store.list_doc_versions.return_value = []
     store.get_doc_version.return_value = None
     store.get_rendered_proposals.return_value = []
+    store.get_completed_order_actions.return_value = []
     loader = MagicMock()
     with patch("claudia.agent.AsyncAnthropic"):
         return ClaudIAAgent(
@@ -666,6 +667,7 @@ def _make_agent_with_sink(sink=None):
     store.get_doc_version.return_value = None
     store.get_history.return_value = []
     store.get_rendered_proposals.return_value = []
+    store.get_completed_order_actions.return_value = []
     loader = MagicMock()
     loader.reload_count = 0
     loader.load_system_prompt.return_value = "# Role\nStub.\n\n# Principles\nStub."
@@ -1374,6 +1376,16 @@ class _FakeStore:
             and d.get("message_id") is not None
         ]
 
+    def get_completed_order_actions(self, session_id: str) -> list[dict]:
+        """Mirrors the real query: allowlist only, and deliberately **no** message_id
+        filter — `order_flow` writes these rows without one, because a button click belongs
+        to no assistant turn."""
+        return [
+            d for d in self.decisions
+            if d["session_id"] == session_id
+            and d.get("decision_type") in COMPLETED_ORDER_ACTION_TYPES
+        ]
+
     def list_doc_versions(self) -> list[dict]:
         return []
 
@@ -1882,6 +1894,216 @@ async def test_a_note_and_records_share_one_system_message():
     assert "propose_cancel" not in texts[0]       # the failed one is not an emission
 
 
+# ── completed order actions in the operator channel ──────────────────────────
+#
+# 2026-07-27, live: an ES order was staged through both gates and read back as Submitted.
+# Minutes later get_live_orders returned two HTTP 500s, and ClaudIA — with no fresh
+# evidence — fell back on a tool result from *before* the staging and told the user "there
+# is nothing to cancel; the ES order was only ever a staged button". The order was live.
+# Staging is a button click: no tool call, no assistant message, nothing in the replayed
+# transcript. These records are the missing evidence, on the channel the model cannot forge.
+
+SYNTHETIC_STAGED_ID = "1230000456"
+
+
+def _seed_completed(agent, decision_type: str, *, confirmed: bool, state: str | None,
+                    order_id: str | None = SYNTHETIC_STAGED_ID, symbol: str = "ZZZ") -> None:
+    """Record a completed action exactly as `order_flow` does after both gates pass.
+
+    Same metadata shape as `_execute_staged_order_core`'s decision row, including the
+    `proposal` key — whose prices and quantities must never reach the record.
+    """
+    agent._store.add_decision(
+        session_id="test-session", decision_type=decision_type, summary_text="seeded",
+        symbol=symbol,
+        metadata={
+            "proposal": SYNTHETIC_ORDER,
+            "ibkr_order_id": order_id,
+            "readback_confirmed": confirmed,
+            "readback_order_status": state,
+        },
+    )
+
+
+def test_completed_staging_is_replayed_with_its_ibkr_order_id():
+    """The incident test. The staging left no trace in the transcript; this record is the
+    only thing that can stop "there is nothing to cancel"."""
+    agent, _sink = _make_agent_recording()
+    _seed_completed(agent, "trade_staged", confirmed=True, state="Submitted")
+    body = _operator_message(agent)
+
+    assert SYNTHETIC_STAGED_ID in body
+    assert "ZZZ" in body
+    assert "Submitted" in body
+    assert "IBKR" in body
+
+
+def test_confirmed_staging_reads_as_an_order_that_exists():
+    """A proposal record says "you offered a button". A staging record has to say something
+    strictly stronger — the order is at IBKR — or it cannot contradict a denial."""
+    agent, _sink = _make_agent_recording()
+    _seed_completed(agent, "trade_staged", confirmed=True, state="Submitted")
+    body = _operator_message(agent)
+
+    assert "CONFIRMED" in body
+    assert "NOT confirmed" not in body
+
+
+def test_unconfirmed_staging_is_neither_a_confirmation_nor_a_denial():
+    """readback_confirmed=False still means the dispatch reached IBKR — the order may be
+    working. Reporting it as confirmed invents an order; reporting it as nothing re-creates
+    the exact denial this change exists to stop. It has to read as "it reached IBKR, its
+    state is unverified, go and check"."""
+    agent, _sink = _make_agent_recording()
+    _seed_completed(agent, "trade_staged", confirmed=False, state="PendingSubmit")
+    body = _operator_message(agent)
+
+    assert SYNTHETIC_STAGED_ID in body
+    assert "reached IBKR" in body
+    assert "did NOT confirm" in body
+    assert "may be live" in body
+    assert "PendingSubmit" in body
+
+
+def test_staging_with_nothing_observed_still_says_it_reached_ibkr():
+    """The 500-storm shape: dispatch accepted, read-back saw nothing at all."""
+    agent, _sink = _make_agent_recording()
+    _seed_completed(agent, "trade_staged", confirmed=False, state=None)
+    body = _operator_message(agent)
+
+    assert "reached IBKR" in body
+    assert "nothing was observed" in body
+
+
+def test_staging_without_an_order_id_is_still_recorded():
+    """IBKR returned no order id — the least verifiable outcome there is, and the one where
+    silence would be most dangerous."""
+    agent, _sink = _make_agent_recording()
+    _seed_completed(agent, "trade_staged", confirmed=False, state=None, order_id=None)
+    body = _operator_message(agent)
+
+    assert "no order id" in body
+    assert "reached IBKR" in body
+
+
+def test_completed_records_cover_cancel_and_modify_too():
+    """A cancel and a modify are button clicks as well, equally invisible in the transcript,
+    and each carries its own read-back verdict."""
+    agent, _sink = _make_agent_recording()
+    _seed_completed(agent, "trade_staged", confirmed=True, state="Submitted")
+    _seed_completed(agent, "trade_cancelled", confirmed=True, state="Cancelled")
+    _seed_completed(agent, "trade_modified", confirmed=False, state="Submitted")
+    body = _operator_message(agent)
+
+    assert "PLACED order" in body
+    assert "CANCEL SENT for order" in body
+    assert "MODIFY SENT for order" in body
+    assert body.index("PLACED") < body.index("CANCEL SENT") < body.index("MODIFY SENT")
+
+
+def test_completed_record_carries_no_pricing():
+    """Identity and observed state only — same rule as the proposal records. The decision
+    row's metadata holds the whole proposal; none of it may leak into the record."""
+    agent, _sink = _make_agent_recording()
+    _seed_completed(agent, "trade_staged", confirmed=True, state="Submitted")
+    body = _operator_message(agent)
+
+    assert "$" not in body
+    assert "limit" not in body.lower()
+    assert "quantity" not in body.lower()
+    stripped = body.replace(SYNTHETIC_STAGED_ID, "")
+    assert not any(ch.isdigit() for ch in stripped)
+    for value in ("7", "333.25", "BUY", "LMT", "DAY"):
+        assert value not in stripped
+    assert "synthetic" not in body.lower()
+
+
+def test_no_completed_actions_produces_no_section():
+    """An empty section would devalue a channel whose worth is that every line on it is
+    load-bearing."""
+    agent, _sink = _make_agent_recording()
+    assert agent._completed_order_records() == ""
+    messages = [{"role": "user", "content": "hello"}]
+    agent._append_operator_message(messages)
+    assert messages == [{"role": "user", "content": "hello"}]
+
+
+def test_completed_records_are_byte_stable_across_calls():
+    agent, _sink = _make_agent_recording()
+    _seed_completed(agent, "trade_staged", confirmed=True, state="Submitted")
+    _seed_completed(agent, "trade_cancelled", confirmed=False, state="PendingCancel")
+
+    first = agent._completed_order_records()
+    assert first != ""
+    assert [agent._completed_order_records() for _ in range(5)] == [first] * 5
+
+
+def test_proposals_and_completed_actions_share_one_system_message():
+    """Two consecutive system messages are outside the probed placement rule. Two labelled
+    sections, one message — and the sections must stay distinguishable, because "a button
+    was drawn" and "an order exists at IBKR" are different facts."""
+    agent, _sink = _make_agent_recording()
+    _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
+    _seed_completed(agent, "trade_staged", confirmed=True, state="Submitted")
+    messages = [{"role": "user", "content": "and now?"}]
+    agent._append_operator_message(messages)
+
+    texts = _system_texts(messages)
+    assert len(texts) == 1
+    assert "propose_order for ZZZ" in texts[0]
+    assert f"PLACED order {SYNTHETIC_STAGED_ID}" in texts[0]
+    # Proposals first, completed actions after: escalating strength, closest to where
+    # generation resumes.
+    assert texts[0].index("propose_order for") < texts[0].index("PLACED order")
+
+
+def test_a_proposal_that_was_never_clicked_produces_no_completed_record():
+    """The critical negative, mirroring the render-failure one: a rendered button that the
+    user never clicked must never appear as an order that reached IBKR."""
+    agent, _sink = _make_agent_recording()
+    _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
+
+    assert agent._completed_order_records() == ""
+
+
+def test_completed_action_verbs_cover_exactly_the_store_allowlist():
+    """Drift guard: a fourth post-click type added to the store must not be silently
+    dropped from the records, and one removed there must not linger here."""
+    from claudia.agent import _COMPLETED_ACTION_VERBS
+
+    assert set(_COMPLETED_ACTION_VERBS) == set(COMPLETED_ORDER_ACTION_TYPES)
+
+
+def test_unmapped_completed_type_is_dropped_not_guessed(caplog):
+    """Defence in depth. Guessing a verb would put a fabricated action in front of the
+    model — the failure class itself."""
+    agent, _sink = _make_agent_recording()
+    agent._store.add_decision(
+        session_id="test-session", decision_type="trade_teleported",
+        summary_text="seeded", metadata={"ibkr_order_id": SYNTHETIC_STAGED_ID},
+    )
+    with caplog.at_level(logging.WARNING, logger="claudia.agent"):
+        # Reach the mapping directly: the store's allowlist would filter this row out.
+        agent._store.get_completed_order_actions = lambda _sid: [  # type: ignore[method-assign]
+            {"decision_type": "trade_teleported", "symbol": "ZZZ",
+             "metadata": {"ibkr_order_id": SYNTHETIC_STAGED_ID}},
+        ]
+        assert agent._completed_order_records() == ""
+    assert "Unmapped completed order action" in caplog.text
+
+
+def test_completed_record_header_forbids_stating_current_state():
+    """The records are evidence that an action happened, not a live order book. Reading
+    them as current state would be the same defect pointed the other way."""
+    from claudia.agent import _COMPLETED_ORDER_HEADER
+
+    lowered = _COMPLETED_ORDER_HEADER.lower()
+    assert "current state" in lowered
+    assert "does not exist" in lowered      # the denial it must forbid
+    assert "call a tool" in lowered
+    assert "button click" in lowered
+
+
 def test_emission_record_tools_cover_exactly_the_store_allowlist():
     """Drift guard: a fourth rendered type added to the store must not be silently dropped
     from the records, and a type removed there must not linger here."""
@@ -2005,9 +2227,11 @@ def test_live_api_accepts_the_emission_record_channel():
     two schema defects earlier in this plan reached a fully green suite for exactly that
     reason.
 
-    The body probed is the real one: built by `_emission_records()` from seeded decision
-    rows and joined with a genuine `_OPERATOR_NOTE`, i.e. the production string, not a
-    hand-written stand-in. Three shapes, all of which the agent really produces:
+    The body probed is the real one: built by `_emission_records()` and
+    `_completed_order_records()` from seeded decision rows and joined with a genuine
+    `_OPERATOR_NOTE`, i.e. the production string, not a hand-written stand-in — so the
+    completed-action section added on 2026-07-28 is covered by the same probe as the
+    section it sits beside. Three shapes, all of which the agent really produces:
       1. the combined message last, straight after the user turn (first request of a turn)
       2. the same carrying the messages-level prompt-cache breakpoint
       3. the same mid-list, followed by the assistant/tool_result round trip of a proposal
@@ -2030,9 +2254,12 @@ def test_live_api_accepts_the_emission_record_channel():
     agent, _sink = _make_agent_recording()
     _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
     _seed_rendered(agent, "trade_modify_proposed", SYNTHETIC_MODIFY)
+    _seed_completed(agent, "trade_staged", confirmed=True, state="Submitted")
+    _seed_completed(agent, "trade_cancelled", confirmed=False, state=None)
     agent._pending_operator_notes.append(_OPERATOR_NOTE.format(kind="cancel"))
     combined = {"role": "system", "content": _operator_message(agent)}
     assert "propose_order" in combined["content"] and "failed to render" in combined["content"]
+    assert f"PLACED order {SYNTHETIC_STAGED_ID}" in combined["content"]
 
     model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
     three_turns = [
