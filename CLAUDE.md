@@ -36,7 +36,7 @@ IBKR Client Portal Gateway
 
 `ibkr_core_mcp` is a direct Python import, not an MCP server — `ClaudeToolkit` tools drop
 straight into the Anthropic SDK `tools=` parameter. TradingView tools come from a Node.js
-sidecar. Full tool catalog: `ibkr_core_mcp/docs/tools-reference.md` (42 tools).
+sidecar. Full tool catalog: `ibkr_core_mcp/docs/tools-reference.md` (43 tools).
 
 ---
 
@@ -189,11 +189,11 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
 Local editable install: see Dev Setup step 3 above for the exact command (strict editable
 mode required for `mypy` to resolve it) — re-run after ibkr_core_mcp adds new tools. No
 Panel restart needed for tool definition changes; restart required for Python module
-changes. Full tool catalog (40 core + 2 optional web-scraper = 42 total, verified against
-`ClaudeToolkit.tools` 2026-07-27): `ibkr_core_mcp/docs/tools-reference.md` — check there
+changes. Full tool catalog (40 core + 3 optional web-scraper = 43 total, verified against
+`ClaudeToolkit.tools` 2026-07-28): `ibkr_core_mcp/docs/tools-reference.md` — check there
 before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.md`.
 
-`self._all_tools` in `claudia/agent.py` is **not** just that catalog: it is the toolkit's 42,
+`self._all_tools` in `claudia/agent.py` is **not** just that catalog: it is the toolkit's 43,
 plus the TradingView extras when the sidecar is up (16 curated), plus 5 local utility tools
 (`_LOCAL_TOOLS`) and the 3 `PROPOSAL_TOOLS`, both declared in claudia_ui. The proposal tools
 are appended last so the tools cache breakpoint on the final entry stays stable.
