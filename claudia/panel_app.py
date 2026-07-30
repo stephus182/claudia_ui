@@ -48,6 +48,7 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.execution_listener import ExecutionListener
 from claudia.gdrive_sync import GDriveSync
+from claudia.install_check import warn_if_stale
 from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_chart import build_chart_pane
 from claudia.panel_markdown import safe_markdown
@@ -1102,6 +1103,12 @@ def main() -> None:
     runs after pn.serve returns — V5 contract.
     """
     _configure_logging()
+    # Before the "server is up" line, so a stale install is the FIRST thing in the log
+    # rather than something scrolled past. Every scraper import in claude_tools.py is
+    # lazy, so a drifted editable install lets ClaudIA start perfectly and fail only when
+    # a web tool is called — see claudia/install_check.py for the three times that cost
+    # real debugging. Warns, never refuses: it breaks the web tools, not the trading ones.
+    warn_if_stale()
     # The only "server is up" signal. pn.serve(show=False) opens no browser, and
     # _configure_logging pins bokeh to WARNING, which suppresses its own
     # "Bokeh app running at" banner — so without this line a correctly-started

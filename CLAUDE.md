@@ -53,11 +53,22 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
 # strict mode required for mypy — the default "lazy" editable install registers a
-# meta-path finder mypy's static import resolution can't see (confirmed 2026-07-21:
-# mypy reports "Cannot find implementation or library stub for module named
-# ibkr_core_mcp" without it, despite the package shipping py.typed and importing
-# fine at runtime). Strict mode still uses real symlinks to the source — genuinely
-# editable, not a frozen copy.
+# meta-path finder mypy's static import resolution can't see. Re-confirmed 2026-07-30
+# against mypy 2.3.0: a non-strict install produces 14 "Cannot find implementation or
+# library stub for module named ibkr_core_mcp" errors, despite the package shipping
+# py.typed and importing fine at runtime. So strict is not optional.
+#
+# THE COST, and it has bitten three times: strict mode snapshots a symlink farm under
+# build/__editable__…/ of the modules that existed AT INSTALL TIME. Add, rename or
+# delete a module in ibkr_core_mcp and this project keeps resolving the old set.
+# Because every scraper import is lazy, ClaudIA starts perfectly and fails only when
+# the affected tool is called. RE-RUN THIS COMMAND after any module is added, renamed
+# or removed — not just after a new tool is added.
+#
+# Guarded since 2026-07-30: claudia/install_check.py compares the snapshot against the
+# real source tree. panel_app logs a loud ERROR naming the modules and this command at
+# startup, and tests/test_install_check.py fails in the ordinary pytest run. You should
+# never have to diagnose this from a bare ModuleNotFoundError again.
 
 # 4. Copy and fill in env vars
 cp .env.example .env
