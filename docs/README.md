@@ -30,6 +30,14 @@ code changes.
 `context.md`, `principles.md`, and `versions/` are personal, git-ignored, hot-reloaded files —
 not part of this catalog. See `context-loading-reference.md` for how they're loaded.
 
+**Lives in the other repo, but ClaudIA depends on it:** the four web tools ClaudIA can call
+(`fetch_page`, `crawl_site`, `search_site`, `firecrawl_search`) are documented in
+`ibkr_core_mcp/docs/web-scraper-reference.md` — paywalled-site logins, what a blocked page looks
+like, and the mandatory live-test procedure. Two behaviors surprise people from this side: the
+tools need the `[scraper]` extra and every import is lazy, so a missing extra fails at tool-call
+time rather than at startup; and a fetch of a domain with a saved login profile opens a **real
+browser window** and is **serialised per profile**, both required rather than incidental.
+
 ## Panel framework reference (`docs/panel/`)
 
 Living reference for the Panel UI (the framework since the 2026-07-24 Chainlit→Panel

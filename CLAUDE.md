@@ -51,7 +51,15 @@ python3.11 -m venv .venv && source .venv/bin/activate
 
 # 3. Install claudia_ui + ibkr_core_mcp (editable)
 pip install -e ".[dev]"
-pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
+pip install -e "../ibkr_core_mcp[scraper]" --config-settings editable_mode=strict
+# [scraper] is NOT optional in practice — it is what installs crawl4ai, and without it all
+# four web tools (fetch_page, crawl_site, search_site, firecrawl_search) are dark. Every
+# scraper import is lazy, so ClaudIA starts perfectly and each tool fails only when the
+# model calls it. This exact omission already shipped once: it was found in the environment
+# on 2026-07-28, fixed there, and left in these instructions, so every clean setup since
+# would have reintroduced it. Corrected 2026-07-30. Fixing the environment is not fixing
+# the bug — the instructions are what the next install actually runs.
+#
 # strict mode required for mypy — the default "lazy" editable install registers a
 # meta-path finder mypy's static import resolution can't see. Re-confirmed 2026-07-30
 # against mypy 2.3.0: a non-strict install produces 14 "Cannot find implementation or
