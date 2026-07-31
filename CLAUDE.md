@@ -36,7 +36,7 @@ IBKR Client Portal Gateway
 
 `ibkr_core_mcp` is a direct Python import, not an MCP server — `ClaudeToolkit` tools drop
 straight into the Anthropic SDK `tools=` parameter. TradingView tools come from a Node.js
-sidecar. Full tool catalog: `ibkr_core_mcp/docs/tools-reference.md` (43 tools).
+sidecar. Full tool catalog: `ibkr_core_mcp/docs/tools-reference.md` (44 tools).
 
 ---
 
@@ -200,11 +200,11 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
 Local editable install: see Dev Setup step 3 above for the exact command (strict editable
 mode required for `mypy` to resolve it) — re-run after ibkr_core_mcp adds new tools. No
 Panel restart needed for tool definition changes; restart required for Python module
-changes. Full tool catalog (40 core + 3 optional web-scraper = 43 total, verified against
-`ClaudeToolkit.tools` 2026-07-28): `ibkr_core_mcp/docs/tools-reference.md` — check there
+changes. Full tool catalog (40 core + 4 optional web-scraper = 44 total, verified against
+`TOOL_DEFINITIONS` 2026-07-30): `ibkr_core_mcp/docs/tools-reference.md` — check there
 before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.md`.
 
-`self._all_tools` in `claudia/agent.py` is **not** just that catalog: it is the toolkit's 43,
+`self._all_tools` in `claudia/agent.py` is **not** just that catalog: it is the toolkit's 44,
 plus the TradingView extras when the sidecar is up (16 curated), plus 5 local utility tools
 (`_LOCAL_TOOLS`) and the 3 `PROPOSAL_TOOLS`, both declared in claudia_ui. The proposal tools
 are appended last so the tools cache breakpoint on the final entry stays stable.
@@ -240,6 +240,12 @@ the fix that established this (75,480 → 2,910 tokens/session).
 - Market calendar (20 exchanges, futures schedules): `docs/market-calendar-reference.md`
 - GDrive sync (folder layout, error handling): `docs/gdrive-sync-reference.md`
 - TradingView integration (sidecar, curated tools, recovery): `docs/tradingview-reference.md` and `docs/tradingview-mcp-recovery.md`
+- Web scraping — the 4 tools ClaudIA can call (`fetch_page`, `crawl_site`, `search_site`,
+  `firecrawl_search`), paywalled-site logins, and what a blocked page looks like:
+  `ibkr_core_mcp/docs/web-scraper-reference.md`. Two things that bite from ClaudIA's side:
+  the tools need the `[scraper]` extra (`pip install "ibkr_core_mcp[scraper]"`) and fail only
+  at call time without it, and **a fetch of a domain with a saved login profile opens a real
+  browser window** — required, not a bug (§6 has the evidence).
 - Environment variables (full reference): `docs/env-vars-reference.md`
 - Conversation memory schema: `docs/conversation-memory-reference.md`
 - API source-of-truth URLs (IBKR, Anthropic, Drive, Panel, libraries): `docs/api-reference.md`
