@@ -58,3 +58,9 @@ docs/plans/
 # UI smoke screenshots contain live account data (account number, balances, positions,
 # P&L, order IDs) — kept local + Google Drive only, never committed (user rule 2026-07-24).
 docs/panel/screenshots/
+
+# Firecrawl CLI local cache — `firecrawl scrape/crawl/search` writes fetched page content
+# here by default. Scraped output is arbitrary third-party content and may carry private
+# or licensed material, so it never belongs in git. The CLI is dev tooling only; ClaudIA's
+# own web tools go through ibkr_core_mcp, not this cache (added 2026-08-01).
+.firecrawl/
