@@ -278,8 +278,9 @@ risk) or a change in the other repo. See §8.1.
 
 Already documented — see
 [`2026-07-24-pinescript-and-actionable-buttons-research.md`](2026-07-24-pinescript-and-actionable-buttons-research.md)
-Part B, which carries the full `Button` parameter table (`label`, `color`, `button_type`,
-`button_style` solid/outline, `icon`, `icon_size`, `description` tooltip, `disabled`,
+Part B, which carries the full `Button` parameter table (`label`, `color`, `variant`
+solid/outline — plus their deprecated aliases `name`/`button_type`/`button_style`, removed in
+Panel 2.0 — `icon`, `icon_size`, `description` tooltip, `disabled`,
 `loading`, `css_classes`, sizing), the `pn.state.notifications` toast API **and its caveat that
 it is `None` unless `pn.extension(notifications=True)` is called**, and template modals for
 destructive confirms.

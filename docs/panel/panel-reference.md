@@ -188,6 +188,13 @@ Read this section before touching any Panel code here. Each item cost real debug
 `Widget.name` raises `PendingDeprecationWarning` on Panel 1.9.3 (probe-verified), which would
 break the test suite's 1-warning gate. `label=` is the supported replacement. Applies to
 `Button`, `BooleanStatus`, `TextInput`, `Select`.
+
+Three details from the 1.9.0 release notes + a 2026-07-31 probe of the installed package:
+`label`, `color` and `variant` are the **canonical** parameters and `name`, `button_type`,
+`button_style` the aliases (not the other way round); the warning names its removal
+target — *"deprecated and will be removed in version 2.0"*; and it fires **only for
+constructor keywords**. `pn.widgets.Button(name="x")` warns, `btn.name = "x"` after
+construction is silent, so the warning gate cannot catch the assignment form.
 [`panel_app.py:286-288`](../../claudia/panel_app.py#L286-L288),
 [`panel_chart.py:119-120`](../../claudia/panel_chart.py#L119-L120)
 
@@ -349,7 +356,8 @@ Three autouse fixtures in `test_panel_app.py` prevent tests from building a real
 `@pytest.mark.real_flex_sync` / `real_tv_connect` escape hatches registered in
 `pyproject.toml`.
 
-Full suite: `pytest` (451 tests). Gates: `ruff check claudia/ tests/ && mypy claudia/`.
+Full suite: `pytest` (765 passed, 3 skipped — re-run 2026-07-31). Gates:
+`ruff check claudia/ tests/ && mypy claudia/`.
 
 ---
 
@@ -358,18 +366,46 @@ Full suite: `pytest` (451 tests). Gates: `ruff check claudia/ tests/ && mypy cla
 | Package | Declared | Installed |
 |---|---|---|
 | `panel` | `>=1.9` ([`pyproject.toml:11`](../../pyproject.toml#L11)) — lower bound only | **1.9.3** |
-| `bokeh` | `>=3.7` ([`pyproject.toml:12-17`](../../pyproject.toml#L12-L17)) — lower bound only | **3.9.1** |
+| `bokeh` | `>=3.8` ([`pyproject.toml:12-23`](../../pyproject.toml#L12-L23)) — lower bound only | **3.9.1** |
+| `pandas` | `>=2.2` ([`pyproject.toml:24-29`](../../pyproject.toml#L24-L29)) — lower bound only | **3.0.5** |
 | `panel-material-ui` | not declared | 0.14.0 (transitive via panel; **imported nowhere**) |
 
 **Resolved 2026-07-24 (was a known gap):** [`panel_chart.py:36`](../../claudia/panel_chart.py#L36)
 imports `bokeh.plotting` directly, but `bokeh` used to appear nowhere in `pyproject.toml` — it
 resolved only because panel depends on it, so a panel release dropping or renaming that dependency
-would have broken the chart pane at import time. It is now a declared direct dependency. The floor
-matches panel 1.9.3's own requirement (`bokeh<3.10,>=3.7.0`); no upper bound is set here, leaving
-panel as the single place that caps the version.
+would have broken the chart pane at import time. It is now a declared direct dependency, with no
+upper bound, leaving panel as the single place that caps the version.
 
 mypy note: panel and bokeh both ship `py.typed`, so `ignore_missing_imports` is **not** needed
-for them ([`pyproject.toml:81-90`](../../pyproject.toml#L81-L90)).
+for them — `pandas` does not, and is one of the three modules in the override list
+([`pyproject.toml:127-139`](../../pyproject.toml#L127-L139); line reference corrected
+2026-07-31, it pointed at the ruff ignore list).
+
+### Upstream release checkpoint — 2026-07-31
+
+Source: <https://panel.holoviz.org/about/releases.html> — fetched whole (101 version sections,
+1.9.3 down to 0.1.3). **Depth is not uniform, deliberately:** 1.9.0–1.9.3 read line by line,
+1.8.0–1.8.10 scanned for deprecations, compatibility notes and anything naming a component this
+app uses; the pre-1.8 sections were not reviewed (they describe versions this project has never
+run). Every finding below is cross-checked against the installed dist metadata, a probe of the
+installed package, or PyPI — never against the notes alone.
+
+**No upgrade is pending.** 1.9.3 is the newest Panel release on both the releases page and
+PyPI (uploaded 2026-06-01); the venv is already on it. Everything below came out of that read.
+
+| Finding | Where it landed |
+|---|---|
+| **Release notes run ahead of packaging metadata — twice.** 1.9.0 says "Dropped support for Bokeh 3.7", yet 1.9.3's metadata still declares `bokeh<3.10,>=3.7.0`. 1.8.4 announced that from 1.9.0 "pandas will no longer be installed by default", yet 1.9.3 still declares `pandas>=1.2`. Copying panel's metadata floor — which is what the 2026-07-24 note did — inherits a floor panel itself no longer supports | `bokeh>=3.7` → **`>=3.8`** ([`pyproject.toml:12-23`](../../pyproject.toml#L12-L23)) |
+| **`pandas` was an undeclared direct import** — same class as the bokeh gap closed 2026-07-24. [`panel_chart.py:34`](../../claudia/panel_chart.py#L34) imports it, nothing in `pyproject.toml` did; it resolved only via panel (announced for removal) and ibkr_core_mcp (installed separately, not a declared dependency here) | added **`pandas>=2.2`** ([`pyproject.toml:24-29`](../../pyproject.toml#L24-L29)) |
+| **The `name`/`button_type`/`button_style` deprecations have a removal target: Panel 2.0.** The warning text is explicit ("deprecated and will be removed in version 2.0"). All three fire `PendingDeprecationWarning` **only when passed as constructor keywords** — attribute assignment after construction is silent, so the suite's warning gate cannot catch a late `w.name = …` | §6, `label=`/`color=` item |
+| **`color`/`variant` are the canonical parameters, `button_type`/`button_style` the aliases** — the 2026-07-24 research doc had the direction reversed | corrected in place, [`2026-07-24-pinescript-and-actionable-buttons-research.md`](2026-07-24-pinescript-and-actionable-buttons-research.md) §B1 |
+| **1.9.0 switched Panel's HTML sanitization from `bleach` to `nh3` (#8503).** Checked against our own XSS control: [`panel_markdown.py`](../../claudia/panel_markdown.py) does not use Panel's sanitizer at all — it closes the vector with markdown-it's `html: False` plus `html.escape`. The engine swap does not touch it | no change needed |
+| **`panel-material-ui>=0.10.0` is now a hard runtime dependency of panel** (not an extra), and 1.9.0's reference gallery was rewritten to use it. It is still imported nowhere here | noted in the version table above; relevant to `ui-design-reference.md` |
+
+Also read and deliberately **not** acted on: wildcard routes for `pn.serve` (1.9.0 — our single
+`_build_session_root` needs no dynamic routing), `PANEL_CDN_ROOT` / `pn.config.cdn_root`
+(1.8.10), `ChatFeed.feed_type` (1.9.0), and the Tabulator/Plotly/Vega fix streams (no Tabulator,
+Plotly or Vega in this app yet — see `data-surfaces-reference.md`).
 
 ---
 

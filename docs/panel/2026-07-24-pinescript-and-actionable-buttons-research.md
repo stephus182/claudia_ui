@@ -84,12 +84,20 @@ reconnect / end-session / launch actions the user flagged for later.
 
 ### B1. `pn.widgets.Button` params (all present in 1.9.3)
 
+> **Correction 2026-07-31** — the alias rows below originally read "`color=` is an alias that
+> sets `button_type`". That is backwards. Panel 1.9.0's release notes state the rename
+> direction (`button_type` → `color`, `button_style` → `variant`), and a probe of the
+> installed 1.9.3 confirms it: constructing with `button_type=`/`button_style=`/`name=` raises
+> `PendingDeprecationWarning: … will be removed in version 2.0`, while `color=`/`variant=`/`label=`
+> are silent. Table corrected in place; the rest of this file remains as researched on 2026-07-24.
+
 | Param | Values / type | Use for reconnect/end |
 |---|---|---|
 | `label` | str | button text (`name` is the deprecated alias — use `label`) |
-| `color` | default/primary/success/warning/danger/**light** | semantic color; `color=` is an alias that sets `button_type` |
-| `button_type` | same set | same as `color` |
-| `button_style` | **solid** / **outline** | outline for secondary actions (e.g. a low-emphasis "End") |
+| `color` | default/primary/success/warning/danger/**light** | semantic color — **canonical** |
+| `button_type` | same set | **deprecated alias** of `color`, removed in Panel 2.0 |
+| `variant` | **solid** / **outline** | outline for secondary actions (e.g. a low-emphasis "End") — **canonical** |
+| `button_style` | same set | **deprecated alias** of `variant`, removed in Panel 2.0 |
 | `icon` | str (tabler icon name, e.g. `"refresh"`, `"power"`) | icon-labeled actions |
 | `icon_size` | str (e.g. `"1.2em"`) | |
 | `description` | str/tooltip | hover tooltip (replaces Chainlit's `tooltip=`) |

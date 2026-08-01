@@ -85,9 +85,13 @@ idea is not lost and so it is not confused with the display path.
 
 **Follow-up, independent of all three — CLOSED 2026-07-24:** `bokeh` is imported directly at
 [`panel_chart.py:36`](../../claudia/panel_chart.py#L36) but was declared nowhere in
-`pyproject.toml`, resolving only because Panel depends on it. Now declared as `bokeh>=3.7`
-([`pyproject.toml:12-17`](../../pyproject.toml#L12-L17)) — floor matched to panel 1.9.3's own
-(`bokeh<3.10,>=3.7.0`), with no upper bound here so panel remains the single place that caps it.
+`pyproject.toml`, resolving only because Panel depends on it. Now declared as `bokeh>=3.8`
+([`pyproject.toml:12-23`](../../pyproject.toml#L12-L23)), with no upper bound here so panel
+remains the single place that caps it. **Floor raised 3.7 → 3.8 on 2026-07-31:** panel 1.9.3's
+metadata still says `bokeh<3.10,>=3.7.0`, but panel 1.9.0's release notes drop support for
+Bokeh 3.7, and `pn.config.reconnect` (§ below) needs ≥3.8 regardless. The same release-notes
+read added `pandas>=2.2` — another direct import of `panel_chart.py` that was declared nowhere.
+Full record: `panel-reference.md` §11 "Upstream release checkpoint".
 
 ---
 

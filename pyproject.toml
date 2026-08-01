@@ -12,9 +12,21 @@ dependencies = [
     # Direct dependency, not transitive: claudia/panel_chart.py imports bokeh.plotting
     # itself to build the candlestick figure. It resolved for a while only because panel
     # requires it (bokeh<3.10,>=3.7.0 as of panel 1.9.3) — a panel release that dropped or
-    # renamed that dependency would have broken the chart pane at import time. Floor matches
-    # panel's own; no upper bound here, so panel stays the single place that caps it.
-    "bokeh>=3.7",
+    # renamed that dependency would have broken the chart pane at import time. No upper bound
+    # here, so panel stays the single place that caps it.
+    #
+    # The floor is 3.8, NOT panel's own 3.7 metadata floor: panel 1.9.0's release notes
+    # ("Dropped support for Bokeh 3.7") are ahead of its packaging metadata, which still
+    # admits 3.7.0 (both re-checked 2026-07-31 against
+    # https://panel.holoviz.org/about/releases.html and the installed dist metadata).
+    # bokeh>=3.8 is also what pn.config.reconnect requires.
+    "bokeh>=3.8",
+    # Same rule, same file: claudia/panel_chart.py imports pandas directly. panel 1.9.3 still
+    # requires pandas>=1.2, but panel 1.8.4's release notes announced that as of 1.9.0 pandas
+    # would no longer be installed by default — that change has not reached the metadata yet
+    # (checked 2026-07-31), so this declaration is what keeps the chart pane importable when
+    # it does. Floor matched to ibkr_core_mcp's own (pandas>=2.2).
+    "pandas>=2.2",
     "anthropic>=0.28",
     # ibkr_core_mcp is installed separately: pip install -e ../ibkr_core_mcp
     "watchdog>=4.0",
