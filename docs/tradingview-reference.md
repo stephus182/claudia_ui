@@ -62,6 +62,15 @@ are the only documentation ClaudIA receives about what each tool does.
 
 ## Upgrading the sidecar
 
+**Status 2026-07-31 — an upgrade is available and has NOT been taken.** The local checkout is
+**60 commits behind** `origin/main` and **1 commit ahead** (`46ec2d3`, the local
+`CHROME_REMOTE_DEBUG_PORT` restore — a `pull` will have to reconcile it, and if upstream fixed
+the same thing differently the local commit should be dropped rather than merged). Upstream adds
+a `tv_update` self-update tool, a watchlist-tool overhaul, a `study_values` same-name fix and a
+CI workflow. Separately, `npm audit --omit=dev` reports **4 vulnerabilities (1 high, 2 moderate,
+1 low)**, the high one under `node_modules/fast-uri`. Taking the upgrade means re-verifying the
+16 curated tools below against a live TradingView Desktop, so it is its own piece of work.
+
 ```bash
 git -C ~/.tradingview-mcp pull
 npm -C ~/.tradingview-mcp install

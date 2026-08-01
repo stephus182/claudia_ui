@@ -9,7 +9,7 @@ Companion docs in this folder:
 - The two dated `2026-07-24-*.md` files — point-in-time *research* from the migration
   (chart pane, PineScript/actionable buttons). Not updated in place.
 
-Versions this document describes: **panel 1.9.3**, **bokeh 3.9.1**, Python 3.11.
+Versions this document describes: **panel 1.9.3**, **bokeh 3.9.2**, Python 3.11.
 
 ---
 
@@ -366,9 +366,9 @@ Full suite: `pytest` (765 passed, 3 skipped — re-run 2026-07-31). Gates:
 | Package | Declared | Installed |
 |---|---|---|
 | `panel` | `>=1.9` ([`pyproject.toml:11`](../../pyproject.toml#L11)) — lower bound only | **1.9.3** |
-| `bokeh` | `>=3.8` ([`pyproject.toml:12-23`](../../pyproject.toml#L12-L23)) — lower bound only | **3.9.1** |
+| `bokeh` | `>=3.8` ([`pyproject.toml:12-23`](../../pyproject.toml#L12-L23)) — lower bound only | **3.9.2** |
 | `pandas` | `>=2.2` ([`pyproject.toml:24-29`](../../pyproject.toml#L24-L29)) — lower bound only | **3.0.5** |
-| `panel-material-ui` | not declared | 0.14.0 (transitive via panel; **imported nowhere**) |
+| `panel-material-ui` | not declared | 0.14.1 (transitive via panel; **imported nowhere**) |
 
 **Resolved 2026-07-24 (was a known gap):** [`panel_chart.py:36`](../../claudia/panel_chart.py#L36)
 imports `bokeh.plotting` directly, but `bokeh` used to appear nowhere in `pyproject.toml` — it
@@ -406,6 +406,27 @@ Also read and deliberately **not** acted on: wildcard routes for `pn.serve` (1.9
 `_build_session_root` needs no dynamic routing), `PANEL_CDN_ROOT` / `pn.config.cdn_root`
 (1.8.10), `ChatFeed.feed_type` (1.9.0), and the Tabulator/Plotly/Vega fix streams (no Tabulator,
 Plotly or Vega in this app yet — see `data-surfaces-reference.md`).
+
+#### Dependency sweep, same day
+
+`pip list --outdated` over the venv, with each candidate's changelog read before it moved.
+**Applied** (patch releases, gates re-run green afterwards — 765 passed, 3 skipped): `bokeh`
+3.9.1 → **3.9.2**, `anthropic` 0.120.0 → **0.120.2**, `panel-material-ui` 0.14.0 → **0.14.1**,
+`ruff` 0.16.0 → **0.16.1**. **Held back, each for a stated reason:**
+
+| Held | Why |
+|---|---|
+| `mcp` 1.28.1 (2.0.0 available) | The `<2` pin is deliberate — 2.0.0 removed the `Server` decorators `ibkr_core_mcp/mcp_server.py` uses. Newly relevant: `anthropic` 0.120.2 added "support mcp sdk v2 alongside v1", so the Anthropic SDK is no longer part of what blocks that port |
+| `websockets` 16.1.1 (17.0.1 available) | Major. 17.0 deprecates the legacy asyncio implementation, requires Python ≥3.11 and makes several args keyword-only. `ibkr_core_mcp/streaming.py` already uses the modern API (`websockets.connect(…, additional_headers=…)`, positional `send`), so it **reads** as compatible — but it is the live P&L/execution path and only a live gateway session can prove it. Not a claudia_ui dependency; it belongs to ibkr_core_mcp |
+| `snowballstemmer` 2.2.0 (3.1.1 available) | **Must not move** — Crawl4AI pins `~=2.2`. Upgrading breaks the web-scraper tools |
+| `playwright`, `openai`, `huggingface_hub`, `trimesh`, `filelock`, `tqdm`, `pydantic_core`, `cryptography`, `uvicorn` | Incidental transitives of the crawl4ai / google-auth / mcp stacks. Nothing here imports them directly; they move when their parent asks |
+
+Tools checked the same day: `ibkr_core_mcp` clean and in sync with its origin (editable 1.2.2,
+44 tools); the **TradingView sidecar is 60 commits behind upstream** with 1 local commit ahead
+(the `CHROME_REMOTE_DEBUG_PORT` restore) and `npm audit` reporting 4 vulnerabilities (1 high, 2
+moderate, 1 low). Upgrading it means re-verifying the 16 curated tools — see
+[`docs/tradingview-reference.md`](../tradingview-reference.md) § Upgrading the sidecar. **Open,
+not done.**
 
 ---
 

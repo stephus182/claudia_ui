@@ -12,7 +12,7 @@ Two rules govern this doc:
    user first. Nothing here has been agreed.
 
 Companion: `panel-reference.md` (how the Panel layer works today).
-Versions described: **panel 1.9.3**, **bokeh 3.9.1**.
+Versions described: **panel 1.9.3**, **bokeh 3.9.2**.
 
 ---
 

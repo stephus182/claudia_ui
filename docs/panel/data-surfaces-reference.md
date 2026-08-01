@@ -16,7 +16,7 @@ Companion docs in this folder:
 - [`ui-design-reference.md`](ui-design-reference.md) — styling surface, the shadow-DOM
   constraint, the restyle proposal. Anything visual belongs there, not here.
 
-Versions described: **panel 1.9.3**, **bokeh 3.9.1**, **pandas 3.0.5**, Python 3.11.
+Versions described: **panel 1.9.3**, **bokeh 3.9.2**, **pandas 3.0.5**, Python 3.11.
 
 ---
 
@@ -104,7 +104,7 @@ components **[S]**. Only the ones relevant to trading data surfaces are listed h
 
 | Component | Extra Python dep? | Installed here? | Notes |
 |---|---|---|---|
-| `pn.pane.Bokeh` | none (bokeh is transitive via panel) | **yes** — bokeh 3.9.1 **[P]** | What the candlestick pane already uses. Full control, most code |
+| `pn.pane.Bokeh` | declared directly (`bokeh>=3.8`), also a panel dependency | **yes** — bokeh 3.9.2 **[P]** | What the candlestick pane already uses. Full control, most code |
 | `pn.pane.ECharts` | none for **raw dict** specs; `pyecharts` only if you pass pyecharts objects **[S]** | echarts JS **is bundled** with panel **[P]**; `pyecharts` **not installed** **[P]** | Accepts an ECharts spec as a plain dict. Params: `object`, `options`, `renderer` (`canvas`/`svg`), `theme` (`default`/`dark`/`light`) **[S]** |
 | `pn.pane.Plotly` | `plotly` | **not installed** **[P]** | Constructing the empty pane works; rendering a figure needs the package |
 | `pn.pane.HoloViews` | `holoviews` (+ `hvplot` for the DataFrame API) | **not installed** **[P]** | The high-level route. Adds two dependencies |
@@ -360,7 +360,7 @@ chart tab (§4.3) that distinction is a real choice, not a detail.
 | `pn.state.busy` / `pn.state.sync_busy(indicator)` | **[P]** | Global "server is working" signal; `sync_busy` drives a `BooleanIndicator`'s `value` with no manual `pn.bind` **[S]** |
 | `pn.state.cache` | **[P]** | Process-wide dict — see the §4.3 warning |
 | `pn.state.session_args` | **[P]** | Query args at session start |
-| `pn.config.reconnect` | **[P]** (default `False`) | **Automatic WebSocket reconnect** with exponential backoff at 1/2/4/8/16/32 s, or `"prompt"` for user-initiated. Requires panel ≥1.8 + bokeh ≥3.8 **[S]** — we are on 1.9.3/3.9.1 **[P]**, so it is available and currently off |
+| `pn.config.reconnect` | **[P]** (default `False`) | **Automatic WebSocket reconnect** with exponential backoff at 1/2/4/8/16/32 s, or `"prompt"` for user-initiated. Requires panel ≥1.8 + bokeh ≥3.8 **[S]** — we are on 1.9.3/3.9.2 **[P]**, so it is available and currently off |
 | `pn.config.defer_load` | **[P]** (default `False`) | Defers bound functions until after first render, so a slow surface does not delay the page **[S]** |
 
 `reconnect` needs `notifications=True` to show its messages **[S]**, and `pn.state.notifications`
