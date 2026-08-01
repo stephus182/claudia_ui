@@ -422,11 +422,11 @@ Plotly or Vega in this app yet — see `data-surfaces-reference.md`).
 | `playwright`, `openai`, `huggingface_hub`, `trimesh`, `filelock`, `tqdm`, `pydantic_core`, `cryptography`, `uvicorn` | Incidental transitives of the crawl4ai / google-auth / mcp stacks. Nothing here imports them directly; they move when their parent asks |
 
 Tools checked the same day: `ibkr_core_mcp` clean and in sync with its origin (editable 1.2.2,
-44 tools); the **TradingView sidecar is 60 commits behind upstream** with 1 local commit ahead
-(the `CHROME_REMOTE_DEBUG_PORT` restore) and `npm audit` reporting 4 vulnerabilities (1 high, 2
-moderate, 1 low). Upgrading it means re-verifying the 16 curated tools — see
-[`docs/tradingview-reference.md`](../tradingview-reference.md) § Upgrading the sidecar. **Open,
-not done.**
+44 tools); the **TradingView sidecar was 60 commits behind with 4 npm vulnerabilities — since
+upgraded** to `55534aa`, 0 vulnerabilities, 84 tools, all 16 curated names intact. That upgrade
+silently broke the CDP-port override (the sidecar renamed the env var) and the fix is in
+[`tradingview.py`](../../claudia/tradingview.py); full record in
+[`docs/tradingview-reference.md`](../tradingview-reference.md) § Upgrading the sidecar.
 
 ---
 

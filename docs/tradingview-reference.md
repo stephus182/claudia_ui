@@ -48,7 +48,9 @@ button to paste it into the Pine Editor via the `pine_set_source` MCP tool.
 
 ## Curated 16-tool subset (`_CURATED_TOOLS` in `claudia/tradingview.py`)
 
-Verified against live sidecar 2026-06-30. Tool descriptions are provided by the sidecar
+All 16 names re-verified present against sidecar `55534aa` on 2026-07-31 (via `list_tools()`,
+which needs no CDP); last verified against a *live* TradingView Desktop 2026-06-30. Tool
+descriptions are provided by the sidecar
 at runtime via MCP `list_tools()` — they appear in the Anthropic `tools=` parameter and
 are the only documentation ClaudIA receives about what each tool does.
 
@@ -62,25 +64,59 @@ are the only documentation ClaudIA receives about what each tool does.
 
 ## Upgrading the sidecar
 
-**Status 2026-07-31 — an upgrade is available and has NOT been taken.** The local checkout is
-**60 commits behind** `origin/main` and **1 commit ahead** (`46ec2d3`, the local
-`CHROME_REMOTE_DEBUG_PORT` restore — a `pull` will have to reconcile it, and if upstream fixed
-the same thing differently the local commit should be dropped rather than merged). Upstream adds
-a `tv_update` self-update tool, a watchlist-tool overhaul, a `study_values` same-name fix and a
-CI workflow. Separately, `npm audit --omit=dev` reports **4 vulnerabilities (1 high, 2 moderate,
-1 low)**, the high one under `node_modules/fast-uri`. Taking the upgrade means re-verifying the
-16 curated tools below against a live TradingView Desktop, so it is its own piece of work.
+**Upgraded 2026-07-31 to `55534aa`** (was `46ec2d3`, 60 commits behind). What it took, because
+the next upgrade will hit the same three things:
+
+**1. The local commit was dropped, not merged.** `46ec2d3` restored `CHROME_REMOTE_DEBUG_PORT`
+support in `src/connection.js`; upstream had meanwhile rewritten that lookup to read
+`TV_CDP_HOST`/`TV_CDP_PORT` (falling back to `CDP_HOST`/`CDP_PORT`) — strictly better, and it
+does **not** read the old name. Upstream's version wins, so the local commit was preserved as
+branch `local-cdp-patch-46ec2d3` + tag `pre-upgrade-2026-07-31` in `~/.tradingview-mcp` and the
+checkout reset to `origin/main`.
+
+**2. That rename was a silent break on our side, and it is now fixed.**
+[`tradingview.py`](../claudia/tradingview.py) set only `CHROME_REMOTE_DEBUG_PORT`, so after the
+pull a non-default `TRADINGVIEW_DEBUG_PORT` would have been ignored and the sidecar would have
+used 9222 — no error, no log line. This is security-audit-2026-06-12 **M-1 returning under a new
+spelling.** Proven, not assumed: with an HTTP listener on 127.0.0.1:9333, `CHROME_REMOTE_DEBUG_PORT=9333`
+produced **0** requests while `TV_CDP_PORT=9333` produced **5** `/json/list` requests. ClaudIA
+now sets **all three names**, so both upstream and the older `vendor/` snapshot honour the
+override; a regression test asserts all three carry the configured port.
+
+**3. `npm audit` needed a separate pass.** The pull alone left the vulnerability count unchanged
+(the advisories are in transitive deps of `@modelcontextprotocol/sdk` and `eslint`, not in
+sidecar code). Plain `npm audit fix` — no `--force` — cleared all six: **0 vulnerabilities**,
+prod and dev. Cost: `~/.tradingview-mcp/package-lock.json` now deviates from upstream's. Expect
+that file to show as modified until upstream bumps its own lockfile; do not "restore" it.
+
+Verification run: sidecar unit tests **152/152 pass** (`npm run test:unit`), lint 0 errors /
+4 upstream warnings, **84 tools** exposed (up from 78) with **all 16 curated tools present** —
+no renames, so `_CURATED_TOOLS` was not touched. `tests/e2e.test.js` fails without TradingView
+Desktop running, which is expected. `vendor/` re-snapshotted to `55534aa`.
+
+**Still unproven:** every tool *call* against live TradingView. `list_tools()` needs no CDP, so
+the tool-name check above is solid, but schema drift inside a tool is not auto-detected — the
+16 curated tools have not been exercised against a live desktop since the upgrade.
+
+The 68 non-curated tools now include `tv_update` (sidecar self-update), `alert_create`/`_list`/
+`_delete`, the overhauled `watchlist_*` set and `tv_launch`. **Whether any of those should join
+the curated 16 is an open product question — not decided here.**
 
 ```bash
 git -C ~/.tradingview-mcp pull
 npm -C ~/.tradingview-mcp install
+npm -C ~/.tradingview-mcp audit fix        # no --force; re-check with: npm audit
+npm -C ~/.tradingview-mcp run test:unit    # e2e needs TradingView Desktop running
 # Restart ClaudIA — startup log will show commit and warn of any renamed tools:
 #   INFO  tradingview-mcp sidecar: .../server.js (commit abc1234)
-#   INFO  tradingview-mcp connected: 78 total tools, 16 curated
+#   INFO  tradingview-mcp connected: 84 total tools, 16 curated
 #   WARNING  curated tools not found in sidecar: {data_get_equity_curve}  ← rename detected
 # If a WARNING appears, update _CURATED_TOOLS in claudia/tradingview.py, then:
 ./scripts/archive-tv-mcp.sh    # snapshot the new working version to vendor/
 ```
+
+⚠ **Check `src/connection.js` for env-var renames on every upgrade.** It has now happened twice.
+The failure mode is silence, so nothing in the startup log will tell you.
 
 ## Version detection at startup (`claudia/tradingview.py → TradingViewBridge.start()`)
 

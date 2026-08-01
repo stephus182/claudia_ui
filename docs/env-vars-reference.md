@@ -22,4 +22,4 @@
 | `GDRIVE_WEB_DOCS_FOLDER_ID` | optional | Drive folder for `firecrawl_crawl` saved web docs (`web_docs/` subfolder of root if unset) |
 | `CRAWL4AI_PROFILES_DIR` | optional | Directory for Crawl4AI browser login profiles (default: `~/.ibkr_core/crawl4ai_profiles`); used by `ibkr_core_mcp/scrape_fallback.py` both as the Firecrawl fallback *and* as the `fetch_page` tool's direct route. **This is what makes paywalled sites (FT, WSJ, NYT) return full articles.** Create one per domain with `python -m ibkr_core_mcp.scrape_fallback create-profile <url>` — interactive, needs a real terminal. |
 | `TRADINGVIEW_MCP_PATH` | optional | Path to `tradingview-mcp` entry point (`src/server.js`); auto-discovered if unset |
-| `TRADINGVIEW_DEBUG_PORT` | optional | Chrome debugging port (default: `9222`) |
+| `TRADINGVIEW_DEBUG_PORT` | optional | Chrome debugging port (default: `9222`). Forwarded to the sidecar under **three** names — `TV_CDP_PORT`, `CDP_PORT` (current sidecar) and `CHROME_REMOTE_DEBUG_PORT` (older builds + the `vendor/` fallback). The sidecar renamed this once and a rename fails silently at 9222; see `docs/tradingview-reference.md` § Upgrading the sidecar |

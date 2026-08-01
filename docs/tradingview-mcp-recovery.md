@@ -22,10 +22,14 @@ This is a **pure JavaScript** package — no TypeScript compilation step.
 ~/.tradingview-mcp/
   src/
     server.js          ← MCP stdio entry point (node src/server.js)
-    connection.js      ← CDP connection (port configurable via CHROME_REMOTE_DEBUG_PORT
-                          env var, default 9222 — claudia_ui sets this itself from its own
-                          TRADINGVIEW_DEBUG_PORT, not hardcoded on either side)
-    tools/             ← 78 tool implementations
+    connection.js      ← CDP connection (port configurable, default 9222 — claudia_ui sets it
+                          from its own TRADINGVIEW_DEBUG_PORT, not hardcoded on either side.
+                          The VARIABLE NAME has changed once already: this sidecar reads
+                          TV_CDP_PORT/CDP_PORT since 55534aa, older ones and the vendor/
+                          snapshot read CHROME_REMOTE_DEBUG_PORT, so claudia_ui sets all
+                          three. Re-check this file's env lookup after every upgrade —
+                          a rename fails silently at 9222)
+    tools/             ← 84 tool implementations
   package.json
   node_modules/        ← npm install (only @modelcontextprotocol/sdk + chrome-remote-interface)
 ```

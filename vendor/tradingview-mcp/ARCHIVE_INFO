@@ -1,7 +1,7 @@
-archived: 2026-06-30 18:59 UTC
+archived: 2026-08-01 02:44 UTC
 layout:   js (src/server.js)
 source:   /Users/steph/.tradingview-mcp/src/
 remote:   https://github.com/tradesdontlie/tradingview-mcp
-commit:   4795784a19dd64ff4e2649d2499a536b01bd2d68
-node:     v26.3.1
-src_size: 332K
+commit:   55534aab8c11f24655b7d8d4de82e6bece14c8b4
+node:     v26.5.1
+src_size: 376K

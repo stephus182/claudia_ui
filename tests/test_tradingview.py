@@ -246,3 +246,46 @@ async def test_start_env_excludes_secrets(tmp_path, monkeypatch):
     assert "GDRIVE_TOKEN_FILE" not in captured_env
     assert "PATH" in captured_env
     assert "CHROME_REMOTE_DEBUG_PORT" in captured_env
+
+
+@pytest.mark.asyncio
+async def test_start_sets_every_cdp_port_name(tmp_path, monkeypatch):
+    """A non-default CDP port must reach the sidecar under all three variable names.
+
+    The sidecar renamed this variable: upstream reads TV_CDP_PORT / CDP_PORT, older
+    builds — including the vendor/ fallback — read CHROME_REMOTE_DEBUG_PORT. Setting
+    only one name reproduces security-audit-2026-06-12 M-1, where the override was
+    silently ignored and the sidecar quietly used 9222.
+    """
+    fake_bin = tmp_path / "server.js"
+    fake_bin.write_text("// fake")
+    monkeypatch.setenv("TRADINGVIEW_MCP_PATH", str(fake_bin))
+    monkeypatch.setattr("claudia.tradingview._TV_DEBUG_PORT", 9333)
+
+    captured_env: dict[str, str] = {}
+
+    def fake_params(**kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return MagicMock()
+
+    class FakeCM:
+        async def __aenter__(self):
+            return (AsyncMock(), AsyncMock())
+        async def __aexit__(self, *a):
+            pass
+
+    fake_session = AsyncMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+    fake_session.initialize = AsyncMock()
+    fake_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
+
+    with patch("claudia.tradingview.StdioServerParameters", side_effect=fake_params), \
+         patch("claudia.tradingview.stdio_client", return_value=FakeCM()), \
+         patch("claudia.tradingview.ClientSession", return_value=fake_session), \
+         patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)):
+        bridge = TradingViewBridge()
+        await bridge.start()
+
+    for name in ("CHROME_REMOTE_DEBUG_PORT", "TV_CDP_PORT", "CDP_PORT"):
+        assert captured_env.get(name) == "9333", f"{name} did not carry the configured port"

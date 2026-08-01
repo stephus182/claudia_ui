@@ -254,15 +254,25 @@ class TradingViewBridge:
 
         # Pass only the vars the sidecar actually needs — never the full process env,
         # which would leak ANTHROPIC_API_KEY and all other secrets to the Node subprocess.
-        # CHROME_REMOTE_DEBUG_PORT tells the sidecar which CDP port to connect to
-        # (default 9222, overridable via TRADINGVIEW_DEBUG_PORT env var).
         env = {
             k: os.environ[k]
             for k in ("PATH", "HOME", "USER", "TMPDIR", "TEMP", "TMP",
                       "NODE_PATH", "NODE_ENV", "XDG_RUNTIME_DIR")
             if k in os.environ
         }
+        # Which CDP port the sidecar connects to (default 9222, overridable in .env via
+        # TRADINGVIEW_DEBUG_PORT). THREE names are set because the sidecar renamed the
+        # variable: upstream's src/connection.js now reads TV_CDP_PORT / CDP_PORT, while
+        # CHROME_REMOTE_DEBUG_PORT is what older sidecars — including the vendor/
+        # fallback snapshot — read. Setting only one name makes the override silently
+        # do nothing on the other, which is exactly security-audit-2026-06-12 M-1
+        # ("CHROME_REMOTE_DEBUG_PORT env var silently ignored by sidecar") returning
+        # under a new spelling. The default is 9222 on both sides, so the failure only
+        # appears for a non-default port — the quietest possible break.
+        # Verified 2026-07-31 against sidecar commit 55534aa.
         env["CHROME_REMOTE_DEBUG_PORT"] = str(_TV_DEBUG_PORT)
+        env["TV_CDP_PORT"] = str(_TV_DEBUG_PORT)
+        env["CDP_PORT"] = str(_TV_DEBUG_PORT)
 
         # node path/to/index.js for a built .js file; direct binary otherwise
         if bin_path.endswith(".js"):
