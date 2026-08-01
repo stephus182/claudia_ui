@@ -33,6 +33,16 @@ Distinct from:
   scraped styling surface (designs, themes, the eight `--design-*` tokens, templates,
   `ChatInterface`'s own appearance parameters), the open design questions, a **proposed**
   direction for the Track D restyle, and the official-source URL index.
+- [Panel component model reference](component-model-reference.md) — **how a component is built,
+  wired and updated.** Started 2026-08-01. The object taxonomy (widgets / panes / indicators /
+  layouts / templates / notifications) and the *real* class hierarchy underneath it (an Indicator
+  is a Widget; `ChatInterface` is a list-like Layout), the Param foundation and its traps, the
+  exact 20-parameter `Viewable`/`Layoutable` contract, state syncing and the mutable-value trap,
+  the **four interactivity APIs ranked** (component-level binding → `pn.bind` → `@param.depends` →
+  watchers) with an honest survey of where ClaudIA stands (100% on the lowest level), the
+  functions-vs-classes tradeoff, and the **four routes to a custom component** — including the
+  probe-verified reason `PyComponent` and not `Viewer` is the right base class. Read this before
+  adding any component; it is the doc that prevents an architecture choice made on prose.
 - [Panel data surfaces reference](data-surfaces-reference.md) — **graphs, tables, indicators and
   the wiring to drive them.** Started 2026-07-24, before any of this work began: the component
   inventory filtered to trading surfaces (Tabulator/Perspective, Trend/Number/LinearGauge, the

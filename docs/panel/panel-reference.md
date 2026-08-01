@@ -330,11 +330,12 @@ that matters.
 
 ## 10. Testing Panel without a browser
 
-103 tests across five files, none of which starts a server or a browser.
+109 tests across five files, none of which starts a server or a browser (re-counted 2026-08-01;
+`test_panel_app.py` grew 54 → 60 with the order-guardrail and stale-editable-install work).
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_panel_app.py` | 54 | Factory/callback wiring, Drive-DB-before-store ordering, init failure paths, doc versioning, opening status, watchdog alert delivery, singleton lifecycle, cleanup + destroy hook, all three action buttons, Flex sync, status dots, screenshot upload |
+| `tests/test_panel_app.py` | 60 | Factory/callback wiring, Drive-DB-before-store ordering, init failure paths, doc versioning, opening status, watchdog alert delivery, singleton lifecycle, cleanup + destroy hook, all three action buttons, Flex sync, status dots, screenshot upload |
 | `tests/test_panel_pinescript.py` | 18 | Block-extraction edge cases, per-block closure correctness, `js_on_click` args, inject success/failure classification |
 | `tests/test_panel_chart.py` | 14 | Pure figure construction, width scaling, cache hit/miss, empty-frame honesty, `loading` lifecycle |
 | `tests/test_panel_sink.py` | 10 | Message routing, pine detection, `ChatStep` streaming + failure, proposal delegation |
@@ -356,8 +357,8 @@ Three autouse fixtures in `test_panel_app.py` prevent tests from building a real
 `@pytest.mark.real_flex_sync` / `real_tv_connect` escape hatches registered in
 `pyproject.toml`.
 
-Full suite: `pytest` (765 passed, 3 skipped — re-run 2026-07-31). Gates:
-`ruff check claudia/ tests/ && mypy claudia/`.
+Full suite: `pytest` (**766 passed, 3 skipped** of 769 collected — re-run 2026-08-01). Gates:
+`ruff check claudia/ tests/ && mypy claudia/`, both clean on the same run.
 
 ---
 
