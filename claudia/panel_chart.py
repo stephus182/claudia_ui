@@ -31,6 +31,12 @@ import logging
 from datetime import date
 from typing import Any
 
+# Imported for its side effects; MUST NOT be removed as an unused import. Two distinct
+# effects, both measured 2026-08-03: importing `hvplot` at all registers the bokeh
+# renderer (hv.Store.renderers, a dict, goes {} -> {'bokeh': BokehRenderer(...)}), which
+# is why no hv.extension() call appears in this module; the `.pandas` suffix is what adds
+# the DataFrame/Series `.hvplot` accessor used below — `import hvplot` alone does not.
+import hvplot.pandas  # noqa: F401
 import pandas as pd
 import panel as pn
 from bokeh.plotting import figure
@@ -105,6 +111,50 @@ def build_candlestick_figure(df: pd.DataFrame, title: str) -> figure:
         line_color=_DOWN_COLOR,
     )
     return p
+
+
+def build_chart_object(df: pd.DataFrame, title: str) -> Any:
+    """Build the HoloViews chart object from an OHLCV DataFrame.
+
+    Returns an `hv.Overlay` of Segments (wicks) + Rectangles (bodies) — measured
+    2026-08-03 via `type(df.hvplot.ohlc(...))`. The `Any` return isn't caused by
+    holoviews: `df: pd.DataFrame` is already `Any` here, because pandas itself sits on
+    mypy's ignore_missing_imports list (pyproject.toml) — `reveal_type(df)` is `Any`
+    before `.hvplot` is even reached, so `df.hvplot` and everything chained off it stay
+    `Any` regardless of whether holoviews/hvplot ship stubs (verified 2026-08-03: a
+    nonexistent method chained onto `df.hvplot` raises no mypy error). Keep this
+    function small for that reason: anything reached through an untyped third-party
+    object is `Any` here, so this function gets no type checking at all.
+
+    `df` is indexed by a DatetimeIndex with lowercase open/high/low/close/volume columns.
+    Candle bodies are sized by hvplot from the data's own bar spacing — specifically
+    `np.min(np.diff(x)) * bar_width` (hvplot/converter.py, `ohlc()`) — which is why this
+    module does not compute a width itself. That is MIN, not the MEDIAN
+    `_body_width_ms` uses: the two agree on uniform data and on the existing
+    weekend-gap fixture, but diverge whenever the single smallest gap in the frame
+    isn't also the median gap (verified 2026-08-03: three daily bars plus one trailing
+    half-day bar gives hvplot ~30,240,000ms and `_body_width_ms` ~60,480,000ms — 2x
+    apart). See commit a51b454 for the smear bug that made a hand-computed width
+    necessary under raw Bokeh in the first place. (Several checked-in docs cite that
+    fix as `794d7c0`; that hash is not a commit that exists in this repository —
+    checked via `git cat-file -t` 2026-08-03. `a51b454` is what `git log -S
+    _body_width_ms` actually finds.)
+    """
+    return df.hvplot.ohlc(
+        # y= pins the OHLC columns BY NAME. Required, not decorative: hvplot 0.12.2's
+        # own docstring (hvplot/plotting/core.py) says the default (y=None) is
+        # ["open", "high", "low", "close"], but converter.py's `ohlc()` actually does
+        # `o, h, l, c = [col for col in data.columns if col != x][:4]` when y is None —
+        # POSITIONAL, not by name. Verified 2026-08-03: with y= omitted and `volume`
+        # moved before `open` in the DataFrame's column order, this silently charted
+        # volume-vs-low and colored every candle red — no error raised anywhere. Do not
+        # delete this as "redundant" on the strength of the docstring; the docstring
+        # describes the documented contract, not the branch that actually runs.
+        y=["open", "high", "low", "close"],
+        bar_width=_BODY_WIDTH_FRACTION,
+        pos_color=_UP_COLOR,
+        neg_color=_DOWN_COLOR,
+    ).opts(title=title)
 
 
 def build_chart_pane() -> pn.Column:

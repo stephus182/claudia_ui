@@ -285,3 +285,164 @@ async def test_on_load_sets_loading_during_and_clears_after():
 
     assert seen["loading"] is True  # spinner on during the blocking load
     assert btn.loading is False  # cleared after
+
+
+# ── build_chart_object (HoloViews) ────────────────────────────────────────────
+
+
+def _price(obj):
+    """The price Overlay (candles, and later the SMA).
+
+    Accepts either a bare Overlay or a Layout, so these tests do not need rewriting
+    when a later task wraps the Overlay in a Layout.
+
+    Dispatches on TYPE, not hasattr: HoloViews' dynamic attribute access answers
+    `hasattr(overlay, "Overlay")` with True on a bare Overlay and returns an EMPTY
+    `:Overlay`, so a hasattr check silently resolves to an element with no data.
+    Verified 2026-08-03 by running every build_chart_object test below against a
+    hasattr-dispatching version of this helper: each one fails on that empty element,
+    with AssertionError, KeyError('ubound'/'color') or TypeError depending on how far
+    it gets -- never an IndexError. No count is given deliberately: an earlier version
+    of this docstring said "the 5 tests below" and was invalidated by the same commit
+    that wrote it, which added two more.
+    """
+    import holoviews as hv
+
+    return obj.Overlay.I if isinstance(obj, hv.Layout) else obj
+
+
+def _rects(obj):
+    """The candle-body element."""
+    return _price(obj).Rectangles.I
+
+
+def _body_width_ms_of(obj) -> float:
+    d = _rects(obj).data
+    return (d["ubound"].iloc[0] - d["lbound"].iloc[0]) / pd.Timedelta(milliseconds=1)
+
+
+def test_build_chart_object_has_wicks_and_bodies():
+    from claudia.panel_chart import build_chart_object
+
+    obj = build_chart_object(_sample_df(), "AAPL 1d (6m)")
+    names = [type(e).__name__ for e in _price(obj)]
+    assert "Segments" in names  # wicks
+    assert "Rectangles" in names  # bodies
+    assert len(_rects(obj).data) == 4  # one body per bar
+    assert len(_price(obj).Segments.I.data) == 4  # one wick per bar
+
+
+def test_build_chart_object_body_width_is_070_of_bar_spacing():
+    # Parity with _body_width_ms: hvplot derives the width from the data's own bar
+    # spacing, so 0.7 x 24h for the daily fixture. NOT exactly equal to
+    # Timedelta(hours=24)*0.7 -- float rounding puts it fractionally under -- hence approx.
+    from claudia.panel_chart import build_chart_object
+
+    layout = build_chart_object(_sample_df(), "T")
+    expected = _ms(pd.Timedelta(hours=24)) * 0.7
+    assert _body_width_ms_of(layout) == pytest.approx(expected)
+
+
+def test_build_chart_object_body_width_tracks_intraday_spacing():
+    # The smear regression (a51b454, not 794d7c0 -- see build_chart_object's docstring)
+    # restated for the new engine: 30m candles must be strictly narrower than 1h, which
+    # must be strictly narrower than daily.
+    from claudia.panel_chart import build_chart_object
+
+    def width(freq):
+        idx = pd.date_range("2024-01-01 09:30", periods=6, freq=freq)
+        df = pd.DataFrame(
+            {"open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 100.0},
+            index=idx,
+        )
+        return _body_width_ms_of(build_chart_object(df, "T"))
+
+    assert width("30min") == pytest.approx(_ms(pd.Timedelta(minutes=30)) * 0.7)
+    assert width("1h") == pytest.approx(_ms(pd.Timedelta(hours=1)) * 0.7)
+    assert width("30min") < width("1h") < width("1D")
+
+
+def test_build_chart_object_colors_up_and_down_bodies():
+    # hvplot encodes the partition as ONE dim expression, not two glyphs. The fixture is
+    # up, up, down, down -- so applying the expression must yield teal, teal, red, red.
+    import holoviews as hv
+
+    from claudia.panel_chart import _DOWN_COLOR, _UP_COLOR, build_chart_object
+
+    obj = build_chart_object(_sample_df(), "T")
+    rects = _rects(obj)
+    color = hv.Store.lookup_options("bokeh", rects, "style").kwargs["color"]
+    assert list(color.apply(rects)) == [_UP_COLOR, _UP_COLOR, _DOWN_COLOR, _DOWN_COLOR]
+
+
+def test_build_chart_object_carries_the_title():
+    import holoviews as hv
+
+    from claudia.panel_chart import build_chart_object
+
+    obj = build_chart_object(_sample_df(), "AAPL 1d (6m)")
+    title = hv.Store.lookup_options("bokeh", _price(obj), "plot").kwargs.get("title")
+    assert title == "AAPL 1d (6m)"
+
+
+def test_build_chart_object_is_column_order_independent():
+    # hvplot's own ohlc(x=None, y=None, ...) binds OHLC columns BY POSITION when y is
+    # omitted (hvplot/converter.py: `o, h, l, c = [c for c in data.columns if c != x][:4]`).
+    # build_chart_object pins y=["open","high","low","close"] specifically to defeat
+    # that -- this test is what would fail if that y= were ever "cleaned up" as
+    # redundant. Move volume before open/high/low/close (a real risk: nothing in the
+    # cache contract fixes column order) and require identical geometry and colors.
+    import holoviews as hv
+
+    from claudia.panel_chart import build_chart_object
+
+    canonical = _sample_df()
+    reordered = canonical[["volume", "open", "high", "low", "close"]]
+
+    canon_obj = build_chart_object(canonical, "T")
+    reord_obj = build_chart_object(reordered, "T")
+    canon_rects = _rects(canon_obj)
+    reord_rects = _rects(reord_obj)
+
+    # The column VALUES survive either way -- .data keeps all five named columns whatever
+    # gets bound as kdims -- so this first assert passes even against the broken builder.
+    # It is here to rule out a mangled frame, not to catch the binding bug.
+    assert reord_rects.data[["open", "close"]].equals(canon_rects.data[["open", "close"]])
+    # THIS is the assert that catches it: without y=, reordering yields
+    # ['lbound','volume','ubound','low'] instead of ['lbound','open','ubound','close'].
+    assert [str(k) for k in reord_rects.kdims] == [str(k) for k in canon_rects.kdims]
+
+    canon_color = hv.Store.lookup_options("bokeh", canon_rects, "style").kwargs["color"]
+    reord_color = hv.Store.lookup_options("bokeh", reord_rects, "style").kwargs["color"]
+    assert list(reord_color.apply(reord_rects)) == list(canon_color.apply(canon_rects))
+    # _body_width_ms_of takes the Overlay (it re-derives Rectangles.I via _price/_rects
+    # internally), not an already-extracted Rectangles element -- passing canon_rects/
+    # reord_rects here would raise (Rectangles has no further .Rectangles to descend into).
+    assert _body_width_ms_of(reord_obj) == pytest.approx(_body_width_ms_of(canon_obj))
+
+
+def test_build_chart_object_body_width_uses_min_not_median_spacing():
+    # hvplot's own width formula is `np.min(np.diff(x)) * bar_width` (converter.py,
+    # verified 2026-08-03) -- MIN, not the MEDIAN _body_width_ms uses. They happen to
+    # agree on test_body_width_median_is_robust_to_weekend_gaps' fixture (min and
+    # median are both 24h there), so that fixture does not exercise the difference.
+    # This one does: a trailing half-day bar makes the min gap 12h while the median
+    # gap stays 24h. Assert what hvplot ACTUALLY does (min-based), not parity with the
+    # old per-bar-size helper -- they are genuinely different statistics and are not
+    # expected to agree here.
+    from claudia.panel_chart import _body_width_ms, build_chart_object
+
+    idx = pd.to_datetime(
+        ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-03 12:00"], format="mixed"
+    )
+    df = pd.DataFrame(
+        {"open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 100.0},
+        index=idx,
+    )
+
+    hv_width = _body_width_ms_of(build_chart_object(df, "T"))
+    assert hv_width == pytest.approx(_ms(pd.Timedelta(hours=12)) * 0.7)
+    # Restate the divergence explicitly: the old helper would have used the median gap
+    # (24h) here, not the min (12h) -- these are not expected to be the same value.
+    assert _body_width_ms(idx) == pytest.approx(_ms(pd.Timedelta(hours=24)) * 0.7)
+    assert hv_width != pytest.approx(_body_width_ms(idx))
