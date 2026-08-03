@@ -124,8 +124,11 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
         # POSITIONAL, not by name. Verified 2026-08-03: with y= omitted and `volume`
         # moved before `open` in the DataFrame's column order, this silently charted
         # volume-vs-low and colored every candle red — no error raised anywhere. Do not
-        # delete this as "redundant" on the strength of the docstring; the docstring
-        # describes the documented contract, not the branch that actually runs.
+        # delete this as "redundant" on the strength of that docstring line. The web
+        # reference IS accurate where it explains the mechanism in prose ("the first four
+        # non-datetime columns correspond to the O, H, L and C components", scraped
+        # 2026-08-03); it is only the `y` parameter line, read alone, that reads as a
+        # name-based guarantee.
         y=["open", "high", "low", "close"],
         bar_width=_BODY_WIDTH_FRACTION,
         pos_color=_UP_COLOR,
