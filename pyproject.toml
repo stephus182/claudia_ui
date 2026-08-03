@@ -27,6 +27,26 @@ dependencies = [
     # (checked 2026-07-31), so this declaration is what keeps the chart pane importable when
     # it does. Floor matched to ibkr_core_mcp's own (pandas>=2.2).
     "pandas>=2.2",
+    # HoloViews becomes the charting layer for claudia/panel_chart.py (supersedes decision
+    # D1 in docs/panel/data-surfaces-reference.md §1.1). This commit only declares the
+    # dependency; the imports that use it land in the commits that follow.
+    #
+    # `import hvplot.pandas` will be load-bearing there and must not be removed as an
+    # unused import. It has two distinct side effects a linter cannot see (both measured
+    # 2026-08-03): a bare `import hvplot` registers the bokeh renderer, so hv.Store.renderers
+    # — a dict — goes {} -> {'bokeh': BokehRenderer(...)} and no hv.extension() call is
+    # needed; the `.pandas` suffix additionally installs the DataFrame/Series `.hvplot`
+    # accessor, which is the part `import hvplot` alone does NOT give you.
+    #
+    # Floors are the versions this was probed against on 2026-08-03, nothing more. In
+    # particular do NOT justify hvplot>=0.12 by .ohlc()'s width behaviour: `sampling =
+    # np.min(np.diff(ds[x])) * width / 2.0` has been in converter.py since 0.7.2, the
+    # release that introduced ohlc() (verified 2026-08-03 by bisecting PyPI sdists —
+    # no `def ohlc` at all in 0.7.1; present in 0.7.2 as the same expression, spelled
+    # `* width/2.` there and reformatted to `* width / 2.0` by 0.12.2). colorcet arrives
+    # transitively (holoviews and hvplot are its only requirers here).
+    "holoviews>=1.23",
+    "hvplot>=0.12",
     "anthropic>=0.28",
     # ibkr_core_mcp is installed separately: pip install -e ../ibkr_core_mcp
     "watchdog>=4.0",
@@ -134,6 +154,17 @@ show_error_codes = true
 #   jsonschema      — ships no py.typed and types-jsonschema is not installed (verified
 #                     2026-07-27). Test-only import: tests/test_proposal_tools.py
 #                     validates the strict proposal schemas locally.
+#   holoviews       — ships no py.typed (verified 2026-08-03). Will be imported by
+#                     claudia/panel_chart.py.
+#   hvplot          — ships no py.typed (verified 2026-08-03). Same consumer.
+#                     NOTE what these two overrides actually cost: they do not make the
+#                     chart path type-check, they make it INVISIBLE to mypy — everything
+#                     reached through .hvplot.* is Any, so even a call to a method that
+#                     does not exist raises no error (measured 2026-08-03). Keep the
+#                     function that touches hvplot small and keep logic out of it.
 [[tool.mypy.overrides]]
-module = ["googleapiclient.*", "pandas", "pandas.*", "jsonschema", "jsonschema.*"]
+module = [
+    "googleapiclient.*", "pandas", "pandas.*", "jsonschema", "jsonschema.*",
+    "holoviews", "holoviews.*", "hvplot", "hvplot.*",
+]
 ignore_missing_imports = true
