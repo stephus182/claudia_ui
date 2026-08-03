@@ -519,3 +519,41 @@ def test_build_chart_object_tolerates_frame_shorter_than_sma_period():
     values = list(_price(build_chart_object(_sample_df(), "T")).Curve.Sma_20.dimension_values("sma_20"))
     assert len(values) == 4
     assert all(v != v for v in values)  # every value NaN
+
+
+def test_build_chart_object_adds_a_volume_subplot():
+    from claudia.panel_chart import build_chart_object
+
+    layout = build_chart_object(_long_df(), "T")
+    assert [type(e).__name__ for e in layout] == ["Overlay", "Bars"]
+    assert list(layout.Bars.Volume.dimension_values("volume")) == pytest.approx(
+        _long_df()["volume"].tolist()
+    )
+
+
+def test_volume_subplot_keeps_a_continuous_x_axis():
+    # linked_axes can only link ranges of the same kind, so a categorical (FactorRange)
+    # volume axis would silently break zoom sync with the datetime candle axis.
+    import holoviews as hv
+    from bokeh.models import FactorRange
+
+    from claudia.panel_chart import build_chart_object
+
+    fig = hv.render(build_chart_object(_long_df(), "T").Bars.Volume, backend="bokeh")
+    assert not isinstance(fig.x_range, FactorRange)
+
+
+def test_layout_figures_share_one_x_range():
+    # The zoom-sync claim, asserted rather than trusted: pn.pane.HoloViews(linked_axes=
+    # True) must make both figures reference the SAME range object.
+    import panel as pn
+    from bokeh.plotting import figure as bk_figure
+
+    from claudia.panel_chart import build_chart_object
+
+    pane = pn.pane.HoloViews(build_chart_object(_long_df(), "T"), linked_axes=True)
+    # Model.select returns Iterable[Model] (bokeh 3.9.2's own annotation, via
+    # core.query.find) -- a generator, not a list -- so len() needs the list() first.
+    figs = list(pane.get_root().select({"type": bk_figure}))
+    assert len(figs) == 2
+    assert figs[0].x_range is figs[1].x_range

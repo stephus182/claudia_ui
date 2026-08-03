@@ -59,6 +59,9 @@ _FALLBACK_BAR_WIDTH_MS = 12 * 60 * 60 * 1000
 # this repo renders, that repo computes (decision D2).
 _SMA_PERIOD = 20
 
+# Volume subplot height in px. The candle plot keeps this module's original 360.
+_VOLUME_HEIGHT = 120
+
 
 def _body_width_ms(index: pd.DatetimeIndex) -> float:
     """Candle-body width in ms, scaled to the data's own bar spacing.
@@ -121,9 +124,11 @@ def build_candlestick_figure(df: pd.DataFrame, title: str) -> figure:
 def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     """Build the HoloViews chart object from an OHLCV DataFrame.
 
-    Returns an `hv.Overlay` of Segments (wicks) + Rectangles (bodies) + Curve (the
-    SMA overlay, added below) — the Segments/Rectangles shape measured 2026-08-03 via
-    `type(df.hvplot.ohlc(...))`. The `Any` return isn't caused by
+    Returns an `hv.Layout` of two stacked figures (`.cols(1)`): a price `hv.Overlay`
+    of Segments (wicks) + Rectangles (bodies) + Curve (the SMA overlay) on top, and a
+    volume `hv.Bars` subplot below. The Segments/Rectangles shape measured 2026-08-03
+    via `type(df.hvplot.ohlc(...))`, before the Layout wrapping was added. The `Any`
+    return isn't caused by
     holoviews: `df: pd.DataFrame` is already `Any` here, because pandas itself sits on
     mypy's ignore_missing_imports list (pyproject.toml) — `reveal_type(df)` is `Any`
     before `.hvplot` is even reached, so `df.hvplot` and everything chained off it stay
@@ -178,7 +183,14 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     # Renaming here rather than upstream keeps the label a presentation concern (D2) and
     # avoids an API change for that function's other callers.
     sma = indicators.sma(df, _SMA_PERIOD).rename(f"sma_{_SMA_PERIOD}")
-    return (candles * sma.hvplot.line(color="orange")).opts(title=title)
+    price = (candles * sma.hvplot.line(color="orange")).opts(title=title)
+    # .hvplot.bar keeps a continuous datetime axis (NOT a categorical FactorRange), which
+    # is what lets pn.pane.HoloViews link the two x-ranges. Bar width verified 2026-08-03
+    # at 0.800 * bar spacing for 1D/1h/30min frames (bokeh VBar.width via hv.render) --
+    # tracking bar spacing rather than being fixed, so the volume row cannot smear the
+    # way the hand-built candle bodies once did.
+    volume = df["volume"].hvplot.bar(height=_VOLUME_HEIGHT)
+    return (price + volume).cols(1)
 
 
 def build_chart_pane() -> pn.Column:
