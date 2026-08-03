@@ -16,9 +16,11 @@ docs/panel/2026-07-24-candlestick-chart-pane-research.md):
   populates the parquet cache, returning only a human-readable SUMMARY string
   (claude_tools.py:1142) — the raw bars are read back from the cache.
 
-`build_chart_object` (this module) builds the chart with `hvplot` — `.hvplot.ohlc()`
-for the price row (wick Segments + body Rectangles + an SMA Curve overlay) and
-`.hvplot.bar()` for the volume row below it — into a single `holoviews.Layout`.
+`build_chart_object` (this module) builds the chart with `hvplot` from three separate
+calls — `.hvplot.ohlc()` for the price row (wick Segments + body Rectangles; measured
+2026-08-03: `type(df.hvplot.ohlc(...))` is an `Overlay` of exactly those two elements,
+nothing else), `sma.hvplot.line()` for the SMA Curve overlaid on top of it, and
+`.hvplot.bar()` for the volume row below — into a single `holoviews.Layout`.
 `import hvplot.pandas` is load-bearing, not decorative: it registers holoviews' bokeh
 renderer as a side effect of the import (`hv.Store.renderers` goes from `{}` to
 `{'bokeh': BokehRenderer(...)}`), which is why this module never calls

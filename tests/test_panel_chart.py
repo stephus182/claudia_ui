@@ -225,12 +225,13 @@ def _price(obj):
 
     An earlier version of this docstring pointed to a hasattr-dispatching run of every
     build_chart_object test below as evidence: all of them failed on the empty element.
-    Re-run 2026-08-03 after the volume subplot landed: 15/15 now PASS under
-    hasattr-dispatch, because build_chart_object no longer ever hands this function a
-    bare Overlay to get wrong. The isinstance/hasattr choice stopped being observable in
-    this file's tests, not stopped being correct -- see the direct-Overlay check above
-    for why it still is. (This replaces a claim invalidated by the same kind of change
-    its own last sentence warned about.)
+    Re-run 2026-08-03 after the volume subplot landed: every test in this section now
+    passes under hasattr-dispatch too, because build_chart_object no longer ever hands
+    this function a bare Overlay to get wrong. The isinstance/hasattr choice stopped
+    being observable in this file's tests, not stopped being correct -- see the
+    direct-Overlay check above for why it still is. (This replaces a claim invalidated
+    by the same kind of change its own last sentence warned about -- no count here
+    either, for the same reason.)
     """
     import holoviews as hv
 

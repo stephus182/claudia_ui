@@ -154,9 +154,16 @@ show_error_codes = true
 #   jsonschema      — ships no py.typed and types-jsonschema is not installed (verified
 #                     2026-07-27). Test-only import: tests/test_proposal_tools.py
 #                     validates the strict proposal schemas locally.
-#   holoviews       — ships no py.typed (verified 2026-08-03). Will be imported by
-#                     claudia/panel_chart.py.
-#   hvplot          — ships no py.typed (verified 2026-08-03). Same consumer.
+#   holoviews       — ships no py.typed (verified 2026-08-03). Not imported by
+#                     claudia/panel_chart.py at all (that module only does `import
+#                     hvplot.pandas`) — the direct `import holoviews as hv` calls are in
+#                     tests/test_panel_chart.py. `mypy claudia/` doesn't need this entry
+#                     (verified 2026-08-03: removing it leaves that invocation clean);
+#                     it stays because `files` below also covers tests, and a bare `mypy`
+#                     picks up a new "Skipping analyzing holoviews" error on
+#                     tests/test_panel_chart.py without it (verified the same way).
+#   hvplot          — ships no py.typed (verified 2026-08-03). Consumed by
+#                     claudia/panel_chart.py's `import hvplot.pandas`.
 #                     NOTE what these two overrides actually cost: they do not make the
 #                     chart path type-check, they make it INVISIBLE to mypy — everything
 #                     reached through .hvplot.* is Any, so even a call to a method that
