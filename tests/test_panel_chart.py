@@ -183,6 +183,31 @@ async def test_on_load_exception_is_caught_as_honest_error():
 
 
 @pytest.mark.asyncio
+async def test_on_load_single_row_frame_is_honest_error_not_a_crash():
+    """A 1-row cache hit reaches build_chart_object's own ValueError guard.
+
+    Before the pane swap this guard had no production caller (nothing between it and
+    the cache), so it was unreachable from the UI. _on_load now calls build_chart_object
+    directly, so a 1-row DataFrame is a real path a user can hit -- this pins that it
+    surfaces as the same honest status-line message every other _on_load failure uses,
+    not a raw traceback or a crash.
+    """
+    from unittest.mock import patch
+
+    tk = _mock_toolkit(cached=True, df=_sample_df().iloc[:1])
+    pane = build_chart_pane()
+    btn = _button(pane)
+    cb = _get_click_callback(btn)
+    with patch("claudia.panel_app._get_toolkit", return_value=tk):
+        await cb(None)  # must not raise
+
+    assert "✕ Could not load AAPL" in _status(pane).object
+    assert "Cannot chart a single bar - need at least 2 bars." in _status(pane).object
+    assert _chart(pane).object is None
+    assert btn.loading is False  # cleared in finally
+
+
+@pytest.mark.asyncio
 async def test_on_load_sets_loading_during_and_clears_after():
     from unittest.mock import patch
 
