@@ -446,3 +446,21 @@ def test_build_chart_object_body_width_uses_min_not_median_spacing():
     # (24h) here, not the min (12h) -- these are not expected to be the same value.
     assert _body_width_ms(idx) == pytest.approx(_ms(pd.Timedelta(hours=24)) * 0.7)
     assert hv_width != pytest.approx(_body_width_ms(idx))
+
+
+def test_build_chart_object_rejects_single_row_frame():
+    # hvplot sizes candles from np.min(np.diff(x)); a 1-row frame gives np.diff an empty
+    # array and numpy raises "zero-size array to reduction operation minimum". 0 rows and
+    # 2 rows are both fine. We convert it to an honest failure rather than letting a numpy
+    # internals message reach the chart pane's status line.
+    from claudia.panel_chart import build_chart_object
+
+    with pytest.raises(ValueError, match="at least 2 bars"):
+        build_chart_object(_sample_df().iloc[:1], "T")
+
+
+def test_build_chart_object_accepts_two_row_frame():
+    from claudia.panel_chart import build_chart_object
+
+    obj = build_chart_object(_sample_df().iloc[:2], "T")
+    assert len(_rects(obj).data) == 2

@@ -140,6 +140,15 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     checked via `git cat-file -t` 2026-08-03. `a51b454` is what `git log -S
     _body_width_ms` actually finds.)
     """
+    if len(df) == 1:
+        # hvplot sizes candles from np.min(np.diff(x)); one row makes np.diff empty and
+        # numpy raises "zero-size array to reduction operation minimum" (verified above,
+        # 2026-08-03). Caught here so any caller gets an actionable message instead of a
+        # numpy internals string. build_chart_object has no production caller yet
+        # (verified by grep, 2026-08-03: _on_load still builds Bokeh figures via
+        # build_candlestick_figure). A 0-row frame does not reach this function either
+        # way -- _on_load's `df.empty` check returns before it calls any chart builder.
+        raise ValueError("Cannot chart a single bar - need at least 2 bars.")
     return df.hvplot.ohlc(
         # y= pins the OHLC columns BY NAME. Required, not decorative: hvplot 0.12.2's
         # own docstring (hvplot/plotting/core.py) says the default (y=None) is
