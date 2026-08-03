@@ -220,13 +220,13 @@ Verbatim findings:
 
 The UI framework since the 2026-07-24 Chainlit→Panel cutover (Chainlit removed entirely).
 Project-**verified** Panel findings — the native `pn.serve` serving model, `ChatInterface`,
-widget idioms, `pn.pane.Bokeh` candlesticks, `js_on_click` clipboard — live in
+widget idioms, `pn.pane.HoloViews` candlesticks, `js_on_click` clipboard — live in
 [`docs/panel/`](panel/README.md), each backed by the installed package or a scraped URL.
 
 | Topic | Official source |
 |---|---|
 | Panel documentation (ChatInterface, widgets, serving) | https://panel.holoviz.org |
-| Bokeh (candlestick chart glyphs) | https://docs.bokeh.org |
+| Bokeh (HoloViews' rendering backend; `bokeh.plotting.figure`/`FactorRange` used directly in tests) | https://docs.bokeh.org |
 
 The **full per-page Panel URL index** — styling how-tos (`apply_css`, `design`, `themes`,
 `design_variables`), the templates index, the `ChatInterface` component reference, and the MDN

@@ -20,14 +20,11 @@ docs/panel/2026-07-24-candlestick-chart-pane-research.md):
 calls — `.hvplot.ohlc()` for the price row (wick Segments + body Rectangles; measured
 2026-08-03: `type(df.hvplot.ohlc(...))` is an `Overlay` of exactly those two elements,
 nothing else), `sma.hvplot.line()` for the SMA Curve overlaid on top of it, and
-`.hvplot.bar()` for the volume row below — into a single `holoviews.Layout`.
-`import hvplot.pandas` is load-bearing, not decorative: it registers holoviews' bokeh
-renderer as a side effect of the import (`hv.Store.renderers` goes from `{}` to
-`{'bokeh': BokehRenderer(...)}`), which is why this module never calls
-`hv.extension()`; the `.pandas` suffix is what adds the DataFrame/Series `.hvplot`
-accessor used throughout `build_chart_object`. `build_chart_pane` renders that Layout
-through `pn.pane.HoloViews`, whose `object` the tests assert against directly rather
-than poking Bokeh glyph renderers. Design rationale for the hvplot/HoloViews rewrite
+`.hvplot.bar()` for the volume row below — into a single `holoviews.Layout`. The
+`import hvplot.pandas` below is load-bearing (see the comment at the import site for
+why); `build_chart_pane` renders the resulting Layout through `pn.pane.HoloViews`,
+whose `object` the tests assert against directly rather than poking Bokeh glyph
+renderers. Design rationale for the hvplot/HoloViews rewrite
 and the decisions cited by name in this module (D2, the 300px price-row height, the
 linked_axes/shared_axes distinction): local plan archive,
 docs/plans/2026-08-03-holoviews-charting-layer-design.md (git-ignored, not in this
@@ -67,24 +64,18 @@ _DOWN_COLOR = "#ef5350"  # red — close < open
 # hv.Bars' own 0.8 default instead (verified by reading both call sites, 2026-08-03).
 # hvplot multiplies this fraction by np.min(np.diff(x)) -- the data's own minimum bar
 # gap -- so 0.7 always leaves a visible gap between candles regardless of the selected
-# bar size (1d/1h/30m). This replaced the deleted _body_width_ms (Task 7, 2026-08-03),
-# which computed a comparable width by hand for the old Bokeh vbar/segment recipe;
-# hvplot now derives it from the data directly, so no caller in this module computes a
-# width itself anymore.
+# bar size (1d/1h/30m). hvplot derives this from the data directly; no caller in this
+# module computes a width itself.
 _BODY_WIDTH_FRACTION = 0.7
 
 # Overlay period for the moving average. Values come from ibkr_core_mcp.indicators --
 # this repo renders, that repo computes (decision D2).
 _SMA_PERIOD = 20
 
-# Volume subplot height in px. The price row above has no explicit height set here, so
-# it renders at holoviews' own ElementPlot default of 300px -- NOT the 360px the old,
-# now-deleted build_candlestick_figure used for its separate, unrelated Bokeh figure.
-# Measured 2026-08-03 via hv.render(...).select({"type": bokeh.plotting.figure}): price
-# row is 300, this row is 120 (== _VOLUME_HEIGHT).
-#
-# The price row is left at holoviews' ElementPlot default height (300px, measured) rather
-# than the 360px the old Bokeh figure used. Deliberate -- user decision 2026-08-03, taking
+# Volume subplot height in px. The price row above has no explicit height set here, so it
+# renders at holoviews' own ElementPlot default of 300px (measured 2026-08-03 via
+# hv.render(...).select({"type": bokeh.plotting.figure})) rather than the 360px the old
+# hand-built Bokeh figure used -- deliberate, user decision 2026-08-03, taking
 # 300 + 120 = 420px total over restoring 360 for the price row.
 _VOLUME_HEIGHT = 120
 
@@ -95,8 +86,7 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     Returns an `hv.Layout` of two stacked figures (`.cols(1)`): a price `hv.Overlay`
     of Segments (wicks) + Rectangles (bodies) + Curve (the SMA overlay) on top, and a
     volume `hv.Bars` subplot below. The Segments/Rectangles shape measured 2026-08-03
-    via `type(df.hvplot.ohlc(...))`, before the Layout wrapping was added. The `Any`
-    return isn't caused by
+    via `type(df.hvplot.ohlc(...))`. The `Any` return isn't caused by
     holoviews: `df: pd.DataFrame` is already `Any` here, because pandas itself sits on
     mypy's ignore_missing_imports list (pyproject.toml) — `reveal_type(df)` is `Any`
     before `.hvplot` is even reached, so `df.hvplot` and everything chained off it stay
@@ -109,8 +99,7 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     Candle bodies are sized by hvplot from the data's own bar spacing — specifically
     `np.min(np.diff(x)) * bar_width` (hvplot/converter.py, `ohlc()`) — which is why this
     module does not compute a width itself. That is MIN, not the MEDIAN the old
-    `_body_width_ms` helper used (deleted in Task 7, 2026-08-03, once this function
-    became `_on_load`'s only chart builder): the two agreed on uniform data and on the
+    `_body_width_ms` helper used: the two agreed on uniform data and on the
     weekend-gap fixture that covered it, but diverged whenever the single smallest gap
     in the frame wasn't also the median gap (verified 2026-08-03, before deletion: three
     daily bars plus one trailing half-day bar gave hvplot ~30,240,000ms and

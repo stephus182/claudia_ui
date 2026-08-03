@@ -9,11 +9,16 @@ description = "ClaudIA — AI trading assistant powered by ibkr_core_mcp"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "panel>=1.9",
-    # Direct dependency, not transitive: claudia/panel_chart.py imports bokeh.plotting
-    # itself to build the candlestick figure. It resolved for a while only because panel
-    # requires it (bokeh<3.10,>=3.7.0 as of panel 1.9.3) — a panel release that dropped or
-    # renamed that dependency would have broken the chart pane at import time. No upper bound
-    # here, so panel stays the single place that caps it.
+    # No longer a direct import: claudia/panel_chart.py's own `import bokeh.plotting` was
+    # removed when that module moved to hvplot/HoloViews (superseded 2026-08-03 — D1,
+    # docs/panel/data-surfaces-reference.md). bokeh now reaches this app as a panel
+    # dependency, as hvplot/holoviews' own bokeh rendering backend (registered via
+    # `hv.Store.renderers` as a side effect of `import hvplot.pandas`), and as a direct
+    # import in tests/test_panel_chart.py (`bokeh.models.FactorRange`,
+    # `bokeh.plotting.figure`) to inspect rendered figures — verified 2026-08-03: no
+    # `import bokeh` anywhere in `claudia/`. Kept as an explicit dependency anyway, for the
+    # version-floor reasons below; panel's own metadata floor is looser than what this app
+    # needs. No upper bound here, so panel stays the single place that caps it.
     #
     # The floor is 3.8, NOT panel's own 3.7 metadata floor: panel 1.9.0's release notes
     # ("Dropped support for Bokeh 3.7") are ahead of its packaging metadata, which still

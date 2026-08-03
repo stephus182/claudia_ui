@@ -11,7 +11,7 @@ ClaudIA is a Panel-based trading assistant that gives you a persistent, principl
 - **Full trade history** — 7-year backfill via IBKR Flex Queries; `sync_flex_trades` keeps it current; `get_trades source='store'` queries with no date limit
 - **Human-confirmed order staging** — ClaudIA proposes trades (equities and futures); you click a button → Touch ID → AppKit colored dialog (green/BUY, red/SELL). The LLM has no order-execution tools. CME Rule 536-B fields auto-added for futures
 - **TradingView live integration** — reads your active chart, sets symbols/timeframes; every ```pine block ClaudIA emits gets a **Copy** button (real client-side clipboard) and an **Inject into TradingView** button that sets the Pine Editor source directly
-- **External candlestick chart pane** — a Bokeh chart beside the chat (symbol/period/bar controls), OHLCV from the Drive cache with fetch-on-miss from IBKR; fully independent of the conversation
+- **External candlestick chart pane** — a HoloViews/hvplot chart beside the chat (symbol/period/bar controls, SMA overlay, volume subplot), OHLCV from the Drive cache with fetch-on-miss from IBKR; fully independent of the conversation
 - **Screenshot analysis** — upload any TradingView chart for vision-based analysis (no Desktop required)
 - **Principle-guided responses** — your personal `docs/principles.md` is loaded as a system prompt; ClaudIA refuses proposals that violate your rules
 - **Persistent memory** — all sessions, decisions, and symbol observations stored in SQLite with FTS5 search ("what did I decide about NVDA last month?")
@@ -103,7 +103,7 @@ claudia/panel_app.py        — pn.serve entry: session lifecycle, status dots, 
 claudia/panel_sink.py       — PanelMessageSink: agent output → pn.chat.ChatInterface
 claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_flow cores
 claudia/panel_pinescript.py — ```pine copy (real clipboard) / inject buttons
-claudia/panel_chart.py      — external Bokeh candlestick chart pane (STK, cache-backed)
+claudia/panel_chart.py      — external HoloViews candlestick chart pane (STK, cache-backed)
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching
 claudia/proposal_tools.py   — strict-schema propose_order/cancel/modify declarations (no execution)
 claudia/message_sink.py     — MessageSink protocol (the UI-decoupling seam)
@@ -224,7 +224,8 @@ Any contribution touching API behavior, error codes, endpoint paths, or field na
 | TradingView MCP | `claudia/tradingview.py` | https://github.com/tradesdontlie/tradingview-mcp |
 | Chrome DevTools Protocol | `claudia/tradingview.py` | https://chromedevtools.github.io/devtools-protocol/ |
 | Panel | `claudia/panel_*.py` | https://panel.holoviz.org |
-| Bokeh | `claudia/panel_chart.py` | https://docs.bokeh.org |
+| hvPlot / HoloViews | `claudia/panel_chart.py` | https://hvplot.holoviz.org / https://holoviews.org |
+| Bokeh (HoloViews' rendering backend) | `claudia/panel_chart.py` | https://docs.bokeh.org |
 | `requests` (web fetch) | `claudia/agent.py` | https://docs.python-requests.org/ |
 | `html2text` (HTML → Markdown) | `claudia/agent.py` | https://github.com/Alir3z4/html2text |
 | `watchdog` (file monitoring) | `claudia/context_loader.py` | https://watchdog.readthedocs.io/ |

@@ -13,7 +13,7 @@ claudia/panel_app.py        — pn.serve entry: session lifecycle, status dots, 
 claudia/panel_sink.py       — PanelMessageSink: agent output → pn.chat.ChatInterface (MessageSink protocol)
 claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_flow.py cores
 claudia/panel_pinescript.py — ```pine copy (real client-side clipboard) / inject buttons
-claudia/panel_chart.py      — external Bokeh candlestick chart pane (STK, cache-backed)
+claudia/panel_chart.py      — external HoloViews candlestick chart pane (STK, cache-backed)
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching (UI-agnostic via MessageSink)
 claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)

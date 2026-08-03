@@ -46,7 +46,8 @@ Distinct from:
 - [Panel data surfaces reference](data-surfaces-reference.md) — **graphs, tables, indicators and
   the wiring to drive them.** Started 2026-07-24, before any of this work began: the component
   inventory filtered to trading surfaces (Tabulator/Perspective, Trend/Number/LinearGauge, the
-  Bokeh-and-ECharts-only dependency reality), the `pn.extension()` gate and its extension-name
+  dependency reality — Bokeh-and-ECharts-only at the time, joined by HoloViews/hvplot 2026-08-03,
+  see that doc's §1.1 D1), the `pn.extension()` gate and its extension-name
   list, side-window tooling (`FloatPanel`/`Modal`/`GridStack`/`Tabs` vs. templates vs. a second
   `pn.serve` slug), the connectivity surface (stream/patch, periodic callbacks, `pn.bind`, URL
   sync, reconnect, thread bridge), and a **sketch** — not a design — for chatbot-piloted vs.
@@ -58,7 +59,11 @@ Distinct from:
   — Bokeh candlestick via `segment`+`vbar` glyphs (no hvplot — bokeh already installed);
   `pn.pane.Bokeh` embed + `pane.object=` refresh; OHLCV from `toolkit._cache.load` (parquet,
   DatetimeIndex + lowercase columns) with fetch-on-miss; symbol/period/bar controls +
-  `loading` spinner; side-by-side placement. All APIs verified live.
+  `loading` spinner; side-by-side placement. All APIs verified live. **The Bokeh-glyph route
+  described here was superseded 2026-08-03 — the shipped pane now renders via
+  `pn.pane.HoloViews`/hvplot; see `panel-reference.md` §9 and `data-surfaces-reference.md`
+  D1.** Left as written below: this bullet describes the research as it stood on 2026-07-24,
+  not the current implementation.
 - [2026-07-24 — PineScript copy/inject + actionable-button capabilities](2026-07-24-pinescript-and-actionable-buttons-research.md)
   — `pine_set_source` sidecar contract; real client-side clipboard via `js_on_click`
   (injection-safe, localhost = secure context); ```pine detection regex; and a full

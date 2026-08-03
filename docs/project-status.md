@@ -23,9 +23,9 @@ subset via stdio MCP), and local tools (`list_doc_versions`, `get_doc_version`,
 and docs across machines. Orders require two physical gates (Touch ID + AppKit NSAlert
 colored dialog: green=BUY, red=SELL); the LLM has no order-execution tools. Order staging
 supports equities (STK) and futures (FUT front-month with CME Rule 536-B fields). An
-external Bokeh candlestick chart pane (`claudia/panel_chart.py`) renders cache-backed STK
-history. ClaudIA surfaces user-directed trade proposals — it never makes trade decisions
-autonomously.
+external HoloViews candlestick chart pane (`claudia/panel_chart.py`) renders cache-backed
+STK history. ClaudIA surfaces user-directed trade proposals — it never makes trade
+decisions autonomously.
 
 ---
 
@@ -93,10 +93,15 @@ verification is manual and recorded in the Live Test Log below.
 | `test_tradingview.py` | 17 | Binary discovery, CDP check, tool curation, env allowlist |
 | `test_context_loader.py` | 17 | Load, hash, watchdog hot-reload, Drive override, version registration |
 | `test_session_reporter.py` | 15 | Session report generation, tool-call/decision aggregation |
-| `test_panel_chart.py` | 14 | Chart pane: fetch/cache paths, candlestick render, error/spinner paths |
+| `test_panel_chart.py` | 24 | Chart pane: fetch/cache paths, HoloViews chart assembly, error/spinner paths |
 | `test_panel_sink.py` | 10 | `PanelMessageSink` → `pn.chat.ChatInterface` routing |
 | `test_opening_status.py` | 9 | UI-free opening-status builders |
 | `test_panel_order_flow.py` | 7 | Proposal buttons → order-flow cores |
+
+Only the `test_panel_chart.py` row above was re-counted 2026-08-03 (`pytest --collect-only`),
+for this branch's own work — the **757** total, the other rows, and the "verified
+2026-07-28" date were not re-verified in this pass and are known stale (e.g.
+`test_panel_app.py` is 60 in `panel-reference.md`, re-counted there the same day, not 59).
 
 ### ibkr_core_mcp (separate repo, own venv)
 

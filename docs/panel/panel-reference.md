@@ -50,11 +50,13 @@ gateway). Serving behavior was verified by `docs/probes/pnserve_probe.py`.
 | [`claudia/panel_app.py`](../../claudia/panel_app.py) | 1000 | `pn.serve` entry, session lifecycle, status dots, action buttons, screenshot upload, layout root |
 | [`claudia/panel_sink.py`](../../claudia/panel_sink.py) | 132 | `PanelMessageSink` — agent output → `ChatInterface` |
 | [`claudia/panel_order_flow.py`](../../claudia/panel_order_flow.py) | 165 | Order/cancel/modify proposals → buttons → `order_flow.py` cores |
-| [`claudia/panel_chart.py`](../../claudia/panel_chart.py) | 182 | External Bokeh candlestick pane |
+| [`claudia/panel_chart.py`](../../claudia/panel_chart.py) | 259 | External HoloViews candlestick pane |
 | [`claudia/panel_pinescript.py`](../../claudia/panel_pinescript.py) | 152 | ` ```pine ` copy/inject buttons |
 | [`claudia/message_sink.py`](../../claudia/message_sink.py) | 43 | The UI-decoupling protocol — **zero Panel imports** |
 
-`claudia/agent.py` imports **no Panel symbol at all**; see §5.
+`claudia/agent.py` imports **no Panel symbol at all**; see §5. Only the `panel_chart.py` row
+above was re-measured 2026-08-03 (`wc -l`), for this branch's own change; the other line
+counts were not re-verified and may also have drifted.
 
 ---
 
@@ -129,7 +131,7 @@ pn.Row(                              sizing_mode="stretch_both"
 ├── pn.Column(
 │   ├── pn.Row(BooleanStatus×3, FileInput)     ← status dots + screenshot upload
 │   └── pn.chat.ChatInterface                  ← the conversation
-└── build_chart_pane()                         ← pn.Column: controls / status / pn.pane.Bokeh
+└── build_chart_pane()                         ← pn.Column: controls / status / pn.pane.HoloViews
 )
 ```
 
@@ -306,14 +308,28 @@ force-refresh the connectivity checker afterwards. Launch TradingView rebuilds t
 
 Self-contained and **decoupled from the conversation** — driven by its own Load button.
 
-- **Bokeh directly**, no hvplot/holoviews: a candlestick is `p.segment` for the high-low wicks
-  plus **two** `p.vbar` calls partitioned on `close >= open`
-  ([`panel_chart.py:88-104`](../../claudia/panel_chart.py#L88-L104)).
-- **`vbar` width is in x-axis data units** (ms on a datetime axis), so it must track the actual
-  bar interval — a fixed daily width turns 1h/30m candles into an overlapping smear (12×/24×
-  their spacing). [`_body_width_ms`](../../claudia/panel_chart.py#L50) uses the index's
-  **median** spacing × `0.7` (median is robust to weekend/overnight gaps), with a daily
-  fallback for frames of fewer than 2 rows. This was a shipped bug fix, commit `794d7c0`.
+- **HoloViews/hvplot, not hand-built Bokeh glyphs** (superseded 2026-08-03 — see
+  `data-surfaces-reference.md` D1). `build_chart_object`
+  ([`panel_chart.py:92-175`](../../claudia/panel_chart.py#L92-L175)) makes three separate
+  hvplot calls — `df.hvplot.ohlc(...)` for the price row (wick `Segments` + body
+  `Rectangles`), `sma.hvplot.line(...)` for the 20-period SMA `Curve` overlaid on top of it,
+  and `df["volume"].hvplot.bar(...)` for the volume row below — combined into one
+  `holoviews.Layout` via `(price + volume).cols(1)` and rendered by `pn.pane.HoloViews`
+  (not `pn.pane.Bokeh`).
+- **Candle/bar width is derived by hvplot itself**, not computed by this module: both
+  `.ohlc()` and `.bar()` scale their default width by `np.min(np.diff(x))` — the data's own
+  **minimum** bar spacing — so 1h/30m candles can no longer smear the way the old hand-built
+  `p.vbar` recipe did before the fix in commit `a51b454` (some docs cited that fix as
+  `794d7c0`; that hash is not a commit in this repository). `bar_width=0.7`
+  (`_BODY_WIDTH_FRACTION`, [`:74`](../../claudia/panel_chart.py#L74)) is the only width knob
+  this module passes; the volume row uses `hv.Bars`' own default instead.
+- **Colors**: `_UP_COLOR = "#26a69a"`, `_DOWN_COLOR = "#ef5350"`
+  ([`:62-63`](../../claudia/panel_chart.py#L62-L63)) are passed to `.ohlc()` as
+  `pos_color`/`neg_color` and only reach the candle **bodies** (`Rectangles`) — the wicks
+  (`Segments`) render at hvplot's own default black regardless (verified 2026-08-03 by
+  inspecting the rendered glyphs' style). There is no wick-color constant in this module; the
+  old `_WICK_COLOR = "#666"` was deleted along with the hand-built recipe, not renamed. These
+  two are still the only hardcoded hex colors anywhere in `claudia/` (grepped 2026-08-03).
 - **Data**: cache-first via `toolkit._cache.check/load` (parquet, `DatetimeIndex`, lowercase
   columns), fetching from IBKR on a miss. `fetch_market_data` returns a summary, not bars —
   hence the direct cache read.
@@ -321,23 +337,21 @@ Self-contained and **decoupled from the conversation** — driven by its own Loa
   always clears it in `finally`.
 - **STK only.**
 
-Colors are the only hardcoded palette in the codebase:
-`_UP_COLOR = "#26a69a"`, `_DOWN_COLOR = "#ef5350"`, `_WICK_COLOR = "#666"`
-([`:40-42`](../../claudia/panel_chart.py#L40-L42)). See `ui-design-reference.md` §7 for why
-that matters.
+See `ui-design-reference.md` §7 for why the color choice matters.
 
 ---
 
 ## 10. Testing Panel without a browser
 
-109 tests across five files, none of which starts a server or a browser (re-counted 2026-08-01;
-`test_panel_app.py` grew 54 → 60 with the order-guardrail and stale-editable-install work).
+119 tests across five files, none of which starts a server or a browser (re-counted
+2026-08-03 via `pytest --collect-only`, per file — counts drift with every change to these
+files, so re-count rather than trust this table).
 
 | File | Tests | Covers |
 |---|---|---|
 | `tests/test_panel_app.py` | 60 | Factory/callback wiring, Drive-DB-before-store ordering, init failure paths, doc versioning, opening status, watchdog alert delivery, singleton lifecycle, cleanup + destroy hook, all three action buttons, Flex sync, status dots, screenshot upload |
 | `tests/test_panel_pinescript.py` | 18 | Block-extraction edge cases, per-block closure correctness, `js_on_click` args, inject success/failure classification |
-| `tests/test_panel_chart.py` | 14 | Pure figure construction, width scaling, cache hit/miss, empty-frame honesty, `loading` lifecycle |
+| `tests/test_panel_chart.py` | 24 | Pane composition, `_on_load` cache/fetch/error/spinner paths, `build_chart_object` HoloViews assembly (wicks/bodies/SMA/volume, width scaling, column-order independence) |
 | `tests/test_panel_sink.py` | 10 | Message routing, pine detection, `ChatStep` streaming + failure, proposal delegation |
 | `tests/test_panel_order_flow.py` | 7 | Each proposal type: buttons rendered, confirm calls the right core, dismiss disables without executing |
 
@@ -381,6 +395,16 @@ mypy note: panel and bokeh both ship `py.typed`, so `ignore_missing_imports` is 
 for them — `pandas` does not, and is one of the three modules in the override list
 ([`pyproject.toml:127-139`](../../pyproject.toml#L127-L139); line reference corrected
 2026-07-31, it pointed at the ruff ignore list).
+
+**Import cost, measured 2026-08-03:** `import hvplot.pandas`
+([`panel_chart.py:51`](../../claudia/panel_chart.py#L51)) is the dominant cost of importing
+`claudia.panel_chart` at all, paid once at `panel_app` import (`panel_app.py` imports
+`build_chart_pane` at module top — that module's own docstring). Measured via
+`python -X importtime -c "import claudia.panel_chart"`, six fresh-process runs (one ~1.3s
+outlier excluded as system jitter): `hvplot.pandas`'s own cumulative import time ranged
+**~536–584ms**, against a `claudia.panel_chart` total of **~692–753ms** — roughly 75–80% of
+the total. Reported as a range because it did not settle on a single figure across runs, not
+because it is imprecise.
 
 ### Upstream release checkpoint — 2026-07-31
 

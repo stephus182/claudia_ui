@@ -40,7 +40,7 @@ disagreement is called out (there is one — §6.5).
 
 | Surface | State |
 |---|---|
-| Candlestick chart | **Shipped.** Bokeh `segment` + two `vbar`, cache-backed, own Load button, STK only. [`panel_chart.py`](../../claudia/panel_chart.py) **[C]** |
+| Candlestick chart | **Shipped.** HoloViews/hvplot (`pn.pane.HoloViews`, superseded 2026-08-03 — §1.1 D1), cache-backed, own Load button, STK only. [`panel_chart.py`](../../claudia/panel_chart.py) **[C]** |
 | Status dots | **Shipped.** `pn.indicators.BooleanStatus` ×3. [`panel_app.py:284`](../../claudia/panel_app.py#L284) **[C]** |
 | Any table | **None.** No `Tabulator`, no `Perspective`, no `DataFrame` pane anywhere in `claudia/` **[C]** |
 | Any value indicator | **None** beyond the three status dots **[C]** |
@@ -51,23 +51,44 @@ So the honest baseline for this document: **one chart, three dots, and no extens
 
 ### 1.1 Decisions taken (2026-07-24)
 
-Unlike §5–§8, these are **settled** — confirmed by the user after reviewing §2.1's dependency
-findings. Do not re-litigate them without new evidence.
+Unlike §5–§8, these were **settled** — confirmed by the user after reviewing §2.1's dependency
+findings — and were not to be re-litigated without new evidence. **D1 was re-litigated and
+reversed on 2026-08-03** (below); D2 and D3 still stand, unchanged.
 
-**D1 — Bokeh is the chart engine. No new charting dependency.**
-Every item on the deferred chart list is native Bokeh: volume subplot (a second figure), MA and
-indicator overlays (`p.line`), crosshair and hover (`CrosshairTool` / `HoverTool`), zoom
-synchronization (a shared `x_range`), multi-symbol comparison, theme-matched colors. Two other
-"deferred chart features" are not charting questions at all — non-STK instruments is conid
-resolution in the data layer, and freeform period entry is a widget. **Nothing currently wanted is
-out of Bokeh's reach**, so the trade is not capability, it is verbosity: hand-built glyphs mean
-more code we own and must test. The `vbar`-width bug (`794d7c0`) is the concrete example of that
-cost, and it is accepted deliberately in favor of a light dependency structure.
+**D1 — SUPERSEDED 2026-08-03. HoloViews is the chart engine.**
+D1 originally read *"Bokeh is the chart engine. No new charting dependency."* It was
+reversed on 2026-08-03.
 
-The trigger that would reopen D1 is evidence, not preference: repeating the same glyph scaffolding
-for a third and fourth chart. One hand-built chart is not enough evidence to justify an
-abstraction. If it is reopened, hvPlot/HoloViews' actual OHLC support is the thing to verify
-first — it has **not** been checked **[?]**.
+Read the reversal honestly: **D1's own stated trigger — "repeating the same glyph
+scaffolding for a third and fourth chart" — never fired.** There was still one chart. The
+actual grounds were (a) the `[?]` below resolving in HoloViews' favour, (b) hvplot's
+`.ohlc()` proving immune by construction to the `vbar`-width bug fixed here by hand in
+`a51b454`, (c) a measured dependency cost of three pure-Python packages, and (d) a change
+of objective — live-streaming P&L surfaces and linked views, where hand-built Bokeh is
+expensive.
+
+What D1 got right and still stands: nothing then-wanted was out of Bokeh's reach, and the
+trade was verbosity rather than capability. That remained true right up to the reversal.
+
+**RESOLVED 2026-08-03 [P]:** `hvplot.ohlc()` exists natively, returning an `Overlay` of
+`Segments` (wicks) + `Rectangles` (bodies) — the same two primitives that were assembled by
+hand here. Body width is `np.min(np.diff(x)) * bar_width`: at hvplot's own default
+(`bar_width=0.5` — confirmed in both the installed docstring and the live
+[hvPlot reference](https://hvplot.holoviz.org/ref/api/manual/hvplot.hvPlot.ohlc.html)), that
+measures out to exactly **0.5x** the minimum bar spacing, stable across 1D/1h/30min/5min
+fixtures and a weekend-gap fixture alike (verified 2026-08-03) — so the smear bug cannot
+recur at any timeframe. **This project does not use that default**: `panel_chart.py` passes
+`bar_width=0.7` (`_BODY_WIDTH_FRACTION`), so 0.7x — not 0.5x — is what actually ships; the
+0.5x figure above is hvplot's own default, verified in isolation to confirm the mechanism,
+not this project's behavior.
+⚠ Column binding, not width, is the real trap here — and it is not undocumented, just easy
+to miss: the bare `y` parameter entry (`Default is ["open", "high", "low", "close"]`)
+reads as name-based in isolation, but the same reference page spells out the actual
+mechanism a few lines below — "the first four non-datetime columns correspond to O, H, L,
+C" — which matches `hvplot/converter.py`'s source exactly: when `y` is omitted, columns
+bind **positionally**, not by matching column names against that default list.
+`claudia/panel_chart.py` passes `y=` explicitly because nothing else pins the cache
+DataFrame's column order (`test_build_chart_object_is_column_order_independent` covers it).
 
 **D2 — Rendering lives in `claudia_ui`; computation stays in `ibkr_core_mcp`.**
 The split already exists in our own code: indicator *computation* is `ibkr_core_mcp/indicators.py`,
@@ -104,20 +125,21 @@ components **[S]**. Only the ones relevant to trading data surfaces are listed h
 
 | Component | Extra Python dep? | Installed here? | Notes |
 |---|---|---|---|
-| `pn.pane.Bokeh` | declared directly (`bokeh>=3.8`), also a panel dependency | **yes** — bokeh 3.9.2 **[P]** | What the candlestick pane already uses. Full control, most code |
+| `pn.pane.Bokeh` | declared directly (`bokeh>=3.8`), also a panel dependency | **yes** — bokeh 3.9.2 **[P]** | Full control, most code. No longer what the candlestick pane uses (superseded 2026-08-03 — §1.1 D1) |
 | `pn.pane.ECharts` | none for **raw dict** specs; `pyecharts` only if you pass pyecharts objects **[S]** | echarts JS **is bundled** with panel **[P]**; `pyecharts` **not installed** **[P]** | Accepts an ECharts spec as a plain dict. Params: `object`, `options`, `renderer` (`canvas`/`svg`), `theme` (`default`/`dark`/`light`) **[S]** |
 | `pn.pane.Plotly` | `plotly` | **not installed** **[P]** | Constructing the empty pane works; rendering a figure needs the package |
-| `pn.pane.HoloViews` | `holoviews` (+ `hvplot` for the DataFrame API) | **not installed** **[P]** | The high-level route. Adds two dependencies |
+| `pn.pane.HoloViews` | `holoviews` (+ `hvplot` for the DataFrame API) | **yes** — holoviews 1.23.1 + hvplot 0.12.2 **[P]**, added 2026-08-03 | The high-level route, and now what the candlestick pane uses (§1.1 D1) |
 | `pn.pane.Matplotlib` | `matplotlib` | **not installed** **[P]** | Static images |
 | `pn.pane.Vega` | `altair` for specs | **not installed** **[P]** | |
 
-**The practical consequence:** today, adding a second chart type costs **zero new Python
-dependencies only if it is Bokeh or ECharts**. Everything else adds a dependency to
-`pyproject.toml` — worth deciding deliberately, given the repo already has one undeclared-bokeh
-gap (`panel-reference.md` §11).
+**The practical consequence, as it stood on 2026-07-24 (before D1 was superseded):** at that
+time, adding a second chart type cost zero new Python dependencies only if it was Bokeh or
+ECharts; everything else, including the HoloViews route eventually taken, added a dependency to
+`pyproject.toml`. The "Installed here?" column above reflects *today's* actual state, not that
+snapshot — read the two together to see what changed.
 
-→ **This table informed D1 (§1.1), which is settled: Bokeh, no new charting dependency.** The rest
-of the table is kept for the reopening case, not as a live menu.
+→ **This table informed D1 (§1.1) as originally decided.** D1 itself is now superseded; the
+table is kept as the record of what was known at decision time, not as a live menu.
 
 ⚠ Note that ECharts' *JavaScript* being bundled is not the same as a Python dependency: the
 bundle ships inside the installed panel package (`panel/dist/bundled/echarts/echarts@6.0.0`)
@@ -437,9 +459,12 @@ Ordered by value-to-cost, all unbuilt:
    signed change. Same data caveat.
 3. **Live execution feed** — `Tabulator.stream(...)` fed from `ExecutionListener` through the
    verified `call_soon_threadsafe` bridge (§5.3).
-4. **Indicator overlays on the candlestick** — already on the deferred list
-   (`ui-design-reference.md` §10: volume subplot, MAs, crosshair/hover, zoom sync). Pure Bokeh, no
-   new dependency.
+4. **Indicator overlays on the candlestick** — **volume subplot, MA (SMA) overlay, and zoom sync
+   between the two rows shipped 2026-08-03** (`panel_chart.py`, via the HoloViews/hvplot engine —
+   §1.1 D1 — not the "pure Bokeh, no new dependency" originally planned here). Hover tooltips come
+   along by default from hvplot's own tool set (verified 2026-08-03: `HoverTool` is on the
+   rendered figure's toolbar with no code in this module asking for it). **Crosshair is the one
+   piece of the original list still unbuilt.**
 5. **A separate charts window** — `pn.serve({...})` (§4.3), if charts should live in their own tab
    beside TradingView.
 
@@ -464,7 +489,7 @@ Every item is scraped or probed, not inferred:
 | 11 | Template area contents are fixed once rendered — nest a mutable layout | **[S]** |
 | 12 | Periodic callbacks: `start=False` + `pn.state.onload`, else a double-registration `ValueError` | **[C]** |
 | 13 | `pn.state.on_session_created` is **global-only** — cannot be registered from inside a session | **[S]** |
-| 14 | `plotly` / `holoviews` / `hvplot` / `matplotlib` / `pyecharts` are **not installed** — Bokeh and ECharts are the dependency-free chart routes | **[P]** |
+| 14 | `plotly` / `matplotlib` / `pyecharts` are **not installed**; `holoviews` and `hvplot` **now are** (added 2026-08-03 — §1.1 D1) — Bokeh, ECharts, and HoloViews/hvplot are the currently-available chart routes | **[P]** |
 | 15 | Nothing inside `ChatInterface` is reachable by page-level CSS (7 shadow roots deep) — see `ui-design-reference.md` §2 | **[C]** |
 
 ---

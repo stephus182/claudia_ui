@@ -298,7 +298,7 @@ Do not re-litigate these during a restyle:
 | Inline `style=` reaching message content | Proven live (§2) |
 | `stylesheets=[':host …']` reaching message content | Proven live (§2) |
 | Page-level CSS reaching message content | Proven **not** to work (§2) |
-| `pn.pane.Bokeh` embedding + `pane.object=` refresh | Shipped (`panel_chart.py`) |
+| `pn.pane.HoloViews` embedding + `pane.object=` refresh | Shipped (`panel_chart.py`) |
 | Real client-side clipboard via `js_on_click` | Shipped (`panel_pinescript.py`) |
 | Button `loading` spinner | Shipped (chart Load button) |
 | `BooleanStatus` as a status dot | Shipped, with the labelling gap noted in §1 |
@@ -416,7 +416,8 @@ Scraped **2026-07-24**; each URL was fetched and returned content on that date.
 | Control visibility | https://panel.holoviz.org/how_to/styling/visibility.html |
 | Templates index (9 built-ins, modal/theme/custom guides) | https://panel.holoviz.org/how_to/templates/index.html |
 | `ChatInterface` component reference | https://panel.holoviz.org/reference/chat/ChatInterface.html |
-| Bokeh (candlestick glyphs) | https://docs.bokeh.org |
+| hvPlot / HoloViews (candlestick chart engine) | https://hvplot.holoviz.org / https://holoviews.org |
+| Bokeh (HoloViews' rendering backend) | https://docs.bokeh.org |
 | MDN — `navigator.clipboard.writeText` (secure context) | https://developer.mozilla.org/en-US/docs/Web/API/Clipboard/writeText |
 | MDN — Using shadow DOM | https://developer.mozilla.org/en-US/docs/Web/Web_Components/Using_shadow_DOM |
 
@@ -431,9 +432,13 @@ Carried forward from
 §5 — chart features **not** built, several of which are design decisions rather than
 engineering ones:
 
-volume subplot · MA / indicator overlays · crosshair & hover tooltips · zoom synchronization ·
-multi-symbol comparison · non-STK instruments (FUT/OPT/CASH) · theme-matched candle colors
-(→ §8.4) · freeform period entry.
+**Shipped 2026-08-03, no longer deferred:** volume subplot · MA (SMA) overlay · zoom
+synchronization between the price and volume rows (`panel_chart.py`, via the HoloViews/hvplot
+engine — `data-surfaces-reference.md` §1.1 D1). Hover tooltips also came along by default from
+hvplot's own tool set, unrequested.
+
+Still deferred: crosshair · multi-symbol comparison · non-STK instruments (FUT/OPT/CASH) ·
+theme-matched candle colors (→ §8.4) · freeform period entry.
 
 Plus, from this document: text-to-speech audio delivery in Panel (`docs/project-status.md`
 Planned Features), and any restyle of the order-proposal message itself — that surface is
