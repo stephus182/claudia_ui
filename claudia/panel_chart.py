@@ -2,7 +2,7 @@
 
 A self-contained component the user drives independently of the conversation:
 symbol / period / bar controls + a Load button that fetches OHLCV (Drive-cache
-first, IBKR on miss) and renders a Bokeh candlestick. STK only — the fetch tool
+first, IBKR on miss) and renders a HoloViews candlestick. STK only — the fetch tool
 resolves STK conids (no sec_type parameter). Every failure path (IBKR offline,
 empty DataFrame, unknown symbol, unexpected exception) surfaces an honest status
 message and never crashes the session.
@@ -16,12 +16,24 @@ docs/panel/2026-07-24-candlestick-chart-pane-research.md):
   populates the parquet cache, returning only a human-readable SUMMARY string
   (claude_tools.py:1142) — the raw bars are read back from the cache.
 
-The candlestick recipe (a Bokeh high/low `segment` for the wicks plus two `vbar`
-glyphs — teal up, red down — partitioned by close >= open) is verified-live in the
-research doc. `_get_toolkit` is imported lazily inside `_on_load` to avoid a
-panel_app <-> panel_chart import cycle: panel_app imports `build_chart_pane` at
-module top for its session-root composition, so this module must never import
-panel_app at module top.
+`build_chart_object` (this module) builds the chart with `hvplot` — `.hvplot.ohlc()`
+for the price row (wick Segments + body Rectangles + an SMA Curve overlay) and
+`.hvplot.bar()` for the volume row below it — into a single `holoviews.Layout`.
+`import hvplot.pandas` is load-bearing, not decorative: it registers holoviews' bokeh
+renderer as a side effect of the import (`hv.Store.renderers` goes from `{}` to
+`{'bokeh': BokehRenderer(...)}`), which is why this module never calls
+`hv.extension()`; the `.pandas` suffix is what adds the DataFrame/Series `.hvplot`
+accessor used throughout `build_chart_object`. `build_chart_pane` renders that Layout
+through `pn.pane.HoloViews`, whose `object` the tests assert against directly rather
+than poking Bokeh glyph renderers. Design rationale for the hvplot/HoloViews rewrite
+and the decisions cited by name in this module (D2, the 300px price-row height, the
+linked_axes/shared_axes distinction): local plan archive,
+docs/plans/2026-08-03-holoviews-charting-layer-design.md (git-ignored, not in this
+repo — see CLAUDE.md Conventions).
+
+`_get_toolkit` is imported lazily inside `_on_load` to avoid a panel_app <->
+panel_chart import cycle: panel_app imports `build_chart_pane` at module top for its
+session-root composition, so this module must never import panel_app at module top.
 """
 
 from __future__ import annotations
@@ -39,7 +51,6 @@ from typing import Any
 import hvplot.pandas  # noqa: F401
 import pandas as pd
 import panel as pn
-from bokeh.plotting import figure
 from ibkr_core_mcp import indicators
 
 from claudia.panel_markdown import safe_markdown
@@ -48,85 +59,32 @@ log = logging.getLogger(__name__)
 
 _UP_COLOR = "#26a69a"  # teal — close >= open
 _DOWN_COLOR = "#ef5350"  # red — close < open
-_WICK_COLOR = "#666"
 
-# Body = 0.7x the bar spacing, so there is always a visible gap between candles.
+# Passed to hvplot.ohlc()'s bar_width= for the candle bodies only (build_chart_object) --
+# the volume bars are a separate .hvplot.bar() call that takes no bar_width and uses
+# hv.Bars' own 0.8 default instead (verified by reading both call sites, 2026-08-03).
+# hvplot multiplies this fraction by np.min(np.diff(x)) -- the data's own minimum bar
+# gap -- so 0.7 always leaves a visible gap between candles regardless of the selected
+# bar size (1d/1h/30m). This replaced the deleted _body_width_ms (Task 7, 2026-08-03),
+# which computed a comparable width by hand for the old Bokeh vbar/segment recipe;
+# hvplot now derives it from the data directly, so no caller in this module computes a
+# width itself anymore.
 _BODY_WIDTH_FRACTION = 0.7
-# <2-row frames have no defined spacing; fall back to a daily-scale body.
-_FALLBACK_BAR_WIDTH_MS = 12 * 60 * 60 * 1000
 
 # Overlay period for the moving average. Values come from ibkr_core_mcp.indicators --
 # this repo renders, that repo computes (decision D2).
 _SMA_PERIOD = 20
 
 # Volume subplot height in px. The price row above has no explicit height set here, so
-# it renders at holoviews' own ElementPlot default of 300px -- NOT the 360px
-# build_candlestick_figure uses for its separate, unrelated Bokeh figure. Measured
-# 2026-08-03 via hv.render(...).select({"type": bokeh.plotting.figure}): price row is
-# 300, this row is 120 (== _VOLUME_HEIGHT).
+# it renders at holoviews' own ElementPlot default of 300px -- NOT the 360px the old,
+# now-deleted build_candlestick_figure used for its separate, unrelated Bokeh figure.
+# Measured 2026-08-03 via hv.render(...).select({"type": bokeh.plotting.figure}): price
+# row is 300, this row is 120 (== _VOLUME_HEIGHT).
 #
 # The price row is left at holoviews' ElementPlot default height (300px, measured) rather
 # than the 360px the old Bokeh figure used. Deliberate -- user decision 2026-08-03, taking
 # 300 + 120 = 420px total over restoring 360 for the price row.
 _VOLUME_HEIGHT = 120
-
-
-def _body_width_ms(index: pd.DatetimeIndex) -> float:
-    """Candle-body width in ms, scaled to the data's own bar spacing.
-
-    A Bokeh vbar `width` is in x-axis data units (ms on a datetime axis), so it
-    MUST track the actual bar interval: a fixed daily-scale width turns 1h/30m
-    candles into an overlapping smear (12x / 24x their spacing). Deriving the
-    width from the DataFrame's median spacing keeps this a pure function of the
-    data yet correct for every selectable bar size. Median (not mean) is robust
-    to weekend / overnight gaps; the <2-row branch covers the degenerate frame
-    where spacing is undefined.
-    """
-    if len(index) >= 2:
-        med = pd.Series(index).diff().dropna().median()
-        return float(med / pd.Timedelta(milliseconds=1)) * _BODY_WIDTH_FRACTION
-    return float(_FALLBACK_BAR_WIDTH_MS)
-
-
-def build_candlestick_figure(df: pd.DataFrame, title: str) -> figure:
-    """Build a Bokeh candlestick figure from an OHLCV DataFrame.
-
-    Pure helper — no server / IBKR / cache access, unit-testable with a fixture
-    DataFrame. `df` is indexed by a DatetimeIndex with lowercase
-    open/high/low/close columns. Up bars (close >= open) are teal, down bars red;
-    wicks are drawn as high-low segments.
-    """
-    inc = df["close"] >= df["open"]
-    width = _body_width_ms(df.index)
-    # The inline call-arg ignore below is because x_axis_type is a bokeh
-    # construction-only option (FigureOptions, _figure.py:1143), not a Plot model
-    # property, so bokeh's property-typed init doesn't enumerate it and mypy flags
-    # it; the runtime and the official docs both accept it (verified live
-    # 2026-07-24). Targeted to this one call, not a module/blanket ignore.
-    p = figure(  # type: ignore[call-arg]
-        x_axis_type="datetime",
-        sizing_mode="stretch_width",
-        height=360,
-        title=title,
-    )
-    p.segment(df.index, df["high"], df.index, df["low"], color=_WICK_COLOR)
-    p.vbar(
-        df.index[inc],
-        width,
-        df["open"][inc],
-        df["close"][inc],
-        fill_color=_UP_COLOR,
-        line_color=_UP_COLOR,
-    )
-    p.vbar(
-        df.index[~inc],
-        width,
-        df["open"][~inc],
-        df["close"][~inc],
-        fill_color=_DOWN_COLOR,
-        line_color=_DOWN_COLOR,
-    )
-    return p
 
 
 def build_chart_object(df: pd.DataFrame, title: str) -> Any:
@@ -148,25 +106,24 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     `df` is indexed by a DatetimeIndex with lowercase open/high/low/close/volume columns.
     Candle bodies are sized by hvplot from the data's own bar spacing — specifically
     `np.min(np.diff(x)) * bar_width` (hvplot/converter.py, `ohlc()`) — which is why this
-    module does not compute a width itself. That is MIN, not the MEDIAN
-    `_body_width_ms` uses: the two agree on uniform data and on the existing
-    weekend-gap fixture, but diverge whenever the single smallest gap in the frame
-    isn't also the median gap (verified 2026-08-03: three daily bars plus one trailing
-    half-day bar gives hvplot ~30,240,000ms and `_body_width_ms` ~60,480,000ms — 2x
-    apart). See commit a51b454 for the smear bug that made a hand-computed width
-    necessary under raw Bokeh in the first place. (Several checked-in docs cite that
-    fix as `794d7c0`; that hash is not a commit that exists in this repository —
-    checked via `git cat-file -t` 2026-08-03. `a51b454` is what `git log -S
-    _body_width_ms` actually finds.)
+    module does not compute a width itself. That is MIN, not the MEDIAN the old
+    `_body_width_ms` helper used (deleted in Task 7, 2026-08-03, once this function
+    became `_on_load`'s only chart builder): the two agreed on uniform data and on the
+    weekend-gap fixture that covered it, but diverged whenever the single smallest gap
+    in the frame wasn't also the median gap (verified 2026-08-03, before deletion: three
+    daily bars plus one trailing half-day bar gave hvplot ~30,240,000ms and
+    `_body_width_ms` ~60,480,000ms — 2x apart). See commit a51b454 for the smear bug
+    that made a hand-computed width necessary under raw Bokeh in the first place.
+    (Several checked-in docs cite that fix as `794d7c0`; that hash is not a commit that
+    exists in this repository — checked via `git cat-file -t` 2026-08-03. `a51b454` is
+    what `git log -S _body_width_ms` actually finds.)
     """
     if len(df) == 1:
         # hvplot sizes candles from np.min(np.diff(x)); one row makes np.diff empty and
         # numpy raises "zero-size array to reduction operation minimum" (verified above,
         # 2026-08-03). Caught here so any caller gets an actionable message instead of a
-        # numpy internals string. build_chart_object has no production caller yet
-        # (verified by grep, 2026-08-03: _on_load still builds Bokeh figures via
-        # build_candlestick_figure). A 0-row frame does not reach this function either
-        # way -- _on_load's `df.empty` check returns before it calls any chart builder.
+        # numpy internals string. A 0-row frame does not reach this function either way --
+        # _on_load's `df.empty` check returns before it calls any chart builder.
         raise ValueError("Cannot chart a single bar - need at least 2 bars.")
     candles = df.hvplot.ohlc(
         # y= pins the OHLC columns BY NAME. Required, not decorative: hvplot 0.12.2's
@@ -208,7 +165,7 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     #
     # Bar width verified 2026-08-03 at 0.8x the MINIMUM gap between x-values (bokeh
     # VBar.width via hv.render, checked on uniform 1D/1h/30min frames and an irregular
-    # one) -- the same MIN-based pattern `_body_width_ms`'s docstring above documents for
+    # one) -- the same MIN-based pattern this function's own docstring above documents for
     # the candle bodies: hv.Bars' default `bar_width` style option is 0.8, scaled by
     # np.min(np.diff(x)) in holoviews/plotting/bokeh/chart.py's BarPlot.get_data. So the
     # volume row cannot smear the way the hand-built candle bodies once did.
@@ -220,10 +177,10 @@ def build_chart_pane() -> pn.Column:
     """Return the self-contained candlestick pane.
 
     Layout: a control Row (symbol / period / bar / Load), a Markdown status line,
-    and a Bokeh pane (empty until the first successful load). The Load button
+    and a HoloViews pane (empty until the first successful load). The Load button
     drives an async handler that resolves the process toolkit, reads the OHLCV
     bars from the Drive cache (fetching from IBKR on a miss), and reassigns the
-    Bokeh pane's `object` to a fresh figure. The toolkit is resolved at click time
+    HoloViews pane's `object` to a fresh Layout. The toolkit is resolved at click time
     (not construction): the process singleton is built by panel_app's background
     session init, which may not have finished when this pane is composed.
     """

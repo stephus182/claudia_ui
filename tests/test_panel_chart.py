@@ -1,8 +1,12 @@
 """Tests for claudia/panel_chart.py — the external candlestick chart pane (Task 10.1).
 
 Two layers, both server-free:
-  * build_candlestick_figure — pure Bokeh glyph assembly, driven by a fixture OHLCV
+  * build_chart_object — pure hvplot/HoloViews assembly, driven by a fixture OHLCV
     DataFrame (DatetimeIndex + lowercase columns, mirroring the real cache output).
+    Returns a holoviews.Layout; assertions read its element data directly rather than
+    poking Bokeh glyph renderers. Design rationale: local plan archive,
+    docs/plans/2026-08-03-holoviews-charting-layer-design.md (git-ignored, not in this
+    repo — see CLAUDE.md Conventions).
   * build_chart_pane / _on_load — the Panel component and its Load handler, exercised
     by grabbing the live Button's on_click callback (conftest _get_click_callback) and
     awaiting it with a patched claudia.panel_app._get_toolkit. No Panel server, no
@@ -12,19 +16,8 @@ Two layers, both server-free:
 import pandas as pd
 import panel as pn
 import pytest
-from bokeh.models import Segment, VBar
-from bokeh.models.annotations import Title
-from bokeh.models.renderers import GlyphRenderer
-from bokeh.plotting import figure
 
-from claudia.panel_chart import (
-    _DOWN_COLOR,
-    _FALLBACK_BAR_WIDTH_MS,
-    _UP_COLOR,
-    _body_width_ms,
-    build_candlestick_figure,
-    build_chart_pane,
-)
+from claudia.panel_chart import build_chart_pane
 from tests.conftest import _get_click_callback
 
 
@@ -65,87 +58,11 @@ def _status(pane):
     return _first(pane, pn.pane.Markdown)
 
 
-# ── build_candlestick_figure (pure) ──────────────────────────────────────────
-
-
-def _glyph_renderers(fig):
-    return [r for r in fig.renderers if isinstance(r, GlyphRenderer)]
-
-
-def test_build_candlestick_figure_returns_datetime_figure_with_title():
-    from bokeh.models import DatetimeAxis
-
-    fig = build_candlestick_figure(_sample_df(), "AAPL 1d (6m)")
-    assert isinstance(fig, figure)
-    assert isinstance(fig.xaxis[0], DatetimeAxis)
-    assert isinstance(fig.title, Title)
-    assert fig.title.text == "AAPL 1d (6m)"
-
-
-def test_build_candlestick_figure_has_segment_and_two_vbars():
-    fig = build_candlestick_figure(_sample_df(), "T")
-    renderers = _glyph_renderers(fig)
-    segments = [r for r in renderers if isinstance(r.glyph, Segment)]
-    vbars = [r for r in renderers if isinstance(r.glyph, VBar)]
-    assert len(segments) == 1  # wicks
-    assert len(vbars) == 2  # up + down bodies
-    assert len(fig.renderers) >= 3
-
-
-def test_build_candlestick_figure_partitions_up_and_down_rows():
-    fig = build_candlestick_figure(_sample_df(), "T")
-    vbars = [r for r in _glyph_renderers(fig) if isinstance(r.glyph, VBar)]
-    up = next(r for r in vbars if r.glyph.fill_color == _UP_COLOR)
-    down = next(r for r in vbars if r.glyph.fill_color == _DOWN_COLOR)
-
-    # Two rows in each partition.
-    assert len(up.data_source.data[up.glyph.x]) == 2
-    assert len(down.data_source.data[down.glyph.x]) == 2
-
-    # vbar is (x, width, top=open, bottom=close): the up partition carries the two
-    # up rows' opens (10, 11), the down partition the two down rows' opens (20, 21).
-    assert sorted(up.data_source.data[up.glyph.top]) == [10.0, 11.0]
-    assert sorted(down.data_source.data[down.glyph.top]) == [20.0, 21.0]
-
-
-# ── body-width scaling (the fixed-12h-smear fix) ──────────────────────────────
+# ── shared helpers ────────────────────────────────────────────────────────────
 
 
 def _ms(td: pd.Timedelta) -> float:
     return td / pd.Timedelta(milliseconds=1)
-
-
-def test_body_width_scales_with_bar_spacing():
-    day = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"])
-    hour = pd.to_datetime(["2024-01-01 09:00", "2024-01-01 10:00", "2024-01-01 11:00"])
-    half = pd.to_datetime(["2024-01-01 09:00", "2024-01-01 09:30", "2024-01-01 10:00"])
-
-    assert _body_width_ms(day) == pytest.approx(_ms(pd.Timedelta(hours=24)) * 0.7)
-    assert _body_width_ms(hour) == pytest.approx(_ms(pd.Timedelta(hours=1)) * 0.7)
-    assert _body_width_ms(half) == pytest.approx(_ms(pd.Timedelta(minutes=30)) * 0.7)
-    # The fixed-12h bug is gone: intraday bodies are strictly narrower than daily,
-    # so 1h/30m candles no longer overlap into a smear.
-    assert _body_width_ms(half) < _body_width_ms(hour) < _body_width_ms(day)
-
-
-def test_body_width_median_is_robust_to_weekend_gaps():
-    # Thu, Fri, Mon, Tue — the Fri→Mon 72h gap must NOT inflate the body width;
-    # the median spacing stays 24h (mean would be pulled to 40h).
-    idx = pd.to_datetime(["2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09"])
-    assert _body_width_ms(idx) == pytest.approx(_ms(pd.Timedelta(hours=24)) * 0.7)
-
-
-def test_body_width_single_row_uses_fallback():
-    assert _body_width_ms(pd.to_datetime(["2024-01-01"])) == float(_FALLBACK_BAR_WIDTH_MS)
-
-
-def test_build_candlestick_figure_vbar_width_matches_spacing():
-    # The daily fixture's spacing is 24h, so both vbar glyphs carry a 0.7x24h body.
-    fig = build_candlestick_figure(_sample_df(), "T")
-    vbars = [r for r in _glyph_renderers(fig) if isinstance(r.glyph, VBar)]
-    expected = _ms(pd.Timedelta(hours=24)) * 0.7
-    for r in vbars:
-        assert r.glyph.width == pytest.approx(expected)
 
 
 # ── build_chart_pane (composition) ────────────────────────────────────────────
@@ -342,9 +259,10 @@ def test_build_chart_object_has_wicks_and_bodies():
 
 
 def test_build_chart_object_body_width_is_070_of_bar_spacing():
-    # Parity with _body_width_ms: hvplot derives the width from the data's own bar
-    # spacing, so 0.7 x 24h for the daily fixture. NOT exactly equal to
-    # Timedelta(hours=24)*0.7 -- float rounding puts it fractionally under -- hence approx.
+    # hvplot derives the width from the data's own bar spacing (np.min(np.diff(x)) *
+    # bar_width, see build_chart_object's docstring), so 0.7 x 24h for the daily
+    # fixture. NOT exactly equal to Timedelta(hours=24)*0.7 -- float rounding puts it
+    # fractionally under -- hence approx.
     from claudia.panel_chart import build_chart_object
 
     layout = build_chart_object(_sample_df(), "T")
@@ -432,14 +350,17 @@ def test_build_chart_object_is_column_order_independent():
 
 def test_build_chart_object_body_width_uses_min_not_median_spacing():
     # hvplot's own width formula is `np.min(np.diff(x)) * bar_width` (converter.py,
-    # verified 2026-08-03) -- MIN, not the MEDIAN _body_width_ms uses. They happen to
-    # agree on test_body_width_median_is_robust_to_weekend_gaps' fixture (min and
-    # median are both 24h there), so that fixture does not exercise the difference.
-    # This one does: a trailing half-day bar makes the min gap 12h while the median
-    # gap stays 24h. Assert what hvplot ACTUALLY does (min-based), not parity with the
-    # old per-bar-size helper -- they are genuinely different statistics and are not
-    # expected to agree here.
-    from claudia.panel_chart import _body_width_ms, build_chart_object
+    # verified 2026-08-03) -- MIN, not the MEDIAN the old, now-deleted `_body_width_ms`
+    # helper used (Task 7). On a weekend-gap fixture (Thu, Fri, Mon, Tue -- one 72h
+    # outlier gap among three) min and median agree at 24h, so that shape of fixture
+    # does not exercise the difference -- confirmed 2026-08-03 by running
+    # build_chart_object directly on that fixture before `_body_width_ms` was deleted:
+    # hvplot's width came out at exactly 24h * 0.7, matching what the old median-based
+    # helper asserted. A trailing half-day bar is the case that DOES diverge: it makes
+    # the min gap 12h while the median gap stays 24h. Assert what hvplot ACTUALLY does
+    # (min-based) here, not parity with the deleted helper -- they are genuinely
+    # different statistics and are not expected to agree on this fixture.
+    from claudia.panel_chart import build_chart_object
 
     idx = pd.to_datetime(
         ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-03 12:00"], format="mixed"
@@ -451,10 +372,12 @@ def test_build_chart_object_body_width_uses_min_not_median_spacing():
 
     hv_width = _body_width_ms_of(build_chart_object(df, "T"))
     assert hv_width == pytest.approx(_ms(pd.Timedelta(hours=12)) * 0.7)
-    # Restate the divergence explicitly: the old helper would have used the median gap
-    # (24h) here, not the min (12h) -- these are not expected to be the same value.
-    assert _body_width_ms(idx) == pytest.approx(_ms(pd.Timedelta(hours=24)) * 0.7)
-    assert hv_width != pytest.approx(_body_width_ms(idx))
+    # Restate the divergence explicitly: the deleted median-based helper would have
+    # returned 24h here, not the 12h min hvplot actually uses -- these are not expected
+    # to be the same value. Hardcoded rather than calling the deleted `_body_width_ms`
+    # directly.
+    old_median_based_width = _ms(pd.Timedelta(hours=24)) * 0.7
+    assert hv_width != pytest.approx(old_median_based_width)
 
 
 def test_build_chart_object_rejects_single_row_frame():
