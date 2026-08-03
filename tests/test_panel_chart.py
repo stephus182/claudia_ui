@@ -464,3 +464,58 @@ def test_build_chart_object_accepts_two_row_frame():
 
     obj = build_chart_object(_sample_df().iloc[:2], "T")
     assert len(_rects(obj).data) == 2
+
+
+def _long_df(n: int = 40) -> pd.DataFrame:
+    """A frame long enough for a 20-period SMA to produce real values."""
+    idx = pd.date_range("2024-01-01", periods=n, freq="1D")
+    close = [10.0 + i * 0.5 for i in range(n)]
+    return pd.DataFrame(
+        {
+            "open": [c - 0.2 for c in close],
+            "high": [c + 1.0 for c in close],
+            "low": [c - 1.0 for c in close],
+            "close": close,
+            "volume": [100.0 + i for i in range(n)],
+        },
+        index=idx,
+    )
+
+
+def test_build_chart_object_overlays_the_sma():
+    from ibkr_core_mcp import indicators
+
+    from claudia.panel_chart import _SMA_PERIOD, build_chart_object
+
+    df = _long_df()
+    curve = _price(build_chart_object(df, "T")).Curve.Sma_20
+    assert curve.vdims[0].name == "sma_20"
+    # Value parity with the source of truth, not a reimplementation of it.
+    expected = indicators.sma(df, _SMA_PERIOD).dropna().tolist()
+    got = [v for v in curve.dimension_values("sma_20") if v == v]  # drop NaNs
+    assert got == pytest.approx(expected)
+
+
+def test_sma_overlay_is_renamed_not_left_as_close():
+    # indicators.sma's docstring claims it returns a Series named 'sma_{period}', but its
+    # body is df["close"].rolling(period).mean(), so the name is actually 'close'.
+    # hvplot labels a Series curve from Series.name, so without the rename the moving
+    # average renders labelled 'close' and collides with the price series. This test pins
+    # our rename; it deliberately also pins the upstream reality so that if indicators.sma
+    # is ever fixed to match its docstring, this fails loudly rather than silently.
+    from ibkr_core_mcp import indicators
+
+    from claudia.panel_chart import build_chart_object
+
+    assert indicators.sma(_long_df(), 20).name == "close"
+    assert _price(build_chart_object(_long_df(), "T")).Curve.Sma_20.vdims[0].name == "sma_20"
+
+
+def test_build_chart_object_tolerates_frame_shorter_than_sma_period():
+    # A 4-row frame makes sma(20) all-NaN. That composes and renders without a crash, so
+    # there is no guard for it -- just an empty overlay.
+    from claudia.panel_chart import build_chart_object
+
+    values = list(_price(build_chart_object(_sample_df(), "T")).Curve.Sma_20.dimension_values("sma_20"))
+    assert len(values) == 4
+    assert all(v != v for v in values)  # every value NaN

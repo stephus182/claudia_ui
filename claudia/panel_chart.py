@@ -40,6 +40,7 @@ import hvplot.pandas  # noqa: F401
 import pandas as pd
 import panel as pn
 from bokeh.plotting import figure
+from ibkr_core_mcp import indicators
 
 from claudia.panel_markdown import safe_markdown
 
@@ -53,6 +54,10 @@ _WICK_COLOR = "#666"
 _BODY_WIDTH_FRACTION = 0.7
 # <2-row frames have no defined spacing; fall back to a daily-scale body.
 _FALLBACK_BAR_WIDTH_MS = 12 * 60 * 60 * 1000
+
+# Overlay period for the moving average. Values come from ibkr_core_mcp.indicators --
+# this repo renders, that repo computes (decision D2).
+_SMA_PERIOD = 20
 
 
 def _body_width_ms(index: pd.DatetimeIndex) -> float:
@@ -116,8 +121,9 @@ def build_candlestick_figure(df: pd.DataFrame, title: str) -> figure:
 def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     """Build the HoloViews chart object from an OHLCV DataFrame.
 
-    Returns an `hv.Overlay` of Segments (wicks) + Rectangles (bodies) — measured
-    2026-08-03 via `type(df.hvplot.ohlc(...))`. The `Any` return isn't caused by
+    Returns an `hv.Overlay` of Segments (wicks) + Rectangles (bodies) + Curve (the
+    SMA overlay, added below) — the Segments/Rectangles shape measured 2026-08-03 via
+    `type(df.hvplot.ohlc(...))`. The `Any` return isn't caused by
     holoviews: `df: pd.DataFrame` is already `Any` here, because pandas itself sits on
     mypy's ignore_missing_imports list (pyproject.toml) — `reveal_type(df)` is `Any`
     before `.hvplot` is even reached, so `df.hvplot` and everything chained off it stay
@@ -149,7 +155,7 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
         # build_candlestick_figure). A 0-row frame does not reach this function either
         # way -- _on_load's `df.empty` check returns before it calls any chart builder.
         raise ValueError("Cannot chart a single bar - need at least 2 bars.")
-    return df.hvplot.ohlc(
+    candles = df.hvplot.ohlc(
         # y= pins the OHLC columns BY NAME. Required, not decorative: hvplot 0.12.2's
         # own docstring (hvplot/plotting/core.py) says the default (y=None) is
         # ["open", "high", "low", "close"], but converter.py's `ohlc()` actually does
@@ -163,7 +169,16 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
         bar_width=_BODY_WIDTH_FRACTION,
         pos_color=_UP_COLOR,
         neg_color=_DOWN_COLOR,
-    ).opts(title=title)
+    )
+    # .rename is load-bearing, not cosmetic: hvplot labels a Series curve from
+    # Series.name, and indicators.sma returns a Series named 'close' despite a docstring
+    # promising 'sma_{period}' (verified 2026-08-03: `indicators.sma(df, 20).name ==
+    # "close"` — its body is `df["close"].rolling(period).mean()`, which never renames).
+    # Without it the overlay is labelled 'close' and collides with the price series.
+    # Renaming here rather than upstream keeps the label a presentation concern (D2) and
+    # avoids an API change for that function's other callers.
+    sma = indicators.sma(df, _SMA_PERIOD).rename(f"sma_{_SMA_PERIOD}")
+    return (candles * sma.hvplot.line(color="orange")).opts(title=title)
 
 
 def build_chart_pane() -> pn.Column:
