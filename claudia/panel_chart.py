@@ -64,6 +64,10 @@ _SMA_PERIOD = 20
 # build_candlestick_figure uses for its separate, unrelated Bokeh figure. Measured
 # 2026-08-03 via hv.render(...).select({"type": bokeh.plotting.figure}): price row is
 # 300, this row is 120 (== _VOLUME_HEIGHT).
+#
+# The price row is left at holoviews' ElementPlot default height (300px, measured) rather
+# than the 360px the old Bokeh figure used. Deliberate -- user decision 2026-08-03, taking
+# 300 + 120 = 420px total over restoring 360 for the price row.
 _VOLUME_HEIGHT = 120
 
 
@@ -232,7 +236,18 @@ def build_chart_pane() -> pn.Column:
     bar = pn.widgets.Select(label="Bar", options=["1d", "1h", "30m"], value="1d")
     load_btn = pn.widgets.Button(label="Load chart", color="primary")
     status = safe_markdown("STK only. Enter a symbol and click **Load chart**.")
-    chart = pn.pane.Bokeh(None)
+    # pn.pane.HoloViews, not pn.pane.Bokeh: the pane's `object` is the declarative
+    # HoloViews Layout, which tests assert against directly instead of poking Bokeh glyph
+    # renderers, and the pane generates widgets for HoloMap/DynamicMap key dimensions --
+    # which the planned live-streaming surfaces will need. Requires no pn.extension()
+    # call: holoviews is not among panel's extension names (verified 2026-08-03).
+    #
+    # linked_axes is NOT why the price and volume rows share an x-range -- that is
+    # holoviews' own Layout `shared_axes` (default True), which applies with no Panel pane
+    # involved at all. Panel's linked_axes links axes ACROSS separate panes in a Panel
+    # layout, which this module never does. Measured 2026-08-03; kept only because it is
+    # the documented default and harmless.
+    chart = pn.pane.HoloViews(None, linked_axes=True)
 
     async def _on_load(event: Any) -> None:
         """Load bars for the entered symbol and rebuild the candlestick figure.
@@ -274,7 +289,7 @@ def build_chart_pane() -> pn.Column:
             if df is None or df.empty:
                 status.object = f"No data for {sym}."
                 return
-            chart.object = build_candlestick_figure(
+            chart.object = build_chart_object(
                 df, f"{sym} {bar.value} ({period.value})"
             )
             status.object = f"Loaded {len(df)} bars for {sym}."

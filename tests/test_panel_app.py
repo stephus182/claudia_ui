@@ -1252,7 +1252,10 @@ async def test_build_session_root_composes_indicators_above_chat():
     assert len([o for o in indicator_row.objects if isinstance(o, BooleanStatus)]) == 3
     assert chat in left_column.objects  # chat sits beside the indicators in the left column
     # The independent candlestick chart pane is composed into the root beside the chat.
-    assert any(isinstance(n, pn.pane.Bokeh) for n in _iter_tree(root))
+    # pn.pane.HoloViews, not pn.pane.Bokeh, since claudia/panel_chart.py's build_chart_pane
+    # swapped panes (Task 6, 2026-08-03) -- the pane's `object` is now the declarative
+    # HoloViews Layout, not a raw Bokeh figure.
+    assert any(isinstance(n, pn.pane.HoloViews) for n in _iter_tree(root))
 
 
 @pytest.mark.asyncio

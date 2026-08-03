@@ -58,7 +58,7 @@ def _button(pane):
 
 
 def _chart(pane):
-    return _first(pane, pn.pane.Bokeh)
+    return _first(pane, pn.pane.HoloViews)
 
 
 def _status(pane):
@@ -158,7 +158,7 @@ def test_build_chart_pane_has_controls_status_and_chart():
     assert len([n for n in nodes if isinstance(n, pn.widgets.TextInput)]) == 1
     assert len([n for n in nodes if isinstance(n, pn.widgets.Select)]) == 2
     assert len([n for n in nodes if isinstance(n, pn.widgets.Button)]) == 1
-    assert len([n for n in nodes if isinstance(n, pn.pane.Bokeh)]) == 1
+    assert len([n for n in nodes if isinstance(n, pn.pane.HoloViews)]) == 1
     assert len([n for n in nodes if isinstance(n, pn.pane.Markdown)]) >= 1
     # empty placeholder until first load
     assert _chart(pane).object is None
@@ -196,7 +196,7 @@ async def test_on_load_cache_hit_renders_figure_without_fetching():
     today = str(date.today())
     tk._cache.check.assert_called_once_with("AAPL", "1D", "6m", today)
     tk._cache.load.assert_called_once_with("AAPL", "1D", "6m", today)
-    assert isinstance(_chart(pane).object, figure)
+    assert [type(e).__name__ for e in _chart(pane).object] == ["Overlay", "Bars"]
     assert "Loaded 4 bars for AAPL" in _status(pane).object
 
 
@@ -231,7 +231,7 @@ async def test_on_load_cache_miss_fetches_then_loads():
     assert name == "fetch_market_data"
     assert inputs == {"symbol": "AAPL", "period": "6m", "bar": "1d"}
     tk._cache.load.assert_called_once()
-    assert isinstance(_chart(pane).object, figure)
+    assert [type(e).__name__ for e in _chart(pane).object] == ["Overlay", "Bars"]
 
 
 @pytest.mark.asyncio
