@@ -59,7 +59,11 @@ _FALLBACK_BAR_WIDTH_MS = 12 * 60 * 60 * 1000
 # this repo renders, that repo computes (decision D2).
 _SMA_PERIOD = 20
 
-# Volume subplot height in px. The candle plot keeps this module's original 360.
+# Volume subplot height in px. The price row above has no explicit height set here, so
+# it renders at holoviews' own ElementPlot default of 300px -- NOT the 360px
+# build_candlestick_figure uses for its separate, unrelated Bokeh figure. Measured
+# 2026-08-03 via hv.render(...).select({"type": bokeh.plotting.figure}): price row is
+# 300, this row is 120 (== _VOLUME_HEIGHT).
 _VOLUME_HEIGHT = 120
 
 
@@ -184,11 +188,26 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     # avoids an API change for that function's other callers.
     sma = indicators.sma(df, _SMA_PERIOD).rename(f"sma_{_SMA_PERIOD}")
     price = (candles * sma.hvplot.line(color="orange")).opts(title=title)
-    # .hvplot.bar keeps a continuous datetime axis (NOT a categorical FactorRange), which
-    # is what lets pn.pane.HoloViews link the two x-ranges. Bar width verified 2026-08-03
-    # at 0.800 * bar spacing for 1D/1h/30min frames (bokeh VBar.width via hv.render) --
-    # tracking bar spacing rather than being fixed, so the volume row cannot smear the
-    # way the hand-built candle bodies once did.
+    # .hvplot.bar keeps a continuous datetime axis (NOT a categorical FactorRange) -- a
+    # categorical one would break x-range sharing with the price row regardless of which
+    # knob is named for it (verified 2026-08-03: pairing a datetime element with a
+    # categorical one under shared_axes=True yields distinct Range1d/FactorRange objects,
+    # not a shared one).
+    #
+    # That sharing itself comes from HoloViews' own Layout `shared_axes` (default True),
+    # NOT from Panel: `pn.pane.HoloViews(linked_axes=...)` makes no difference either way
+    # (True and False both share; even a bare hv.render with no Panel pane at all shares),
+    # while `.opts(shared_axes=False)` does turn it off (all verified 2026-08-03). Panel's
+    # `linked_axes` links separate sibling panes within a Panel layout (its own param
+    # doc) -- a mechanism this module never exercises, since only one HoloViews pane is
+    # ever built here.
+    #
+    # Bar width verified 2026-08-03 at 0.8x the MINIMUM gap between x-values (bokeh
+    # VBar.width via hv.render, checked on uniform 1D/1h/30min frames and an irregular
+    # one) -- the same MIN-based pattern `_body_width_ms`'s docstring above documents for
+    # the candle bodies: hv.Bars' default `bar_width` style option is 0.8, scaled by
+    # np.min(np.diff(x)) in holoviews/plotting/bokeh/chart.py's BarPlot.get_data. So the
+    # volume row cannot smear the way the hand-built candle bodies once did.
     volume = df["volume"].hvplot.bar(height=_VOLUME_HEIGHT)
     return (price + volume).cols(1)
 

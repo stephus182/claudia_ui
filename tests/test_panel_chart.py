@@ -291,20 +291,29 @@ async def test_on_load_sets_loading_during_and_clears_after():
 
 
 def _price(obj):
-    """The price Overlay (candles, and later the SMA).
+    """The price Overlay (candles + SMA).
 
-    Accepts either a bare Overlay or a Layout, so these tests do not need rewriting
-    when a later task wraps the Overlay in a Layout.
+    Accepts either a bare Overlay or a Layout. build_chart_object has returned a Layout
+    unconditionally since the volume subplot was added, so the bare-Overlay branch below
+    no longer fires for any call in this file -- kept anyway because it is still the
+    structurally correct behavior for a bare Overlay, not because anything today
+    exercises it.
 
     Dispatches on TYPE, not hasattr: HoloViews' dynamic attribute access answers
-    `hasattr(overlay, "Overlay")` with True on a bare Overlay and returns an EMPTY
-    `:Overlay`, so a hasattr check silently resolves to an element with no data.
-    Verified 2026-08-03 by running every build_chart_object test below against a
-    hasattr-dispatching version of this helper: each one fails on that empty element,
-    with AssertionError, KeyError('ubound'/'color') or TypeError depending on how far
-    it gets -- never an IndexError. No count is given deliberately: an earlier version
-    of this docstring said "the 5 tests below" and was invalidated by the same commit
-    that wrote it, which added two more.
+    `hasattr(overlay, "Overlay")` with True on a bare Overlay too, resolving to an EMPTY
+    `:Overlay` rather than the Overlay itself (verified 2026-08-03 directly against a
+    bare hv.Overlay: `hasattr(ov, "Overlay")` is True, `ov.Overlay` is an empty
+    `:Overlay`, `isinstance(ov, hv.Layout)` is correctly False) -- hasattr cannot tell
+    the two shapes apart, isinstance can.
+
+    An earlier version of this docstring pointed to a hasattr-dispatching run of every
+    build_chart_object test below as evidence: all of them failed on the empty element.
+    Re-run 2026-08-03 after the volume subplot landed: 15/15 now PASS under
+    hasattr-dispatch, because build_chart_object no longer ever hands this function a
+    bare Overlay to get wrong. The isinstance/hasattr choice stopped being observable in
+    this file's tests, not stopped being correct -- see the direct-Overlay check above
+    for why it still is. (This replaces a claim invalidated by the same kind of change
+    its own last sentence warned about.)
     """
     import holoviews as hv
 
@@ -490,10 +499,20 @@ def test_build_chart_object_overlays_the_sma():
     df = _long_df()
     curve = _price(build_chart_object(df, "T")).Curve.Sma_20
     assert curve.vdims[0].name == "sma_20"
+    sma = indicators.sma(df, _SMA_PERIOD)
+    xs = list(curve.dimension_values(curve.kdims[0].name))
+    ys = list(curve.dimension_values("sma_20"))
+    valid = [(x, y) for x, y in zip(xs, ys, strict=True) if y == y]  # drop NaNs
     # Value parity with the source of truth, not a reimplementation of it.
-    expected = indicators.sma(df, _SMA_PERIOD).dropna().tolist()
-    got = [v for v in curve.dimension_values("sma_20") if v == v]  # drop NaNs
-    assert got == pytest.approx(expected)
+    assert [y for _, y in valid] == pytest.approx(sma.dropna().tolist())
+    # Alignment, not just values: rolling(20).mean() and rolling(20, center=True).mean()
+    # give the SAME dropna'd value sequence for ANY input -- a centered window's average
+    # is the same set of numbers as a trailing window's, just labelled at a different x
+    # position (verified 2026-08-03 on this fixture and on random data: max abs diff
+    # 0.0 either way). So the value check above cannot by itself catch a trailing-vs-
+    # centered mixup; pin the x-position too, against indicators.sma's own index.
+    got_x = pd.DatetimeIndex([x for x, _ in valid])
+    assert got_x.equals(pd.DatetimeIndex(sma.dropna().index))
 
 
 def test_sma_overlay_is_renamed_not_left_as_close():
@@ -532,8 +551,12 @@ def test_build_chart_object_adds_a_volume_subplot():
 
 
 def test_volume_subplot_keeps_a_continuous_x_axis():
-    # linked_axes can only link ranges of the same kind, so a categorical (FactorRange)
-    # volume axis would silently break zoom sync with the datetime candle axis.
+    # x-range sharing between the two rows comes from HoloViews' Layout shared_axes (see
+    # test_layout_figures_share_one_x_range for why it isn't Panel's linked_axes).
+    # shared_axes still needs matching range kinds to actually share: a categorical
+    # (FactorRange) volume axis paired with the datetime candle axis would silently break
+    # the sync (verified 2026-08-03: pairing a datetime element with a categorical one
+    # under shared_axes=True yields two distinct range objects, not one shared one).
     import holoviews as hv
     from bokeh.models import FactorRange
 
@@ -544,8 +567,15 @@ def test_volume_subplot_keeps_a_continuous_x_axis():
 
 
 def test_layout_figures_share_one_x_range():
-    # The zoom-sync claim, asserted rather than trusted: pn.pane.HoloViews(linked_axes=
-    # True) must make both figures reference the SAME range object.
+    # The zoom-sync claim, asserted rather than trusted -- but not the mechanism first
+    # attributed to it here. pn.pane.HoloViews(linked_axes=...) makes NO difference to
+    # whether the two figures share an x_range (verified 2026-08-03: True and False both
+    # share, and even a bare hv.render with no Panel pane at all shares). The real knob
+    # is HoloViews' own Layout `shared_axes` (default True): `.opts(shared_axes=False)`
+    # is what actually turns sharing off, proven below. `linked_axes=True` stays on the
+    # pane because that pane is how this chart ships in the app, not because it does
+    # anything measurable in this test.
+    import holoviews as hv
     import panel as pn
     from bokeh.plotting import figure as bk_figure
 
@@ -557,3 +587,35 @@ def test_layout_figures_share_one_x_range():
     figs = list(pane.get_root().select({"type": bk_figure}))
     assert len(figs) == 2
     assert figs[0].x_range is figs[1].x_range
+
+    # The actual cause, isolated: a FRESH object (not the one already rendered above --
+    # re-rendering the same object/pane a second time is not a supported pattern and was
+    # observed to corrupt the first pane's own already-built models) with
+    # shared_axes=False, rendered with no Panel pane at all, does NOT share -- proving
+    # shared_axes (not linked_axes) is what the assertion above is really exercising.
+    unshared_obj = build_chart_object(_long_df(), "T").opts(shared_axes=False)
+    unshared = hv.render(unshared_obj, backend="bokeh")
+    unshared_figs = list(unshared.select({"type": bk_figure}))
+    assert len(unshared_figs) == 2
+    assert unshared_figs[0].x_range is not unshared_figs[1].x_range
+
+
+def test_build_chart_object_stacks_price_over_volume():
+    # (price + volume) alone lays the two figures out SIDE BY SIDE by default -- a
+    # 2-element Layout's default column count is 4 (verified 2026-08-03: monkeypatching
+    # Layout.cols to a no-op and inspecting layout._max_cols on the result). .cols(1) is
+    # what forces the stacked, single-column layout instead: removing it changes
+    # GridPlot.children row/col positions from [(0,0),(1,0)] (stacked) to [(0,0),(0,1)]
+    # (side by side) -- verified both ways before writing this assertion.
+    import holoviews as hv
+    from bokeh.plotting import figure as bk_figure
+
+    from claudia.panel_chart import _VOLUME_HEIGHT, build_chart_object
+
+    fig = hv.render(build_chart_object(_long_df(), "T"), backend="bokeh")
+    figs = [
+        (row, col, child) for child, row, col in fig.children if isinstance(child, bk_figure)
+    ]
+    assert sorted((row, col) for row, col, _ in figs) == [(0, 0), (1, 0)]
+    volume_fig = next(child for row, col, child in figs if row == 1)
+    assert volume_fig.height == _VOLUME_HEIGHT
