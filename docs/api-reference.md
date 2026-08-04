@@ -14,16 +14,59 @@ official docs — and had gone undetected for months because nobody checked:
 
 ## IBKR Client Portal API (`ibkr_core_mcp/client.py`, `claude_tools.py`)
 
+⚠ **`campus/ibkr-api-page/cpapi-v1/` is DEAD — 404, checked 2026-08-03.** It was cited four
+times in this table, including for every session-lifecycle page. IBKR moved the reference to
+`ibkrcampus.com/docs/web-api/`. Verify a URL resolves before citing it; "API Docs First" is
+worth nothing if the doc it points at has moved.
+
+**Use the machine-readable index.** IBKR publishes one, and its own 404 page advertises it:
+*"a documentation index is available at the root level at /llms.txt. Append /llms.txt to any
+URL for a page-level index, or .md for the markdown version of any page."* So
+<https://ibkrcampus.com/docs/llms.txt> enumerates every page (484 lines, 2026-08-03) and any
+page + `.md` gives clean markdown with no scraping heuristics. Start there rather than
+guessing paths.
+
 | Topic | Official source |
 |---|---|
-| Client Portal API reference | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/ |
-| Web API reference | https://www.interactivebrokers.com/campus/ibkr-api-page/webapi-ref/ |
-| Orders / modify (two-call pattern) | https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/ |
-| IBKR Campus (general) | https://www.interactivebrokers.com/campus/ibkr-api-page/ |
-| Session lifecycle FAQ (timeout duration, `/tickle` interval, 24h/midnight cap) | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#tickle |
-| `POST /iserver/auth/ssodh/init` — current, non-deprecated brokerage-session init | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ssodh-init |
-| `POST /iserver/reauthenticate` — **Deprecated**, superseded by `ssodh/init` | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#reauthenticate |
-| Competing-session / gateway launch walkthrough | https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/ |
+| **Documentation index (start here)** | <https://ibkrcampus.com/docs/llms.txt> |
+| Web API reference | <https://www.interactivebrokers.com/docs/web-api/> |
+| `GET /iserver/account/pnl/partitioned` — account P&L | <https://ibkrcampus.com/docs/web-api/v1/endpoints/accounts/account-profit-and-loss.md> |
+| `GET /portfolio/{accountId}/ledger` — per-currency ledger | <https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md> |
+| Positions | <https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/positions.md> |
+| Session authentication | <https://ibkrcampus.com/docs/web-api/authentication/sessions.md> |
+| `POST /iserver/auth/ssodh/init` — current brokerage-session init | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/initialize-brokerage-session.md> |
+| Ping / `tickle` | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md> |
+| Authentication status | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/authentication-status.md> |
+| Orders / modify (two-call pattern) | <https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/> |
+| IBKR Campus (general) | <https://www.interactivebrokers.com/campus/ibkr-api-page/> |
+| Competing-session / gateway launch walkthrough | <https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/> |
+
+The four surviving `interactivebrokers.com` URLs above were re-checked live 2026-08-03 and
+return 200. `campus/ibkr-api-page/webapi-ref/` also returns 200 but **redirects** to
+`/docs/web-api/api-reference/trading-accounts/get-account-owners` — a single endpoint page,
+not a reference index, so it is replaced above rather than kept.
+
+### The two P&L endpoints are not the same quantity [P]
+
+Settled 2026-08-03 against the docs above plus live measurement, after a $128.51 discrepancy
+was found between them:
+
+| source | field | live value | character |
+|---|---|---|---|
+| `get_positions` summed | per-position unrealized | **−3,937.87** | cent-accurate |
+| `/portfolio/…/ledger` | `unrealizedpnl` | **−3,937.87** | cent-accurate, **matches positions exactly** |
+| `/iserver/account/pnl/partitioned` | `upl` | **−3,890.00** | always a multiple of 10 |
+
+Stable across repeated samples. The docs explain the scope difference — `upl` is *"Unrealized
+PnL for the specified **account profile**"* while the ledger's is *"unrealized profit and loss
+for positions **in the given currency**"* — and the live data adds what the docs do not say:
+`pnl/partitioned` returns **quantised values** (`upl`, `nl`, `mv` and `el` all landed on
+multiples of 10, while `uel` and the ledger did not).
+
+**Consequence:** the ledger and `get_positions` are the authoritative cent-level pair and are
+the ones `opening_status.reconcile_positions_against_ledger` compares. Do **not** reconcile
+`pnl/partitioned` against either; it is a coarse real-time summary. The ledger also carries a
+separate `futuresonlypnl` field, which the official docs list with **no description at all**.
 
 **Scraped 2026-07-17 (Firecrawl keyless tier — `interactivebrokers.com` 403s direct `WebFetch`,
 see [[feedback-documentation-firecrawl]]).** Verbatim findings, load-bearing for any gateway
