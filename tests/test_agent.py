@@ -2733,3 +2733,35 @@ def test_live_api_accepts_the_emission_record_channel():
             )
         except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
             pytest.fail(f"live API rejected the emission-record channel ({label}) on {model}: {exc}")
+
+
+# ── Safety block: derived figures (2026-08-03 live finding) ───────────────────
+
+
+def test_safety_block_requires_percentages_to_name_their_base():
+    """Live 2026-08-03: ClaudIA computed a drawdown correctly and named the wrong base.
+
+    It reported "a ~25% drawdown on a $9,245 position". 24.6% is correct against the
+    12,254.91 cost basis; $9,245 is the current market value, which gives 32.6%. The
+    calculation was the right one -- the prose named the other quantity. No existing
+    guardrail catches this: L4/L5 assert a claim was BACKED by a tool call, not that a
+    ratio names its denominator, so the turn passed both and still failed verification
+    for anyone who checked it.
+    """
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    assert "DERIVED FIGURES MUST NAME THEIR BASE" in prompt
+    assert "cost basis" in prompt
+    assert "Do not switch bases silently." in prompt
+
+
+def test_safety_block_derived_figures_rule_sits_inside_data_integrity():
+    """It is a provenance rule, not a formatting preference -- placement matters.
+
+    DATA INTEGRITY is marked non-overridable; a base that cannot be traced to a tool
+    result is the same defect as a price that cannot.
+    """
+    prompt = _build_system_prompt("# Role\nI am ClaudIA.")
+    di = prompt.index("## DATA INTEGRITY")
+    rule = prompt.index("DERIVED FIGURES MUST NAME THEIR BASE")
+    nxt = prompt.index("## ORDER PROPOSAL")
+    assert di < rule < nxt
