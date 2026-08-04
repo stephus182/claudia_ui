@@ -58,6 +58,19 @@ def _status(pane):
     return _first(pane, pn.pane.Markdown)
 
 
+def _selects(pane):
+    """[Period, Bar] in layout order."""
+    return [n for n in _iter_tree(pane) if isinstance(n, pn.widgets.Select)]
+
+
+def hv_title(obj):
+    """The title opt on the price Overlay (the Layout itself carries none)."""
+    import holoviews as hv
+
+    price = obj.Overlay.I if isinstance(obj, hv.Layout) else obj
+    return hv.Store.lookup_options("bokeh", price, "plot").kwargs.get("title") or ""
+
+
 # ── shared helpers ────────────────────────────────────────────────────────────
 
 
@@ -677,3 +690,93 @@ async def test_on_load_failure_message_does_not_double_punctuate():
     with patch("claudia.panel_app._get_toolkit", return_value=tk2):
         await cb2(None)
     assert ".." not in _status(pane2).object
+
+
+# ── bar-size disclosure (2026-08-03 matrix finding) ───────────────────────────
+
+
+def _idx(*, minutes: float, n: int = 10, first_gap: float | None = None):
+    """A DatetimeIndex with a given regular spacing, optionally an odd first gap."""
+    stamps = [pd.Timestamp("2026-01-05 09:30")]
+    for i in range(1, n):
+        step = first_gap if (i == 1 and first_gap is not None) else minutes
+        stamps.append(stamps[-1] + pd.Timedelta(minutes=step))
+    return pd.DatetimeIndex(stamps)
+
+
+def test_infer_bar_label_recognises_the_standard_bars():
+    from claudia.panel_chart import _infer_bar_label
+
+    assert _infer_bar_label(_idx(minutes=30)) == "30m"
+    assert _infer_bar_label(_idx(minutes=60)) == "1h"
+    assert _infer_bar_label(_idx(minutes=1440)) == "1d"
+
+
+def test_infer_bar_label_uses_median_not_min():
+    """An hourly series opens with a half-hour bar at the RTH boundary.
+
+    Measured live 2026-08-03: every "1h" request returns min gap 30m, median 60m.
+    A min-based rule would call all five of them "30m" and raise a false alarm on
+    data that is genuinely hourly.
+    """
+    from claudia.panel_chart import _infer_bar_label
+
+    assert _infer_bar_label(_idx(minutes=60, first_gap=30)) == "1h"
+
+
+def test_infer_bar_label_is_robust_to_weekend_gaps():
+    # Daily bars with a 72h weekend gap: the median stays 24h.
+    from claudia.panel_chart import _infer_bar_label
+
+    idx = pd.to_datetime(
+        ["2026-01-01", "2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07"]
+    )
+    assert _infer_bar_label(idx) == "1d"
+
+
+def test_infer_bar_label_marks_nonstandard_spacing_approximate():
+    """Live 3m/30m had a 120m median -- not a bar size the UI offers."""
+    from claudia.panel_chart import _infer_bar_label
+
+    assert _infer_bar_label(_idx(minutes=120)) == "~2h"
+
+
+@pytest.mark.asyncio
+async def test_on_load_discloses_when_ibkr_returns_a_coarser_bar():
+    """1y/30m returns DAILY bars -- verified live 2026-08-03 as byte-identical to 1y/1d.
+
+    The pane used to title that "AAPL 30m (1y)" over daily candles and say nothing.
+    """
+    from unittest.mock import patch
+
+    daily = pd.DataFrame(
+        {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0},
+        index=_idx(minutes=1440, n=30),
+    )
+    tk = _mock_toolkit(cached=True, df=daily)
+    pane = build_chart_pane()
+    _selects(pane)[1].value = "30m"  # [Period, Bar]
+    cb = _get_click_callback(_button(pane))
+    with patch("claudia.panel_app._get_toolkit", return_value=tk):
+        await cb(None)
+
+    status = _status(pane).object
+    assert "IBKR returned 1d bars, not the 30m requested" in status
+    title = hv_title(_chart(pane).object)
+    assert "1d" in title and "requested 30m" in title
+
+
+@pytest.mark.asyncio
+async def test_on_load_says_nothing_when_the_bar_size_matches():
+    from unittest.mock import patch
+
+    tk = _mock_toolkit(cached=True, df=_sample_df())  # daily fixture, 1d requested
+    pane = build_chart_pane()
+    cb = _get_click_callback(_button(pane))
+    with patch("claudia.panel_app._get_toolkit", return_value=tk):
+        await cb(None)
+
+    status = _status(pane).object
+    assert "Loaded 4 bars for AAPL" in status
+    assert "IBKR returned" not in status
+    assert "requested" not in hv_title(_chart(pane).object)

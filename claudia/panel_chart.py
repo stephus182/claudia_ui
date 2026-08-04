@@ -80,6 +80,39 @@ _SMA_PERIOD = 20
 _VOLUME_HEIGHT = 120
 
 
+def _infer_bar_label(index: pd.DatetimeIndex) -> str:
+    """The bar size the data actually has, from its own median spacing.
+
+    IBKR does not always return the bar size that was asked for. Measured live
+    2026-08-03 across all fifteen period x bar combinations the UI offers: a `1y`
+    or `2y` request at `30m` comes back as **daily** bars -- byte-identical index
+    and closes to the same period at `1d`, on both AAPL and TSLA -- while both the
+    fetch summary and the chart title still say `30M`. Nothing disclosed it.
+
+    MEDIAN, not min: every `1h` request measured a 30-minute *minimum* gap (the
+    half-hour bar at the RTH open) against a 60-minute median. A min-based rule
+    would call all five of those "30m" and raise a false alarm on data that is
+    genuinely hourly. Median is also unmoved by weekend gaps in daily data.
+
+    Returns "" when the frame is too short to have a spacing, so the caller can
+    skip the disclosure rather than guess.
+    """
+    if len(index) < 2:
+        return ""
+    minutes = float(
+        pd.Series(index).diff().dropna().median() / pd.Timedelta(minutes=1)
+    )
+    exact = {30.0: "30m", 60.0: "1h", 1440.0: "1d"}
+    if minutes in exact:
+        return exact[minutes]
+    # Not one of the three sizes the UI offers -- report what it measured, marked
+    # approximate so it cannot be mistaken for a selectable bar (live 3m/30m
+    # measured a 120-minute median, 6m/30m a 240-minute one).
+    if minutes >= 60 and minutes % 60 == 0:
+        return f"~{int(minutes // 60)}h"
+    return f"~{minutes:.0f}m"
+
+
 def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     """Build the HoloViews chart object from an OHLCV DataFrame.
 
@@ -254,10 +287,25 @@ def build_chart_pane() -> pn.Column:
             if df is None or df.empty:
                 status.object = f"No data for {sym}."
                 return
-            label = f"{sym} {bar.value} ({period.value})"
+            # Title the chart with the bar size the data ACTUALLY has, not the one
+            # that was requested -- see _infer_bar_label for the live evidence that
+            # these diverge. When they disagree the title carries both, so a
+            # screenshot cannot silently misreport its own timeframe.
+            actual = _infer_bar_label(df.index)
+            mismatched = bool(actual) and actual != bar.value
+            label = (
+                f"{sym} {actual} ({period.value}) — requested {bar.value}"
+                if mismatched
+                else f"{sym} {bar.value} ({period.value})"
+            )
             chart.object = build_chart_object(df, label)
             shown_label = label
-            status.object = f"Loaded {len(df)} bars for {sym}."
+            note = (
+                f" ⚠ IBKR returned {actual} bars, not the {bar.value} requested."
+                if mismatched
+                else ""
+            )
+            status.object = f"Loaded {len(df)} bars for {sym}.{note}"
         except Exception as exc:
             # symbol.value (not a try-local) so the message is safe even if the
             # failure fired before any local was bound (e.g. _get_toolkit raising).
