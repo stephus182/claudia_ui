@@ -225,6 +225,19 @@ def test_coverage_line_states_the_t_plus_one_gap(view):
     assert "The ledger figure above does include today" in line
 
 
+def test_coverage_line_names_the_session_day_boundary(view):
+    """IBKR's "day" is a session, not a calendar day, and the two figures differ on it.
+
+    Measured 2026-08-04 across this account's 1,101 executions: `trade_date` rolls
+    forward at 18:00 ET for futures, 20:00 ET for stock, 17:00 ET for FX. The ledger
+    figure does not follow that roll. A reader comparing them at 19:00 needs to know.
+    """
+    line = view._pnl_coverage.object
+    assert "session" in line
+    assert "18:00 ET" in line and "20:00 ET" in line and "17:00 ET" in line
+    assert "does not follow that roll" in line
+
+
 def test_coverage_line_without_pending_fills_omits_the_warning():
     snap = _snapshot(coverage=dd.FlexCoverage(through=date(2026, 8, 5), live_pending=0))
     assert "not yet in a statement" not in pdash.coverage_line(snap)

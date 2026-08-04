@@ -56,6 +56,42 @@ row (verified 2026-08-04: 0 of 1,101). `flex_lot` has **neither** `trade_date_is
 Flex-derived — so `round_trip_stats` formats its own bounds. That asymmetry is the
 reason the two query helpers do not share a date predicate.
 
+## IBKR's "day" is a session, not a calendar day — and that is already handled
+
+`trade_date` is **not** the calendar date of the fill. IBKR rolls it forward to the
+trading day the *session* belongs to, and the boundary differs by asset class. Measured
+across this account's 1,101 Flex executions on 2026-08-04, every boundary bracketed
+cleanly with no overlap:
+
+| Asset | latest same-day fill | earliest rolled-forward fill | boundary |
+|---|---|---|---|
+| `FUT` | 16:59:40 | 18:00:00 (91 of 91 rolled) | **18:00 ET** — CME Globex opens 17:00 CT |
+| `STK` | 19:23:31 | 20:09:37 | **20:00 ET** — IBKR's overnight session |
+| `CASH` | 15:17:59 | 17:28:09 | **17:00 ET** — IdealPro FX day roll |
+| `OPT` | 15:57:04 | none observed | no evening fills, so no evidence |
+
+The `FUT` gap between 17:00 and 18:00 ET is CME's daily maintenance break, which is why
+the boundary lands exactly on the session open. `STK` matches IBKR's published wording
+verbatim — *"Trades executed between 8:00pm and 12:00am will carry a trade date of the
+following day"*
+(https://www.interactivebrokers.com/campus/trading-lessons/overnight-trading-in-tws/).
+Two independent boundaries landing on their venue's ET session times also confirms the
+statement's `dateTime` is ET. One apparent `FUT` exception — 2026-05-25 00:06:53 filed to
+05-26 — is Memorial Day: the session rolled to the next *trading* day, not the next
+calendar day, which is the same rule.
+
+**Nothing here needs replicating, and that is the point.** Every window in this module
+buckets on `trade_date`, so it inherits IBKR's session convention for free and by
+construction. Re-deriving a roll rule in Python would be a second, drifting definition of
+"day" sitting next to the authoritative one — the class of mistake the realised-P&L rule
+above already cost this project once.
+
+What the convention *does* change is what a reader should be told: after 18:00 ET a
+futures fill already belongs to tomorrow as far as these windows are concerned, while the
+ledger figure beside them does not follow that roll (measured 2026-08-04: `realizedpnl`
+held at -2,656.11 across four reads from 17:51 to 19:02 ET, spanning the boundary, while
+`unrealizedpnl` moved freely). `panel_dashboard.coverage_line` says so on the surface.
+
 ## The T+1 gap is real and is surfaced, not papered over
 
 Flex never has today. The live Client Portal rows (`source='live'`) carry **no
@@ -176,12 +212,22 @@ class LedgerSnapshot:
 # a same-day figure or a cumulative one? IBKR's own documentation does not say (see
 # LedgerSnapshot), so this is a measurement, not a docs read.
 #
-# NARROWED, not settled, by the first live read on 2026-08-04. The ledger reported
-# `realizedpnl -2,656.11` against Flex-derived totals of -8,767.40 (2026 YTD) and
-# +1,575.01 (all time, six years). It matches neither, which **rules out** both
-# cumulative readings — since-inception and year-to-date. What remains is a short
-# window (today, or the trading session), and separating those two needs a second
-# measurement across a midnight, which one session cannot provide.
+# NARROWED TWICE on 2026-08-04, still not settled.
+#
+# (1) The ledger reported `realizedpnl -2,656.11` against Flex-derived totals of
+#     -8,767.40 (2026 YTD) and +1,575.01 (all time, six years). It matches neither,
+#     which **rules out** both cumulative readings — since-inception and year-to-date.
+#
+# (2) It does **not** reset on the futures session roll either. IBKR's own `trade_date`
+#     rolls forward at 18:00 ET for futures (see the session table in the module
+#     docstring), so "the trading session" was a live candidate for what this figure
+#     resets on. Four reads at 17:51, 18:08, 18:49 and 19:02 ET — straddling that
+#     boundary by 71 minutes — all returned exactly -2,656.11, while `unrealizedpnl`
+#     moved freely across the same span. A session-scoped figure would have reset to
+#     0.00 at 18:00; this one did not.
+#
+# What remains is the calendar day, most likely resetting at midnight ET, and confirming
+# it needs one reading either side of a midnight — which one session cannot provide.
 #
 # So the label still must not assert a window. "unverified" renders as
 # "Realised (ledger)"; once a cross-midnight measurement lands, flip this to "session"

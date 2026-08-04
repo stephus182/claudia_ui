@@ -210,7 +210,11 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
     return (
         f"_Realised week/month/YTD come from the Flex dataset through "
         f"**{cov.through.isoformat()}** (T+1 — never includes today){pending}. "
-        f"The ledger figure above does include today._"
+        f"The ledger figure above does include today. Note the two use different day "
+        f"boundaries: Flex buckets on IBKR's **session** date, which rolls forward at "
+        f"18:00 ET for futures, 20:00 ET for stock and 17:00 ET for FX — so an evening "
+        f"fill already belongs to tomorrow — while the ledger figure does not follow "
+        f"that roll (measured 2026-08-04)._"
     )
 
 
