@@ -105,7 +105,7 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ## Testing
 
 ```bash
-pytest        # full suite — all unit, no IBKR gateway needed (757 tests as of 2026-07-28)
+pytest        # full suite — all unit, no IBKR gateway needed (799 tests as of 2026-08-04)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (3 tests):
@@ -244,7 +244,11 @@ the fix that established this (75,480 → 2,910 tokens/session).
   vs. independent sketch): `docs/panel/data-surfaces-reference.md`
 - Panel folder hub (both references + dated research + smoke screenshots): `docs/panel/README.md`
 - Startup flow, phase by phase (diagnose startup failures): `docs/startup-flow.md`
-- Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and `docs/trading-data-reference.md`
+- Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and
+  `docs/trading-data-reference.md`. **Realised P&L = `SUM(flex_trade.fifo_pnl_realized)` over
+  ALL trades — no open/close filter** (settled 2026-08-04 against IBKR's own annual statements,
+  6/6 years exact). `flex_lot` is pre-wash-sale detail and must not be summed instead;
+  `Trade == Lot + WashSale`. Both traps were live in this repo and are gated now.
 - Market calendar (20 exchanges, futures schedules): `docs/market-calendar-reference.md`
 - GDrive sync (folder layout, error handling): `docs/gdrive-sync-reference.md`
 - TradingView integration (sidecar, curated tools, recovery): `docs/tradingview-reference.md` and `docs/tradingview-mcp-recovery.md`
