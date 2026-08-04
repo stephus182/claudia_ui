@@ -552,10 +552,14 @@ async def _maybe_background_flex_sync(
         try:
             result, _ = await asyncio.to_thread(toolkit.execute, "sync_flex_trades", {})
             chat.send(f"✅ {result}", user="System", respond=False)
-            # Back up the updated store.db to Drive account_data/
+            # Back up the updated store.db to Drive account_data/.
+            # upload_account_sqlite, not upload_account_file: store.db runs in WAL mode, so
+            # a raw byte read would miss commits still sitting in store.db-wal and could tear
+            # mid-checkpoint. Same consistent-snapshot guarantee GDriveSync.upload_db gives
+            # claudia.db.
             try:
                 await asyncio.to_thread(
-                    toolkit._cache.upload_account_file, cfg.sqlite_path, "store.db"
+                    toolkit._cache.upload_account_sqlite, cfg.sqlite_path, "store.db"
                 )
                 log.info("store.db backed up to Drive account_data/")
             except Exception as backup_exc:

@@ -1111,9 +1111,12 @@ async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
     for _ in range(10):          # drain the spawned sync task
         await asyncio.sleep(0)
     toolkit.execute.assert_called_once_with("sync_flex_trades", {})
-    toolkit._cache.upload_account_file.assert_called_once_with(
+    # upload_account_sqlite, not upload_account_file: store.db runs in WAL mode, so a raw
+    # byte read would miss commits still in store.db-wal and could tear mid-checkpoint.
+    toolkit._cache.upload_account_sqlite.assert_called_once_with(
         toolkit._config.sqlite_path, "store.db"
     )
+    toolkit._cache.upload_account_file.assert_not_called()
     sent = [c.args[0] for c in chat.send.call_args_list]
     assert any(str(s).startswith("✅") for s in sent)
 

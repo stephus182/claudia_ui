@@ -19,10 +19,48 @@ Flex never has today's trades. The live API fills that gap.
 3. Otherwise → sync, log result, back up `store.db` to Drive `account_data/`
 
 **Data stores:**
-- `~/.ibkr_core/store.db` — SQLite, all Flex-synced trades (full history from account open); includes `flex_import_log` manifest
+- `~/.ibkr_core/store.db` — SQLite. Legacy `trades` table **plus** the complete Flex archive
+  in 14 generated `flex_*` tables (one per XML element type, one column per attribute);
+  includes `flex_import_log` manifest
 - `data/claudia.db` — SQLite, conversation history, sessions, decisions
 - Drive `market_data/` — Parquet OHLCV cache
-- Drive `account_data/` — Flex XML archives (`ClaudIA_Full_Activity_*.xml` manual, `flex_U*.xml` auto-synced), `store.db` backup
+- Drive `account_data/` — auto-synced `flex_U*.xml` + `store.db` backup
+- Drive `account_data/Flex_Archive/` — the 7 manual `ClaudIA_Full_Activity_*.xml` website
+  pulls. **Anything enumerating account files must recurse** (`GDriveCache.account_folder_ids`);
+  a single-level listing silently returns only the automated syncs.
+
+### The two execution-id namespaces (fixed 2026-08-04)
+
+The same fill has **two different IBKR identifiers**, and storing both in one primary-key
+column is what produced 75 duplicate rows:
+
+| Source | Identifier | Shape |
+|---|---|---|
+| Flex statement | `tradeID` | `9969169283` (10-digit) |
+| Client Portal API | `execId` | `00010279.6a6b54b6.01.01` (dotted) |
+
+The dotted value is Flex's `ibExecID` — present on the same `<Trade>` element all along.
+Both paths now derive one **`execution_key`**:
+
+```
+execution_key = ibExecID            when non-empty
+              = "flex:" + tradeID   otherwise   (exactly one 2021 trade)
+```
+
+so a live fill and its T+1 Flex statement land on the same row. The merge is one-way by
+construction: a Flex row overwrites a live placeholder, a live row can never clobber Flex
+data. Verified live in both arrival orders, 2026-08-04.
+
+**Live rows carry no `trade_date`, deliberately.** The Client Portal timestamp is UTC, and a
+trading day is not derivable from a UTC instant — a 20:56 ET fill on Monday reads as Tuesday
+in UTC (observed: `2026-08-04T00:56:35` was a Monday-session CL trade). IBKR states the
+authoritative `tradeDate` in the T+1 statement, which lands on the same row. All day / week /
+month aggregation buckets on `trade_date`, never on a parsed timestamp.
+
+**`store.db` is uploaded via `upload_account_sqlite`, not `upload_account_file`** — it runs in
+WAL mode, so a raw byte read can omit commits still sitting in `store.db-wal` and can tear
+mid-checkpoint. The consistent-snapshot path is verified by downloading the Drive copy back
+and re-running the full audit gate on it.
 
 **Flex import integrity** — `verify_flex_import` cross-checks every tradeID in the Drive XML
 archives against `store.db`. The `flex_import_log` manifest tracks SHA-256, trade count, and

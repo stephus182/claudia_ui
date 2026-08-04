@@ -196,17 +196,63 @@ parsed as each feature is implemented in code.
 
 ---
 
-## XML Tag Reference (for developers extending flex_query.py)
+## XML Tag Reference (for developers extending the Flex import)
 
-| Section | XML element | Key attributes |
-|---|---|---|
-| Trades | `<Trade>` | tradeID, symbol, buySell, quantity, tradePrice, dateTime, ibCommission, accountId |
-| Cash Transactions | `<CashTransaction>` | transactionID, type, amount, dateTime, symbol, currency |
-| Open Positions | `<OpenPosition>` | reportDate, symbol, position, costBasisMoney, fifoPnlUnrealized |
-| Corporate Actions | `<CorporateAction>` | type, dateTime, symbol, quantity, value |
-| Change in NAV | `<ChangeInNAV>` | reportDate, startingValue, endingValue, commissions, dividends |
-| Statement of Funds | `<StatementOfFunds>` | reportDate, activityDescription, debit, credit, balance |
-| Forex Balances | `<FxPosition>` | reportDate, currency, quantity, costBasisMoney, fifoPnlUnrealized |
+> **Corrected 2026-08-04.** This table previously listed 8 attributes for `<Trade>`.
+> A `<Trade>` element carries **85**, and every one of them was present in every
+> statement in the archive. The old list was not a summary — it was the exact set the
+> parser kept, and the other 75 were silently discarded for months. Do not hand-maintain
+> a field list here again.
+
+**The authoritative inventory is generated from the statements themselves:**
+
+```bash
+python scripts/audit_flex_xml.py --src ~/.ibkr_core/flex_archive
+#   → ibkr_core_mcp/docs/flex-xml-structure-audit.md   (human-readable, per-attribute)
+#   → ibkr_core_mcp/docs/flex-xml-structure.json       (machine-readable)
+#   → ibkr_core_mcp/ibkr_core_mcp/flex_schema.py       (generated table/column spec)
+```
+
+Measured across the 21 archived statements (2020-01-02 → 2026-08-03):
+
+| XML element | Rows | Attributes | Stored as |
+|---|---:|---:|---|
+| `<ConversionRate>` | 90,909 | 4 | `flex_conversion_rate` |
+| `<StatementOfFundsLine>` | 6,117 | 56 | `flex_statement_of_funds_line` |
+| `<Trade>` | 2,247 | 85 | `flex_trade` |
+| `<UnbundledCommissionDetail>` | 2,232 | 49 | `flex_unbundled_commission_detail` |
+| `<Order>` | 2,152 | 85 | `flex_order` |
+| `<Lot>` | 1,371 | 85 | `flex_lot` |
+| `<CashTransaction>` | 776 | 46 | `flex_cash_transaction` |
+| `<WashSale>` | 443 | 85 | `flex_wash_sale` |
+| `<SymbolSummary>` | 279 | 85 | `flex_symbol_summary` |
+| `<SecurityInfo>` | 175 | 33 | `flex_security_info` |
+| `<OpenPosition>` | 75 | 50 | `flex_open_position` |
+| `<AssetSummary>` | 35 | 85 | `flex_asset_summary` |
+| `<AccountInformation>` | 19 | 37 | `flex_account_information` |
+| `<ChangeInNAV>` | 19 | 58 | `flex_change_in_nav` |
+
+**`<Trade>`, `<Lot>`, `<Order>`, `<WashSale>`, `<SymbolSummary>` and `<AssetSummary>` are
+attribute-identical** — one 85-attribute shape distinguished by `levelOfDetail`
+(`EXECUTION` / `CLOSED_LOT` / `ORDER` / `WASH_SALE` / `SYMBOL_SUMMARY` / `ASSET_SUMMARY`).
+They are siblings under `<Trades>`, **not** nested inside `<Trade>`.
+
+### The three fields most easily got wrong
+
+| Field | What it actually is |
+|---|---|
+| `fifoPnlRealized` | Realised P/L. **Agrees with the closed lots for FUT/OPT/FUND; does not for STK** — IBKR reports `0` on multi-lot equity closes and puts the figure on the `CLOSED_LOT` rows instead. `flex_lot` is the fuller record. |
+| `mtmPnl` | Mark-to-market P/L — a **different quantity**, reported as its own column in IBKR's own Trades report. Not interchangeable with realised. |
+| `tradePnl` | **Does not exist.** The old parser read it first and always fell through to `fifoPnlRealized`. |
+
+`Lot.transactionID` refers to the **opening** transaction; `Lot.tradeDate` is the
+**closing** date. Joining lots to trades on `transactionID` matches the open, not the close.
+
+Codes in `notes` are semicolon-delimited and documented at
+`ibkrguides.com/reportingreference/reportguide/codes.htm` — mirrored in
+`ibkr_core_mcp.flex_import.STATEMENT_CODES`. Present in this account's history:
+`P` (partial execution), `IA` (executed against an IB affiliate), `L` (**ordered by IB —
+margin violation**), `R` (dividend reinvestment).
 
 ---
 
