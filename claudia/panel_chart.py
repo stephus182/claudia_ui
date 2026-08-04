@@ -199,18 +199,27 @@ def build_chart_pane() -> pn.Column:
     # layout, which this module never does. Measured 2026-08-03; kept only because it is
     # the documented default and harmless.
     chart = pn.pane.HoloViews(None, linked_axes=True)
+    # Title of whatever is currently drawn, or None before the first success. A failed
+    # load deliberately leaves the previous chart up (losing a chart to a typo is worse),
+    # which means the title and the symbol box can disagree -- observed live 2026-08-03 as
+    # a chart reading "AAPL 30m (1m)" beside an input reading "ZZQQXX". This is what lets
+    # the failure message say which of the two the user is actually looking at.
+    shown_label: str | None = None
 
     async def _on_load(event: Any) -> None:
         """Load bars for the entered symbol and rebuild the candlestick figure.
 
         Checks the parquet cache first and fetches on a miss — a multi-second IBKR wait,
         hence the spinner, which is cleared in `finally` on every path. An empty result and
-        a failure are both reported honestly in the status line rather than leaving the
-        previous chart up as if it were current.
+        a failure are both reported honestly in the status line, and a failure additionally
+        names the chart still on screen so a stale title cannot be mistaken for the symbol
+        that was just requested.
         """
+        nonlocal shown_label
         # loading spinner first — the fetch-on-miss path is a multi-second IBKR wait
         # (actionable-buttons research). Always cleared in the finally.
         load_btn.loading = True
+        fetch_summary: str | None = None
         try:
             # Deferred import breaks the panel_app <-> panel_chart cycle (module docstring).
             from claudia.panel_app import _get_toolkit
@@ -226,10 +235,15 @@ def build_chart_pane() -> pn.Column:
                 toolkit._cache.check, sym, tf, period.value, end
             ):
                 status.object = f"Fetching {sym}…"
-                # execute returns a SUMMARY string and populates the cache; an
-                # IBKR-offline / unknown-symbol miss leaves the cache empty and the
-                # load below raises, caught as an honest error.
-                await asyncio.to_thread(
+                # execute returns (text_result, None) -- ClaudeToolkit.execute's declared
+                # signature is `-> tuple[str, None]`, the second slot a legacy figure
+                # field that is always None. The text is the ONLY explanation of a failed
+                # fetch: an unresolvable symbol returns "Could not resolve conid for X
+                # (as STK). Is IBKR connected?" while the cache stays empty, so the
+                # `load` below then raises a CacheMissError naming an internal cache key.
+                # Discarding this text is why an unknown symbol used to surface
+                # "No cached file for ZZQQXX_30M_1M_2026-08-03" (found live 2026-08-03).
+                fetch_summary, _ = await asyncio.to_thread(
                     toolkit.execute,
                     "fetch_market_data",
                     {"symbol": sym, "period": period.value, "bar": bar.value},
@@ -240,15 +254,27 @@ def build_chart_pane() -> pn.Column:
             if df is None or df.empty:
                 status.object = f"No data for {sym}."
                 return
-            chart.object = build_chart_object(
-                df, f"{sym} {bar.value} ({period.value})"
-            )
+            label = f"{sym} {bar.value} ({period.value})"
+            chart.object = build_chart_object(df, label)
+            shown_label = label
             status.object = f"Loaded {len(df)} bars for {sym}."
         except Exception as exc:
             # symbol.value (not a try-local) so the message is safe even if the
             # failure fired before any local was bound (e.g. _get_toolkit raising).
             log.exception("Chart load failed for %s", symbol.value)
-            status.object = f"✕ Could not load {(symbol.value or '').strip().upper()}: {exc}"
+            failed = (symbol.value or "").strip().upper()
+            # Attribute the fetch's own words rather than presenting them as the root
+            # cause: when a fetch ran, its text is the most proximate explanation we have,
+            # and in the pathological case where it reports success yet the load still
+            # failed, quoting it makes that contradiction visible instead of hiding it.
+            reason = f"fetch reported: {fetch_summary}" if fetch_summary else str(exc)
+            # Both sources already punctuate their own sentences -- the fetch text ends
+            # "Is IBKR connected?" and the 1-row guard ends "need at least 2 bars." --
+            # so appending unconditionally produced "connected?." and "bars..".
+            if not reason.endswith((".", "?", "!")):
+                reason += "."
+            still = f" Still showing {shown_label}." if shown_label else ""
+            status.object = f"✕ Could not load {failed} — {reason}{still}"
         finally:
             load_btn.loading = False
 

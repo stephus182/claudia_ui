@@ -568,3 +568,112 @@ def test_build_chart_object_stacks_price_over_volume():
     assert sorted((row, col) for row, col, _ in figs) == [(0, 0), (1, 0)]
     volume_fig = next(child for row, col, child in figs if row == 1)
     assert volume_fig.height == _VOLUME_HEIGHT
+
+
+# ── failure-path messaging (2026-08-03 live-test findings) ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_on_load_unknown_symbol_reports_the_fetch_reason_not_the_cache_key():
+    """An unresolvable symbol must surface IBKR's explanation, not a cache key.
+
+    Found live 2026-08-03: loading a nonexistent symbol showed
+    "No cached file for ZZQQXX_30M_1M_2026-08-03" -- the cache layer's own key,
+    which tells a user nothing. fetch_market_data already returns the real reason
+    ("Could not resolve conid for ZZQQXX (as STK). Is IBKR connected?"); _on_load
+    was discarding it and then reporting the downstream CacheMissError instead.
+    """
+    from unittest.mock import patch
+
+    tk = _mock_toolkit(cached=False, df=None)
+    tk.execute.return_value = (
+        "Could not resolve conid for ZZQQXX (as STK). Is IBKR connected?",
+        None,
+    )
+    tk._cache.load.side_effect = RuntimeError(
+        "No cached file for ZZQQXX_30M_1M_2026-08-03"
+    )
+    pane = build_chart_pane()
+    _first(pane, pn.widgets.TextInput).value = "ZZQQXX"
+    cb = _get_click_callback(_button(pane))
+    with patch("claudia.panel_app._get_toolkit", return_value=tk):
+        await cb(None)
+
+    msg = _status(pane).object
+    assert "Could not resolve conid for ZZQQXX" in msg
+    assert "No cached file" not in msg  # the cache key must not reach the user
+    assert _button(pane).loading is False
+
+
+@pytest.mark.asyncio
+async def test_on_load_failure_names_the_chart_still_displayed():
+    """A failed load leaves the previous chart up; the status must say so.
+
+    Found live 2026-08-03: after a failed load the chart still read
+    "AAPL 30m (1m)" while the symbol box read "ZZQQXX" -- title and input
+    disagreeing with nothing to reconcile them. Keeping the chart is deliberate
+    (losing it on a typo is worse), so the status line names what is on screen.
+    """
+    from unittest.mock import patch
+
+    pane = build_chart_pane()
+    cb = _get_click_callback(_button(pane))
+
+    tk_ok = _mock_toolkit(cached=True, df=_sample_df())
+    with patch("claudia.panel_app._get_toolkit", return_value=tk_ok):
+        await cb(None)
+    assert _chart(pane).object is not None
+
+    tk_bad = _mock_toolkit(cached=False, df=None)
+    tk_bad.execute.return_value = ("Could not resolve conid for ZZQQXX (as STK).", None)
+    tk_bad._cache.load.side_effect = RuntimeError("No cached file for ZZQQXX")
+    _first(pane, pn.widgets.TextInput).value = "ZZQQXX"
+    with patch("claudia.panel_app._get_toolkit", return_value=tk_bad):
+        await cb(None)
+
+    msg = _status(pane).object
+    assert "ZZQQXX" in msg
+    assert "Still showing AAPL 1d (6m)" in msg
+    assert _chart(pane).object is not None  # chart deliberately NOT cleared
+
+
+@pytest.mark.asyncio
+async def test_on_load_first_ever_failure_has_no_still_showing_clause():
+    """Nothing has been charted yet, so there is nothing to still be showing."""
+    from unittest.mock import patch
+
+    pane = build_chart_pane()
+    cb = _get_click_callback(_button(pane))
+    with patch("claudia.panel_app._get_toolkit", side_effect=RuntimeError("boom")):
+        await cb(None)
+
+    msg = _status(pane).object
+    assert "boom" in msg
+    assert "Still showing" not in msg
+
+
+@pytest.mark.asyncio
+async def test_on_load_failure_message_does_not_double_punctuate():
+    """Both reason sources already end their own sentence.
+
+    The fetch text ends "Is IBKR connected?" and build_chart_object's guard ends
+    "need at least 2 bars." -- appending a period unconditionally produced
+    "connected?." and "bars..".
+    """
+    from unittest.mock import patch
+
+    tk = _mock_toolkit(cached=False, df=None)
+    tk.execute.return_value = ("Could not resolve conid for Z (as STK). Is IBKR connected?", None)
+    tk._cache.load.side_effect = RuntimeError("No cached file")
+    pane = build_chart_pane()
+    cb = _get_click_callback(_button(pane))
+    with patch("claudia.panel_app._get_toolkit", return_value=tk):
+        await cb(None)
+    assert "?." not in _status(pane).object
+
+    tk2 = _mock_toolkit(cached=True, df=_sample_df().iloc[:1])
+    pane2 = build_chart_pane()
+    cb2 = _get_click_callback(_button(pane2))
+    with patch("claudia.panel_app._get_toolkit", return_value=tk2):
+        await cb2(None)
+    assert ".." not in _status(pane2).object
