@@ -107,14 +107,21 @@ def _configure_loader(mock_loader_cls: MagicMock) -> None:
 @pytest.fixture(autouse=True)
 def backend_singletons():
     """No test in this module may construct or start a real ConnectivityChecker/
-    ExecutionListener (module docstring discipline — they are network-facing and
-    their .start() binds an asyncio task to whatever loop is running). Globals
-    are reset to None on BOTH sides — deliberately NOT restored — because a
-    monkeypatch-style restore would re-install any previously leaked object."""
+    ExecutionListener/DashboardPoller (module docstring discipline — they are
+    network-facing and their .start() binds an asyncio task to whatever loop is
+    running). Globals are reset to None on BOTH sides — deliberately NOT restored —
+    because a monkeypatch-style restore would re-install any previously leaked object.
+
+    DashboardPoller joined the list on 2026-08-04. It is not patched by default, only
+    reset: several tests exercise the real construction path, and a real poller that is
+    never started performs no I/O at all. The reset is what matters — a poller leaked
+    from an earlier test would make the next test's construction assertion pass or fail
+    depending on execution order."""
     import claudia.panel_app as pa
 
     pa._connectivity_checker = None
     pa._execution_listener = None
+    pa._dashboard_poller = None
     with (
         patch("claudia.panel_app.ConnectivityChecker") as checker_cls,
         patch("claudia.panel_app.ExecutionListener") as listener_cls,
@@ -122,6 +129,7 @@ def backend_singletons():
         yield SimpleNamespace(checker_cls=checker_cls, listener_cls=listener_cls)
     pa._connectivity_checker = None
     pa._execution_listener = None
+    pa._dashboard_poller = None
 
 
 @pytest.fixture(autouse=True)
@@ -1248,12 +1256,21 @@ async def test_build_session_root_composes_indicators_above_chat():
     # importable one.
     from panel.widgets.indicators import BooleanStatus
 
-    # Task 10.1 nested the chat + indicators inside a left Column of a top-level Row;
-    # the indicator Row is now root.objects[0].objects[0].
-    left_column = root.objects[0]
-    indicator_row = left_column.objects[0]
+    # The dashboard (2026-08-04) put a KPI strip above everything, so the root is a
+    # Column and every positional index below it shifted. Located structurally rather
+    # than by index: the next pane added at the top must not silently break this test
+    # into passing against the wrong node.
+    indicator_row = next(
+        n for n in _iter_tree(root)
+        if isinstance(n, pn.Row)
+        and any(isinstance(o, BooleanStatus) for o in getattr(n, "objects", []))
+    )
     assert len([o for o in indicator_row.objects if isinstance(o, BooleanStatus)]) == 3
-    assert chat in left_column.objects  # chat sits beside the indicators in the left column
+    left_column = next(
+        n for n in _iter_tree(root)
+        if isinstance(n, pn.Column) and chat in getattr(n, "objects", [])
+    )
+    assert indicator_row in left_column.objects  # dots sit directly above the chat
     # The independent candlestick chart pane is composed into the root beside the chat.
     # pn.pane.HoloViews, not pn.pane.Bokeh, since claudia/panel_chart.py's build_chart_pane
     # swapped panes (Task 6, 2026-08-03) -- the pane's `object` is now the declarative
@@ -1292,6 +1309,195 @@ async def test_build_session_root_registers_5s_periodic_refresh():
     # freeze the dots gray forever (refresh never starts) with no test failing.
     assert mock_cb.call_args.kwargs.get("start") is False
     mock_onload.assert_called_once_with(mock_cb.return_value.start)
+
+
+# ── Live dashboard wire-up (2026-08-04) ──────────────────────────────────────
+
+
+def test_tabulator_extension_is_actually_loaded():
+    """Assert on the loaded-extension list, NOT on the argument string.
+
+    `pn.extension('typo')` does not raise — panel logs "extension not recognized and
+    will be skipped" via param.warning and continues, so a misspelled name yields a
+    silently non-functional table. Only `_loaded_extensions` proves it took effect.
+    """
+    import claudia.panel_app  # noqa: F401 - importing is what runs pn.extension
+
+    assert "tabulator" in pn.extension._loaded_extensions
+
+
+def test_notifications_and_reconnect_are_enabled():
+    """`reconnect` cannot tell the user anything without `notifications`."""
+    import claudia.panel_app  # noqa: F401
+
+    assert pn.config.notifications is True
+    assert pn.config.reconnect is True
+
+
+def test_extension_call_does_not_pre_empt_the_restyle_track():
+    """`design=`/`theme=` belong to the deferred restyle plan, not to a table addition."""
+    import inspect
+
+    import claudia.panel_app as app
+
+    source = inspect.getsource(app)
+    call = source[source.index("pn.extension("):]
+    call = call[: call.index(")") + 1]
+    assert "design=" not in call and "theme=" not in call
+
+
+@pytest.mark.asyncio
+async def test_session_root_composes_the_dashboard_tabs_and_table():
+    """One Tabs with three named tabs, one Tabulator, and it is not editable."""
+    from claudia.panel_app import _build_session_root
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "add_periodic_callback"),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = _build_session_root()
+        chat = _find_chat(root)
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    tabs = [n for n in _iter_tree(root) if isinstance(n, pn.Tabs)]
+    assert len(tabs) == 1
+    assert list(tabs[0]._names) == ["Chart", "Positions", "P&L"]
+
+    tables = [n for n in _iter_tree(root) if isinstance(n, pn.widgets.Tabulator)]
+    assert len(tables) == 1
+    # Hard Rule 1 regression guard, asserted at the composed-root level: a display
+    # surface must never become an order path, and Tabulator cells are editable by
+    # default. The absence of handlers is checked, not just the flag.
+    assert tables[0].disabled is True
+    assert not tables[0]._on_click_callbacks
+    assert not tables[0]._on_edit_callbacks
+
+    # Two HoloViews panes now: the candlestick pane inside the Chart tab, and the
+    # realised-P&L pane inside the P&L tab.
+    assert len([n for n in _iter_tree(root) if isinstance(n, pn.pane.HoloViews)]) == 2
+
+    # The KPI strip sits above the chat/tabs Row, so it is glanceable from any tab.
+    assert isinstance(root, pn.Column)
+    assert isinstance(root.objects[-1], pn.Row)
+    tiles = [n for n in _iter_tree(root.objects[0]) if isinstance(n, pn.indicators.Number)]
+    assert len(tiles) == 6
+
+
+@pytest.mark.asyncio
+async def test_periodic_refresh_repaints_both_the_dots_and_the_dashboard():
+    """One 5s timer drives both cache reads; neither performs I/O."""
+    from datetime import UTC, datetime
+
+    import claudia.panel_app as app
+    from claudia.dashboard_data import DashboardSnapshot, LedgerSnapshot
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    snapshot = DashboardSnapshot(
+        as_of=datetime.now(UTC),
+        ledger=LedgerSnapshot("USD", 100000.0, 25000.0, 24000.0, 60000.0, 0.0,
+                              -3638.52, 412.10, -3516.98),
+    )
+    poller = MagicMock()
+    poller.snapshot.return_value = snapshot
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "add_periodic_callback") as mock_cb,
+        patch.object(app, "_dashboard_poller", poller),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = app._build_session_root()
+        chat = _find_chat(root)
+        await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        refresh = mock_cb.call_args.args[0]
+        refresh()
+
+    poller.snapshot.assert_called()
+    tiles = [n for n in _iter_tree(root.objects[0]) if isinstance(n, pn.indicators.Number)]
+    by_label = {t.label: t for t in tiles}
+    assert by_label["Net liquidation"].value == 100000.0
+    assert by_label["Net liquidation"].format == "{value:,.2f} USD"
+
+
+@pytest.mark.asyncio
+async def test_periodic_refresh_survives_a_poller_that_is_not_up_yet():
+    """The dots must still repaint when the dashboard poller has not been built."""
+    import claudia.panel_app as app
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "add_periodic_callback") as mock_cb,
+        patch.object(app, "_dashboard_poller", None),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = app._build_session_root()
+        chat = _find_chat(root)
+        await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        mock_cb.call_args.args[0]()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_init_starts_the_dashboard_poller_on_the_toolkit_client(backend_singletons):
+    """The poller is built once per process from toolkit.client, then started."""
+    import claudia.panel_app as app
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "add_periodic_callback"),
+        patch.object(app, "DashboardPoller") as poller_cls,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = app._build_session_root()
+        chat = _find_chat(root)
+        await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    poller_cls.assert_called_once_with(
+        mock_toolkit.client, mock_toolkit._config.sqlite_path
+    )
+    poller_cls.return_value.start.assert_called()
 
 
 @pytest.mark.asyncio
@@ -1602,8 +1808,11 @@ async def test_file_widget_configured_and_composed_in_session_root():
     fi = _screenshot_file_input(chat)
     assert isinstance(fi, FileInput)
     assert fi.accept == "image/*"
-    # Task 10.1 nesting: the indicator/upload Row is now the left Column's first child.
-    assert fi in root.objects[0].objects[0].objects
+    # Located structurally, not by index: the 2026-08-04 dashboard added a KPI strip
+    # above the whole layout and shifted every positional path beneath it.
+    assert any(
+        fi in getattr(n, "objects", []) for n in _iter_tree(root) if isinstance(n, pn.Row)
+    )
 
 
 @pytest.mark.asyncio

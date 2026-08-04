@@ -4,8 +4,13 @@ removed the Chainlit app (claudia/app.py) and the chainlit dependency.
 Owns the whole session lifecycle: background init, Drive document download +
 versioning, opening status, document hot-reload alerts, process-wide backend
 singletons, per-session connectivity indicators and chat-alert delivery, the
-TradingView bridge, the external candlestick chart pane, screenshot upload,
-background Flex sync, and session-end cleanup.
+TradingView bridge, the external candlestick chart pane, the live dashboard
+(KPI strip + Positions/P&L tabs), screenshot upload, background Flex sync, and
+session-end cleanup.
+
+Also owns the app's single `pn.extension(...)` call and `pn.config` settings — see
+the block below `load_dotenv`. That call is shared with the deferred restyle track,
+so it is changed deliberately and in one place, never as a side effect.
 
 Served by Panel's own first-class Tornado server via pn.serve(callable) — the
 native-serving principle (2026-07-24): Panel-native serving, no workarounds.
@@ -46,11 +51,13 @@ from ibkr_core_mcp.gateway import GatewayManager
 from claudia.agent import ClaudIAAgent
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
+from claudia.dashboard_poller import DashboardPoller
 from claudia.execution_listener import ExecutionListener
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
 from claudia.opening_status import build_trade_lines, gather_status_block
 from claudia.panel_chart import build_chart_pane
+from claudia.panel_dashboard import build_dashboard
 from claudia.panel_markdown import safe_markdown
 from claudia.panel_sink import PanelMessageSink
 from claudia.session_reporter import generate_session_report
@@ -60,6 +67,31 @@ from claudia.tradingview import TradingViewBridge, check_cdp_running, launch_tra
 log = logging.getLogger(__name__)
 
 load_dotenv(override=False)
+
+# The one and only pn.extension() call in this app, at import time so it runs before any
+# session Document exists (Panel collects the extension's JS into the page template).
+#
+# `tabulator` is required — without it the dashboard's positions table renders as a blank
+# rectangle. An unrecognised name does NOT raise: panel logs "<name> extension not
+# recognized and will be skipped" via param.warning and carries on (panel/config.py), so
+# a typo yields a silently non-functional table. tests/test_panel_app.py therefore
+# asserts on `pn.extension._loaded_extensions`, never on the argument string.
+#
+# `notifications=True` is not cosmetic: it is what `pn.config.reconnect` needs in order
+# to tell the user anything. Without it `pn.state.notifications` is None and a dropped
+# socket reconnects — or fails to — in silence.
+#
+# `design=` / `theme=` are deliberately absent. They belong to the deferred restyle
+# track (docs/panel/ui-design-reference.md §8.3), and this call is shared with it: adding
+# a table must not silently pre-empt those decisions.
+pn.extension("tabulator", notifications=True)
+
+# Automatic WebSocket reconnect with exponential backoff (1/2/4/8/16/32s). Requires
+# panel >= 1.8 and bokeh >= 3.8, both floored in pyproject.toml. A trading session that
+# silently loses its socket keeps showing the last numbers it received forever — the
+# dashboard's staleness line covers the poller failing, but not the browser being
+# disconnected from a poller that is still running happily.
+pn.config.reconnect = True
 
 _MODEL = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
 _DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))
@@ -74,6 +106,9 @@ _conv_store: ConversationStore | None = None
 _gdrive_sync: GDriveSync | None = None
 _connectivity_checker: ConnectivityChecker | None = None
 _execution_listener: ExecutionListener | None = None
+# Process-wide, exactly like the checker above: one 15s poll serves every browser
+# session, and each session's 5s repaint reads its cache with no I/O at all.
+_dashboard_poller: DashboardPoller | None = None
 
 # Process-level TradingViewBridge singleton (Phase 9). Originally mirrored from the old
 # claudia/app.py; app.py was removed in the Phase 11 cutover, so this is now the only copy.
@@ -844,7 +879,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         next user message, so a broken startup degrades to an explained UI rather than a
         dead one.
         """
-        global _gdrive_sync, _connectivity_checker, _execution_listener
+        global _gdrive_sync, _connectivity_checker, _execution_listener, _dashboard_poller
         try:
             # GDrive DB download — MUST complete before ConversationStore first opens
             # the DB file (design D1). Unlike app.py, whose download is synchronous and
@@ -961,6 +996,13 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             if _execution_listener is None:
                 _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
             _execution_listener.start()
+            # Same construct-once/start-each-session shape as the checker above; start() is
+            # idempotent and restarts a cancelled task. The poller reads `toolkit.client`
+            # directly rather than going through ClaudeToolkit.execute(), which returns
+            # rendered markdown rather than data — see claudia/dashboard_data.py.
+            if _dashboard_poller is None:
+                _dashboard_poller = DashboardPoller(toolkit.client, cfg.sqlite_path)
+            _dashboard_poller.start()
 
             # tv_bridge_getter reads panel_app's live _tv_bridge module global at click
             # time, so a ```pine Inject button reflects a TradingView launched later.
@@ -1024,20 +1066,48 @@ def _screenshot_file_input(chat: pn.chat.ChatInterface) -> pn.widgets.FileInput:
     return chat._claudia_file_input  # type: ignore[attr-defined, no-any-return]
 
 
-def _build_session_root() -> pn.Row:
-    """pn.serve target: chat (with its status-indicator + screenshot-FileInput row
-    above it) on the left, the independent candlestick chart pane on the right
-    (Task 10.1) — functional placement; deep styling is the post-migration restyle
-    plan. Periodic refresh is session-scoped with automatic cleanup
+def _build_session_root() -> pn.Column:
+    """pn.serve target: the KPI strip across the top, chat left, dashboard tabs right.
+
+    Layout (the plan's chosen shape, taken over three columns, floating FloatPanels and a
+    second pn.serve route — all three costed and still available):
+
+        Column( KPI strip
+                Row( Column( status dots + screenshot upload, chat ),
+                     Tabs( Chart · Positions · P&L ) ) )
+
+    The KPI strip is a Column, not a Row, at the top level so account state is glanceable
+    from any tab without switching. The candlestick pane moved from a bare right-hand
+    column into the Chart tab; it is still driven by its own Load button and still
+    decoupled from the conversation.
+
+    **The root type changed from pn.Row to pn.Column here.** Composition tests that index
+    into the root by position were updated with it — a new pane at the top necessarily
+    shifts every positional index below it.
+
+    Periodic refresh is session-scoped with automatic cleanup
     (pn.state.add_periodic_callback registers against this session's Document —
-    source-verified, see the Phase 6 design note in the migration plan)."""
+    source-verified, see the Phase 6 design note in the migration plan). Both the status
+    dots and the dashboard ride the same 5-second callback: one timer, two synchronous
+    cache reads, no I/O on the session's event loop.
+    """
     chat = _build_chat_app()
     indicators = _make_status_indicators()
+    dashboard = build_dashboard(chart_pane=build_chart_pane())
 
     def _refresh() -> None:
-        """Repaint the status dots from the checker's latest cached result."""
+        """Repaint the status dots and the dashboard from their cached snapshots.
+
+        Both reads are synchronous and I/O-free by construction — the checker and the
+        poller each maintain their own background task. `DashboardView.refresh` swallows
+        its own exceptions (a repaint that raises inside a periodic callback would take
+        the timer down and freeze the dots too), so this function cannot break the dots
+        by failing on the dashboard.
+        """
         if _connectivity_checker is not None:
             _apply_status(indicators, _connectivity_checker.get_status())
+        if _dashboard_poller is not None:
+            dashboard.refresh(_dashboard_poller.snapshot())
 
     # start=False + onload: starting at build time registers the callback
     # doc-side before the ServerSession exists, and the held SessionCallbackAdded
@@ -1048,16 +1118,16 @@ def _build_session_root() -> pn.Row:
     # in pn.state._periodic[curdoc], so session auto-cleanup is preserved.
     cb = pn.state.add_periodic_callback(_refresh, period=5000, start=False)
     pn.state.onload(cb.start)
-    # Chat + its status/upload row on the left, the independent candlestick chart
-    # pane on the right (Task 10.1). The chart is driven by its own Load button —
-    # decoupled from the conversation by design. Split ratio / tabs-vs-side-by-side
-    # is a deferred restyle refinement (research doc §4).
-    return pn.Row(
-        pn.Column(
-            pn.Row(*indicators.values(), _screenshot_file_input(chat)),
-            chat,
+    return pn.Column(
+        dashboard.kpi_strip,
+        pn.Row(
+            pn.Column(
+                pn.Row(*indicators.values(), _screenshot_file_input(chat)),
+                chat,
+            ),
+            dashboard.tabs,
+            sizing_mode="stretch_both",
         ),
-        build_chart_pane(),
         sizing_mode="stretch_both",
     )
 
