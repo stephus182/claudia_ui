@@ -95,7 +95,7 @@ verification is manual and recorded in the Live Test Log below.
 | `test_tradingview.py` | 17 | Binary discovery, CDP check, tool curation, env allowlist |
 | `test_context_loader.py` | 17 | Load, hash, watchdog hot-reload, Drive override, version registration |
 | `test_session_reporter.py` | 15 | Session report generation, tool-call/decision aggregation |
-| `test_panel_chart.py` | 24 | Chart pane: fetch/cache paths, HoloViews chart assembly, error/spinner paths |
+| `test_panel_chart.py` | 28 | Chart pane: fetch/cache paths, HoloViews chart assembly, error/spinner paths, failure messaging |
 | `test_panel_sink.py` | 10 | `PanelMessageSink` → `pn.chat.ChatInterface` routing |
 | `test_opening_status.py` | 9 | UI-free opening-status builders |
 | `test_panel_order_flow.py` | 7 | Proposal buttons → order-flow cores |

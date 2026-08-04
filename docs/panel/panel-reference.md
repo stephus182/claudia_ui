@@ -330,12 +330,62 @@ Self-contained and **decoupled from the conversation** — driven by its own Loa
   inspecting the rendered glyphs' style). There is no wick-color constant in this module; the
   old `_WICK_COLOR = "#666"` was deleted along with the hand-built recipe, not renamed. These
   two are still the only hardcoded hex colors anywhere in `claudia/` (grepped 2026-08-03).
+- ⚠ **`.ohlc()` binds the OHLC columns by POSITION, not by name.** `converter.py` does
+  `o, h, l, c = [col for col in data.columns if col != x][:4]` when `y is None`. Measured
+  2026-08-03: move `volume` ahead of `open` in the frame and it silently charts
+  **volume-vs-low with every candle red**, raising nothing. `build_chart_object` therefore
+  passes `y=["open", "high", "low", "close"]` explicitly, and a test
+  (`test_build_chart_object_is_column_order_independent`) pins it. **Do not delete that
+  argument as redundant**: the hvPlot reference's `y` parameter line reads as a name-based
+  guarantee (*"Field names of the OHLC fields. Default is `["open","high","low","close"]`"*),
+  and only its surrounding prose states the positional rule — the isolated line is what a
+  reader checks.
 - **Data**: cache-first via `toolkit._cache.check/load` (parquet, `DatetimeIndex`, lowercase
-  columns), fetching from IBKR on a miss. `fetch_market_data` returns a summary, not bars —
-  hence the direct cache read.
+  columns), fetching from IBKR on a miss. `toolkit.execute` returns `tuple[str, None]` —
+  a text result and a legacy always-`None` slot — **not** bars, hence the direct cache read.
+  That text is load-bearing on the failure path (below), so do not discard it.
+- **Failure messaging** (rebuilt 2026-08-03 after the live run, `ba6c83e`): a failed load
+  quotes the fetch's own words — `✕ Could not load ZZQQXX — fetch reported: Could not resolve
+  conid for ZZQQXX (as STK). Is IBKR connected? Still showing AAPL 1d (6m).` Two deliberate
+  choices there. It **attributes** rather than asserts a root cause, so the pathological
+  "fetch reported success yet the load still failed" case stays visible. And it **names the
+  chart still on screen**, because a failed load deliberately leaves the previous chart up —
+  losing a chart to a typo is worse — which otherwise leaves the title and the symbol box
+  disagreeing with nothing to reconcile them.
+- **A 1-row frame is refused, not drawn.** hvplot sizes candles from `np.min(np.diff(x))`;
+  one row makes `np.diff` empty and numpy raises. `build_chart_object` converts that into
+  `ValueError("Cannot chart a single bar - need at least 2 bars.")` so the status line shows
+  something actionable instead of numpy internals. 0 rows and 2 rows are both fine.
 - **Refresh** by reassigning `chart.object`; the Load button sets `loading = True` first and
   always clears it in `finally`.
 - **STK only.**
+
+### Why min-spacing beats median — a live production case, not a theoretical one
+
+The deleted `_body_width_ms` used **median** spacing; hvplot uses **min**. Review treated the
+difference as a corner case. The 2026-08-03 live run found it occurring for real **[P]**.
+
+IBKR downsamples a long intraday request. Asking for `6m` at `30m` returned 267 bars whose
+gaps were nothing like 30 minutes — measured histogram: 150min ×102, 1290min ×80, 90min ×21,
+240min ×21. So `min = 90min` while `median = 240min`:
+
+```
+deleted _body_width_ms:  0.7 × median(240min)  = 168min body
+actual minimum gap between bars                =  90min
+                                    168 > 90  →  overlapping candles
+```
+
+The old helper would have smeared a chart you can load today. hvplot's min-based width gives
+a 0.700 ratio with no overlap at every timeframe tested (1d, 6m/30m, 1m/30m). Two corollaries
+worth keeping: **min is strictly safer than median** here, because `min ≤ every gap` makes
+overlap arithmetically unreachable; and the risk it *does* carry is the opposite one — a
+single anomalously *small* gap shrinks every body (a duplicate timestamp gives width 0).
+`ibkr_core_mcp` sorts and de-duplicates its bars, so that is guarded upstream rather than here.
+
+Also worth knowing when reading a "30m" chart: over a `6m` window the bars are **not** 30
+minutes apart. Over `1m` they are (measured: 30min ×252, plus overnight and weekend gaps).
+That is an IBKR data-volume behaviour, not a charting one — but the control says `30m` either
+way.
 
 See `ui-design-reference.md` §7 for why the color choice matters.
 
@@ -343,7 +393,7 @@ See `ui-design-reference.md` §7 for why the color choice matters.
 
 ## 10. Testing Panel without a browser
 
-119 tests across five files, none of which starts a server or a browser (re-counted
+123 tests across five files, none of which starts a server or a browser (re-counted
 2026-08-03 via `pytest --collect-only`, per file — counts drift with every change to these
 files, so re-count rather than trust this table).
 
@@ -351,7 +401,7 @@ files, so re-count rather than trust this table).
 |---|---|---|
 | `tests/test_panel_app.py` | 60 | Factory/callback wiring, Drive-DB-before-store ordering, init failure paths, doc versioning, opening status, watchdog alert delivery, singleton lifecycle, cleanup + destroy hook, all three action buttons, Flex sync, status dots, screenshot upload |
 | `tests/test_panel_pinescript.py` | 18 | Block-extraction edge cases, per-block closure correctness, `js_on_click` args, inject success/failure classification |
-| `tests/test_panel_chart.py` | 24 | Pane composition, `_on_load` cache/fetch/error/spinner paths, `build_chart_object` HoloViews assembly (wicks/bodies/SMA/volume, width scaling, column-order independence) |
+| `tests/test_panel_chart.py` | 28 | Pane composition, `_on_load` cache/fetch/error/spinner paths and failure messaging, `build_chart_object` HoloViews assembly (wicks/bodies/SMA/volume, width scaling, column-order independence, 1-row refusal) |
 | `tests/test_panel_sink.py` | 10 | Message routing, pine detection, `ChatStep` streaming + failure, proposal delegation |
 | `tests/test_panel_order_flow.py` | 7 | Each proposal type: buttons rendered, confirm calls the right core, dismiss disables without executing |
 
@@ -371,7 +421,64 @@ Three autouse fixtures in `test_panel_app.py` prevent tests from building a real
 `@pytest.mark.real_flex_sync` / `real_tv_connect` escape hatches registered in
 `pyproject.toml`.
 
-Full suite: `pytest` (**766 passed, 3 skipped** of 769 collected — re-run 2026-08-01). Gates:
+### Asserting on a HoloViews chart
+
+The chart moved from `pn.pane.Bokeh` to `pn.pane.HoloViews` on 2026-08-03, and that
+**improved** the assertion surface rather than complicating it. `pane.object` is now the
+declarative `holoviews.Layout`, so tests read the data being drawn instead of poking glyph
+renderers:
+
+```python
+[type(e).__name__ for e in pane.object]        # ['Overlay', 'Bars']
+_price(obj).Rectangles.I.data                  # candle count, lbound/ubound per body
+_price(obj).Curve.Sma_20.vdims[0].name         # 'sma_20'
+hv.Store.lookup_options("bokeh", rects, "style").kwargs["color"].apply(rects)
+                                               # per-row ['#26a69a', …, '#ef5350']
+```
+
+Two traps this file hit, both worth knowing before writing such a test **[P]**:
+
+- ⚠ **`hasattr` cannot distinguish an `Overlay` from a `Layout`.** HoloViews' dynamic
+  attribute access answers `hasattr(overlay, "Overlay")` with **`True`** and returns an
+  *empty* `:Overlay`, so a `hasattr`-based helper silently resolves to an element with no
+  data. Dispatch on `isinstance(obj, hv.Layout)`. The symptom is `AssertionError` /
+  `KeyError: 'ubound'` / `KeyError: 'color'`, never something that names the real cause.
+- ⚠ **Bokeh's `Model.select()` returns a generator**, annotated `Iterable[Model]` — `len()`
+  on it raises `TypeError: object of type 'generator' has no len()`. Wrap in `list(...)`.
+
+Candle-geometry assertions need `pytest.approx`: at daily spacing the measured body is
+`16:47:59.999998`, one microsecond under an exact `Timedelta(hours=24) * 0.7`, because
+`hv.Dataset` exposes the index as `datetime64[us]` and the sampling arithmetic truncates
+twice.
+
+### Verifying a *served* app — beyond `get_root()`
+
+`pn.pane.HoloViews(obj).get_root()` succeeding in a bare process proves an import side
+effect, **not** that a served app renders — inside a Panel server, JS loading is governed by
+`pn.extension()`, a different mechanism. Two checks that look decisive and are not, both
+tried on 2026-08-03:
+
+- Grepping the saved HTML for `"HoloViews"` / `"hv.plotting"` returns **0** for a page that
+  renders perfectly — those are Python namespace strings that never appear in serialized
+  Bokeh JSON.
+- `GET`ting the served URL and looking for `docs_json` also fails: a Panel server returns a
+  small HTML shell and delivers the document over **WebSocket**.
+
+What does work — pull the live session and inspect the real document:
+
+```python
+from bokeh.client import pull_session
+srv = pn.serve({"/c": app}, port=5601, show=False, threaded=True)
+doc = pull_session(url="http://localhost:5601/c").document
+Counter(type(m).__name__ for m in doc.roots[0].references())
+# figure: 2, GlyphRenderer: 4, ColumnDataSource: 4, GridPlot: 1  → heights [120, 300]
+```
+
+Or, from a driven browser, query `window.Bokeh.documents` directly — which is how the
+zoom-sync claim was settled (same `x_range` object; mutating one figure's range moved both).
+That is stronger than a screenshot, because it reads the state rather than its rendering.
+
+Full suite: `pytest` (**780 passed, 3 skipped** — re-run 2026-08-03). Gates:
 `ruff check claudia/ tests/ && mypy claudia/`, both clean on the same run.
 
 ---

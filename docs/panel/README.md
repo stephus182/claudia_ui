@@ -25,8 +25,10 @@ Distinct from:
   Serving model (`pn.serve`, `websocket_origin`, SIGTERM translation), session lifecycle (the
   init gate, the `_init_lock` data-integrity rationale, the V4 destroy contract), the layout
   tree, the `MessageSink` seam, the widget idioms and gotchas that cost real debugging time,
-  status dots, the chart pane, how the 103 Panel tests drive buttons with no browser, and the
-  version/dependency state. Every claim cites a `file:line`.
+  status dots, the **HoloViews chart pane** (§9 — including the positional column-binding trap
+  and the live production case where min-spacing beats median), how the 123 Panel tests drive
+  buttons with no browser, how to assert on a HoloViews chart, **what does and does not prove a
+  served app renders** (§10), and the version/dependency state. Every claim cites a `file:line`.
 - [Panel UI design & styling reference](ui-design-reference.md) — **the styling surface.** The
   honest visual baseline (there is currently *no* CSS, theme, template or `pn.extension()`
   call anywhere), the shadow-DOM constraint that dictates every styling choice, Panel's
@@ -40,9 +42,11 @@ Distinct from:
   exact 20-parameter `Viewable`/`Layoutable` contract, state syncing and the mutable-value trap,
   the **four interactivity APIs ranked** (component-level binding → `pn.bind` → `@param.depends` →
   watchers) with an honest survey of where ClaudIA stands (100% on the lowest level), the
-  functions-vs-classes tradeoff, and the **four routes to a custom component** — including the
-  probe-verified reason `PyComponent` and not `Viewer` is the right base class. Read this before
-  adding any component; it is the doc that prevents an architecture choice made on prose.
+  functions-vs-classes tradeoff, the **four routes to a custom component** — including the
+  probe-verified reason `PyComponent` and not `Viewer` is the right base class — and (added
+  2026-08-03) why a pane holding a *specification* is cheaper to test than one holding a
+  rendering, demonstrated by the chart's `pn.pane.Bokeh` → `pn.pane.HoloViews` move. Read this
+  before adding any component; it is the doc that prevents an architecture choice made on prose.
 - [Panel data surfaces reference](data-surfaces-reference.md) — **graphs, tables, indicators and
   the wiring to drive them.** Started 2026-07-24, before any of this work began: the component
   inventory filtered to trading surfaces (Tabulator/Perspective, Trend/Number/LinearGauge, the

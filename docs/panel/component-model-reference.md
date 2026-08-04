@@ -127,6 +127,34 @@ Param buys two things, and both are load-bearing for a trading UI:
 a live reference you can bind. Binding requires the object, not the value **[S]**. Everything
 in §5 hinges on this.
 
+### A pane's `object` can hold a *specification*, not a rendering [P]
+
+Panes take `object`, widgets take `value` (§1). But what a pane's `object` *is* varies more
+than the taxonomy suggests, and it changes how testable the component is.
+
+`pn.pane.Bokeh.object` is a `bokeh.plotting.figure` — an already-rendered artifact. Asking it
+what it draws means walking `figure.renderers`, matching on glyph classes and reading
+`data_source` dictionaries.
+
+`pn.pane.HoloViews.object` is a `holoviews.Layout` — a **declarative spec** that has not been
+rendered yet. It answers questions about the data directly:
+
+```python
+[type(e).__name__ for e in pane.object]   # ['Overlay', 'Bars']
+layout.Overlay.I.Rectangles.I.data        # the actual candle bodies
+```
+
+ClaudIA's chart pane moved from the first to the second on 2026-08-03, and the test suite got
+*shorter and more direct* as a result — assertions on the data being drawn replaced assertions
+on Bokeh glyph internals ([`panel-reference.md`](panel-reference.md) §10). Worth knowing when
+choosing a pane for a new surface: a spec-holding pane is cheaper to test than a
+figure-holding one, independent of what it renders.
+
+⚠ **The trap that comes with it:** HoloViews containers use dynamic attribute access, so
+`hasattr(overlay, "Overlay")` returns **`True`** on a bare `Overlay` and yields an *empty*
+`:Overlay` rather than raising. Type-test with `isinstance(obj, hv.Layout)`; a `hasattr` check
+silently resolves to an element with no data **[P]**.
+
 ### Parameters can be set at class level *and* instance level [S]
 
 ```python
@@ -626,6 +654,18 @@ Nothing here has been agreed. Each item is stated with what would settle it.
 6. **`pn.config.notifications = True` is sufficient for toasts** — see the §15 note. A refinement,
    not a correction, to what the buttons research and
    [`ui-design-reference.md`](ui-design-reference.md) §5 already record.
+7. **A spec-holding pane is cheaper to test than a figure-holding one** (§3). Demonstrated
+   rather than argued: the chart pane moved `pn.pane.Bokeh` → `pn.pane.HoloViews` on
+   2026-08-03 and its tests got shorter *and* stricter, because `pane.object` became the
+   declarative `Layout` instead of a rendered `figure`. **Settled by evidence** for that pane;
+   what it does *not* settle is whether the same holds for a `Tabulator` or `Trend`, whose
+   `value`/`data` already are the data. Worth weighing when a new surface picks a component.
+8. **The survey in §7 survived the chart rewrite unchanged** — re-counted 2026-08-03:
+   `on_click` 11, `js_on_click` 1, `param.watch` 1, `pn.bind`/`pn.rx`/`@param.depends` 0,
+   `pn.extension(...)` **0** (the one grep hit in `claudia/` is a comment, not a call). Swapping
+   the chart's rendering layer changed nothing about *how* ClaudIA drives components. That is
+   the point finding 2 makes: the callback style is still untested against a derivation,
+   because no derivation has been built yet.
 
 **What this document does *not* settle:** which surfaces get built, in what order, or whether
 any of the class-based machinery is adopted at all. Those are
@@ -651,6 +691,10 @@ data-source answer first.
 | 11 | Bootstrap's **JavaScript** does not work with Panel — it cannot reach into the shadow root. Its CSS is fine | **[S]** |
 | 12 | `ChatFeed` list mutation is verified **Python-side only**; live browser re-render untested | **[P]/[?]** |
 | 13 | An **Indicator is a Widget** in the MRO — widget parameter facts apply to our status dots | **[P]** |
+| 14 | `hasattr(overlay, "Overlay")` is **`True`** on a bare HoloViews `Overlay` and returns an *empty* element — type-test with `isinstance(obj, hv.Layout)`, never `hasattr` (§3) | **[P]** |
+| 15 | Bokeh's `Model.select()` returns a **generator** (annotated `Iterable[Model]`) — `len()` on it raises `TypeError`; wrap in `list(...)` | **[P]** |
+| 16 | `pn.pane.HoloViews.linked_axes` does **not** link axes within one `Layout` — that is holoviews' own `Layout.shared_axes` (default `True`), which applies with no Panel pane involved. `linked_axes` links across *separate panes* in a Panel layout | **[P]** |
+| 17 | A served Panel app delivers its document over **WebSocket** — the initial `GET` returns a shell with no `docs_json`, so grepping the HTML proves nothing. Pull the session (`bokeh.client.pull_session`) or query `window.Bokeh.documents` | **[P]** |
 
 ---
 
