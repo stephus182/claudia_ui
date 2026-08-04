@@ -44,6 +44,12 @@ Every money figure carries its ISO code, never a bare `$` — that symbol is sha
 USD/MXN/CAD/AUD/HKD/SGD, and a wrong-currency price reads as an ordinary one. Where a
 window spans several currencies the label is `mixed` rather than a code the total does
 not actually have.
+
+The one case with **no** code is a window that realised nothing: it has no currency, so
+the view substitutes the account's own base currency from the ledger, and renders a bare
+number when there is no ledger either. Substitute a known currency or none — never a
+plausible-looking placeholder, which is the mistake the ledger's `"BASE"` row already
+caused once (`dashboard_data.parse_ledger`).
 """
 
 from __future__ import annotations
@@ -106,21 +112,27 @@ _WINDOW_LABELS = tuple(_WINDOW_KEYS)
 
 
 def fmt_money(value: float | None, currency: str) -> str:
-    """A balance as `12,345.67 USD`. `—` for None, never a bare currency symbol."""
+    """A balance as `12,345.67 USD`. `—` for None, never a bare currency symbol.
+
+    An empty `currency` renders the number alone. That case is not an oversight: an
+    empty realised window has no currency to state (`RealisedWindow.currency_label`),
+    and a bare `0.00` is honest where `0.00 USD` on a EUR account would not be.
+    """
     if value is None:
         return "—"
-    return f"{value:,.2f} {currency}"
+    return f"{value:,.2f} {currency}".rstrip()
 
 
 def fmt_signed(value: float | None, currency: str) -> str:
     """A P&L figure as `-3,516.98 USD` / `+250.25 USD`, with an explicit sign.
 
     The sign is always shown: a profit and a loss must not be distinguishable only by a
-    minus that is easy to miss in a dense row of numbers.
+    minus that is easy to miss in a dense row of numbers. An empty `currency` renders
+    the number alone — see `fmt_money`.
     """
     if value is None:
         return "—"
-    return f"{value:+,.2f} {currency}"
+    return f"{value:+,.2f} {currency}".rstrip()
 
 
 def fmt_age(seconds: float) -> str:
@@ -301,10 +313,12 @@ _MONEY_FORMAT = "0,0.00"
 _PRICE_FORMAT = "0,0.00[00]"
 _QTY_FORMAT = "0,0.[00000000]"  # fractional-share and futures quantities alike
 
-# Paginate rather than grow: `get_positions` pages at 30 and the data layer follows every
-# page, so a large book would otherwise stretch the pane past the viewport and push the
-# reconciliation line — the one thing on this tab that must not be missed — off screen.
-_POSITIONS_PAGE_SIZE = 15
+# Rows per displayed page. Distinct from `dashboard_data._POSITIONS_PAGE_SIZE`, which is
+# IBKR's own 30-per-request paging — this is purely how many rows the table shows at once.
+# Paginate rather than grow: the data layer follows every IBKR page, so a large book would
+# otherwise stretch the pane past the viewport and push the reconciliation line — the one
+# thing on this tab that must not be missed — off screen.
+_POSITIONS_ROWS_PER_PAGE = 15
 
 # What each column actually is, on hover. Two of these are genuinely ambiguous on a
 # trading surface: "Avg cost" is IBKR's `avgCost`, which for a futures position is per
@@ -319,6 +333,14 @@ _POSITION_TOOLTIPS = {
     "Unrealised": "Open P&L on the position. Not the day's change, and not realised.",
     "Ccy": "The position's own currency — it need not be the account's base currency.",
 }
+
+
+# A never-polled snapshot, used only to give the Tabulator its column headers at build
+# time, so `positions_frame`'s empty-frame path runs on construction rather than first
+# appearing on a live session with no positions. `as_of` is a fixed sentinel rather than
+# `datetime.now()`: nothing reads it, and a module-level clock read is an import-time side
+# effect that would make import order observable.
+_EMPTY = DashboardSnapshot(as_of=datetime.min.replace(tzinfo=UTC))
 
 
 def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
@@ -399,7 +421,10 @@ def _sign_style(value: Any) -> str:
 
 
 def stats_markdown(
-    window: RealisedWindow | None, stats: RoundTripStats | None, label: str
+    window: RealisedWindow | None,
+    stats: RoundTripStats | None,
+    label: str,
+    currency: str | None = None,
 ) -> str:
     """The trading-stats block: trade count, winners vs losers in % **and** absolute money.
 
@@ -418,7 +443,9 @@ def stats_markdown(
     """
     if window is None or stats is None:
         return "_No trade data in the local store._"
-    ccy = window.currency_label
+    # `currency` lets the caller substitute the account's base currency for a window
+    # that realised nothing and therefore has no currency of its own.
+    ccy = currency if currency is not None else window.currency_label
     lines = [
         f"#### {label}",
         "",
@@ -457,18 +484,20 @@ def ledger_markdown(snapshot: DashboardSnapshot) -> str:
     two are complementary. The exact per-asset split is available — from the Flex
     windows, where it is measured rather than inferred — and that is where it is shown.
 
-    That restraint was vindicated on the first live read (2026-08-04). The account
-    returned:
+    That restraint was vindicated live on 2026-08-04, in **two** reads an hour apart at
+    different market values:
 
-        futuremarketvalue  -11,607.50      futuresonlypnl  -11,607.50
-        unrealizedpnl      -11,618.32      realizedpnl      -2,656.11
+        read 1   futuremarketvalue  -11,607.50   futuresonlypnl  -11,607.50
+                 unrealizedpnl      -11,618.32   realizedpnl      -2,656.11
+        read 2   futuremarketvalue  -11,223.30   futuresonlypnl  -11,223.30
+                 unrealizedpnl      -11,202.04   realizedpnl      -2,656.11
 
-    `futuresonlypnl` is **exactly** `futuremarketvalue` — not close to it, equal — and
-    is four times the realised figure. Treating it as the futures half of a realised
-    split would have been wrong by an order of magnitude and in the wrong direction.
-    One measurement on one futures-heavy account is evidence, not proof, which is why
-    the field is displayed under IBKR's own name with the observation attached and no
-    arithmetic performed on it.
+    `futuresonlypnl` is **exactly** `futuremarketvalue` both times — not close to it,
+    equal — while `realizedpnl` did not move at all between them. Treating it as the
+    futures half of a realised split would have been wrong by an order of magnitude and
+    in the wrong direction. Two reads on one futures-heavy account is still evidence
+    rather than proof, which is why the field is displayed under IBKR's own name with
+    the observation attached and no arithmetic performed on it.
     """
     led = snapshot.ledger
     if led is None:
@@ -505,6 +534,17 @@ def ledger_markdown(snapshot: DashboardSnapshot) -> str:
 
 class DashboardView:
     """The dashboard's widgets plus the one `refresh(snapshot)` that repaints them all.
+
+    Two public attributes, both Panel layouts for the caller to place where it likes:
+
+    * `kpi_strip` — the tile row and the freshness line. `panel_app` puts it at the top
+      of the session root so account state is glanceable from any tab.
+    * `tabs` — `Tabs(Chart · Positions · P&L)`.
+
+    They are separate rather than one component because they belong in different places
+    in the layout; keeping them as standalone factories is also what makes re-parenting
+    (a `FloatPanel`, a `GridStack` cell, a second `pn.serve` route) a layout change
+    rather than a rewrite.
 
     Built with no data — `refresh` is what fills it — so a session renders instantly and
     populates on the poller's first snapshot rather than blocking page load on IBKR.
@@ -567,7 +607,7 @@ class DashboardView:
             header_filters=True,
             header_tooltips=dict(_POSITION_TOOLTIPS),
             pagination="local",
-            page_size=_POSITIONS_PAGE_SIZE,
+            page_size=_POSITIONS_ROWS_PER_PAGE,
         )
         # `.style` is a real pandas Styler and it survives every `value` reassignment,
         # rebinding to the new frame (verified 2026-08-04 against panel 1.9.3/pandas
@@ -704,9 +744,15 @@ class DashboardView:
             notifications.success("Account data is live again.", duration=4000)
 
     def _refresh_tiles(self, snapshot: DashboardSnapshot, now: datetime | None) -> None:
-        """KPI strip: ledger balances, live unrealised, the two realised figures, win rate."""
+        """KPI strip: ledger balances, live unrealised, the two realised figures, win rate.
+
+        `ccy` is the empty string when there is no ledger, never a guessed "USD". Every
+        tile whose value comes from that missing ledger is set to None, and `_set` drops
+        the format for a None value, so the code is not rendered in that case anyway —
+        but a placeholder currency sitting in a local is one edit away from being shown.
+        """
         led = snapshot.ledger
-        ccy = led.currency if led else "USD"
+        ccy = led.currency if led else ""
         self._set(self._tiles["net_liq"], led.net_liquidation if led else None,
                   f"{{value:,.2f}} {ccy}")
         self._set(self._tiles["cash"], led.cash if led else None, f"{{value:,.2f}} {ccy}")
@@ -716,9 +762,12 @@ class DashboardView:
         self._set(self._tiles["realised_ledger"], led.realised_pnl if led else None,
                   f"{{value:+,.2f}} {ccy}")
 
+        # An empty week has no currency of its own (`currency_label` returns ""), so the
+        # account's own base currency stands in — known, not assumed.
         week = snapshot.week
+        week_ccy = (week.currency_label or ccy) if week else ccy
         self._set(self._tiles["realised_week"], week.total if week else None,
-                  f"{{value:+,.2f}} {week.currency_label if week else ccy}")
+                  f"{{value:+,.2f}} {week_ccy}".rstrip())
         stats = snapshot.stats.get("week")
         self._set(self._tiles["win_rate"],
                   stats.win_rate if stats and stats.win_rate is not None else None,
@@ -743,7 +792,7 @@ class DashboardView:
         tile.param.update(value=value, format="{value}" if value is None else fmt)
 
     def _refresh_positions(self, snapshot: DashboardSnapshot) -> None:
-        """Positions tab: the table plus a count/currency summary line."""
+        """Positions tab: the table, a count/currency summary, and the reconciliation line."""
         self._positions.value = positions_frame(snapshot)
         self._reconciliation.object = reconciliation_line(reconcile(snapshot))
         count = len(snapshot.positions)
@@ -762,25 +811,30 @@ class DashboardView:
         self._positions_status.object = summary
 
     def _refresh_pnl(self, snapshot: DashboardSnapshot) -> None:
-        """P&L tab: the realised chart for the selected window, stats, and disclosures."""
+        """P&L tab: the realised chart for the selected window, stats, and disclosures.
+
+        An empty window reports no currency of its own, so the account's base currency
+        (from the ledger) stands in — and when there is no ledger either, nothing is
+        stated. Same rule as the KPI strip: substitute a *known* currency or none.
+        """
         label = str(self._window.value)
         window, points, stats = self._selected_window(snapshot)
+        account_ccy = snapshot.ledger.currency if snapshot.ledger else ""
         if window is None:
             self._pnl_chart.object = None
             self._pnl_chart_note.object = ""
             self._pnl_stats.object = "_No trade data in the local store._"
         else:
+            ccy = window.currency_label or account_ccy
             title = (
                 f"Realised P&L — {label} "
-                f"({window.start.isoformat()} → {window.end.isoformat()}, "
-                f"{window.currency_label})"
+                f"({window.start.isoformat()} → {window.end.isoformat()}"
+                + (f", {ccy})" if ccy else ")")
             )
             self._pnl_chart.object = build_realised_chart(points, title)
-            self._pnl_chart_note.object = realised_chart_note(
-                points, window.currency_label
-            )
+            self._pnl_chart_note.object = realised_chart_note(points, ccy)
             self._pnl_stats.object = stats_markdown(
-                window, stats, f"{label} — realised & round trips"
+                window, stats, f"{label} — realised & round trips", currency=ccy
             )
         self._pnl_coverage.object = coverage_line(snapshot)
         self._ledger_detail.object = ledger_markdown(snapshot)
@@ -806,12 +860,6 @@ class DashboardView:
         """Re-render the P&L tab when the window selector changes, without a new poll."""
         if self._snapshot is not None:
             self._refresh_pnl(self._snapshot)
-
-
-# A never-polled snapshot, used only to give the Tabulator its column headers at build
-# time. Module-level so `positions_frame`'s empty-frame path is exercised on construction
-# rather than first appearing on a live session with no positions.
-_EMPTY = DashboardSnapshot(as_of=datetime.now(UTC))
 
 
 def build_dashboard(chart_pane: Any = None) -> DashboardView:

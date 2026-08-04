@@ -186,6 +186,66 @@ async def test_a_missing_store_does_not_stop_the_account_half(tmp_path):
     assert snap.error is None  # the IBKR half succeeded; that is what `error` reports
 
 
+async def test_a_failed_flex_read_carries_the_previous_windows_forward(db):
+    """A failed local read means no NEW information, not that the information is gone.
+
+    The Flex dataset changes at most once a day, so blanking the realised windows because
+    SQLite was momentarily unavailable throws away the best available answer. An earlier
+    version did exactly that: it spread an empty dict into the new snapshot and let every
+    window default to None.
+    """
+    p = _poller(db, FakeClient())
+    await p._poll_once()
+    good = p.snapshot()
+    assert good.week is not None
+
+    p._read_flex = lambda: None  # type: ignore[method-assign]
+    await p._poll_once()
+    after = p.snapshot()
+
+    assert after.week is good.week
+    assert after.ytd is good.ytd
+    assert after.stats is good.stats
+    assert after.coverage is good.coverage
+    assert after.ledger is not None  # the account half is unaffected
+
+
+async def test_a_failed_flex_read_during_an_ibkr_failure_keeps_both_halves(db):
+    """Both reads failing must not blank a snapshot that was complete a second ago."""
+    p = _poller(db, FakeClient(fail_from=2))
+    await p._poll_once()
+    good = p.snapshot()
+
+    p._read_flex = lambda: None  # type: ignore[method-assign]
+    await p._poll_once()
+    after = p.snapshot()
+
+    assert after.week is good.week
+    assert after.ledger == good.ledger
+    assert after.as_of == good.as_of  # still not refreshed
+    assert "gateway went away" in (after.error or "")
+
+
+async def test_an_empty_store_is_not_treated_as_a_failed_read(tmp_path):
+    """A successful read that finds nothing is a different claim from a failed one.
+
+    `_read_flex` returns all six keys on success and None on failure, so an empty store
+    yields real (empty) windows rather than silently carrying stale ones forward.
+    """
+    path = tmp_path / "empty.db"
+    with sqlite3.connect(path) as w:
+        w.execute(
+            "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)"
+        )
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, fifo_pnl_realized REAL)")
+    p = DashboardPoller(FakeClient(), path, today_provider=lambda: _TODAY)
+    await p._poll_once()
+    snap = p.snapshot()
+    assert snap.week is not None and snap.week.trade_count == 0
+    assert snap.coverage == dd.FlexCoverage(through=None, live_pending=0)
+
+
 async def test_loop_survives_a_client_that_raises_and_keeps_polling(db):
     """The task must outlive a failing poll — a frozen dashboard is a silent failure."""
     client = FakeClient(fail_from=2)

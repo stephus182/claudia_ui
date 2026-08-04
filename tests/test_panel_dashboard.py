@@ -33,10 +33,10 @@ _NOW = datetime(2026, 8, 6, 15, 30, tzinfo=UTC)
 _TODAY = date(2026, 8, 6)
 
 
-def _window(name, start, end, total, count, by_asset=None, currencies=("USD",)):
+def _window(start, end, total, count, by_asset=None, currencies=("USD",)):
     """A `RealisedWindow` with sensible defaults for the fields a test does not pin."""
     return dd.RealisedWindow(
-        name=name, start=start, end=end, total=total, trade_count=count,
+        start=start, end=end, total=total, trade_count=count,
         by_asset=by_asset or {"FUT": total}, currencies=currencies,
     )
 
@@ -80,10 +80,10 @@ def _snapshot(**over):
         "as_of": _NOW,
         "ledger": _ledger(),
         "positions": _positions(),
-        "week": _window("week", date(2026, 8, 3), _TODAY, -2194.98, 5,
+        "week": _window(date(2026, 8, 3), _TODAY, -2194.98, 5,
                         {"FUT": -3516.98, "STK": 1322.0}),
-        "month": _window("month", date(2026, 8, 1), _TODAY, -2294.98, 6),
-        "ytd": _window("ytd", date(2026, 1, 1), _TODAY, -4006.18, 8,
+        "month": _window(date(2026, 8, 1), _TODAY, -2294.98, 6),
+        "ytd": _window(date(2026, 1, 1), _TODAY, -4006.18, 8,
                        {"FUT": -3616.98, "STK": 1122.0, "OPT": -1511.20},
                        currencies=("EUR", "USD")),
         "stats": {"week": _stats(), "month": _stats(lots=5), "ytd": _stats(lots=42, wins=20, losses=22)},
@@ -297,6 +297,34 @@ def test_a_mixed_currency_window_is_labelled_mixed_not_usd(view):
     assert "mixed" in view._pnl_chart.object.Overlay.I.opts.get("plot").kwargs["title"]
 
 
+def test_an_empty_window_borrows_the_accounts_currency_rather_than_guessing():
+    """A window that realised nothing has no currency; the ledger's is known, so use it."""
+    empty = _window(date(2026, 8, 3), _TODAY, 0.0, 0, by_asset={}, currencies=())
+    assert empty.currency_label == ""
+
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(week=empty, month=empty, ytd=empty, series=()), now=_NOW)
+    v._window.value = "Week"
+    assert v._tiles["realised_week"].format == "{value:+,.2f} USD"
+    assert "+0.00 USD" in v._pnl_stats.object
+
+
+def test_with_neither_a_window_currency_nor_a_ledger_no_code_is_stated():
+    """Nothing known: render the bare number. Never a placeholder ISO code."""
+    empty = _window(date(2026, 8, 3), _TODAY, 0.0, 0, by_asset={}, currencies=())
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(week=empty, month=empty, ytd=empty, series=(), ledger=None), now=_NOW)
+    v._window.value = "Week"
+    assert v._tiles["realised_week"].format == "{value:+,.2f}"
+    assert "+0.00 |" in v._pnl_stats.object
+    assert "USD" not in v._pnl_stats.object
+
+
+def test_formatters_omit_a_trailing_space_for_an_unknown_currency():
+    assert pdash.fmt_money(1234.5, "") == "1,234.50"
+    assert pdash.fmt_signed(-1234.5, "") == "-1,234.50"
+
+
 def test_signed_figures_always_show_their_sign():
     assert pdash.fmt_signed(250.25, "USD") == "+250.25 USD"
     assert pdash.fmt_signed(-3516.98, "USD") == "-3,516.98 USD"
@@ -442,7 +470,7 @@ def test_positions_table_has_read_only_affordances_only(view):
     """Filtering, sorting and paging change the view; none can reach an order path."""
     assert view._positions.header_filters is True
     assert view._positions.pagination == "local"
-    assert view._positions.page_size == pdash._POSITIONS_PAGE_SIZE
+    assert view._positions.page_size == pdash._POSITIONS_ROWS_PER_PAGE
     assert set(view._positions.header_tooltips) <= set(pdash._POSITION_COLUMNS)
     # The Hard Rule 1 guarantees are unchanged by any of the above.
     assert view._positions.disabled is True
@@ -644,7 +672,7 @@ def test_a_single_point_window_explains_itself_instead_of_drawing_a_broken_axis(
     v.refresh(
         _snapshot(
             series=one,
-            week=_window("week", date(2026, 8, 3), date(2026, 8, 4), -3516.98, 4),
+            week=_window(date(2026, 8, 3), date(2026, 8, 4), -3516.98, 4),
         ),
         now=_NOW,
     )
@@ -695,7 +723,7 @@ def test_refresh_never_raises_and_keeps_the_previous_frame(view, caplog):
 
 def test_stats_markdown_handles_a_window_with_no_lots():
     text = pdash.stats_markdown(
-        _window("week", date(2026, 8, 3), _TODAY, 0.0, 0, {}),
+        _window(date(2026, 8, 3), _TODAY, 0.0, 0, {}),
         _stats(lots=0, wins=0, losses=0, gross_win=0.0, gross_loss=0.0),
         "Week",
     )

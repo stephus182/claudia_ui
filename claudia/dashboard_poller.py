@@ -36,6 +36,11 @@ gateway reasons, and its own as-of is a *date* carried by `FlexCoverage.through`
 snapshot can legitimately hold fresh realised windows beside a stale ledger — which is
 exactly what a logged-out gateway looks like, and exactly what the UI must say.
 
+The same principle runs the other way too: a Flex read that fails carries the **previous**
+sections forward rather than blanking them (`_flex_sections`). A failed local read means
+no new information, not that the information is gone — the Flex dataset changes at most
+once a day, so the last good windows are still the best available answer.
+
 ## Account id
 
 Resolved **once** and cached. `ClaudeToolkit._first_account_id()` calls
@@ -56,6 +61,8 @@ from typing import TYPE_CHECKING, Any
 
 from claudia.dashboard_data import (
     DashboardSnapshot,
+    LedgerSnapshot,
+    Position,
     build_flex_sections,
     connect,
     empty_snapshot,
@@ -187,7 +194,7 @@ class DashboardPoller:
         week/month/YTD rather than an empty dashboard — the numbers that are available
         are shown, and the ones that are not are marked stale with a reason.
         """
-        flex = await asyncio.to_thread(self._read_flex)
+        flex = self._flex_sections(await asyncio.to_thread(self._read_flex))
         try:
             ledger, positions = await asyncio.to_thread(self._read_account)
         except Exception as exc:
@@ -206,9 +213,10 @@ class DashboardPoller:
         """Republish the previous account data, unaged, with `error` attached.
 
         `as_of` is carried over from the previous snapshot rather than refreshed — see
-        the module docstring. The Flex sections *are* refreshed, because they came from
-        a local read that succeeded and withholding them would hide good data behind an
-        unrelated failure.
+        the module docstring. The Flex sections are whatever `_flex_sections` resolved:
+        this poll's if the local read succeeded, the previous poll's if it did not.
+        Withholding good Flex data because an unrelated IBKR call failed would hide the
+        half of the dashboard that still works.
         """
         previous = self._snapshot
         self._snapshot = DashboardSnapshot(
@@ -219,26 +227,52 @@ class DashboardPoller:
             **flex,
         )
 
-    def _read_flex(self) -> dict[str, Any]:
-        """Read every Flex-derived section. Blocking SQLite — runs on a worker thread.
+    def _flex_sections(self, flex: dict[str, Any] | None) -> dict[str, Any]:
+        """Fresh Flex sections from this poll, or the previous snapshot's if the read failed.
 
-        Opens its own read-only connection per poll and closes it. A cached connection
-        would be an object created on one `asyncio.to_thread` worker and used on
-        another, which sqlite3 rejects outright; and holding a handle open across polls
-        would keep a read transaction alive against a file the Flex sync is writing.
+        A failed local read means *no new information*, not *the information is gone*.
+        The Flex dataset changes at most once a day, so carrying the previous sections
+        forward is strictly more accurate than blanking the realised windows because
+        SQLite was momentarily unavailable — which is what an earlier version did, since
+        it spread an empty dict into the new snapshot and let every window default to
+        None.
+
+        `None` from `_read_flex` is the failure signal; a *successful* read always
+        returns all six keys, so it can never be confused with an empty result.
+        """
+        if flex is not None:
+            return flex
+        previous = self._snapshot
+        return {
+            "week": previous.week,
+            "month": previous.month,
+            "ytd": previous.ytd,
+            "stats": previous.stats,
+            "series": previous.series,
+            "coverage": previous.coverage,
+        }
+
+    def _read_flex(self) -> dict[str, Any] | None:
+        """Read every Flex-derived section, or None if the read failed.
+
+        Blocking SQLite — runs on a worker thread. Opens its own read-only connection
+        per poll and closes it. A cached connection would be an object created on one
+        `asyncio.to_thread` worker and used on another, which sqlite3 rejects outright;
+        and holding a handle open across polls would keep a read transaction alive
+        against a file the Flex sync is writing.
 
         Never raises: a missing or half-built store must not stop the account half of
-        the poll. Returns empty sections instead, which render as "—" rather than as
-        wrong numbers.
+        the poll. Returns None so `_flex_sections` can tell "the read failed" apart from
+        "the read succeeded and found nothing", which are different claims.
         """
         try:
             with closing(connect(self._db_path)) as conn:
                 return build_flex_sections(conn, self._today())
         except Exception as exc:
             log.warning("Dashboard Flex read failed: %s", exc)
-            return {}
+            return None
 
-    def _read_account(self) -> tuple[Any, tuple[Any, ...]]:
+    def _read_account(self) -> tuple[LedgerSnapshot | None, tuple[Position, ...]]:
         """Resolve the account if needed, then read the ledger and positions.
 
         Blocking HTTP — runs on a worker thread. Raises on any IBKR failure so

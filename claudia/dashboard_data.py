@@ -15,7 +15,7 @@ every session (`docs/panel/panel-reference.md` §3.3).
 | Figure | Source |
 |---|---|
 | Net liq, cash, market values, unrealised P&L | `client.get_account_ledger()` |
-| Realised P&L "now" | ledger `realizedpnl` + `futuresonlypnl` — see the caveat below |
+| Realised P&L "now" | ledger `realizedpnl` alone — **not** `futuresonlypnl`, see `LedgerSnapshot` |
 | Positions | `client.get_positions()`, **paged** (page 0 returns only 30) |
 | Realised week / month / YTD | `SUM(flex_trade.fifo_pnl_realized)` bucketed by `trade_date_iso` |
 | Round trips, winners/losers | `flex_lot` — closed lots, see `round_trip_stats` |
@@ -33,7 +33,8 @@ and that endpoint is rate-limited to roughly one request per five seconds.
 ## The realised-P&L rule — do not re-derive it
 
 ```sql
-SELECT SUM(fifo_pnl_realized) FROM flex_trade WHERE source='flex' AND trade_date_iso >= ?
+SELECT SUM(fifo_pnl_realized) FROM flex_trade
+ WHERE source='flex' AND trade_date_iso BETWEEN ? AND ?
 ```
 
 **No open/close filter.** Settled 2026-08-04 against IBKR's own `SymbolSummary` in 20 of
@@ -144,6 +145,15 @@ class LedgerSnapshot:
     https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md). So
     this module does not claim these are same-day figures; `REALISED_LEDGER_WINDOW`
     below holds the current state of that question and the UI label is derived from it.
+
+    ⚠ **`futures_only_pnl` is not the futures half of a realised split.** Measured
+    against the live account 2026-08-04 in two reads an hour apart, it was **exactly**
+    `futuremarketvalue` both times (-11,607.50, then -11,223.30) while `realizedpnl`
+    did not move at all (-2,656.11). Computing `realised_pnl - futures_only_pnl` as an
+    "equities" residual would therefore be wrong by an order of magnitude and in the
+    wrong direction. The field is carried verbatim under IBKR's own name and no
+    arithmetic is done on it; the per-asset split that *is* exact comes from
+    `RealisedWindow.by_asset`. Full evidence: `panel_dashboard.ledger_markdown`.
 
     `other_currencies` lists the non-BASE currency codes present in the same response
     that are *not* this row, so a UI can disclose that other balances exist rather than
@@ -285,6 +295,15 @@ class Position:
     `description` is IBKR's `contractDesc` — the only field that disambiguates a futures
     contract month (`ESU6`) from its root, and the one a trader reads. `symbol` falls
     back to it when IBKR omits `ticker`.
+
+    The positions table renders `symbol`, `asset_class`, `quantity`, `average_cost`,
+    `market_price`, `market_value`, `unrealised_pnl` and `currency`. `conid` and
+    `realised_pnl` are carried but not yet displayed — deliberately, and named here so a
+    reader does not go looking for where they are shown: `conid` is the contract's only
+    unambiguous identity (a ticker is not a unique key, and IGV once priced a US ETF in
+    MXN because of it), and `realised_pnl` is the sibling of the figure beside it. Both
+    are free to carry and would otherwise force a data-layer change on the first
+    drill-down.
     """
 
     conid: int
@@ -396,9 +415,12 @@ class RealisedWindow:
     `currencies` is what the window actually contained, not an assumption. When it holds
     more than one code the total is a sum across currencies and the UI must say so
     rather than stamping one ISO code on it.
+
+    There is no `name` field: `start`/`end` identify the window completely, and the
+    caller already knows which one it asked for. A name carried here and never read is
+    a second place for "week" to be wrong.
     """
 
-    name: str
     start: date
     end: date
     total: float
@@ -408,15 +430,18 @@ class RealisedWindow:
 
     @property
     def currency_label(self) -> str:
-        """ISO code for `total`, or "mixed" when the window spans several currencies.
+        """ISO code for `total`, "mixed" across several currencies, or "" when unknown.
 
-        Empty windows report "USD" — nothing was realised, so there is no currency to
-        get wrong, and a blank label reads as a bug.
+        An **empty** window returns the empty string rather than "USD". Nothing was
+        realised, so there is no currency to state — and stating one anyway would be
+        exactly the guess `parse_ledger` refuses to make two hundred lines up. The view
+        substitutes the account's own base currency when it has one; `fmt_money` and
+        `fmt_signed` render a bare number when it does not.
         """
         if len(self.currencies) == 1:
             return self.currencies[0]
         if not self.currencies:
-            return "USD"
+            return ""
         return "mixed"
 
     def asset_total(self, *categories: str) -> float:
@@ -425,7 +450,7 @@ class RealisedWindow:
 
 
 def realised_window(
-    conn: sqlite3.Connection, name: str, start: date, end: date
+    conn: sqlite3.Connection, start: date, end: date
 ) -> RealisedWindow:
     """Realised P&L between `start` and `end` inclusive, split by asset class.
 
@@ -459,7 +484,6 @@ def realised_window(
         if row["currency"]:
             currencies.add(str(row["currency"]).upper())
     return RealisedWindow(
-        name=name,
         start=start,
         end=end,
         total=total,
@@ -589,8 +613,8 @@ class FlexCoverage:
     """How far the Flex dataset reaches, and how much has not landed in it yet.
 
     This is what makes the T+1 gap visible instead of implicit. `through` is the newest
-    Flex `trade_date`; `live_pending` counts Client Portal rows that have no statement
-    yet. When `live_pending` is non-zero the Flex-derived windows are, by construction,
+    Flex `trade_date_iso`; `live_pending` counts Client Portal rows that have no
+    statement yet. When `live_pending` is non-zero the Flex-derived windows are, by construction,
     missing those fills — and the ledger figure beside them is not.
     """
 
@@ -636,9 +660,10 @@ class DashboardSnapshot:
     week: RealisedWindow | None = None
     month: RealisedWindow | None = None
     ytd: RealisedWindow | None = None
-    # One RoundTripStats per window, keyed by the same names. A single set of stats
-    # reused across windows renders week figures under a YTD heading — caught in the
-    # Phase 3 smoke, and the reason these are keyed rather than singular.
+    # One RoundTripStats per window, keyed "week"/"month"/"ytd" to match the three
+    # attributes above. A single set of stats reused across windows renders week figures
+    # under a YTD heading — caught in the Phase 3 smoke, and the reason these are keyed
+    # rather than singular.
     stats: Mapping[str, RoundTripStats] = field(default_factory=dict)
     series: tuple[RealisedPoint, ...] = ()
     coverage: FlexCoverage | None = None
@@ -762,7 +787,7 @@ def build_flex_sections(
         "ytd": (year_start(today), today),
     }
     return {
-        **{name: realised_window(conn, name, lo, hi) for name, (lo, hi) in bounds.items()},
+        **{name: realised_window(conn, lo, hi) for name, (lo, hi) in bounds.items()},
         "stats": {name: round_trip_stats(conn, lo, hi) for name, (lo, hi) in bounds.items()},
         "series": realised_series(conn, *bounds["ytd"]),
         "coverage": flex_coverage(conn),

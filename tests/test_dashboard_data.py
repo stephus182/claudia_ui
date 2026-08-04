@@ -119,7 +119,7 @@ def test_week_total_matches_a_plain_unfiltered_sum(store):
     from the same table rather than against a hand-typed constant, so the assertion
     still means something if the fixture changes.
     """
-    win = dd.realised_window(store, "week", date(2026, 8, 3), _TODAY)
+    win = dd.realised_window(store, date(2026, 8, 3), _TODAY)
     expected = store.execute(
         "SELECT SUM(fifo_pnl_realized) FROM flex_trade WHERE source='flex'"
         " AND trade_date_iso BETWEEN '2026-08-03' AND '2026-08-06'"
@@ -135,7 +135,7 @@ def test_opening_leg_that_realises_is_counted(store):
     'O' and still realises. Asserted by comparing against the same window computed with
     the wrong filter — the two must differ by exactly that row.
     """
-    win = dd.realised_window(store, "week", date(2026, 8, 3), _TODAY)
+    win = dd.realised_window(store, date(2026, 8, 3), _TODAY)
     with_filter = store.execute(
         "SELECT SUM(fifo_pnl_realized) FROM flex_trade WHERE source='flex'"
         " AND open_close_indicator LIKE '%C%'"
@@ -151,7 +151,7 @@ def test_wash_sale_zeroed_close_contributes_zero_not_the_lot_loss(store):
     for the same week gives a materially worse number, and the test states that gap
     explicitly so nobody "fixes" the window query by pointing it at flex_lot.
     """
-    win = dd.realised_window(store, "week", date(2026, 8, 3), _TODAY)
+    win = dd.realised_window(store, date(2026, 8, 3), _TODAY)
     lot_sum = store.execute(
         "SELECT SUM(fifo_pnl_realized) FROM flex_lot"
         " WHERE trade_date BETWEEN '20260803' AND '20260806'"
@@ -162,7 +162,7 @@ def test_wash_sale_zeroed_close_contributes_zero_not_the_lot_loss(store):
 
 def test_live_rows_are_excluded_entirely(store):
     """The live row has no trade_date and must not be counted, in any window."""
-    ytd = dd.realised_window(store, "ytd", date(2026, 1, 1), _TODAY)
+    ytd = dd.realised_window(store, date(2026, 1, 1), _TODAY)
     flex_rows = store.execute(
         "SELECT COUNT(*) FROM flex_trade WHERE source='flex' AND trade_date_iso >= '2026-01-01'"
     ).fetchone()[0]
@@ -172,13 +172,13 @@ def test_live_rows_are_excluded_entirely(store):
 
 def test_year_boundary_excludes_last_years_trade(store):
     """2025-12-31's +9999.99 must not reach a YTD window that starts 2026-01-01."""
-    ytd = dd.realised_window(store, "ytd", date(2026, 1, 1), _TODAY)
+    ytd = dd.realised_window(store, date(2026, 1, 1), _TODAY)
     assert ytd.total == pytest.approx(-2194.98 - 100.00 - 1511.20 - 200.00)
 
 
 def test_window_splits_by_asset_class(store):
     """FUT vs STK vs OPT — the futures/equities split the requirements ask for."""
-    ytd = dd.realised_window(store, "ytd", date(2026, 1, 1), _TODAY)
+    ytd = dd.realised_window(store, date(2026, 1, 1), _TODAY)
     assert ytd.by_asset["FUT"] == pytest.approx(-3616.98)
     assert ytd.by_asset["STK"] == pytest.approx(1122.00)
     assert ytd.by_asset["OPT"] == pytest.approx(-1511.20)
@@ -188,19 +188,23 @@ def test_window_splits_by_asset_class(store):
 
 def test_currency_label_reports_mixed_rather_than_assuming_usd(store):
     """A window holding EUR and USD is labelled 'mixed', never stamped USD."""
-    ytd = dd.realised_window(store, "ytd", date(2026, 1, 1), _TODAY)
+    ytd = dd.realised_window(store, date(2026, 1, 1), _TODAY)
     assert set(ytd.currencies) == {"EUR", "USD"}
     assert ytd.currency_label == "mixed"
 
-    week = dd.realised_window(store, "week", date(2026, 8, 3), _TODAY)
+    week = dd.realised_window(store, date(2026, 8, 3), _TODAY)
     assert week.currency_label == "USD"
 
 
-def test_empty_window_is_zero_and_labelled_usd(store):
-    """A window with no trades reports 0.00/0 trades and a usable label, not blank."""
-    win = dd.realised_window(store, "week", date(2026, 6, 1), date(2026, 6, 7))
+def test_an_empty_window_states_no_currency_rather_than_guessing_usd(store):
+    """Nothing realised means no currency to state — and "USD" would be a guess.
+
+    The same refusal `parse_ledger` makes. The view substitutes the account's own base
+    currency when it has one; `fmt_signed` renders a bare number when it does not.
+    """
+    win = dd.realised_window(store, date(2026, 6, 1), date(2026, 6, 7))
     assert (win.total, win.trade_count, win.by_asset) == (0.0, 0, {})
-    assert win.currency_label == "USD"
+    assert win.currency_label == ""
 
 
 # ── Realised series ───────────────────────────────────────────────────────────
@@ -218,7 +222,7 @@ def test_series_is_daily_with_a_running_total(store):
     assert pts[0].realised == pytest.approx(-3516.98)  # both 08-03 rows summed
     assert pts[-1].cumulative == pytest.approx(-2194.98)
     assert pts[-1].cumulative == pytest.approx(
-        dd.realised_window(store, "week", date(2026, 8, 3), _TODAY).total
+        dd.realised_window(store, date(2026, 8, 3), _TODAY).total
     )
 
 
