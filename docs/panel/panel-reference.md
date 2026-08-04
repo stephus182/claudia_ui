@@ -382,10 +382,46 @@ overlap arithmetically unreachable; and the risk it *does* carry is the opposite
 single anomalously *small* gap shrinks every body (a duplicate timestamp gives width 0).
 `ibkr_core_mcp` sorts and de-duplicates its bars, so that is guarded upstream rather than here.
 
-Also worth knowing when reading a "30m" chart: over a `6m` window the bars are **not** 30
-minutes apart. Over `1m` they are (measured: 30min ×252, plus overnight and weekend gaps).
-That is an IBKR data-volume behaviour, not a charting one — but the control says `30m` either
-way.
+### The full matrix — measured, and it changes two conclusions
+
+All fifteen `period × bar` combinations the UI offers, swept against a live gateway
+2026-08-03 **[P]**:
+
+| period | bar | bars | min gap | median gap | median rule |
+|---|---|---|---|---|---|
+| 1m | 1d | 20 | 1440m | 1440m | ok |
+| 1m | 1h | 147 | 30m | 60m | **would smear** |
+| 1m | 30m | 273 | 30m | 30m | ok |
+| 3m | 1h | 427 | 30m | 60m | **would smear** |
+| 3m | 30m | 244 | 30m | 120m | **would smear (2.80×)** |
+| 6m | 1h | 861 | 30m | 60m | **would smear** |
+| 6m | 30m | 267 | 90m | 240m | **would smear (1.87×)** |
+| 1y | 1h | 1408 | 30m | 60m | **would smear** |
+| 2y | 1h | 3000 | 30m | 60m | **would smear** |
+| 1y/2y | 30m | 250 / 499 | 1440m | 1440m | ok — *because it is daily data* |
+
+**1. The median rule fails on 7 of 15, not on one edge case.** Every `1h` request smears
+(5/5) — a "1h" series has a 30-minute *minimum* gap from the half-hour bar at the RTH open,
+so `0.7 × median(60m) = 42m` overflows a 30m slot by 1.40×. `3m/30m` is the worst at 2.80×.
+hvplot's min-based width measured **exactly 0.7000 on all fifteen**, zero overlaps, no spread.
+
+**2. `1y/30m` and `2y/30m` do not return 30-minute bars — they return daily ones.** Verified
+byte-identical index and close values to the same period at `1d`, on AAPL and TSLA. Neither
+IBKR nor `ibkr_core_mcp` discloses it: the fetch summary reads *"Fetched TSLA **30M** (1y)
+from IBKR: 250 bars"*. Until 2026-08-03 the chart repeated the claim in its title.
+
+`_infer_bar_label` ([`panel_chart.py`](../../claudia/panel_chart.py)) now derives the bar size
+from the frame's own **median** spacing and the pane titles what the data actually is:
+
+```
+AAPL 1d (1y) — requested 30m
+Loaded 250 bars for AAPL. ⚠ IBKR returned 1d bars, not the 30m requested.
+```
+
+Median and not min here for the same reason the *width* wants min and not median: an hourly
+series' 30-minute opening gap would make a min-based rule call all five `1h` combinations
+"30m" and fire a false alarm on correct data. Non-standard spacings report as `~2h` so they
+cannot be mistaken for a selectable bar.
 
 See `ui-design-reference.md` §7 for why the color choice matters.
 
