@@ -655,6 +655,88 @@ def empty_snapshot(now: datetime | None = None, error: str | None = None) -> Das
     return DashboardSnapshot(as_of=now or datetime.now(UTC), error=error)
 
 
+# Reconciliation tolerance between the summed positions and the ledger's unrealised P&L.
+#
+# NOT a rounding allowance. The two come from different IBKR endpoints, and they do not
+# agree while a fast leg is moving: measured 2026-08-03 in `opening_status.py`, CL (2
+# contracts x 1,000 bbl, one $0.01 tick = $20.00) moved +$140 and the two sat **$59.99
+# apart, unchanged, for 52 seconds** — a real lag, not a sampling race. $250 is about
+# four times the largest gap observed, chosen there by the user on that evidence.
+#
+# The same number as `opening_status._RECONCILE_TOLERANCE`, deliberately restated rather
+# than imported: that module reaches for `ClaudeToolkit` at import time, and this one is
+# the pure data layer. If one moves, move both — the evidence above is shared.
+RECONCILE_TOLERANCE = 250.00
+
+
+@dataclass(frozen=True)
+class Reconciliation:
+    """Whether the summed positions agree with the ledger's unrealised P&L.
+
+    Two different IBKR endpoints produce these, and they must agree to rounding. Unlike
+    `opening_status.reconcile_positions_against_ledger`, which re-parses rendered
+    markdown because that is all the chat block has, this works on the structured
+    figures the poller already holds — so it cannot fail to parse and it can compare
+    currencies rather than guessing at a bare `$`.
+
+    `checked` is False when there is nothing to compare (no ledger, or no positions).
+    That is not a pass: the caller must not render "reconciled" for a check that never
+    ran.
+    """
+
+    checked: bool
+    positions_total: float
+    ledger_total: float
+    currency: str
+    mixed_currency: bool = False
+
+    @property
+    def delta(self) -> float:
+        """Absolute gap, rounded to cents **before** comparing.
+
+        These are cent-denominated figures that do not survive binary float exactly:
+        summing the real 2026-08-03 positions yields -3638.5099999999998, so a delta
+        that is exactly five cents measures as 0.0500000000001819 — enough to trip a
+        tolerance of 0.05 by 1.8e-13 and raise an integrity alarm on money that
+        reconciles perfectly (the same trap `opening_status` documents).
+        """
+        return round(abs(self.positions_total - self.ledger_total), 2)
+
+    @property
+    def agrees(self) -> bool:
+        """True when the two sources agree within `RECONCILE_TOLERANCE`.
+
+        False when the check did not run — an unverified figure is not a verified one.
+        """
+        return self.checked and not self.mixed_currency and self.delta <= RECONCILE_TOLERANCE
+
+
+def reconcile(snapshot: DashboardSnapshot) -> Reconciliation:
+    """Compare the summed position P&L against the ledger's unrealised P&L.
+
+    Measured live 2026-08-04 on this account: positions summed -11,618.31 against a
+    ledger reading -11,618.32 — one cent, which is what agreement looks like.
+
+    A position denominated in a currency other than the ledger's makes the sum invalid,
+    so that case is flagged rather than compared. `mixed_currency` is reported instead
+    of a delta: IGV once priced a US ETF in MXN, so this is a real path, not a
+    hypothetical, and a cross-currency sum would produce a confident wrong number.
+    """
+    led = snapshot.ledger
+    if led is None or not snapshot.positions:
+        return Reconciliation(False, 0.0, led.unrealised_pnl if led else 0.0,
+                              led.currency if led else "USD")
+    currencies = {p.currency for p in snapshot.positions if p.currency}
+    total = sum(p.unrealised_pnl for p in snapshot.positions)
+    return Reconciliation(
+        checked=True,
+        positions_total=total,
+        ledger_total=led.unrealised_pnl,
+        currency=led.currency,
+        mixed_currency=bool(currencies - {led.currency}),
+    )
+
+
 def build_flex_sections(
     conn: sqlite3.Connection, today: date
 ) -> dict[str, Any]:

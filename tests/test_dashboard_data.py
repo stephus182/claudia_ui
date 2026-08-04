@@ -586,3 +586,76 @@ def test_empty_snapshot_carries_an_error_and_no_data():
     assert snap.ledger is None
     assert snap.positions == ()
     assert snap.error == "IBKR gateway not reachable"
+
+
+# ── Reconciliation ────────────────────────────────────────────────────────────
+
+
+def _snapshot_for_reconcile(positions, unrealised, currency="USD"):
+    """A snapshot carrying just enough for `reconcile` to work on."""
+    return dd.DashboardSnapshot(
+        as_of=datetime(2026, 8, 6, tzinfo=UTC),
+        ledger=dd.LedgerSnapshot(currency, 0.0, 0.0, 0.0, 0.0, 0.0, unrealised, 0.0, 0.0),
+        positions=positions,
+    )
+
+
+def _pos(symbol, upl, currency="USD"):
+    """One position carrying only the fields reconciliation reads."""
+    (out,) = dd.parse_positions([
+        {"ticker": symbol, "position": 1.0, "unrealizedPnl": upl, "currency": currency}
+    ])
+    return out
+
+
+def test_reconcile_agrees_on_the_live_figures():
+    """Measured live 2026-08-04: positions summed -11,618.31 vs ledger -11,618.32."""
+    rec = dd.reconcile(_snapshot_for_reconcile(
+        (_pos("GLD", -458.66), _pos("CL", -11584.72), _pos("IGV", 425.07)), -11618.32
+    ))
+    assert rec.checked
+    assert rec.positions_total == pytest.approx(-11618.31)
+    assert rec.delta == pytest.approx(0.01)
+    assert rec.agrees
+
+
+def test_reconcile_rounds_to_cents_before_comparing():
+    """Binary float made an exactly-five-cent delta measure as 0.0500000000001819.
+
+    Against a tolerance of 0.05 that trips by 1.8e-13 — a spurious integrity alarm on
+    money that reconciles perfectly. The same trap `opening_status` documents.
+    """
+    rec = dd.reconcile(_snapshot_for_reconcile(
+        (_pos("A", -1152.43), _pos("B", -2486.08)), -3638.56
+    ))
+    assert rec.positions_total == pytest.approx(-3638.51)
+    assert rec.delta == 0.05  # exactly, not 0.0500000000001819
+
+
+def test_reconcile_fails_past_the_tolerance():
+    rec = dd.reconcile(_snapshot_for_reconcile((_pos("CL", -1000.0),), -2000.0))
+    assert rec.checked and not rec.agrees
+    assert rec.delta == pytest.approx(1000.0)
+    assert dd.RECONCILE_TOLERANCE == 250.00
+
+
+def test_reconcile_flags_a_cross_currency_book_rather_than_summing_it():
+    """IGV once priced a US ETF in MXN — a cross-currency sum is a confident wrong number."""
+    rec = dd.reconcile(_snapshot_for_reconcile(
+        (_pos("AAPL", 10.0), _pos("SAP", -4.0, "EUR")), 6.0
+    ))
+    assert rec.mixed_currency
+    assert not rec.agrees  # the delta happens to be 0.00, and that proves nothing
+
+
+def test_an_unrun_check_is_never_a_pass():
+    """No ledger or no positions: `checked` False and `agrees` False, not a green tick."""
+    no_ledger = dd.DashboardSnapshot(
+        as_of=datetime(2026, 8, 6, tzinfo=UTC), positions=(_pos("A", 1.0),)
+    )
+    assert not dd.reconcile(no_ledger).checked
+    assert not dd.reconcile(no_ledger).agrees
+
+    no_positions = _snapshot_for_reconcile((), -100.0)
+    assert not dd.reconcile(no_positions).checked
+    assert not dd.reconcile(no_positions).agrees

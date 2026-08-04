@@ -1,14 +1,14 @@
 # Panel data surfaces reference — graphs, tables & indicators
 
-**What Panel offers for the data surfaces ClaudIA does not have yet: tables, indicators,
-additional graphs, side windows, and the wiring that lets the chatbot drive them (or lets them
-run on their own).** Living document — started 2026-07-24.
+**What Panel offers for ClaudIA's data surfaces: tables, indicators, additional graphs, side
+windows, and the wiring that lets the chatbot drive them (or lets them run on their own).**
+Living document — started 2026-07-24, **substantially updated 2026-08-04** when the live
+dashboard shipped the first `Tabulator`, the first `Number` tiles, the first `pn.extension` call
+and the first notifications.
 
-This is a **starting point, not a design**. Nothing in §5–§8 has been built or agreed; ClaudIA's
-only data surface today is the candlestick pane
-([`claudia/panel_chart.py`](../../claudia/panel_chart.py)). The doc exists so that when the work
-starts, the API surface, the version facts and the traps are already established rather than
-rediscovered.
+It began as a starting point rather than a design, and that is still true of §4–§6. What has
+changed is that §1, §3, §7 and §8 are now records of shipped behaviour rather than a menu — the
+traps in §8 numbered 16 and above were all measured against a live account, not scraped.
 
 Companion docs in this folder:
 - [`panel-reference.md`](panel-reference.md) — how ClaudIA uses Panel **today** (serving model,
@@ -41,13 +41,15 @@ disagreement is called out (there is one — §6.5).
 | Surface | State |
 |---|---|
 | Candlestick chart | **Shipped.** HoloViews/hvplot (`pn.pane.HoloViews`, superseded 2026-08-03 — §1.1 D1), cache-backed, own Load button, STK only. [`panel_chart.py`](../../claudia/panel_chart.py) **[C]** |
-| Status dots | **Shipped.** `pn.indicators.BooleanStatus` ×3. [`panel_app.py:284`](../../claudia/panel_app.py#L284) **[C]** |
-| Any table | **None.** No `Tabulator`, no `Perspective`, no `DataFrame` pane anywhere in `claudia/` **[C]** |
-| Any value indicator | **None** beyond the three status dots **[C]** |
-| Any chatbot-driven surface | **None.** The chart pane is deliberately decoupled from the conversation — the user drives it **[C]** |
-| `pn.extension(...)` | **Never called** anywhere in the repo **[C]** — see §3, this gates most of what follows |
+| Status dots | **Shipped.** `pn.indicators.BooleanStatus` ×3 **[C]** |
+| Tables | **Shipped 2026-08-04.** One `Tabulator` — the dashboard's positions table: `disabled=True`, `formatters`, `text_align`, `header_filters`, `header_tooltips`, `pagination='local'`, and `.style.map` for signed P&L. [`panel_dashboard.py`](../../claudia/panel_dashboard.py) **[C]** |
+| Value indicators | **Shipped 2026-08-04.** Six `pn.indicators.Number` KPI tiles with sign-threshold `colors` **[C]** |
+| Second chart | **Shipped 2026-08-04.** Realised-P&L cumulative area + daily bars, a second `pn.pane.HoloViews` **[C]** |
+| Notifications | **Shipped 2026-08-04.** `pn.state.notifications` toasts on the fresh↔stale transition only **[C]** |
+| Any chatbot-driven surface | **None.** Both the chart pane and the dashboard are deliberately decoupled from the conversation **[C]** |
+| `pn.extension(...)` | **Called once, 2026-08-04**, at import time in [`panel_app.py`](../../claudia/panel_app.py): `pn.extension("tabulator", notifications=True)` plus `pn.config.reconnect = True`. `design=`/`theme=` deliberately left to the restyle track **[C]** |
 
-So the honest baseline for this document: **one chart, three dots, and no extension call.**
+The baseline this document was written against — *one chart, three dots, and no extension call* — held until **2026-08-04**, when the live dashboard landed. §5–§8 below are still largely unbuilt; §1's table is the live inventory, and §7 marks what the dashboard closed.
 
 ### 1.1 Decisions taken (2026-07-24)
 
@@ -212,9 +214,22 @@ All 10 confirmed present as `pn.indicators.*` on 1.9.3 **[P]**: `BooleanStatus`,
 
 ## 3. `pn.extension()` — the gate
 
-**ClaudIA calls `pn.extension()` nowhere** **[C]**. That is fine for what is shipped (Bokeh
-panes, buttons, `BooleanStatus`, `ChatInterface` all work without it), but **most of §2 needs
-it**.
+**ClaudIA calls `pn.extension()` exactly once**, at import time in `claudia/panel_app.py`
+**[C]** — added 2026-08-04 with the dashboard, which needs `tabulator`:
+
+```python
+pn.extension("tabulator", notifications=True)
+pn.config.reconnect = True
+```
+
+`notifications=True` is not cosmetic: `pn.state.notifications` is `None` without it, so
+`reconnect` has no way to tell the user anything, and the dashboard's stale toast would be a
+silent no-op. This resolves open question 3 (§9) and question 5 — `reconnect` is now on.
+
+Everything that shipped before it (Bokeh panes, buttons, `BooleanStatus`, `ChatInterface`,
+`pn.pane.HoloViews`) still needs no extension call, so the ordering constraint is the only
+thing that changed: the call must run before any session Document exists, which is why it sits
+at module import rather than inside the session factory.
 
 Two independent name sources, both enumerated from the installed package **[P]**:
 
@@ -447,18 +462,26 @@ the agent to function.
 
 ## 7. Candidate surfaces for ClaudIA **[?]**
 
-Ordered by value-to-cost, all unbuilt:
+1–2 **SHIPPED 2026-08-04** (live dashboard); 3–5 still unbuilt:
 
-1. **Positions / orders table** — `Tabulator` + `.style.map` for signed P&L. Closes half of the
-   "P&L is colorless" gap (`ui-design-reference.md` §1) for tabular data, with no CSS and no
-   restyle project. ⚠ **The blocker is data, not display**: those numbers currently arrive as
-   *pre-formatted text* from ibkr_core_mcp (`ui-design-reference.md` §4), so a table needs a
-   structured source — either a different toolkit call or a change in the other repo. Settle that
-   before designing the table.
-2. **Account/P&L tiles** — `Number` with `colors` thresholds, or `Trend` for value + sparkline +
-   signed change. Same data caveat.
+1. **Positions table** — ✅ **shipped.** `Tabulator` + `.style.map` for signed P&L, in
+   `claudia/panel_dashboard.py`. ⚠ The blocker recorded here was *"the data arrives as
+   pre-formatted text from ibkr_core_mcp"* — **that turned out to be a property of
+   `ClaudeToolkit.execute()`, not of the data.** `toolkit.client.get_positions()` /
+   `get_account_ledger()` return structured dicts; only `execute()` renders markdown. So the
+   answer was to read the client directly, and open question 1 (§9) is closed without any
+   change in the other repo. Two traps found doing it: `get_positions` **pages at 30** and page 0
+   alone silently shows a partial book, and the ledger's `BASE` row reports its `currency` as the
+   literal `"BASE"` (§8, gotcha 16).
+2. **Account/P&L tiles** — ✅ **shipped**, as six `Number` tiles with sign-threshold `colors`.
+   `Number.colors` is scanned in **reverse** and the last match wins, so the earliest threshold a
+   value satisfies is the colour applied (`Number._process_param_change`, read 2026-08-04); the
+   comparison is `value <= threshold`, so a dead band around zero is needed or a flat P&L renders
+   red. `Trend` was considered and **not** used: its `value_change` badge is a percentage, and
+   P&L has no honest denominator.
 3. **Live execution feed** — `Tabulator.stream(...)` fed from `ExecutionListener` through the
-   verified `call_soon_threadsafe` bridge (§5.3).
+   verified `call_soon_threadsafe` bridge (§5.3). Still unbuilt; the dashboard polls at 15s
+   instead, which is sufficient for account state but not for a fill-by-fill tape.
 4. **Indicator overlays on the candlestick** — **volume subplot, MA (SMA) overlay, and zoom sync
    between the two rows shipped 2026-08-03** (`panel_chart.py`, via the HoloViews/hvplot engine —
    §1.1 D1 — not the "pure Bokeh, no new dependency" originally planned here). Hover tooltips come
@@ -491,24 +514,38 @@ Every item is scraped or probed, not inferred:
 | 13 | `pn.state.on_session_created` is **global-only** — cannot be registered from inside a session | **[S]** |
 | 14 | `plotly` / `matplotlib` / `pyecharts` are **not installed**; `holoviews` and `hvplot` **now are** (added 2026-08-03 — §1.1 D1) — Bokeh, ECharts, and HoloViews/hvplot are the currently-available chart routes | **[P]** |
 | 15 | Nothing inside `ChatInterface` is reachable by page-level CSS (7 shadow roots deep) — see `ui-design-reference.md` §2 | **[C]** |
+| 16 | The ledger's `BASE` row reports its own `currency` as the literal string **`"BASE"`**, not the base currency's code — IBKR's docs read the other way. Take the base currency from `/portfolio/accounts` instead | **[P]** live 2026-08-04 |
+| 17 | `Number.colors` is scanned in **reverse**, last match wins, comparison is `value <= threshold` — so an exactly-zero P&L renders in the negative colour without a dead band | **[P]** |
+| 18 | `Number` renders `nan_format` **inside** the format string, so a signed money format yields the tile `"+— USD"` for a `None` value. Drop the format when the value is absent | **[P]** |
+| 19 | `Tabulator.style` is a real pandas `Styler` that **survives `value` reassignment** and rebinds to the new frame — apply `.style.map` once at build time, not on every repaint | **[P]** |
+| 20 | `pn.state.notifications` is a read-only **property**; to fake it in a test, patch the attribute on `type(pn.state)`, not on the instance | **[P]** |
+| 21 | `pn.Tabs(dynamic=True)` renders only the active tab, but widget **identity survives deactivation** and params set on a hidden tab's widget are present when it is shown again — a repaint can write to all tabs unconditionally | **[P]** |
+| 22 | A **single-point** time series renders with a millisecond-scale x-axis (`0ms / 500ms / 0ms`) under a full-width bar. Two points is a hard floor for any dated chart | **[P]** live 2026-08-04 |
+| 23 | `pn.extension._loaded_extensions` is the only proof an extension took effect — assert on it, never on the argument string (see gotcha 1) | **[P]** |
 
 ---
 
 ## 9. Open questions
 
-1. **Where does structured position/P&L data come from?** (§7.1) — the single biggest unknown, and
-   it is an ibkr_core_mcp question, not a Panel one.
+1. ~~**Where does structured position/P&L data come from?**~~ **CLOSED 2026-08-04.** It was never
+   an ibkr_core_mcp question: `ClaudeToolkit.execute()` renders markdown, but `toolkit.client.*`
+   returns structured dicts. Read the client. See §7.1.
 2. **In-page or separate window?** `GridStack`/`FloatPanel` versus a second `pn.serve` slug — a
-   real fork with different state semantics (§4).
-3. **Who owns the `pn.extension(...)` call?** Adding `tabulator` also means deciding `design`,
-   `theme`, `notifications`, `defer_load`, `reconnect` in the same breath (§3).
-4. **Chatbot-driven: block detection or protocol extension?** (§6 A vs B).
-5. **Should `reconnect=True` be turned on regardless?** It is free, available on our versions, and
-   a trading session losing its socket is a real cost (§5.6). Needs a live test, not a decision on
-   paper.
-6. **How is a data surface tested headlessly?** The button-click idiom is established
-   (`panel-reference.md` §10); `stream`/`patch`/`on_edit` round-trips are not, and Tabulator's
-   client-side behavior may not be observable server-side at all.
+   real fork with different state semantics (§4). **Still open**, but no longer blocking: the
+   dashboard's components are standalone factories, so re-parenting is a layout change.
+3. ~~**Who owns the `pn.extension(...)` call?**~~ **CLOSED 2026-08-04.** `claudia/panel_app.py`,
+   at module import, and it is the only one. `design`/`theme` were deliberately left out so the
+   restyle track still owns them (§3).
+4. **Chatbot-driven: block detection or protocol extension?** (§6 A vs B). Still open — the
+   dashboard is user-driven and polls on its own, which was the deliberate first increment.
+5. ~~**Should `reconnect=True` be turned on regardless?**~~ **CLOSED 2026-08-04** — on, with
+   `notifications=True` alongside it, since `reconnect` cannot surface anything without it.
+6. **How is a data surface tested headlessly?** **Partly answered.** A `Tabulator`'s server-side
+   state is fully assertable — `value`, `disabled`, `formatters`, `text_align`,
+   `_on_click_callbacks`/`_on_edit_callbacks`, and `style.ctx` after `style._compute()` (which is
+   how the P&L colouring is tested). `stream`/`patch` round-trips are still unexercised here: the
+   dashboard replaces `value` wholesale, because the position book is small and a full replace
+   cannot drift from the source the way an incremental patch can.
 
 ---
 

@@ -54,7 +54,9 @@ def _ledger(**over):
     fields = {
         "currency": "USD", "net_liquidation": 100000.0, "cash": 25000.0,
         "settled_cash": 24000.0, "stock_market_value": 60000.0,
-        "futures_market_value": 0.0, "unrealised_pnl": -3638.52,
+        # Matches the default position book below, so the fixture reconciles. A
+        # non-reconciling case is built explicitly by the test that wants one.
+        "futures_market_value": 0.0, "unrealised_pnl": -1000.0,
         "realised_pnl": 412.10, "futures_only_pnl": -3516.98,
     }
     fields.update(over)
@@ -395,6 +397,148 @@ def test_numeric_columns_are_formatted_and_right_aligned(view):
     assert view._positions.text_align["Unrealised"] == "right"
     # The underlying frame is untouched — display precision must not become data.
     assert view._positions.value["Unrealised"].dtype.kind == "f"
+
+
+# ── Enrichments (2026-08-04): reconciliation, filters, paging, notifications ──
+
+
+def test_reconciliation_line_is_rendered_on_the_positions_tab(view):
+    """Structured figures, so the check cannot fail to parse the way the chat block's can."""
+    text = view._reconciliation.object
+    assert "Reconciles with the ledger" in text
+    assert "USD" in text and "$" not in text
+
+
+def test_a_failed_reconciliation_leads_with_lag_not_with_a_data_error():
+    """The usual cause is `get_positions` going stale while a futures leg keeps ticking."""
+    v = pdash.build_dashboard()
+    v.refresh(
+        _snapshot(positions=_positions(("CL", 1.0, -1000.0)), ledger=_ledger(unrealised_pnl=-5000.0)),
+        now=_NOW,
+    )
+    text = v._reconciliation.object
+    assert "do not reconcile" in text
+    assert "gone stale while a fast-moving leg" in text
+    assert "verify against IBKR" in text
+
+
+def test_an_unrun_reconciliation_does_not_claim_a_pass():
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(positions=(), ledger=None), now=_NOW)
+    assert "not checked" in v._reconciliation.object
+
+
+def test_a_cross_currency_book_claims_no_reconciliation():
+    rows = dd.parse_positions([
+        {"ticker": "AAPL", "position": 1.0, "unrealizedPnl": 10.0, "currency": "USD"},
+        {"ticker": "SAP", "position": 1.0, "unrealizedPnl": -4.0, "currency": "EUR"},
+    ])
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(positions=rows), now=_NOW)
+    assert "No reconciliation claimed" in v._reconciliation.object
+
+
+def test_positions_table_has_read_only_affordances_only(view):
+    """Filtering, sorting and paging change the view; none can reach an order path."""
+    assert view._positions.header_filters is True
+    assert view._positions.pagination == "local"
+    assert view._positions.page_size == pdash._POSITIONS_PAGE_SIZE
+    assert set(view._positions.header_tooltips) <= set(pdash._POSITION_COLUMNS)
+    # The Hard Rule 1 guarantees are unchanged by any of the above.
+    assert view._positions.disabled is True
+    assert not view._positions._on_click_callbacks
+    assert not view._positions._on_edit_callbacks
+
+
+def test_tabs_render_only_the_active_one(view):
+    """dynamic=True — and the repaint still reaches widgets in hidden tabs."""
+    assert view.tabs.dynamic is True
+    view.tabs.active = 0  # hide Positions and P&L
+    view.refresh(_snapshot(positions=_positions(("XYZ", 3.0, 42.0))), now=_NOW)
+    assert list(view._positions.value["Symbol"]) == ["XYZ"]
+    view.tabs.active = 1
+    assert view.tabs[1][2] is view._positions  # identity survives deactivation
+
+
+class _Notifications:
+    """Captures the notification calls a served session would make."""
+
+    def __init__(self):
+        """Start with no recorded calls."""
+        self.errors: list[str] = []
+        self.successes: list[str] = []
+
+    def error(self, message, duration=None):
+        """Record an error toast."""
+        self.errors.append(message)
+
+    def success(self, message, duration=None):
+        """Record a success toast."""
+        self.successes.append(message)
+
+
+@pytest.fixture
+def toasts(monkeypatch):
+    """Install a capturing `pn.state.notifications` for the duration of a test."""
+    captured = _Notifications()
+    # `pn.state.notifications` is a read-only property, so the patch goes on the class:
+    # replacing the descriptor with a plain object makes instance access return it.
+    monkeypatch.setattr(type(pn.state), "notifications", captured, raising=False)
+    return captured
+
+
+def test_going_stale_toasts_once_not_every_poll(toasts):
+    """The status line is always right — but only if you are looking at it.
+
+    Repeating the toast every five seconds would train the user to dismiss it, which
+    costs more than the notification buys.
+    """
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(), now=_NOW)  # first good poll: silent
+    assert toasts.errors == [] and toasts.successes == []
+
+    stale = _snapshot(error="IBKR unavailable: boom")
+    v.refresh(stale, now=_NOW)
+    v.refresh(stale, now=_NOW)
+    v.refresh(stale, now=_NOW)
+    assert len(toasts.errors) == 1
+    assert "stale" in toasts.errors[0]
+
+
+def test_recovery_toasts_once(toasts):
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(), now=_NOW)
+    v.refresh(_snapshot(error="boom"), now=_NOW)
+    v.refresh(_snapshot(), now=_NOW)
+    v.refresh(_snapshot(), now=_NOW)
+    assert len(toasts.successes) == 1
+    assert "live again" in toasts.successes[0]
+
+
+def test_the_first_seconds_of_a_session_do_not_toast(toasts):
+    """"Has not polled yet" is the normal first second of every session, not an incident."""
+    v = pdash.build_dashboard()
+    v.refresh(dd.empty_snapshot(now=_NOW, error="Dashboard has not polled yet."), now=_NOW)
+    v.refresh(dd.empty_snapshot(now=_NOW, error="Dashboard has not polled yet."), now=_NOW)
+    assert toasts.errors == []
+
+
+def test_age_alone_makes_a_snapshot_stale(toasts):
+    """No error, just an old poll — still stale, and still worth one toast."""
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(), now=_NOW)
+    late = _NOW + timedelta(seconds=STALE_AFTER + 1)
+    assert v.is_stale(_snapshot(), late)
+    v.refresh(_snapshot(), now=late)
+    assert len(toasts.errors) == 1
+
+
+def test_notifications_absent_outside_a_served_session(monkeypatch):
+    """`pn.state.notifications` is None headlessly — the repaint must not care."""
+    monkeypatch.setattr(type(pn.state), "notifications", None, raising=False)
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(), now=_NOW)
+    v.refresh(_snapshot(error="boom"), now=_NOW)  # must not raise
 
 
 def test_positions_frame_has_headers_even_with_no_rows():

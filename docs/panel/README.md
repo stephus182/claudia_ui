@@ -56,6 +56,12 @@ Distinct from:
   `pn.serve` slug), the connectivity surface (stream/patch, periodic callbacks, `pn.bind`, URL
   sync, reconnect, thread bridge), and a **sketch** — not a design — for chatbot-piloted vs.
   independently-driven surfaces. Every claim tagged scraped / probed / code / unverified.
+  **Substantially updated 2026-08-04** when the live dashboard shipped the first `Tabulator`,
+  the first `Number` tiles, the first `pn.extension()` call and the first notifications: §1, §3
+  and §7 now record shipped behaviour rather than options, three of the six open questions in
+  §9 are closed, and §8 gained eight new gotchas (16–23) — most of them measured against a live
+  account rather than scraped, including the ledger `BASE` row that reports its own currency as
+  the literal string `"BASE"`.
 
 ### Research — point-in-time, not updated
 

@@ -1,6 +1,6 @@
 # ClaudIA UI — Developer Guide
 
-ClaudIA is a Panel-based trading assistant chatbot that connects to Interactive Brokers via `ibkr_core_mcp`. It provides conversational access to IBKR data, backtesting, technical analysis, TradingView integration, an external candlestick chart pane, and human-confirmed order staging. (It was migrated from Chainlit to Panel — see `docs/plans/2026-07-22-panel-migration.md`.)
+ClaudIA is a Panel-based trading assistant chatbot that connects to Interactive Brokers via `ibkr_core_mcp`. It provides conversational access to IBKR data, backtesting, technical analysis, TradingView integration, an external candlestick chart pane, a live account dashboard (KPI strip · positions · realised P&L), and human-confirmed order staging. (It was migrated from Chainlit to Panel — see `docs/plans/2026-07-22-panel-migration.md`.)
 
 ---
 
@@ -14,6 +14,9 @@ claudia/panel_sink.py       — PanelMessageSink: agent output → pn.chat.ChatI
 claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_flow.py cores
 claudia/panel_pinescript.py — ```pine copy (real client-side clipboard) / inject buttons
 claudia/panel_chart.py      — external HoloViews candlestick chart pane (STK, cache-backed)
+claudia/dashboard_data.py   — live dashboard: pure data (ledger, positions, realised windows), no panel import
+claudia/dashboard_poller.py — live dashboard: process-wide 15s poller caching one DashboardSnapshot
+claudia/panel_dashboard.py  — live dashboard: KPI strip + Tabs(Chart/Positions/P&L), no IBKR and no SQL
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching (UI-agnostic via MessageSink)
 claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
@@ -105,7 +108,7 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ## Testing
 
 ```bash
-pytest        # full suite — all unit, no IBKR gateway needed (799 tests as of 2026-08-04)
+pytest        # full suite — all unit, no IBKR gateway needed (951 tests as of 2026-08-04)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (3 tests):
@@ -239,9 +242,15 @@ the fix that established this (75,480 → 2,910 tokens/session).
   headless button testing): `docs/panel/panel-reference.md`
 - Panel UI design & styling (no-styling baseline, shadow-DOM constraint, scraped styling
   surface, proposed restyle direction): `docs/panel/ui-design-reference.md`
-- Panel data surfaces — graphs/tables/indicators not yet built (Tabulator, Trend/Number,
-  ECharts, `pn.extension()` gate, side windows, stream/patch + connectivity, chatbot-piloted
-  vs. independent sketch): `docs/panel/data-surfaces-reference.md`
+- Panel data surfaces — Tabulator/Number/ECharts, the `pn.extension()` gate, side windows,
+  stream/patch + connectivity, and 23 measured gotchas (16 onwards found live against the
+  account): `docs/panel/data-surfaces-reference.md`
+- **Live dashboard** (KPI strip · Positions · P&L, shipped 2026-08-04): the three modules in
+  the diagram above. Read `claudia/dashboard_data.py`'s module docstring first — it carries the
+  realised-P&L rule, the T+1 gap, and the source table for every figure. Two invariants that
+  must not be relaxed: a failed poll republishes the previous `as_of` (so staleness stays
+  visible instead of being masked by a fresh timestamp), and the positions `Tabulator` is
+  `disabled=True` with **no** click/edit handler bound (Hard Rule 1, asserted in tests)
 - Panel folder hub (both references + dated research + smoke screenshots): `docs/panel/README.md`
 - Startup flow, phase by phase (diagnose startup failures): `docs/startup-flow.md`
 - Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and

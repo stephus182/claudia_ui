@@ -60,11 +60,14 @@ import panel as pn
 from bokeh.models.widgets.tables import NumberFormatter
 
 from claudia.dashboard_data import (
+    RECONCILE_TOLERANCE,
     DashboardSnapshot,
     RealisedPoint,
     RealisedWindow,
+    Reconciliation,
     RoundTripStats,
     realised_ledger_label,
+    reconcile,
 )
 from claudia.dashboard_poller import STALE_AFTER
 from claudia.panel_markdown import safe_markdown
@@ -298,6 +301,25 @@ _MONEY_FORMAT = "0,0.00"
 _PRICE_FORMAT = "0,0.00[00]"
 _QTY_FORMAT = "0,0.[00000000]"  # fractional-share and futures quantities alike
 
+# Paginate rather than grow: `get_positions` pages at 30 and the data layer follows every
+# page, so a large book would otherwise stretch the pane past the viewport and push the
+# reconciliation line — the one thing on this tab that must not be missed — off screen.
+_POSITIONS_PAGE_SIZE = 15
+
+# What each column actually is, on hover. Two of these are genuinely ambiguous on a
+# trading surface: "Avg cost" is IBKR's `avgCost`, which for a futures position is per
+# contract including the multiplier, and "Unrealised" is open P&L, not the day's move.
+_POSITION_TOOLTIPS = {
+    "Qty": "Signed position size. Negative is short.",
+    "Avg cost": "IBKR avgCost — per unit for stock, per contract (multiplier included) "
+                "for futures.",
+    "Last": "IBKR mktPrice at the last poll, not a live tick.",
+    "Market value": "IBKR mktValue. For futures the ledger reports this as open P&L "
+                    "rather than notional.",
+    "Unrealised": "Open P&L on the position. Not the day's change, and not realised.",
+    "Ccy": "The position's own currency — it need not be the account's base currency.",
+}
+
 
 def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     """Open positions as the DataFrame the `Tabulator` renders.
@@ -322,6 +344,44 @@ def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame({c: pd.Series(dtype="object") for c in _POSITION_COLUMNS})
     return pd.DataFrame(rows, columns=_POSITION_COLUMNS)
+
+
+def reconciliation_line(rec: Reconciliation) -> str:
+    """One line saying whether the positions and the ledger agree, and by how much.
+
+    Three outcomes, and the middle one is why this is not a boolean:
+
+    * **not checked** — no ledger or no positions. Says so. Rendering "reconciled" for
+      a check that never ran would be the worst of the three.
+    * **mixed currency** — a position denominated outside the ledger's currency makes
+      the sum invalid, so no delta is claimed. IGV once priced a US ETF in MXN.
+    * **checked** — the delta, with a pass/fail against `RECONCILE_TOLERANCE`.
+
+    A failure leads with lag rather than asserting a data error: the usual cause is
+    `get_positions` going stale while a fast futures leg keeps ticking in the ledger
+    (measured, `dashboard_data.RECONCILE_TOLERANCE`), not a wrong number.
+    """
+    if not rec.checked:
+        return "_Position/ledger reconciliation: not checked (no ledger or no positions)._"
+    if rec.mixed_currency:
+        return (
+            "⚠ _Positions span more than one currency, so they cannot be summed against "
+            f"the {rec.currency} ledger. No reconciliation claimed._"
+        )
+    summed = fmt_signed(rec.positions_total, rec.currency)
+    ledger = fmt_signed(rec.ledger_total, rec.currency)
+    if rec.agrees:
+        return (
+            f"_Reconciles with the ledger: positions sum {summed}, ledger {ledger} "
+            f"(delta {rec.delta:,.2f} {rec.currency})._"
+        )
+    return (
+        f"**⚠ Positions do not reconcile with the ledger: {summed} summed vs {ledger} "
+        f"— a gap of {rec.delta:,.2f} {rec.currency}.** Most often `get_positions` has "
+        f"gone stale while a fast-moving leg kept ticking in the ledger. A gap past "
+        f"{RECONCILE_TOLERANCE:,.2f} is beyond ordinary drift, so verify against IBKR "
+        f"before trading on either figure."
+    )
 
 
 def _sign_style(value: Any) -> str:
@@ -462,6 +522,9 @@ class DashboardView:
         that reaches for the process toolkit.
         """
         self._snapshot: DashboardSnapshot | None = None
+        # Tri-state: None = no successful poll yet, so no transition has happened and no
+        # toast is owed. See `_notify_staleness`.
+        self._was_stale: bool | None = None
 
         self._tiles: dict[str, pn.indicators.Number] = {
             "net_liq": self._tile("Net liquidation"),
@@ -498,6 +561,13 @@ class DashboardView:
             text_align=dict.fromkeys(
                 ["Qty", "Avg cost", "Last", "Market value", "Unrealised"], "right"
             ),
+            # Read-only affordances only. Filtering, sorting and paging change what is
+            # displayed and nothing else — none of them can reach an order path, which
+            # is the line Hard Rule 1 draws. `disabled=True` above still governs edits.
+            header_filters=True,
+            header_tooltips=dict(_POSITION_TOOLTIPS),
+            pagination="local",
+            page_size=_POSITIONS_PAGE_SIZE,
         )
         # `.style` is a real pandas Styler and it survives every `value` reassignment,
         # rebinding to the new frame (verified 2026-08-04 against panel 1.9.3/pandas
@@ -508,6 +578,7 @@ class DashboardView:
         assert styler is not None  # narrowing for mypy, not a runtime guarantee
         styler.map(_sign_style, subset=_SIGNED_COLUMNS)
         self._positions_status = safe_markdown("_Positions: waiting for the first poll…_")
+        self._reconciliation = safe_markdown("")
 
         self._window = pn.widgets.RadioButtonGroup(
             # color=, not button_type=: `button_type` PendingDeprecationWarns on panel
@@ -521,13 +592,19 @@ class DashboardView:
         self._pnl_coverage = safe_markdown("")
         self._ledger_detail = safe_markdown("")
 
+        # dynamic=True renders only the active tab, so the candlestick figure and the
+        # realised-P&L figure are not both serialised on every page load. Verified
+        # 2026-08-04 that this is safe with the repaint: widget identity survives
+        # deactivation and a param set on a hidden tab's widget is present when that tab
+        # is activated again — `refresh` can keep writing to all three unconditionally.
         self.tabs = pn.Tabs(
             ("Chart", chart_pane if chart_pane is not None else pn.Column()),
-            ("Positions", pn.Column(self._positions_status, self._positions,
-                                    sizing_mode="stretch_both")),
+            ("Positions", pn.Column(self._positions_status, self._reconciliation,
+                                    self._positions, sizing_mode="stretch_both")),
             ("P&L", pn.Column(self._window, self._pnl_chart, self._pnl_chart_note,
                               self._pnl_stats, self._pnl_coverage, self._ledger_detail,
                               sizing_mode="stretch_both")),
+            dynamic=True,
             sizing_mode="stretch_both",
         )
 
@@ -577,8 +654,54 @@ class DashboardView:
             self._refresh_tiles(snapshot, now)
             self._refresh_positions(snapshot)
             self._refresh_pnl(snapshot)
+            self._notify_staleness(snapshot, now)
         except Exception:
             log.exception("Dashboard repaint failed; leaving the previous frame up")
+
+    def is_stale(self, snapshot: DashboardSnapshot, now: datetime | None = None) -> bool:
+        """Whether the account half of `snapshot` should be treated as untrustworthy.
+
+        One definition, shared by the status line and the notification, so the toast and
+        the text on screen can never disagree about whether the data is good.
+        """
+        return bool(snapshot.error) or snapshot.age_seconds(now) > STALE_AFTER
+
+    def _notify_staleness(
+        self, snapshot: DashboardSnapshot, now: datetime | None = None
+    ) -> None:
+        """Toast on the fresh↔stale transition only — never on every poll.
+
+        The status line is always right, but only if you are looking at it. A trading
+        surface losing its feed while the user reads the chat is worth interrupting for
+        once; repeating it every five seconds would train them to dismiss it, which
+        would cost more than the notification buys.
+
+        Silent before the first successful poll: "the dashboard has not polled yet" is
+        the normal first second of every session, not an incident.
+
+        `pn.state.notifications` is None outside a served session (and would be None
+        anyway had `notifications=True` not been passed to `pn.extension`), so the guard
+        also covers the whole test suite and any headless embedding.
+        """
+        if snapshot.ledger is None and self._was_stale is None:
+            return  # nothing has been established yet, so nothing has changed
+        stale = self.is_stale(snapshot, now)
+        previous, self._was_stale = self._was_stale, stale
+        if previous is None or previous == stale:
+            # `previous is None` is the FIRST established state, not a transition.
+            # Toasting there fired "Account data is live again" one second into every
+            # session, announcing a recovery from nothing.
+            return
+        notifications = pn.state.notifications
+        if notifications is None:
+            return
+        if stale:
+            notifications.error(
+                f"Account data is stale — {short_reason(snapshot.error) or 'no recent poll'}",
+                duration=0,  # 0 = sticky: a stale trading surface should not self-dismiss
+            )
+        else:
+            notifications.success("Account data is live again.", duration=4000)
 
     def _refresh_tiles(self, snapshot: DashboardSnapshot, now: datetime | None) -> None:
         """KPI strip: ledger balances, live unrealised, the two realised figures, win rate."""
@@ -622,6 +745,7 @@ class DashboardView:
     def _refresh_positions(self, snapshot: DashboardSnapshot) -> None:
         """Positions tab: the table plus a count/currency summary line."""
         self._positions.value = positions_frame(snapshot)
+        self._reconciliation.object = reconciliation_line(reconcile(snapshot))
         count = len(snapshot.positions)
         if count == 0 and snapshot.ledger is None:
             self._positions_status.object = "_Positions unavailable — IBKR not connected._"
