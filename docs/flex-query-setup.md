@@ -241,9 +241,27 @@ They are siblings under `<Trades>`, **not** nested inside `<Trade>`.
 
 | Field | What it actually is |
 |---|---|
-| `fifoPnlRealized` | Realised P/L. **Agrees with the closed lots for FUT/OPT/FUND; does not for STK** — IBKR reports `0` on multi-lot equity closes and puts the figure on the `CLOSED_LOT` rows instead. `flex_lot` is the fuller record. |
-| `mtmPnl` | Mark-to-market P/L — a **different quantity**, reported as its own column in IBKR's own Trades report. Not interchangeable with realised. |
+| `fifoPnlRealized` on `<Trade>` | **Realised P/L — the authoritative figure**, net of wash-sale adjustment, exactly as IBKR reports it. |
+| `fifoPnlRealized` on `<Lot>` | Tax-lot detail *before* the wash-sale adjustment. Summing it overstates losses. |
+| `fifoPnlRealized` on `<WashSale>` | The disallowed loss IBKR adds back. |
+| `mtmPnl` | Mark-to-market P/L — a **different accounting methodology**, not another view of the same number. Positions are not matched and commissions are not netted. |
 | `tradePnl` | **Does not exist.** The old parser read it first and always fell through to `fifoPnlRealized`. |
+
+**Realised P&L = `SUM(fifo_pnl_realized)` over ALL trades — no open/close filter.** Verified
+against IBKR's own `SymbolSummary` totals in **20 of 20** archived statements, to the cent.
+Filtering on `openCloseIndicator` is wrong: a buy that closes a short and opens a long is
+flagged `O` and still carries realised P&L.
+
+The exact relationship, holding in every statement:
+
+```
+Trade.fifoPnlRealized  ==  Lot.fifoPnlRealized  +  WashSale.fifoPnlRealized
+```
+
+per IBKR: *"For wash sales, the Realized P/L column will contain the net realized amount,
+including loss disallowed."* This is why some equity closes report **exactly 0.00** — the
+position was re-bought inside 30 days and the whole loss was disallowed. Correct tax
+accounting, not a bug.
 
 `Lot.transactionID` refers to the **opening** transaction; `Lot.tradeDate` is the
 **closing** date. Joining lots to trades on `transactionID` matches the open, not the close.
