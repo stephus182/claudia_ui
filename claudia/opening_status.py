@@ -10,6 +10,7 @@ exposes no public config/store properties.
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from ibkr_core_mcp import ClaudeToolkit
@@ -30,6 +31,95 @@ _EXCHANGE_LABELS = {
     "XJSE": "JSE Johannesburg", "XSAU": "Tadawul (Sun–Thu week)",  # noqa: RUF001 — correct en-dash for a day range
     "XIDX": "IDX Jakarta", "XIST": "Borsa Istanbul",
 }
+
+
+# Positions and the ledger are two different IBKR endpoints. When nothing is moving they
+# agree to a cent — measured live 2026-08-03, -3,638.51 summed vs -3,638.52 in the ledger.
+#
+# They do NOT agree while a fast leg is moving, and the gap does not self-correct quickly.
+# Same session, CL (2 contracts x 1,000 bbl, so one $0.01 tick = $20.00) moved +$140: the
+# ledger captured all of it, `get_positions` captured +$80 and then went stale. The two sat
+# **$59.99 apart, unchanged, for 52 seconds** — not a sampling race, which would have varied.
+#
+# So the tolerance is a heuristic, not a rounding allowance. $250 is ~12 CL ticks, about 4x
+# the largest lag observed, chosen (user's call, 2026-08-03) to stay quiet through ordinary
+# futures drift while still catching the failures worth catching: a missing position, an
+# inverted sign, a mis-parsed row. It is calibrated against ONE session's observation and a
+# violent futures move could still trip it — that is why the warning text leads with lag
+# rather than asserting a data error.
+_RECONCILE_TOLERANCE = 250.00
+# "**-$1,152.43**" / "$9,245.00" -> the signed amount. Bare $ deliberately: the
+# positions table does not carry an ISO code (see the caveat in the warning text).
+_MONEY = re.compile(r"([-+]?)\$([\d,]+\.\d{2})")
+_LEDGER_UNREALIZED = re.compile(r"Unrealized P&L\s*:\s*\*{0,2}([-+]?)\$([\d,]+\.\d{2})")
+# A positions row: | SYM | qty | mkt val | unrealized |  -- the LAST money cell is the P&L.
+_POSITION_ROW = re.compile(
+    r"^\|(?!\s*(?:Symbol|-))[^|]+\|.*\|\s*\*{0,2}([-+]?\$[\d,]+\.\d{2})", re.MULTILINE
+)
+
+
+def _money(sign: str, digits: str) -> float:
+    """A ``(sign, digits)`` regex pair as a signed float, e.g. ``("-", "1,152.43")``."""
+    return float(digits.replace(",", "")) * (-1.0 if sign == "-" else 1.0)
+
+
+def reconcile_positions_against_ledger(
+    positions_text: str, ledger_text: str, tolerance: float = _RECONCILE_TOLERANCE
+) -> str | None:
+    """Warn if the displayed positions do not sum to the displayed ledger P&L.
+
+    Two different IBKR endpoints produce these, and they must agree to rounding —
+    measured live 2026-08-03 they reconciled to **one cent** (-3,638.51 summed vs
+    -3,638.52 in the ledger) while a *third* source, `get_pnl`'s real-time endpoint,
+    was $128.51 away. That third one moving when the market is shut is expected and
+    is not what this checks; this checks the invariant that should hold regardless.
+
+    Parses the rendered text rather than re-fetching, deliberately: the property worth
+    guaranteeing is that the two numbers **the user is shown** agree with each other.
+
+    Fails **safe**. These strings are formatted in another repo; if either cannot be
+    parsed the check returns None rather than raising an alarm it cannot substantiate.
+
+    ⚠ It cannot verify currency. The positions table renders a bare `$` with no ISO
+    code, so a position denominated in something other than the ledger's currency
+    would make the sum invalid and trip this — IGV once priced a US ETF in MXN, so
+    that is a real path, not a hypothetical. The warning says so rather than asserting
+    a data error it cannot distinguish from a currency mix.
+
+    Returns the warning line, or None when the numbers agree or cannot be read.
+    """
+    ledger_hit = _LEDGER_UNREALIZED.search(ledger_text or "")
+    if not ledger_hit:
+        return None
+    rows = _POSITION_ROW.findall(positions_text or "")
+    if not rows:
+        return None
+    total = 0.0
+    for cell in rows:
+        hit = _MONEY.search(cell)
+        if not hit:
+            return None  # a row we cannot read makes the whole sum untrustworthy
+        total += _money(*hit.groups())
+
+    ledger = _money(*ledger_hit.groups())
+    # Round to cents BEFORE comparing. These are cent-denominated figures that do not
+    # survive binary float exactly: summing the real 2026-08-03 positions yields
+    # -3638.5099999999998, so a delta that is exactly five cents measures as
+    # 0.0500000000001819 and would trip a "tolerance" of 0.05 by 1.8e-13 — a spurious
+    # integrity alarm on money that reconciles perfectly.
+    delta = round(abs(total - ledger), 2)
+    if delta <= tolerance:
+        return None
+    return (
+        f"⚠ Position P&L does not reconcile with the account ledger: positions sum to "
+        f"{total:,.2f} USD, ledger reports {ledger:,.2f} USD — a difference of "
+        f"{delta:,.2f} USD. Most often this means `get_positions` has gone stale while a "
+        f"fast-moving leg (futures) kept ticking in the ledger; it can also mean a position "
+        f"is denominated in a currency other than the ledger's, which cannot be checked "
+        f"here because the positions table shows a bare $ with no ISO code. A gap this "
+        f"large is past ordinary drift, so verify against IBKR before trading on either "
+        f"figure."
+    )
 
 
 async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
@@ -54,11 +144,18 @@ async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
                 asyncio.to_thread(get_live_pnl_text, toolkit),
             )
         )
+        # Two different IBKR endpoints produced the two blocks above. They must agree
+        # to rounding, and a session that opens on figures that do not is something the
+        # user needs told before they act on them, not something to discover later.
+        mismatch = reconcile_positions_against_ledger(positions_text, pnl_text)
+        if mismatch:
+            log.warning("Opening status reconciliation failed: %s", mismatch)
         return (
             f"**Account Summary**\n{opening_text}\n\n"
             f"**Open Positions**\n{positions_text}\n\n"
             f"**Account P&L**\n{pnl_text}\n\n"
-            f"**Live Orders**\n{orders_text}"
+            + (f"{mismatch}\n\n" if mismatch else "")
+            + f"**Live Orders**\n{orders_text}"
         ), False
     except Exception as exc:
         log.warning("Could not load IBKR opening status: %s", exc)
