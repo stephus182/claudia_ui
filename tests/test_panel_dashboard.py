@@ -253,18 +253,26 @@ def test_coverage_line_names_the_session_day_boundary(view):
     assert "the tile follows the calendar day" in line
 
 
-def test_coverage_line_discloses_the_cost_basis_difference(view):
-    """The largest of the three gaps, and the last to be measured (2026-08-04).
+def test_coverage_line_discloses_the_cost_basis_difference_without_overstating_it(view):
+    """The Flex windows are IBKR's statement basis; the tile is IBKR's real-time
+    `avgCost`. Both must be named, because a reader reconciling the tile against the
+    week window without being told will conclude one of them is broken.
 
-    The Flex windows are IBKR's statement basis; the tile is IBKR's real-time
-    `avgCost`. On this account the same CRM close is -2,810.47 on one and roughly
-    -252.60 on the other, so a reader who tries to reconcile the tile against the week
-    window without being told will conclude one of them is broken.
+    **What this test stopped asserting on 2026-08-05.** It used to call the basis gap
+    "the largest of the three" on the strength of a projection: that the 2026-08-04 CRM
+    close worth -2,810.47 on the ledger would be worth roughly -252.60 on Flex. When the
+    statement arrived it read -2,810.47 — the same to the cent. The disclosure now says
+    the bases are *defined* differently and have agreed wherever both priced the same
+    close, which is all that was measured. Overstating a caveat misleads in the same way
+    as omitting one.
     """
-    line = view._pnl_coverage.object
+    line = " ".join(view._pnl_coverage.object.split())
     assert "statement" in line
     assert "real-time average cost" in line
-    assert "do not add up and are not meant to" in " ".join(line.split())
+    assert "do not add up and are not meant to" in line
+    # the corrected claim, and the absence of the disproved one
+    assert "agreed to the cent" in line
+    assert "252.60" not in line
 
 
 def test_coverage_line_without_pending_fills_omits_the_warning():

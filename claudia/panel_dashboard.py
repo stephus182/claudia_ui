@@ -203,11 +203,19 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
     2. **Day boundary** — Flex buckets on IBKR's session date (18:00 ET futures /
        20:00 ET stock / 17:00 ET FX); the ledger figure is a calendar day.
     3. **Cost basis** — Flex is the statement basis, the ledger is IBKR's real-time
-       `avgCost`. `dashboard_data.RealisedWindow` carries the measured evidence and the
-       CRM case where the same close differs by an order of magnitude.
+       `avgCost`: different quantities by construction, with no guarantee they agree.
 
-    Only the first two were disclosed before 2026-08-04; the basis difference is the
-    largest of the three and was the last to be measured.
+    Only the first two were disclosed before 2026-08-04.
+
+    **Bullet 3 was softened on 2026-08-05, on evidence.** It used to tell the user the
+    basis difference was "the largest of the three" and cite CRM as a close where the
+    two differ by an order of magnitude. That rested on a projection — that Flex would
+    report about -252.60 for the 2026-08-04 CRM sale where the ledger reported -2,810.47.
+    The statement arrived reading **-2,810.47**, the same figure to the cent
+    (`dashboard_data.RealisedWindow` carries the full measurement). Coverage and the day
+    boundary are the differences actually observed to move these numbers; the basis
+    difference is real in definition and so far unobserved in size, and the text now says
+    only that much. A disclosure that overstates is still a disclosure that misleads.
     """
     cov = snapshot.coverage
     if cov is None or cov.through is None:
@@ -221,11 +229,13 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
         f"_Realised week/month/YTD come from the Flex dataset through "
         f"**{cov.through.isoformat()}** (T+1 — never includes today){pending}, and are "
         f"IBKR's **statement** figures. The tile above is today only, on IBKR's "
-        f"**real-time average cost** — a different basis, so the two do not add up and "
-        f"are not meant to. They also use different day boundaries: Flex buckets on "
-        f"IBKR's **session** date, which rolls at 18:00 ET for futures, 20:00 ET for "
-        f"stock and 17:00 ET for FX — so an evening fill already belongs to tomorrow — "
-        f"while the tile follows the calendar day (all measured 2026-08-04)._"
+        f"**real-time average cost**. The two do not add up and are not meant to: they "
+        f"cover different periods, and they use different day boundaries — Flex buckets "
+        f"on IBKR's **session** date, which rolls at 18:00 ET for futures, 20:00 ET for "
+        f"stock and 17:00 ET for FX, so an evening fill already belongs to tomorrow, "
+        f"while the tile follows the calendar day. The two cost bases are also defined "
+        f"differently, though where both have priced the same close they have agreed to "
+        f"the cent (measured 2026-08-04 and 2026-08-05)._"
     )
 
 

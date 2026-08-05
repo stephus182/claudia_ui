@@ -719,8 +719,15 @@ class RealisedWindow:
     a second place for "week" to be wrong.
 
     ⚠ **This is not the same quantity as `LedgerSnapshot.realised_pnl`, and the two must
-    never be added or expected to agree.** Both are realised P&L; they are computed on
-    different cost bases, so the same closing trade can produce very different figures:
+    never be added.** Both are realised P&L, over different windows (this one is T+1 and
+    excludes today; the ledger's is today only) and bucketed on different day boundaries
+    — those two differences are permanent and are the reason the figures on screen will
+    not tie out.
+
+    They are also *defined* on different cost bases, which is the reason for the detail
+    below. How far apart that drives them is now measured rather than assumed, and the
+    answer was: not at all, in the one case where both sides priced the same trade.
+    See "What the CRM close settled" at the end.
 
     * This one is IBKR's *statement* basis — `flex_trade.fifo_pnl_realized`, the number
       that reconciled to IBKR's annual statements 6/6 years exactly.
@@ -739,11 +746,27 @@ class RealisedWindow:
       2026-08-04). Our Flex extract carries no wash-sale note code, so the *mechanism*
       is inferred from IBKR's published rule; the *divergence* is measured and exact.
 
-    The consequence is concrete, not theoretical: on 2026-08-04 the ledger reported
-    -2,810.47 realised on CRM while the same day's closing trades move roughly -252.60
-    at FIFO cost. `panel_dashboard.coverage_line` states this on the surface, because a
-    trader who tries to reconcile the KPI tile against the week window will otherwise
-    conclude one of them is broken.
+    **What the CRM close settled (measured 2026-08-05, and it corrected this docstring).**
+    The 2026-08-04 sale of 50 CRM was the first case where both sides priced the same
+    trade, so it was left as an open question with two possible answers: if Flex reported
+    roughly **-252.60**, the two bases recognise the disallowed loss at different times
+    and diverge by an order of magnitude; if it reported roughly **-2,810**, they
+    recognise it identically. The statement arrived the next morning reading
+    **-2,810.467842** at trade level, against the ledger's **-2,810.47** — agreement to
+    the cent, and the lot rows sum to the same figure over 15 lots, all opened 2026-06-03
+    (the replacement shares), carrying no wash-sale row on the close.
+
+    So the -252.60 figure this docstring used to assert was a *projection*, not a
+    measurement: it assumed the statement basis excluded the disallowed loss. It does
+    not — IBKR incorporates that loss into the replacement shares' basis on **both**
+    sides, exactly as its published rule says, and both recognise it on the same day.
+
+    What survives the correction, stated no more strongly than the evidence supports:
+    the two bases are different by construction and are not guaranteed to agree, and the
+    GLD/CRM `avgCost` measurements above remain exact — but they measure `avgCost`
+    against a *reconstructed FIFO purchase average* (`economic_entries`), which is not
+    the statement basis. No measurement here shows the two **reported** realised figures
+    disagreeing. They may; it has not been observed.
     """
 
     start: date
