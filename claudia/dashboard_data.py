@@ -1100,7 +1100,14 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
         if order_id in (None, ""):
             continue
         total = _as_float(row.get("totalSize") or row.get("quantity") or 0)
-        remaining = _as_float(row.get("remainingQuantity", total))
+        # A blank `remainingQuantity` means "not reported", NOT "nothing remaining".
+        # `_as_float` maps None to 0.0, so reading it directly would compute
+        # filled = total and render an untouched resting order as fully filled — and
+        # IBKR does serve lean rows with fields missing (measured on the positions
+        # endpoint, 2026-08-04). Unknown falls back to the full size, i.e. 0 filled,
+        # which is the safe direction to be wrong in on a trading surface.
+        raw_remaining = row.get("remainingQuantity")
+        remaining = total if raw_remaining in (None, "") else _as_float(raw_remaining)
         out.append(
             LiveOrder(
                 order_id=str(order_id),

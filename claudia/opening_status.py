@@ -8,17 +8,25 @@ Began as a faithful port of the Chainlit app's startup status logic and **delibe
 stopped being one on 2026-08-05**, when the live dashboard took over the account figures.
 What this builds now is the half chat still owns:
 
-* the **live order book**, which no other surface shows (the dashboard's tabs are
-  Chart · Positions · P&L);
 * the **session state** — which of IBKR's two independent halves is answering
   (`account_readable`), and the `brokerage_session_down` flag that drives the
   Start-Gateway button and defers the background Flex sync;
-* the **trade-dataset line** and the system-prompt trade/calendar context.
+* the **trade-dataset line** and the system-prompt trade/calendar context;
+* a **one-shot snapshot of the working order book** at session start.
 
 Account Summary, Open Positions and Account P&L were removed with the port's last
 Chainlit-shaped assumption: that chat is the only place a number can live. So was the
 reconciliation that re-parsed those rendered blocks against each other —
 `dashboard_data.reconcile` does that on structured figures instead.
+
+⚠ **Open question, raised 2026-08-05 by the change that caused it.** The order book was
+kept here on the grounds that no other surface showed it. Later the same day the dashboard
+gained an **Orders** tab, which polls it live — so this block is now a once-rendered copy
+of a continuously-updated surface, which is precisely the argument that retired the other
+three. It is deliberately *not* removed yet: unlike those, it is a glance at session start
+before any tab is chosen, and the same call also produces the `brokerage_session_down`
+flag that the buttons and the Flex sync depend on. Whether the *rendering* stays is a UX
+decision for the account holder; the probe stays regardless.
 """
 
 import asyncio
@@ -121,11 +129,16 @@ async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
     Two surfaces disagreeing about the account is the failure the middle row above exists
     to prevent; keeping a frozen duplicate was inviting it back in another form.
 
-    Live orders stayed because nothing else shows them — the dashboard's tabs are
-    Chart · Positions · P&L. That also removed the three `toolkit.execute` calls and the
-    ledger fetch from the startup path, and with them the text-reparsing reconciliation
-    that used to compare the rendered positions block against the rendered ledger block.
-    The dashboard runs the same check on structured figures (`dashboard_data.reconcile`),
+    Live orders stayed because, at that moment, nothing else showed them. **That reason
+    expired the same afternoon** — the dashboard gained an Orders tab hours later, so this
+    is now a session-start snapshot beside a live one rather than the only view of the
+    book. See the module docstring for why it was left in place anyway and what is still
+    an open question.
+
+    Removing the other three also took the three `toolkit.execute` calls and the ledger
+    fetch off the startup path, and with them the text-reparsing reconciliation that used
+    to compare the rendered positions block against the rendered ledger block. The
+    dashboard runs the same check on structured figures (`dashboard_data.reconcile`),
     where it cannot fail to parse and can compare currencies instead of guessing at a
     bare `$`.
 

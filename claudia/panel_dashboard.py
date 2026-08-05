@@ -9,7 +9,7 @@ Layout, as decided in the plan:
 
 ```
 KPI strip  (always visible, across the top)
-Chat  |  Tabs( Chart · Positions · P&L )
+Chat  |  Tabs( Chart · Positions · Orders · P&L )
 ```
 
 The tabs are built here; the Chart tab's contents are passed in, because that pane is
@@ -696,7 +696,7 @@ class DashboardView:
 
     * `kpi_strip` — the tile row and the freshness line. `panel_app` puts it at the top
       of the session root so account state is glanceable from any tab.
-    * `tabs` — `Tabs(Chart · Positions · P&L)`.
+    * `tabs` — `Tabs(Chart · Positions · Orders · P&L)`.
 
     They are separate rather than one component because they belong in different places
     in the layout; keeping them as standalone factories is also what makes re-parenting

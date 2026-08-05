@@ -885,3 +885,67 @@ def test_an_unrun_check_is_never_a_pass():
     no_positions = _snapshot_for_reconcile((), -100.0)
     assert not dd.reconcile(no_positions).checked
     assert not dd.reconcile(no_positions).agrees
+
+
+# ── parse_orders (2026-08-05) ─────────────────────────────────────────────────
+
+
+def test_parse_orders_reads_a_working_order():
+    orders = dd.parse_orders([{
+        "orderId": 314390101, "ticker": "AAPL", "side": "BUY", "totalSize": 1,
+        "remainingQuantity": 1, "price": 100.0, "orderType": "Limit",
+        "timeInForce": "GTC", "status": "Submitted", "order_ref": "CLAUDIA-178594",
+    }])
+    assert len(orders) == 1
+    o = orders[0]
+    assert o.order_id == "314390101" and o.symbol == "AAPL"
+    assert o.filled == 0.0 and o.quantity == 1.0
+    assert o.is_claudia_staged is True
+
+
+def test_a_blank_remaining_quantity_does_not_read_as_fully_filled():
+    """Regression, caught in review 2026-08-05 before it shipped.
+
+    `_as_float(None)` is 0.0, so reading `remainingQuantity` directly turned a missing
+    field into "nothing remaining" and therefore filled == total — rendering an untouched
+    resting order as fully filled. IBKR does serve lean rows with fields absent (measured
+    on the positions endpoint). Unknown must mean 0 filled, not complete.
+    """
+    for blank in (None, ""):
+        orders = dd.parse_orders([{
+            "orderId": "1", "ticker": "CL", "side": "SELL", "totalSize": 2,
+            "remainingQuantity": blank, "status": "PreSubmitted",
+        }])
+        assert orders[0].filled == 0.0, f"blank {blank!r} read as filled"
+
+    # absent entirely — same answer
+    orders = dd.parse_orders([{"orderId": "1", "ticker": "CL", "totalSize": 2}])
+    assert orders[0].filled == 0.0
+
+
+def test_a_partial_fill_is_reported_as_such():
+    orders = dd.parse_orders([{
+        "orderId": "1", "ticker": "CL", "totalSize": 5, "remainingQuantity": 2,
+    }])
+    assert orders[0].filled == 3.0
+
+
+def test_rows_without_an_order_id_are_skipped():
+    """IBKR's order feed carries non-order rows; one with no id cannot be acted on or
+    even named, so it must not occupy a line in the book."""
+    orders = dd.parse_orders([{"ticker": "AAPL"}, None, "junk", {"orderId": "7"}])
+    assert [o.order_id for o in orders] == ["7"]
+
+
+def test_an_external_order_is_not_attributed_to_claudia():
+    orders = dd.parse_orders([{"orderId": "1", "ticker": "CL", "order_ref": ""}])
+    assert orders[0].is_claudia_staged is False
+
+
+def test_fetch_orders_returns_none_when_the_lookup_fails(monkeypatch):
+    """None is "unknown", () is "nothing resting" — the whole point of the field."""
+    class _Boom:
+        def get_live_orders(self):
+            raise RuntimeError("no bridge")
+
+    assert dd.fetch_orders(_Boom()) is None

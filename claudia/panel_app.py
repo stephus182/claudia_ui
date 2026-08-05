@@ -1109,7 +1109,7 @@ def _build_session_root() -> pn.Column:
 
         Column( KPI strip
                 Row( Column( status dots + screenshot upload, chat ),
-                     Tabs( Chart · Positions · P&L ) ) )
+                     Tabs( Chart · Positions · Orders · P&L ) ) )
 
     The KPI strip is a Column, not a Row, at the top level so account state is glanceable
     from any tab without switching. The candlestick pane moved from a bare right-hand
