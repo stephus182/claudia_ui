@@ -1802,3 +1802,68 @@ async def test_an_unknown_readback_action_can_never_confirm():
         confirmed, line, _status = await _read_back(client, "555", "not-an-action")
     assert confirmed is False
     assert "not confirmed" in line
+
+
+# ── read-back vocabulary (live-measured 2026-08-05) ───────────────────────────
+#
+# A modify that applied perfectly was reported to the user as "the modification is NOT
+# confirmed", because IBKR answers in a different vocabulary than it accepts. Order
+# 314390101, limit 50 -> 100: the change landed, and the read-back objected that it had
+# requested 'LMT' where IBKR reported 'LIMIT', and 'BUY' where IBKR reported 'B'.
+#
+# For the SAME order that day, `get_live_orders` reported "BUY" and "Limit", and IBKR's
+# own OpenAPI spec documents orderStatus.side as enum ['BUY','SELL'] — which the live
+# response did not honour. Three spellings, one field.
+
+
+def test_ibkr_vocabulary_does_not_read_as_a_mismatch():
+    """The exact pair that fired on a successful modify."""
+    from claudia.order_flow import _values_match
+
+    assert _values_match("LMT", "LIMIT")
+    assert _values_match("BUY", "B")
+    assert _values_match("SELL", "S")
+
+
+def test_vocabulary_folding_does_not_hide_a_real_difference():
+    """The other direction of failure. Silencing a genuine mismatch would defeat the
+    read-back entirely, which is worse than the false alarm this fixes."""
+    from claudia.order_flow import _values_match
+
+    assert not _values_match("BUY", "SELL")
+    assert not _values_match("BUY", "S")
+    assert not _values_match("LMT", "MKT")
+    assert not _values_match("LMT", "STP")
+
+
+def test_an_unmeasured_vocabulary_still_fails_loud():
+    """Stop and market synonyms are deliberately NOT guessed at. Until a pair has been
+    observed it must mismatch: a false alarm costs a second look, a silently-accepted
+    difference costs a wrong order state."""
+    from claudia.order_flow import _values_match
+
+    assert not _values_match("STP", "STOP")
+    assert not _values_match("MKT", "MARKET")
+
+
+def test_a_successful_modify_now_reads_as_confirmed():
+    """End to end through the comparison, in the shape IBKR actually returned."""
+    from claudia.order_flow import _compare_modify_readback
+
+    agree, line = _compare_modify_readback(
+        {"orderType": "LMT", "side": "BUY", "tif": "GTC", "quantity": 1},
+        {"order_type": "LIMIT", "side": "B", "tif": "GTC", "total_size": "1.0"},
+    )
+    assert agree is True
+    assert "does NOT match" not in line
+
+
+def test_a_genuinely_changed_side_is_still_caught():
+    from claudia.order_flow import _compare_modify_readback
+
+    agree, line = _compare_modify_readback(
+        {"orderType": "LMT", "side": "BUY", "quantity": 1},
+        {"order_type": "LIMIT", "side": "S", "total_size": "1.0"},
+    )
+    assert agree is False
+    assert "side" in line

@@ -491,18 +491,47 @@ change is not machine-verifiable here. It is reported as such rather than parsed
 `order_description`, which would be a string heuristic dressed as a fact."""
 
 
+# IBKR answers with a different vocabulary than it accepts, and not even one of its own:
+# for the SAME order on 2026-08-05, `get_order_status` returned side "B" / orderType
+# "LIMIT" while `get_live_orders` returned "BUY" / "Limit", and IBKR's OpenAPI spec
+# (https://api.ibkr.com/gw/api/v3/api-docs) documents `orderStatus.side` as
+# enum ['BUY','SELL'] — which the live response does not honour.
+#
+# Only measured equivalences live here. Anything absent still fails loud, which is the
+# safe direction: a false alarm costs a second look, a silently-accepted difference costs
+# a wrong order state. Add a pair when it has been *observed*, not when it seems obvious —
+# stop and market types are deliberately not guessed at.
+_FIELD_SYNONYMS: dict[str, str] = {
+    "b": "buy",       # measured: get_order_status returns "B" for a BUY
+    "s": "sell",      # the symmetric counterpart of the above, not separately measured
+    "limit": "lmt",   # measured: "LIMIT" read back for a request of "LMT"
+}
+
+
+def _canonical(value: object) -> str:
+    """A field value reduced to its canonical spelling for comparison."""
+    text = str(value).strip().casefold()
+    return _FIELD_SYNONYMS.get(text, text)
+
+
 def _values_match(requested: object, observed: object) -> bool:
     """Compare a requested order field against IBKR's read-back of it.
 
-    Numeric first (IBKR may return "3.0" where the request had 3), falling back to a
-    case-folded string compare (side/tif/order type). Both directions of failure matter:
-    a comparison that cries mismatch on a formatting difference trains the user to ignore
-    the warning, and one that shrugs off a real difference defeats the read-back.
+    Numeric first (IBKR may return "3.0" where the request had 3), then a comparison that
+    folds case *and* IBKR's own synonyms. Both directions of failure matter: a comparison
+    that cries mismatch on a vocabulary difference trains the user to ignore the warning,
+    and one that shrugs off a real difference defeats the read-back.
+
+    The first of those is not hypothetical — it shipped. A live modify on 2026-08-05
+    (order 314390101, limit 50 → 100) applied perfectly and was reported to the user as
+    **"the modification is not confirmed"**, on the strength of `LMT` vs `LIMIT` and
+    `BUY` vs `B`. A guardrail that fires on every successful modify is training data for
+    ignoring it.
     """
     try:
         return float(requested) == float(observed)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        return str(requested).strip().casefold() == str(observed).strip().casefold()
+        return _canonical(requested) == _canonical(observed)
 
 
 def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]:
