@@ -222,7 +222,7 @@ def test_coverage_line_states_the_t_plus_one_gap(view):
     assert "2026-08-05" in line
     assert "never includes today" in line
     assert "9 fill(s) today not yet in a statement" in line
-    assert "The ledger figure above does include today" in line
+    assert "The tile above is today only" in line
 
 
 def test_coverage_line_names_the_session_day_boundary(view):
@@ -230,12 +230,26 @@ def test_coverage_line_names_the_session_day_boundary(view):
 
     Measured 2026-08-04 across this account's 1,101 executions: `trade_date` rolls
     forward at 18:00 ET for futures, 20:00 ET for stock, 17:00 ET for FX. The ledger
-    figure does not follow that roll. A reader comparing them at 19:00 needs to know.
+    figure follows the calendar day instead. A reader comparing them at 19:00 needs it.
     """
     line = view._pnl_coverage.object
     assert "session" in line
     assert "18:00 ET" in line and "20:00 ET" in line and "17:00 ET" in line
-    assert "does not follow that roll" in line
+    assert "the tile follows the calendar day" in line
+
+
+def test_coverage_line_discloses_the_cost_basis_difference(view):
+    """The largest of the three gaps, and the last to be measured (2026-08-04).
+
+    The Flex windows are IBKR's statement basis; the tile is IBKR's real-time
+    `avgCost`. On this account the same CRM close is -2,810.47 on one and roughly
+    -252.60 on the other, so a reader who tries to reconcile the tile against the week
+    window without being told will conclude one of them is broken.
+    """
+    line = view._pnl_coverage.object
+    assert "statement" in line
+    assert "real-time average cost" in line
+    assert "do not add up and are not meant to" in " ".join(line.split())
 
 
 def test_coverage_line_without_pending_fills_omits_the_warning():
@@ -283,10 +297,14 @@ def test_ledger_block_does_not_invent_an_equities_residual(view):
     assert text.index("futuresonlypnl") < text.index(pdash.realised_ledger_label())
 
 
-def test_realised_ledger_tile_uses_the_unverified_label(view):
-    """Until measured live, the tile must not claim the figure is same-day."""
-    assert view._tiles["realised_ledger"].label == "Realised (ledger)"
-    assert dd.REALISED_LEDGER_WINDOW == "unverified"
+def test_realised_ledger_tile_follows_the_measured_window(view):
+    """The tile label is derived from the constant, not written twice.
+
+    Settled 2026-08-04 to "day"; the tile must track that from one edit rather than
+    carrying its own copy of the claim.
+    """
+    assert view._tiles["realised_ledger"].label == dd.realised_ledger_label()
+    assert view._tiles["realised_ledger"].label == "Realised today"
 
 
 def test_every_money_string_carries_an_iso_code_and_no_bare_dollar(view):
@@ -369,7 +387,7 @@ def test_kpi_strip_holds_six_number_tiles(view):
     tiles = [o for o in view.kpi_strip[0] if isinstance(o, pn.indicators.Number)]
     assert len(tiles) == 6
     assert [t.label for t in tiles] == [
-        "Net liquidation", "Cash", "Unrealised P&L", "Realised (ledger)",
+        "Net liquidation", "Cash", "Unrealised P&L", dd.realised_ledger_label(),
         "Realised this week", "Win rate this week",
     ]
 

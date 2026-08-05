@@ -192,12 +192,22 @@ def freshness_line(snapshot: DashboardSnapshot, now: datetime | None = None) -> 
 
 
 def coverage_line(snapshot: DashboardSnapshot) -> str:
-    """The T+1 disclosure: what the Flex-derived windows do and do not include.
+    """The disclosure: the three ways the ledger tile and the Flex windows differ.
 
-    The ledger figure includes today and the Flex windows cannot, so the two will
-    disagree. An unlabelled pair that disagrees is exactly the failure this whole track
-    exists to avoid, so the gap is stated in words on the surface itself rather than
-    left for the reader to infer.
+    The two realised figures sit next to each other on one screen and will not
+    reconcile. An unlabelled pair that disagrees is exactly the failure this whole track
+    exists to avoid, so all three reasons are stated in words on the surface itself
+    rather than left for a reader to discover by subtraction:
+
+    1. **Coverage** — Flex is T+1 and never includes today; the ledger is today only.
+    2. **Day boundary** — Flex buckets on IBKR's session date (18:00 ET futures /
+       20:00 ET stock / 17:00 ET FX); the ledger figure is a calendar day.
+    3. **Cost basis** — Flex is the statement basis, the ledger is IBKR's real-time
+       `avgCost`. `dashboard_data.RealisedWindow` carries the measured evidence and the
+       CRM case where the same close differs by an order of magnitude.
+
+    Only the first two were disclosed before 2026-08-04; the basis difference is the
+    largest of the three and was the last to be measured.
     """
     cov = snapshot.coverage
     if cov is None or cov.through is None:
@@ -209,12 +219,13 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
     )
     return (
         f"_Realised week/month/YTD come from the Flex dataset through "
-        f"**{cov.through.isoformat()}** (T+1 — never includes today){pending}. "
-        f"The ledger figure above does include today. Note the two use different day "
-        f"boundaries: Flex buckets on IBKR's **session** date, which rolls forward at "
-        f"18:00 ET for futures, 20:00 ET for stock and 17:00 ET for FX — so an evening "
-        f"fill already belongs to tomorrow — while the ledger figure does not follow "
-        f"that roll (measured 2026-08-04)._"
+        f"**{cov.through.isoformat()}** (T+1 — never includes today){pending}, and are "
+        f"IBKR's **statement** figures. The tile above is today only, on IBKR's "
+        f"**real-time average cost** — a different basis, so the two do not add up and "
+        f"are not meant to. They also use different day boundaries: Flex buckets on "
+        f"IBKR's **session** date, which rolls at 18:00 ET for futures, 20:00 ET for "
+        f"stock and 17:00 ET for FX — so an evening fill already belongs to tomorrow — "
+        f"while the tile follows the calendar day (all measured 2026-08-04)._"
     )
 
 
@@ -484,9 +495,11 @@ def ledger_markdown(snapshot: DashboardSnapshot) -> str:
 
     `futuresonlypnl` is reported verbatim under IBKR's own field name. The residual
     (`realizedpnl - futuresonlypnl`) is deliberately **not** computed and labelled
-    "equities": IBKR documents neither field's scope, and nothing establishes that the
-    two are complementary. The exact per-asset split is available — from the Flex
-    windows, where it is measured rather than inferred — and that is where it is shown.
+    "equities". `realizedpnl`'s scope is now settled (today — see
+    `dashboard_data.REALISED_LEDGER_WINDOW`), but `futuresonlypnl` still carries no
+    published description at all, and nothing establishes that the two are
+    complementary. The exact per-asset split is available — from the Flex windows, where
+    it is measured rather than inferred — and that is where it is shown.
 
     That restraint was vindicated live on 2026-08-04, in **two** reads an hour apart at
     different market values:
@@ -523,8 +536,11 @@ def ledger_markdown(snapshot: DashboardSnapshot) -> str:
         f"| IBKR `futuresonlypnl` | {fmt_signed(led.futures_only_pnl, led.currency)} |\n"
         f"| {realised_ledger_label()} | **{fmt_signed(led.realised_pnl, led.currency)}** |"
         f"{extra}\n\n"
-        "_IBKR documents no time window for `realizedpnl` and no description at all for "
-        "`futuresonlypnl`. Measured live 2026-08-04, `futuresonlypnl` was **exactly** "
+        "_`realizedpnl` is today's realised P&L on IBKR's real-time average cost — it "
+        "equals the sum of the per-position `realizedPnl`, which IBKR defines as \"the "
+        "total profit made today through trades\" (measured and cross-checked "
+        "2026-08-04). `futuresonlypnl` still carries no published description. Measured "
+        "live the same day, `futuresonlypnl` was **exactly** "
         "`futuremarketvalue` and four times the realised figure, so it is listed here "
         "among the market-value rows under IBKR's own field name rather than treated as "
         "a realised split. No residual is computed: `realizedpnl - futuresonlypnl` is "

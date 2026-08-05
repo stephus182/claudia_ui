@@ -465,13 +465,29 @@ def test_fetch_ledger_passes_the_account_id_and_currency_hint_through():
     assert snap is not None and snap.currency == "USD"
 
 
-def test_realised_ledger_label_never_overclaims():
-    """The default label makes no claim about a window IBKR does not document."""
-    assert dd.REALISED_LEDGER_WINDOW == "unverified"
-    assert dd.realised_ledger_label() == "Realised (ledger)"
-    assert dd.realised_ledger_label("session") == "Realised today"
+def test_realised_ledger_window_is_the_measured_calendar_day():
+    """Settled 2026-08-04: ledger `realizedpnl` is today's realised P&L.
+
+    The ledger endpoint documents no window, but `realizedpnl` was measured to be
+    exactly the sum of the per-position `realizedPnl`, which IBKR does document as
+    "the total profit made today through trades". Seven reads spanning both the 18:00 ET
+    futures roll and the 20:00 ET stock roll never moved, ruling out the session
+    reading; IGV — realised on 2026-07-30, never flat, reporting 0.00 — ruled out every
+    cumulative reading. Full evidence at the constant.
+    """
+    assert dd.REALISED_LEDGER_WINDOW == "day"
+    assert dd.realised_ledger_label() == "Realised today"
+
+
+def test_realised_ledger_label_falls_back_rather_than_overclaiming():
+    """An unknown window must render the label that claims least, not raise or guess."""
+    assert dd.realised_ledger_label("unverified") == "Realised (ledger)"
     assert dd.realised_ledger_label("cumulative") == "Realised (cumulative)"
     assert dd.realised_ledger_label("something-else") == "Realised (ledger)"
+    # "session" was the rival reading and is now disproven: it must not survive as a
+    # key, or a future edit could quietly relabel the tile with a window we ruled out.
+    assert "session" not in dd._REALISED_LEDGER_LABELS
+    assert dd.realised_ledger_label("session") == "Realised (ledger)"
 
 
 # ── Positions ─────────────────────────────────────────────────────────────────

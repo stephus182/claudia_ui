@@ -88,9 +88,12 @@ above already cost this project once.
 
 What the convention *does* change is what a reader should be told: after 18:00 ET a
 futures fill already belongs to tomorrow as far as these windows are concerned, while the
-ledger figure beside them does not follow that roll (measured 2026-08-04: `realizedpnl`
-held at -2,656.11 across four reads from 17:51 to 19:02 ET, spanning the boundary, while
-`unrealizedpnl` moved freely). `panel_dashboard.coverage_line` says so on the surface.
+ledger figure beside them is a **calendar** day and does not follow that roll. That is
+measured, not assumed — see `REALISED_LEDGER_WINDOW` below, where seven reads spanning
+both the 18:00 ET futures roll and the 20:00 ET stock roll never moved off -2,656.11.
+So the two realised figures on the dashboard differ on the day boundary as well as on the
+cost basis (`RealisedWindow`), and `panel_dashboard.coverage_line` states both on the
+surface rather than leaving a reader to discover them by subtraction.
 
 ## The T+1 gap is real and is surfaced, not papered over
 
@@ -175,12 +178,15 @@ class LedgerSnapshot:
     """One currency row of `/portfolio/{accountId}/ledger`, typed.
 
     `realised_pnl` and `futures_only_pnl` come straight from the ledger's `realizedpnl`
-    and `futuresonlypnl`. **IBKR documents neither field's time window** — the published
-    description is "Returns the realized profit and loss for positions in the given
-    currency" and `futuresonlypnl` carries no description at all (scraped 2026-08-04,
-    https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md). So
-    this module does not claim these are same-day figures; `REALISED_LEDGER_WINDOW`
-    below holds the current state of that question and the UI label is derived from it.
+    and `futuresonlypnl`. **The ledger endpoint documents neither field's time window** —
+    its published description is "Returns the realized profit and loss for positions in
+    the given currency" and `futuresonlypnl` carries no description at all (scraped
+    2026-08-04,
+    https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md).
+
+    The window came from the *positions* endpoint instead, because `realizedpnl` is
+    exactly the sum of the per-position `realizedPnl` — see `REALISED_LEDGER_WINDOW`
+    below, which holds that evidence and from which the UI label is derived.
 
     ⚠ **`futures_only_pnl` is not the futures half of a realised split.** Measured
     against the live account 2026-08-04 in two reads an hour apart, it was **exactly**
@@ -208,37 +214,49 @@ class LedgerSnapshot:
     other_currencies: tuple[str, ...] = ()
 
 
-# The state of the one question the plan left open for Phase 1: is ledger `realizedpnl`
-# a same-day figure or a cumulative one? IBKR's own documentation does not say (see
-# LedgerSnapshot), so this is a measurement, not a docs read.
+# SETTLED 2026-08-04: ledger `realizedpnl` is **today's** realised P&L — a calendar day,
+# not a trading session, and not a cumulative total.
 #
-# NARROWED TWICE on 2026-08-04, still not settled.
+# The ledger endpoint does not document the window (see LedgerSnapshot). The positions
+# endpoint does, and the two are the same number:
 #
-# (1) The ledger reported `realizedpnl -2,656.11` against Flex-derived totals of
-#     -8,767.40 (2026 YTD) and +1,575.01 (all time, six years). It matches neither,
-#     which **rules out** both cumulative readings — since-inception and year-to-date.
+# (1) IDENTITY. Read together at 19:55 ET, the five per-position `realizedPnl` values
+#     (GLD -436.44, CL +1,945.28, CRM -2,810.47, ES -1,354.48, IGV 0.00) summed to
+#     **exactly** the ledger's -2,656.11. So whatever the positions endpoint means by
+#     `realizedPnl`, the ledger reports its sum.
 #
-# (2) It does **not** reset on the futures session roll either. IBKR's own `trade_date`
-#     rolls forward at 18:00 ET for futures (see the session table in the module
-#     docstring), so "the trading session" was a live candidate for what this figure
-#     resets on. Four reads at 17:51, 18:08, 18:49 and 19:02 ET — straddling that
-#     boundary by 71 minutes — all returned exactly -2,656.11, while `unrealizedpnl`
-#     moved freely across the same span. A session-scoped figure would have reset to
-#     0.00 at 18:00; this one did not.
+# (2) IBKR'S OWN WORDS for that field: "Returns the total profit made today through
+#     trades" (scraped 2026-08-04,
+#     https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/positions.md, and
+#     identically on .../positions-new.md).
 #
-# What remains is the calendar day, most likely resetting at midnight ET, and confirming
-# it needs one reading either side of a midnight — which one session cannot provide.
+# (3) NEGATIVE CONTROL. IGV realised -154.44 on 2026-07-30 and has never been flat, yet
+#     reported `realizedPnl` 0.00 — while every instrument traded *today* reported a
+#     non-zero figure. That rules out every since-inception reading in one observation.
 #
-# So the label still must not assert a window. "unverified" renders as
-# "Realised (ledger)"; once a cross-midnight measurement lands, flip this to "session"
-# or "cumulative" and the tile relabels itself everywhere. Deliberately a module
-# constant rather than a string buried in the UI, so that live test has exactly one
-# thing to change.
-REALISED_LEDGER_WINDOW = "unverified"
+# (4) ARITHMETIC. GLD's reported `avgCost` 383.270899 times today's 50-share sale at
+#     374.57 gives -435.04, which is -436.44 after commission: the reported figure, from
+#     today's fill alone. Nothing from any earlier day is in it.
+#
+# (5) NOT A SESSION. IBKR's own `trade_date` rolls at 18:00 ET for futures and 20:00 ET
+#     for stock (the session table in the module docstring), so "the trading session"
+#     was the live rival reading. Seven reads at 17:51, 18:08, 18:49, 19:02, 19:55,
+#     20:02 and 20:02 ET returned exactly -2,656.11 throughout, while `unrealizedpnl`
+#     moved freely. The futures roll would have cleared CL and ES at 18:00; the stock
+#     roll would have cleared GLD and CRM at 20:00. Neither happened.
+#
+# The one thing NOT observed is the reset instant itself — a cross-midnight read, which
+# no single session can produce. "day" therefore names the window IBKR documents and the
+# measurements confirm, and claims nothing about the exact moment it turns over. The
+# label reads "Realised today" either way, so that residue changes no user-visible text.
+#
+# Deliberately a module constant rather than a string buried in the UI, so the tile,
+# the ledger table and the tests all relabel from one edit.
+REALISED_LEDGER_WINDOW = "day"
 
 _REALISED_LEDGER_LABELS = {
     "unverified": "Realised (ledger)",
-    "session": "Realised today",
+    "day": "Realised today",
     "cumulative": "Realised (cumulative)",
 }
 
@@ -465,6 +483,33 @@ class RealisedWindow:
     There is no `name` field: `start`/`end` identify the window completely, and the
     caller already knows which one it asked for. A name carried here and never read is
     a second place for "week" to be wrong.
+
+    ⚠ **This is not the same quantity as `LedgerSnapshot.realised_pnl`, and the two must
+    never be added or expected to agree.** Both are realised P&L; they are computed on
+    different cost bases, so the same closing trade can produce very different figures:
+
+    * This one is IBKR's *statement* basis — `flex_trade.fifo_pnl_realized`, the number
+      that reconciled to IBKR's annual statements 6/6 years exactly.
+    * The ledger's is IBKR's *real-time* basis, priced against the positions endpoint's
+      `avgCost`, which is not the FIFO purchase average. Measured 2026-08-04: GLD's
+      100 shares cost 380.3654 on FIFO but IBKR carried `avgCost` **383.270899** —
+      higher by 2.905499, which is to six decimal places the 290.55 the 2026-06-11
+      close realised, spread over the 100 replacement shares. CRM showed the same
+      pattern for its 2026-06-22 close (2,555.66 over 50 shares). Both of those closes
+      report `fifo_pnl_realized = 0.0` at trade level, so on this side the P&L lands on
+      the earlier date at zero and on the later date in full, while on the ledger side
+      it lands wholly on the later date. That is the mechanism IBKR describes for a
+      disallowed loss — "the disallowed loss is incorporated into the calculations of
+      the gain or loss on the replacement shares and recognized"
+      (https://www.interactivebrokers.com/en/support/tax-wash-sales.php, read
+      2026-08-04). Our Flex extract carries no wash-sale note code, so the *mechanism*
+      is inferred from IBKR's published rule; the *divergence* is measured and exact.
+
+    The consequence is concrete, not theoretical: on 2026-08-04 the ledger reported
+    -2,810.47 realised on CRM while the same day's closing trades move roughly -252.60
+    at FIFO cost. `panel_dashboard.coverage_line` states this on the surface, because a
+    trader who tries to reconcile the KPI tile against the week window will otherwise
+    conclude one of them is broken.
     """
 
     start: date

@@ -522,6 +522,8 @@ Every item is scraped or probed, not inferred:
 | 21 | `pn.Tabs(dynamic=True)` renders only the active tab, but widget **identity survives deactivation** and params set on a hidden tab's widget are present when it is shown again — a repaint can write to all tabs unconditionally | **[P]** |
 | 22 | A **single-point** time series renders with a millisecond-scale x-axis (`0ms / 500ms / 0ms`) under a full-width bar. Two points is a hard floor for any dated chart | **[P]** live 2026-08-04 |
 | 23 | `pn.extension._loaded_extensions` is the only proof an extension took effect — assert on it, never on the argument string (see gotcha 1) | **[P]** |
+| 24 | Ledger `realizedpnl` has no documented window, but it is **exactly** the sum of the per-position `realizedPnl`, which IBKR *does* document — *"the total profit made today through trades"*. When an endpoint won't define a field, look for another endpoint that reports the same number | **[P]** live 2026-08-04 |
+| 25 | The positions endpoint's `avgCost` is **not** the FIFO purchase average — it carries earlier closes' disallowed losses (GLD: 380.3654 on FIFO vs **383.270899** reported, the difference being 290.55 over 100 replacement shares to six decimals). So a P&L derived from it is a different quantity from `flex_trade.fifo_pnl_realized` and the two must never be added | **[P]** live 2026-08-04 |
 
 ---
 
