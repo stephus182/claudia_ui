@@ -64,8 +64,10 @@ for positions **in the given currency**"* — and the live data adds what the do
 multiples of 10, while `uel` and the ledger did not).
 
 **Consequence:** the ledger and `get_positions` are the authoritative cent-level pair and are
-the ones `opening_status.reconcile_positions_against_ledger` compares. Do **not** reconcile
-`pnl/partitioned` against either; it is a coarse real-time summary. The ledger also carries a
+the ones `dashboard_data.reconcile` compares. Do **not** reconcile `pnl/partitioned` against
+either; it is a coarse real-time summary. (Until 2026-08-05 a second check,
+`opening_status.reconcile_positions_against_ledger`, compared the same pair by re-parsing the
+chat's rendered markdown; it was retired with the opening account block.) The ledger also carries a
 separate `futuresonlypnl` field, which the official docs list with **no description at all**.
 
 **Scraped 2026-07-17 (Firecrawl keyless tier — `interactivebrokers.com` 403s direct `WebFetch`,

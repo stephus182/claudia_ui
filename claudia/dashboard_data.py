@@ -23,8 +23,8 @@ every session (`docs/panel/panel-reference.md` §3.3).
 `ClaudeToolkit.execute()` is deliberately **not** used: it returns rendered markdown,
 not data (`claude_tools.py` `_get_ledger` formats its own table). Reading
 `toolkit.client.*` directly is what makes structured values available at all; the
-alternative — regex-scraping rendered output, as `opening_status.py` must do for the
-chat block — is not a pattern to copy into a new module.
+alternative — regex-scraping rendered output, which the retired chat account block had
+to do because rendered markdown was all it had — is not a pattern to copy anywhere.
 
 Likewise the account id is resolved **once** by the caller (the poller) and passed in.
 `ClaudeToolkit._first_account_id()` hits `/portfolio/accounts` on every toolkit call,
@@ -91,9 +91,11 @@ futures fill already belongs to tomorrow as far as these windows are concerned, 
 ledger figure beside them is a **calendar** day and does not follow that roll. That is
 measured, not assumed — see `REALISED_LEDGER_WINDOW` below, where seven reads spanning
 both the 18:00 ET futures roll and the 20:00 ET stock roll never moved off -2,656.11.
-So the two realised figures on the dashboard differ on the day boundary as well as on the
-cost basis (`RealisedWindow`), and `panel_dashboard.coverage_line` states both on the
-surface rather than leaving a reader to discover them by subtraction.
+So the two realised figures on the dashboard differ on the day boundary as well as on
+coverage, and `panel_dashboard.coverage_line` states both on the surface rather than
+leaving a reader to discover them by subtraction. They are *also* defined on different
+cost bases — but that difference has never been observed to move them apart, and
+`RealisedWindow` carries the measurement that corrected the earlier claim that it did.
 
 ## The T+1 gap is real and is surfaced, not papered over
 
@@ -1049,14 +1051,21 @@ def empty_snapshot(now: datetime | None = None, error: str | None = None) -> Das
 # Reconciliation tolerance between the summed positions and the ledger's unrealised P&L.
 #
 # NOT a rounding allowance. The two come from different IBKR endpoints, and they do not
-# agree while a fast leg is moving: measured 2026-08-03 in `opening_status.py`, CL (2
-# contracts x 1,000 bbl, one $0.01 tick = $20.00) moved +$140 and the two sat **$59.99
-# apart, unchanged, for 52 seconds** — a real lag, not a sampling race. $250 is about
-# four times the largest gap observed, chosen there by the user on that evidence.
+# agree while a fast leg is moving: measured 2026-08-03, CL (2 contracts x 1,000 bbl, one
+# $0.01 tick = $20.00) moved +$140 and the two sat **$59.99 apart, unchanged, for 52
+# seconds** — a real lag, not a sampling race. $250 is about four times the largest gap
+# observed, chosen by the user on that evidence.
 #
-# The same number as `opening_status._RECONCILE_TOLERANCE`, deliberately restated rather
-# than imported: that module reaches for `ClaudeToolkit` at import time, and this one is
-# the pure data layer. If one moves, move both — the evidence above is shared.
+# This is now the only copy. It was one of a pair until 2026-08-05, restated rather than
+# imported because the other lived in a module that reaches for `ClaudeToolkit` at import
+# time; that copy went with the chat-side reconciliation when the opening account
+# statement was retired.
+#
+# ⚠ Still calibrated against ONE quiet observation. An attempt to measure it under load on
+# 2026-08-05 produced 14 samples at exactly 0.00 — but the account held no futures leg and
+# equities were pre-open, so nothing was moving and the tolerance was never exercised. A
+# flat delta on a frozen market is not evidence that this number is right; it remains
+# unvalidated under a fast leg.
 RECONCILE_TOLERANCE = 250.00
 
 
@@ -1064,11 +1073,14 @@ RECONCILE_TOLERANCE = 250.00
 class Reconciliation:
     """Whether the summed positions agree with the ledger's unrealised P&L.
 
-    Two different IBKR endpoints produce these, and they must agree to rounding. Unlike
-    `opening_status.reconcile_positions_against_ledger`, which re-parses rendered
-    markdown because that is all the chat block has, this works on the structured
-    figures the poller already holds — so it cannot fail to parse and it can compare
-    currencies rather than guessing at a bare `$`.
+    Two different IBKR endpoints produce these, and they must agree to rounding. This
+    works on the structured figures the poller already holds, so it cannot fail to parse
+    and it can compare currencies rather than guessing at a bare `$`.
+
+    It is the **only** such check since 2026-08-05. The chat used to run a second one that
+    re-parsed its own rendered markdown, because rendered markdown was all the opening
+    block had; that block and its reconciliation were retired together when the dashboard
+    took over the account figures.
 
     `checked` is False when there is nothing to compare (no ledger, or no positions).
     That is not a pass: the caller must not render "reconciled" for a check that never
@@ -1089,7 +1101,7 @@ class Reconciliation:
         summing the real 2026-08-03 positions yields -3638.5099999999998, so a delta
         that is exactly five cents measures as 0.0500000000001819 — enough to trip a
         tolerance of 0.05 by 1.8e-13 and raise an integrity alarm on money that
-        reconciles perfectly (the same trap `opening_status` documents).
+        reconciles perfectly.
         """
         return round(abs(self.positions_total - self.ledger_total), 2)
 

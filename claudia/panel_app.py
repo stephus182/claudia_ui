@@ -534,12 +534,24 @@ async def _maybe_background_flex_sync(
 ) -> None:
     """Startup Flex sync decision + background sync (parity with the removed app.py).
 
-    Decision (fast sqlite, threaded) runs inline; only the actual sync — Flex
-    API call + store.db Drive backup — is spawned as a background task. Logic:
-    1. Data integrity check first (SQLite, no API): if data is current, skip.
-    2. Only if stale: check logs for a recent attempt (<4h) — avoid hammering
-       the rate-limited Flex API on restarts.
+    Decision (fast sqlite, threaded) runs inline; only the actual work — Flex API call,
+    conditional Drive backup, re-validation — is spawned as a background task. Logic:
+
+    1. **Coverage** check first (SQLite, no API): if the data is current, skip. This is
+       `get_trade_date_coverage`, which is an *activity report* — it counts trades and
+       finds date gaps. It is deliberately **not** called an integrity check here: that
+       mislabel is what let "integrity validated" sit unearned in the opening line for
+       months. The real checks are `flex_sync.validate_dataset`.
+    2. Only if stale: check the logs for a recent attempt (<4h) — avoid hammering the
+       rate-limited Flex API on restarts.
     3. Only if stale AND no recent attempt: call the Flex API.
+
+    **Where validation happens, and why not here.** Every session start validates the
+    dataset through `opening_status.build_trade_lines`, which runs whether or not a sync
+    was due — this function returns early when Flex is unconfigured or IBKR is offline,
+    so hanging validation off it would skip exactly the sessions where a stale or damaged
+    store matters most. It re-validates after a *successful* sync because a pull is the
+    one thing in a session that can change the answer.
     """
     cfg = toolkit._config
     if not (cfg and cfg.flex_token and cfg.flex_query_id) or ibkr_offline:

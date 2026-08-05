@@ -28,7 +28,8 @@ checked. `get_trade_date_coverage` — the only thing consulted — is an *activ
 and says so in its own docstring; it counts trades and finds date gaps, which is not an
 integrity check by any reading. So the claim was decoration on a number.
 
-These checks make it true, at a measured 0.07-0.13s on the real 53 MB store.db:
+These checks make it true. **0.19s measured end to end** on the real 53 MB store.db —
+that is the whole function, not the pragma alone (the pragma is 0.07-0.13s of it):
 
 | Check | Catches |
 |---|---|

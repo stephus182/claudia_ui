@@ -1,18 +1,31 @@
 """UI-free builders for the opening status message (Panel entry point).
 
-Faithful port of the Chainlit app's startup status logic, restructured into
-pure/thread-friendly functions so panel_app._init_session stays readable and tests
-can feed dict fixtures directly. Uses the toolkit._store reach-in; for config, it
-substitutes toolkit._config for the old Chainlit app's module-global _config —
-behaviorally equivalent, both are Config.from_env() products. ClaudeToolkit
-exposes no public config/store properties.
+Structured as pure/thread-friendly functions so `panel_app._init_session` stays readable
+and tests can feed dict fixtures directly. Uses the `toolkit._store` reach-in; for config
+it uses `toolkit._config`, since `ClaudeToolkit` exposes no public config/store property.
+
+Began as a faithful port of the Chainlit app's startup status logic and **deliberately
+stopped being one on 2026-08-05**, when the live dashboard took over the account figures.
+What this builds now is the half chat still owns:
+
+* the **live order book**, which no other surface shows (the dashboard's tabs are
+  Chart · Positions · P&L);
+* the **session state** — which of IBKR's two independent halves is answering
+  (`account_readable`), and the `brokerage_session_down` flag that drives the
+  Start-Gateway button and defers the background Flex sync;
+* the **trade-dataset line** and the system-prompt trade/calendar context.
+
+Account Summary, Open Positions and Account P&L were removed with the port's last
+Chainlit-shaped assumption: that chat is the only place a number can live. So was the
+reconciliation that re-parsed those rendered blocks against each other —
+`dashboard_data.reconcile` does that on structured figures instead.
 """
 
 import asyncio
 import logging
 from typing import Any
 
-from ibkr_core_mcp import ClaudeToolkit
+from ibkr_core_mcp import ClaudeToolkit, Config
 
 from claudia.flex_sync import validate_dataset
 
@@ -135,7 +148,7 @@ async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
         return OFFLINE_STATUS, True
 
 
-def _integrity_phrases(config: Any) -> tuple[str, str]:
+def _integrity_phrases(config: Config) -> tuple[str, str]:
     """(status_line_fragment, system_prompt_sentence) reflecting the dataset verdict.
 
     Three outcomes, three wordings, and none of them assert more than was measured:
@@ -183,7 +196,7 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
     no missing imports" — used to rest on `get_trade_date_coverage` alone, which
     describes itself in its own docstring as an ACTIVITY REPORT: it counts trades and
     finds date gaps, and validates nothing. `flex_sync.validate_dataset` now runs the
-    real checks (0.07-0.13s on the live 53 MB store.db) and the wording follows its
+    real checks (0.19s measured on the live 53 MB store.db) and the wording follows its
     verdict in all three directions — validated, failed, or nothing to validate.
     """
     config = toolkit._config

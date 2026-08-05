@@ -21,7 +21,8 @@ claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prom
 claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
 claudia/order_flow.py       — framework-agnostic order-execution cores → ibkr_core_mcp biometric gates
-claudia/opening_status.py   — UI-free opening-status builders
+claudia/opening_status.py   — UI-free opening-status builders (live orders + session state + trade line)
+claudia/flex_sync.py        — session-start dataset validation + the "did this pull change anything" gate
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
 claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger fallback
@@ -251,12 +252,16 @@ the fix that established this (75,480 → 2,910 tokens/session).
   must not be relaxed: a failed poll republishes the previous `as_of` (so staleness stays
   visible instead of being masked by a fresh timestamp), and the positions `Tabulator` is
   `disabled=True` with **no** click/edit handler bound (Hard Rule 1, asserted in tests).
-  **The two realised figures on that screen are different quantities.** Ledger
-  `realizedpnl` is today only, on IBKR's real-time `avgCost`; the week/month/YTD windows are
-  IBKR's statement basis via `flex_trade.fifo_pnl_realized`. They also use different day
-  boundaries (calendar vs session). Never add them or "fix" one to match the other — both
-  measured 2026-08-04, evidence at `dashboard_data.REALISED_LEDGER_WINDOW` and `RealisedWindow`.
-  For the same reason the positions table leads with **"Avg entry"** — the average price of
+  **The two realised figures on that screen are different quantities — never add them or
+  "fix" one to match the other.** Ledger `realizedpnl` is today only; the week/month/YTD
+  windows are Flex, which is T+1 and never includes today. They also use different day
+  boundaries (calendar vs session). Those two differences are why they disagree on screen.
+  They are additionally defined on different cost bases — ledger on IBKR's real-time
+  `avgCost`, Flex on the statement basis — but **that divergence was measured on 2026-08-05
+  and did not appear**: the CRM close read −2,810.47 on both, to the cent, and the earlier
+  ≈−252.60 counter-figure was a projection, not a measurement. Do not restate it. Evidence
+  at `dashboard_data.REALISED_LEDGER_WINDOW` and `RealisedWindow`.
+  The positions table leads with **"Avg entry"** — the average price of
   the open lots, FIFO over the account's own fills (`dashboard_data.economic_entries`) —
   and shows IBKR's basis beside it: a basis is a fiscal figure, and a trader sizing an exit
   needs the level actually traded at. The reconstruction publishes a number **only when it
