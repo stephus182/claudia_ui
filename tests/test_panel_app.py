@@ -1070,6 +1070,23 @@ def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
 # ── Task 5.7: background Flex sync decision + sync + store.db backup ──────────
 
 
+async def _drain_flex_sync() -> None:
+    """Wait for the spawned sync task to finish, done callback included.
+
+    The `for _ in range(10): await asyncio.sleep(0)` idiom these tests used is not a
+    drain — it yields to the loop ten times, which says nothing about an
+    `asyncio.to_thread` round trip completing. It happened to be enough while the task
+    made two thread hops; the 2026-08-05 backup/validation work took it to four, and the
+    assertions started racing the task instead of testing it.
+    """
+    import claudia.panel_app as pa
+
+    await asyncio.wait_for(
+        asyncio.gather(*pa._background_tasks, return_exceptions=True), timeout=5
+    )
+    await asyncio.sleep(0)  # done callbacks are scheduled via call_soon
+
+
 def _flex_toolkit(stale: bool, attempts: list[dict] | None = None) -> MagicMock:
     toolkit = MagicMock()
     toolkit._config.flex_token = "tok"
@@ -1115,9 +1132,15 @@ async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
     from claudia.panel_app import _maybe_background_flex_sync
     toolkit = _flex_toolkit(stale=True, attempts=[])
     chat = MagicMock()
-    await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
-    for _ in range(10):          # drain the spawned sync task
-        await asyncio.sleep(0)
+    # Pinned rather than left to the real fingerprint of the fixture's "/tmp/store.db":
+    # that path not existing is what made this pass, which is a filesystem accident, not
+    # the behaviour under test. A pull that lands new trades is.
+    with patch(
+        "claudia.panel_app.dataset_fingerprint",
+        side_effect=[(1101, 1101, "2026-08-03"), (1110, 1110, "2026-08-04")],
+    ):
+        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        await _drain_flex_sync()
     toolkit.execute.assert_called_once_with("sync_flex_trades", {})
     # upload_account_sqlite, not upload_account_file: store.db runs in WAL mode, so a raw
     # byte read would miss commits still in store.db-wal and could tear mid-checkpoint.
@@ -1140,8 +1163,7 @@ async def test_flex_sync_failure_sends_coverage_fallback():
     ]
     chat = MagicMock()
     await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
-    for _ in range(10):
-        await asyncio.sleep(0)
+    await _drain_flex_sync()
     assert toolkit.execute.call_args_list[1].args[0] == "check_flex_coverage"
     sent = [str(c.args[0]) for c in chat.send.call_args_list]
     assert any(s.startswith("⚠ Sync failed") and "coverage: 1129 trades" in s for s in sent)
@@ -1175,6 +1197,115 @@ async def test_flex_sync_task_death_is_logged_by_done_callback(caplog):
     # exc_info present == the exception WAS retrieved (no unraisable/never-retrieved).
     assert died[0].exc_info is not None
     assert pa._background_tasks == set()  # discard still ran
+
+
+# ── 2026-08-05: the backup follows the data, and the data is checked ──────────
+#
+# Found in the live session: the 08-05 statement imported locally at 12:18Z while the
+# Drive copy still read 2026-08-04T17:47Z. The backup was correct code in the wrong
+# place. The rule the user set alongside the fix — Flex is T+1, one pull per session is
+# the whole budget — is why the upload is conditional rather than unconditional: 53 MB
+# takes 21s measured, and re-sending an unchanged file buys nothing.
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_no_upload_when_the_pull_changed_nothing():
+    """A pull that returns the same dataset must not spend 21s re-sending 53 MB."""
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    chat = MagicMock()
+    with patch("claudia.panel_app.dataset_fingerprint", return_value=(1110, 1110, "2026-08-04")):
+        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        await _drain_flex_sync()
+
+    toolkit.execute.assert_called_once_with("sync_flex_trades", {})
+    toolkit._cache.upload_account_sqlite.assert_not_called()
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_upload_when_the_merge_moves_the_source_mix_without_moving_the_count():
+    """The 2026-08-05 shape: 1,110 rows before and after, because the statement merged
+    onto nine live-captured rows via execution_key. Row count alone would have called
+    that 'unchanged' and skipped the backup — losing the settled statement figures."""
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    with patch(
+        "claudia.panel_app.dataset_fingerprint",
+        side_effect=[(1110, 1101, "2026-08-03"), (1110, 1110, "2026-08-04")],
+    ):
+        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+        await _drain_flex_sync()
+
+    toolkit._cache.upload_account_sqlite.assert_called_once_with(
+        toolkit._config.sqlite_path, "store.db"
+    )
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_an_unreadable_fingerprint_uploads_rather_than_skips():
+    """Unknown is not 'unchanged'. If the fingerprint cannot be taken, the safe move is
+    to refresh the backup — a redundant upload costs seconds, a skipped one costs the
+    restore point."""
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    with patch("claudia.panel_app.dataset_fingerprint", return_value=None):
+        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+        await _drain_flex_sync()
+
+    toolkit._cache.upload_account_sqlite.assert_called_once()
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_a_pull_that_breaks_the_dataset_is_reported_not_swallowed(caplog):
+    """The backup is only worth having if what it backs up is sound. A pull that leaves
+    the dataset failing validation has to say so — in the log AND on screen, because the
+    realised-P&L windows on the dashboard are computed from exactly these rows."""
+    from claudia.flex_sync import DatasetCheck, DatasetValidity
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    chat = MagicMock()
+    broken = DatasetValidity(
+        (DatasetCheck("execution_key is unique", False, "75 duplicated key(s)"),)
+    )
+    with (
+        patch("claudia.panel_app.dataset_fingerprint", return_value=None),
+        patch("claudia.panel_app.validate_dataset", return_value=broken),
+        caplog.at_level(logging.ERROR),
+    ):
+        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        await _drain_flex_sync()
+
+    sent = [str(c.args[0]) for c in chat.send.call_args_list]
+    assert any("75 duplicated key(s)" in s for s in sent)
+    assert any("execution_key" in r.message for r in caplog.records)
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_a_sound_pull_stays_quiet():
+    """No second message on the happy path — the ✅ sync line is the whole report."""
+    from claudia.flex_sync import DatasetValidity
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    chat = MagicMock()
+    with (
+        patch("claudia.panel_app.dataset_fingerprint", return_value=None),
+        patch("claudia.panel_app.validate_dataset", return_value=DatasetValidity((), empty=True)),
+    ):
+        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        await _drain_flex_sync()
+
+    sent = [str(c.args[0]) for c in chat.send.call_args_list]
+    assert len(sent) == 1 and sent[0].startswith("✅")
 
 
 @pytest.mark.real_flex_sync

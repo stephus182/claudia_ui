@@ -10,12 +10,11 @@ exposes no public config/store properties.
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 from ibkr_core_mcp import ClaudeToolkit
 
-from claudia.execution_listener import get_live_pnl_text
+from claudia.flex_sync import validate_dataset
 
 log = logging.getLogger(__name__)
 
@@ -26,11 +25,13 @@ OFFLINE_STATUS = (
 
 # The middle state: account endpoints answer, the brokerage session does not. Named as
 # what is missing rather than as "offline", because the balances on screen are live.
+# Points at the dashboard rather than at "the data above": since 2026-08-05 there is no
+# account data above — the dashboard is where it lives, and it is filling normally here.
 BROKERAGE_SESSION_DOWN = (
-    "*Account data above is **live**. The **brokerage session** is not authenticated, so "
-    "live orders, market data and order staging are unavailable until it is — use "
-    "**Start IBKR Gateway** below. Balances and positions are served from the account "
-    "endpoints and are unaffected.*"
+    "*The **dashboard** is live — balances and positions come from the account endpoints "
+    "and are unaffected. The **brokerage session** is not authenticated, so live orders, "
+    "market data and order staging are unavailable until it is — use **Start IBKR "
+    "Gateway** below.*"
 )
 
 _EXCHANGE_LABELS = {
@@ -43,95 +44,6 @@ _EXCHANGE_LABELS = {
     "XJSE": "JSE Johannesburg", "XSAU": "Tadawul (Sun–Thu week)",  # noqa: RUF001 — correct en-dash for a day range
     "XIDX": "IDX Jakarta", "XIST": "Borsa Istanbul",
 }
-
-
-# Positions and the ledger are two different IBKR endpoints. When nothing is moving they
-# agree to a cent — measured live 2026-08-03, -3,638.51 summed vs -3,638.52 in the ledger.
-#
-# They do NOT agree while a fast leg is moving, and the gap does not self-correct quickly.
-# Same session, CL (2 contracts x 1,000 bbl, so one $0.01 tick = $20.00) moved +$140: the
-# ledger captured all of it, `get_positions` captured +$80 and then went stale. The two sat
-# **$59.99 apart, unchanged, for 52 seconds** — not a sampling race, which would have varied.
-#
-# So the tolerance is a heuristic, not a rounding allowance. $250 is ~12 CL ticks, about 4x
-# the largest lag observed, chosen (user's call, 2026-08-03) to stay quiet through ordinary
-# futures drift while still catching the failures worth catching: a missing position, an
-# inverted sign, a mis-parsed row. It is calibrated against ONE session's observation and a
-# violent futures move could still trip it — that is why the warning text leads with lag
-# rather than asserting a data error.
-_RECONCILE_TOLERANCE = 250.00
-# "**-$1,152.43**" / "$9,245.00" -> the signed amount. Bare $ deliberately: the
-# positions table does not carry an ISO code (see the caveat in the warning text).
-_MONEY = re.compile(r"([-+]?)\$([\d,]+\.\d{2})")
-_LEDGER_UNREALIZED = re.compile(r"Unrealized P&L\s*:\s*\*{0,2}([-+]?)\$([\d,]+\.\d{2})")
-# A positions row: | SYM | qty | mkt val | unrealized |  -- the LAST money cell is the P&L.
-_POSITION_ROW = re.compile(
-    r"^\|(?!\s*(?:Symbol|-))[^|]+\|.*\|\s*\*{0,2}([-+]?\$[\d,]+\.\d{2})", re.MULTILINE
-)
-
-
-def _money(sign: str, digits: str) -> float:
-    """A ``(sign, digits)`` regex pair as a signed float, e.g. ``("-", "1,152.43")``."""
-    return float(digits.replace(",", "")) * (-1.0 if sign == "-" else 1.0)
-
-
-def reconcile_positions_against_ledger(
-    positions_text: str, ledger_text: str, tolerance: float = _RECONCILE_TOLERANCE
-) -> str | None:
-    """Warn if the displayed positions do not sum to the displayed ledger P&L.
-
-    Two different IBKR endpoints produce these, and they must agree to rounding —
-    measured live 2026-08-03 they reconciled to **one cent** (-3,638.51 summed vs
-    -3,638.52 in the ledger) while a *third* source, `get_pnl`'s real-time endpoint,
-    was $128.51 away. That third one moving when the market is shut is expected and
-    is not what this checks; this checks the invariant that should hold regardless.
-
-    Parses the rendered text rather than re-fetching, deliberately: the property worth
-    guaranteeing is that the two numbers **the user is shown** agree with each other.
-
-    Fails **safe**. These strings are formatted in another repo; if either cannot be
-    parsed the check returns None rather than raising an alarm it cannot substantiate.
-
-    ⚠ It cannot verify currency. The positions table renders a bare `$` with no ISO
-    code, so a position denominated in something other than the ledger's currency
-    would make the sum invalid and trip this — IGV once priced a US ETF in MXN, so
-    that is a real path, not a hypothetical. The warning says so rather than asserting
-    a data error it cannot distinguish from a currency mix.
-
-    Returns the warning line, or None when the numbers agree or cannot be read.
-    """
-    ledger_hit = _LEDGER_UNREALIZED.search(ledger_text or "")
-    if not ledger_hit:
-        return None
-    rows = _POSITION_ROW.findall(positions_text or "")
-    if not rows:
-        return None
-    total = 0.0
-    for cell in rows:
-        hit = _MONEY.search(cell)
-        if not hit:
-            return None  # a row we cannot read makes the whole sum untrustworthy
-        total += _money(*hit.groups())
-
-    ledger = _money(*ledger_hit.groups())
-    # Round to cents BEFORE comparing. These are cent-denominated figures that do not
-    # survive binary float exactly: summing the real 2026-08-03 positions yields
-    # -3638.5099999999998, so a delta that is exactly five cents measures as
-    # 0.0500000000001819 and would trip a "tolerance" of 0.05 by 1.8e-13 — a spurious
-    # integrity alarm on money that reconciles perfectly.
-    delta = round(abs(total - ledger), 2)
-    if delta <= tolerance:
-        return None
-    return (
-        f"⚠ Position P&L does not reconcile with the account ledger: positions sum to "
-        f"{total:,.2f} USD, ledger reports {ledger:,.2f} USD — a difference of "
-        f"{delta:,.2f} USD. Most often this means `get_positions` has gone stale while a "
-        f"fast-moving leg (futures) kept ticking in the ledger; it can also mean a position "
-        f"is denominated in a currency other than the ledger's, which cannot be checked "
-        f"here because the positions table shows a bare $ with no ISO code. A gap this "
-        f"large is past ordinary drift, so verify against IBKR before trading on either "
-        f"figure."
-    )
 
 
 def account_readable(toolkit: ClaudeToolkit) -> bool:
@@ -172,8 +84,8 @@ async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
 
     | `ping()` | account reads | block | flag |
     |---|---|---|---|
-    | up | up | full status, orders included | False |
-    | down | **up** | account status + what is unavailable and why | True |
+    | up | up | live orders | False |
+    | down | **up** | what is unavailable and why | True |
     | down | down | `OFFLINE_STATUS` | True |
 
     The middle row is the one this function used to get wrong. It short-circuited on
@@ -187,13 +99,26 @@ async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
     unavailable there — and the block says so in words instead of implying the account
     is unreadable.
 
+    **Live orders are all this returns (2026-08-05).** It used to open with Account
+    Summary, Open Positions and Account P&L as well — the Chainlit-era opening statement,
+    written when chat was the only surface there was. The live dashboard now polls all
+    three every 15 seconds, so printing them here produced a second copy that was stale
+    the moment it rendered, of exactly the figures the panel beside it keeps current.
+    Two surfaces disagreeing about the account is the failure the middle row above exists
+    to prevent; keeping a frozen duplicate was inviting it back in another form.
+
+    Live orders stayed because nothing else shows them — the dashboard's tabs are
+    Chart · Positions · P&L. That also removed the three `toolkit.execute` calls and the
+    ledger fetch from the startup path, and with them the text-reparsing reconciliation
+    that used to compare the rendered positions block against the rendered ledger block.
+    The dashboard runs the same check on structured figures (`dashboard_data.reconcile`),
+    where it cannot fail to parse and can compare currencies instead of guessing at a
+    bare `$`.
+
     `toolkit.execute()` swallows exceptions and returns an error string rather than
     raising, which is why reachability is probed first instead of being inferred from the
-    output. The gather over `to_thread` matches the removed Chainlit app.py's
-    `cl.make_async` concurrency exactly (same thread-pool parallelism against
-    `IBKRClient` — no new hazard).
+    output.
     """
-    orders_task: asyncio.Task[tuple[str, Any]] | None = None
     try:
         gateway_up = await asyncio.to_thread(toolkit.client.ping)
         if not gateway_up and not await asyncio.to_thread(account_readable, toolkit):
@@ -201,37 +126,48 @@ async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
         # Only ask for live orders when the brokerage session can answer. Without it the
         # call returns IBKR's "no bridge" 400, and rendering that under a **Live Orders**
         # heading reads as an account fault rather than as the session state it is.
-        # Started first so it still overlaps the other three, as it always has.
-        if gateway_up:
-            orders_task = asyncio.create_task(
-                asyncio.to_thread(toolkit.execute, "get_live_orders", {})
-            )
-        (opening_text, _), (positions_text, _), pnl_text = await asyncio.gather(
-            asyncio.to_thread(toolkit.execute, "get_account_summary", {}),
-            asyncio.to_thread(toolkit.execute, "get_positions", {}),
-            asyncio.to_thread(get_live_pnl_text, toolkit),
-        )
-        # Two different IBKR endpoints produced the two blocks above. They must agree
-        # to rounding, and a session that opens on figures that do not is something the
-        # user needs told before they act on them, not something to discover later.
-        mismatch = reconcile_positions_against_ledger(positions_text, pnl_text)
-        if mismatch:
-            log.warning("Opening status reconciliation failed: %s", mismatch)
-        block = (
-            f"**Account Summary**\n{opening_text}\n\n"
-            f"**Open Positions**\n{positions_text}\n\n"
-            f"**Account P&L**\n{pnl_text}\n\n"
-            + (f"{mismatch}\n\n" if mismatch else "")
-        )
-        if orders_task is None:
-            return block + BROKERAGE_SESSION_DOWN, True
-        orders_text, _ = await orders_task
-        return block + f"**Live Orders**\n{orders_text}", False
+        if not gateway_up:
+            return BROKERAGE_SESSION_DOWN, True
+        orders_text, _ = await asyncio.to_thread(toolkit.execute, "get_live_orders", {})
+        return f"**Live Orders**\n{orders_text}", False
     except Exception as exc:
-        if orders_task is not None and not orders_task.done():
-            orders_task.cancel()  # else the failure surfaces as a stray unretrieved task
         log.warning("Could not load IBKR opening status: %s", exc)
         return OFFLINE_STATUS, True
+
+
+def _integrity_phrases(config: Any) -> tuple[str, str]:
+    """(status_line_fragment, system_prompt_sentence) reflecting the dataset verdict.
+
+    Three outcomes, three wordings, and none of them assert more than was measured:
+
+    * **validated** — the checks ran and passed; say so, to the user and to the model.
+    * **failed** — name the failure in both places. The model must not be told the data
+      is complete while the dashboard's realised windows are computed from rows that
+      just failed a uniqueness or identity check.
+    * **nothing to validate / could not check** — say nothing about integrity at all.
+      A fresh install is not a corrupt one, and an unperformed check is not a pass.
+
+    Never raises: a validation error must not cost the user their opening status.
+    """
+    try:
+        validity = validate_dataset(config.sqlite_path)
+    except Exception as exc:
+        log.warning("Dataset validation could not run: %s", exc)
+        return "", "Dataset integrity was not checked this session."
+    if validity.empty:
+        return "", "Dataset integrity was not checked this session."
+    if validity.ok:
+        return (
+            ", integrity validated",
+            "Dataset is complete and verified — no missing imports.",
+        )
+    log.error("Flex dataset validation FAILED at session start — %s", validity.summary)
+    return (
+        f", ⚠ integrity check FAILED: {validity.summary}",
+        f"⚠ The local trade dataset FAILED validation at session start: {validity.summary}. "
+        f"Do not present realised P&L or trade history from it as verified; say it is "
+        f"unverified if the user asks for figures derived from it.",
+    )
 
 
 def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, str | None]:
@@ -240,7 +176,16 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
 
     Blocking (SQLite reads) — call via asyncio.to_thread. Port of the removed app.py,
     including the subtlety that the market-calendar block appends to
-    trade_context even when Flex is unconfigured."""
+    trade_context even when Flex is unconfigured.
+
+    **The "integrity validated" phrase is earned here, not decoration (2026-08-05).**
+    It — and the stronger claim made to the model, "Dataset is complete and verified —
+    no missing imports" — used to rest on `get_trade_date_coverage` alone, which
+    describes itself in its own docstring as an ACTIVITY REPORT: it counts trades and
+    finds date gaps, and validates nothing. `flex_sync.validate_dataset` now runs the
+    real checks (0.07-0.13s on the live 53 MB store.db) and the wording follows its
+    verdict in all three directions — validated, failed, or nothing to validate.
+    """
     config = toolkit._config
     flex_configured = bool(config and config.flex_token and config.flex_query_id)
     trade_context: str | None = None
@@ -253,11 +198,12 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
                     sync_note = f"last refreshed {cov['newest']} ({days}d ago) — connect IBKR to refresh"
                 else:
                     sync_note = f"last refreshed {cov['newest']}"
-                trade_status = f"Historical dataset loaded: {cov['total_trades']} trades ({cov['oldest']} → {cov['newest']}, integrity validated) — {sync_note}"
+                integrity_note, integrity_context = _integrity_phrases(config)
+                trade_status = f"Historical dataset loaded: {cov['total_trades']} trades ({cov['oldest']} → {cov['newest']}{integrity_note}) — {sync_note}"
                 trade_context = (
-                    f"## Trade History (local store — integrity validated)\n"
+                    f"## Trade History (local store)\n"
                     f"{cov['total_trades']} executions from {cov['oldest']} to {cov['newest']}. "
-                    f"Last refreshed: {cov['newest']}. Dataset is complete and verified — no missing imports.\n"
+                    f"Last refreshed: {cov['newest']}. {integrity_context}\n"
                     f"Flex data lags 1 day (T+1). Newest entry being yesterday is normal, not stale. "
                     f"Do not flag the data as stale or suggest syncing unless the user explicitly asks "
                     f"or days_since_newest > 3 on a weekday.\n"

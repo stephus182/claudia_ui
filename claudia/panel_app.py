@@ -53,6 +53,7 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.dashboard_poller import DashboardPoller
 from claudia.execution_listener import ExecutionListener
+from claudia.flex_sync import dataset_fingerprint, validate_dataset
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
 from claudia.opening_status import build_trade_lines, gather_status_block
@@ -583,22 +584,44 @@ async def _maybe_background_flex_sync(
         Fire-and-forget: **never raises**. A sync failure falls back to reporting
         `check_flex_coverage` so the user learns what data is actually present rather than
         just that something broke.
+
+        The backup is **conditional on the data having moved** (2026-08-05). Flex is T+1,
+        so one pull per session is the entire refresh budget and an unchanged 53 MB file
+        costs 21 measured seconds to re-send for nothing. `dataset_fingerprint` decides;
+        an unreadable fingerprint uploads, because unknown is not "unchanged".
         """
         try:
+            before = await asyncio.to_thread(dataset_fingerprint, cfg.sqlite_path)
             result, _ = await asyncio.to_thread(toolkit.execute, "sync_flex_trades", {})
             chat.send(f"✅ {result}", user="System", respond=False)
+            after = await asyncio.to_thread(dataset_fingerprint, cfg.sqlite_path)
             # Back up the updated store.db to Drive account_data/.
             # upload_account_sqlite, not upload_account_file: store.db runs in WAL mode, so
             # a raw byte read would miss commits still sitting in store.db-wal and could tear
             # mid-checkpoint. Same consistent-snapshot guarantee GDriveSync.upload_db gives
             # claudia.db.
-            try:
-                await asyncio.to_thread(
-                    toolkit._cache.upload_account_sqlite, cfg.sqlite_path, "store.db"
+            if before is not None and after is not None and before == after:
+                log.info("store.db unchanged by this pull — Drive backup left as is")
+            else:
+                try:
+                    await asyncio.to_thread(
+                        toolkit._cache.upload_account_sqlite, cfg.sqlite_path, "store.db"
+                    )
+                    log.info("store.db backed up to Drive account_data/")
+                except Exception as backup_exc:
+                    log.warning("store.db Drive backup failed: %s", backup_exc)
+            # A backup is only worth having if what it holds is sound, and the dashboard's
+            # realised windows are computed from exactly these rows — so re-check after a
+            # pull, and say so on screen rather than only in a log nobody is reading.
+            validity = await asyncio.to_thread(validate_dataset, cfg.sqlite_path)
+            if not validity.ok:
+                log.error("Flex dataset validation FAILED after sync — %s", validity.summary)
+                chat.send(
+                    f"⚠ Trade dataset failed validation after the sync — {validity.summary}. "
+                    f"The realised P&L figures on the dashboard are computed from these rows; "
+                    f"treat them as unverified until this is resolved.",
+                    user="System", respond=False,
                 )
-                log.info("store.db backed up to Drive account_data/")
-            except Exception as backup_exc:
-                log.warning("store.db Drive backup failed: %s", backup_exc)
         except Exception as exc:
             log.warning("Background Flex sync failed: %s", exc)
             # Sync failed — still run integrity check so data status is known
