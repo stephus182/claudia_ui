@@ -180,13 +180,31 @@ matching neither the configured `GDRIVE_CREDENTIALS_FILE` nor the code default
 (`credentials.json`, plural). The 2026-07-10 migration design had already listed its
 cleanup as outstanding, so this completes a decision rather than making one.
 
-**Not done, and it is a separate action:** deleting the file removes the local copy but
-does **not** revoke the OAuth client, which still exists in the Google Cloud console. If
-the intent is that this client can never be used again, revoke it there.
+`token.json.expired.bak` — the companion straggler named in the same 2026-07-10 cleanup
+line — was deleted too. It held a refresh token and client secret for the *retired*
+`lj50qt9r…` client, expired 2026-07-08 and referenced by nothing. `~/.ibkr_core/` now
+holds exactly one credential pair, the live one.
 
-**Also left alone:** `token.json.expired.bak` (already `0600`) is the companion straggler
-named in the same 2026-07-10 cleanup line. Not deleted — it was not in scope for this
-request and its permissions are already correct.
+**The one item this audit cannot close.** Deleting the files removed the local copies; it
+did **not** revoke either retired OAuth client, both of which still exist in the Google
+Cloud console. That is a browser action against the user's Google account, so it is
+recorded here rather than performed:
+
+> APIs & Services → Credentials → project `753612828444`, delete the OAuth 2.0 client IDs
+> `…-d3mdcb27…` (dormant since 2026-05-20) and `…-lj50qt9r…` (retired 2026-07-10).
+> Keep `…-aehr92qe…` — that is the live one.
+
+Until then the practical exposure is unchanged from before the audit: a client secret for
+an *installed* application, which Google does not treat as confidential and which grants
+nothing without a user consent flow. This is a tidiness item, not a live risk.
+
+---
+
+## Status
+
+**Closed 2026-08-05.** Both Lows fixed and regression-tested; five documentation defects
+corrected; the two `ibkr_core_mcp` items resolved in that repo (`177c339`). One follow-up
+is recorded above and belongs to the Google Cloud console, not to either codebase.
 
 ---
 
