@@ -68,6 +68,7 @@ from claudia.dashboard_data import (
     economic_entries,
     empty_snapshot,
     fetch_ledger,
+    fetch_orders,
     fetch_positions,
     with_economic_entries,
 )
@@ -204,10 +205,17 @@ class DashboardPoller:
             self._publish_stale(flex, f"IBKR unavailable: {exc}")
             return
         positions = await asyncio.to_thread(self._read_entries, positions)
+        # Deliberately NOT inside `_read_account`: orders come from `/iserver/*` and the
+        # account half from `/portfolio/*`, and those fail independently (measured
+        # 2026-08-04 — ledger live while orders returned "no bridge"). A raise here would
+        # take a perfectly good ledger down with it, so `fetch_orders` returns None and
+        # the view says "not established" instead of drawing an empty book.
+        orders = await asyncio.to_thread(fetch_orders, self._client)
         self._snapshot = DashboardSnapshot(
             as_of=datetime.now(UTC),
             ledger=ledger,
             positions=positions,
+            orders=orders,
             error=None,
             **flex,
         )

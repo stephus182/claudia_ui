@@ -379,6 +379,59 @@ _POSITION_TOOLTIPS = {
 _EMPTY = DashboardSnapshot(as_of=datetime.min.replace(tzinfo=UTC))
 
 
+_ORDER_COLUMNS = ["Order", "Symbol", "Side", "Qty", "Filled", "Limit", "Type", "TIF", "Status", "Origin"]
+
+
+def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
+    """Working orders as the DataFrame the `Tabulator` renders.
+
+    Always the full column set even with no rows, for the same reason as
+    `positions_frame`: a zero-column `Tabulator` renders as a blank rectangle and reads
+    as a broken widget rather than as an empty book.
+
+    **An empty frame here means "no working orders", and it is the caller's job to only
+    show it when that is true.** `snapshot.orders is None` means the book was never
+    established — see `orders_status_line`. Drawing an empty table for a failed lookup
+    would tell a trader they have nothing resting, which is the most dangerous sentence
+    this panel could say by accident.
+    """
+    rows = [
+        {
+            "Order": o.order_id,
+            "Symbol": o.symbol,
+            "Side": o.side,
+            "Qty": o.quantity,
+            "Filled": o.filled,
+            "Limit": o.price,
+            "Type": o.order_type,
+            "TIF": o.tif,
+            "Status": o.status,
+            "Origin": "ClaudIA" if o.is_claudia_staged else "external",
+        }
+        for o in (snapshot.orders or ())
+    ]
+    return pd.DataFrame(rows, columns=_ORDER_COLUMNS)
+
+
+def orders_status_line(snapshot: DashboardSnapshot) -> str:
+    """One line above the table, distinguishing empty from unknown.
+
+    Three states, because there are three: the book was read and is empty, the book was
+    read and has orders, or it could not be read at all. The third is not an empty book
+    and must never render as one — orders come from `/iserver/*`, which can be down while
+    the `/portfolio/*` figures on the other tabs are perfectly live.
+    """
+    if snapshot.orders is None:
+        return (
+            "_**Order book unavailable** — the brokerage session is not answering. "
+            "This is not the same as having no working orders; nothing is claimed here._"
+        )
+    if not snapshot.orders:
+        return "_No working orders._"
+    staged = sum(1 for o in snapshot.orders if o.is_claudia_staged)
+    return f"_{len(snapshot.orders)} working order(s) — {staged} staged by ClaudIA._"
+
+
 def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     """Open positions as the DataFrame the `Tabulator` renders.
 
@@ -734,6 +787,19 @@ class DashboardView:
             # 1.9 and the suite gates on warnings (same finding as Widget.name).
             label="Window", options=list(_WINDOW_LABELS), value="Week", color="light"
         )
+        # Same Hard Rule 1 shape as the positions table: disabled=True and NO on_click /
+        # on_edit handler bound anywhere. An order row is the one place in this app where
+        # a click could plausibly be wired to "cancel this" — it must not be. Cancelling
+        # goes through propose_cancel and both gates, never a table cell.
+        self._orders = pn.widgets.Tabulator(
+            orders_frame(_EMPTY),
+            disabled=True,
+            show_index=False,
+            layout="fit_data_stretch",
+            sizing_mode="stretch_width",
+            height=300,
+        )
+        self._orders_status = safe_markdown("_Orders: waiting for the first poll…_")
         self._window.param.watch(self._on_window_change, "value")
         self._pnl_chart = pn.pane.HoloViews(None, sizing_mode="stretch_width")
         self._pnl_chart_note = safe_markdown("")
@@ -751,6 +817,8 @@ class DashboardView:
             ("Positions", pn.Column(self._positions_status, self._reconciliation,
                                     self._basis_note, self._positions,
                                     sizing_mode="stretch_both")),
+            ("Orders", pn.Column(self._orders_status, self._orders,
+                                 sizing_mode="stretch_both")),
             ("P&L", pn.Column(self._window, self._pnl_chart, self._pnl_chart_note,
                               self._pnl_stats, self._pnl_coverage, self._ledger_detail,
                               sizing_mode="stretch_both")),
@@ -814,6 +882,7 @@ class DashboardView:
             display = snapshot.without_account() if self.is_stale(snapshot, now) else snapshot
             self._refresh_tiles(display, now)
             self._refresh_positions(display)
+            self._refresh_orders(display)
             self._refresh_pnl(display)
             self._notify_staleness(snapshot, now)
         except Exception:
@@ -911,6 +980,18 @@ class DashboardView:
         renders as a bare em dash, which is the whole of what is known.
         """
         tile.param.update(value=value, format="{value}" if value is None else fmt)
+
+    def _refresh_orders(self, snapshot: DashboardSnapshot) -> None:
+        """Orders tab: the working book, and a line saying which of three states it is in.
+
+        Added 2026-08-05. The book had been visible only in the chat's opening message —
+        printed once at startup and never updated — so a full place → modify → cancel run
+        during a session left the dashboard unchanged throughout. (Positions were correct
+        the whole time: a resting limit order is not a position, and it only reaches that
+        table on a fill.)
+        """
+        self._orders.value = orders_frame(snapshot)
+        self._orders_status.object = orders_status_line(snapshot)
 
     def _refresh_positions(self, snapshot: DashboardSnapshot) -> None:
         """Positions tab: the table, a count/currency summary, and the reconciliation line."""

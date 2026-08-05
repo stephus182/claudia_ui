@@ -1007,6 +1007,13 @@ class DashboardSnapshot:
     as_of: datetime
     ledger: LedgerSnapshot | None = None
     positions: tuple[Position, ...] = ()
+    # `None` means the order book was NOT established — not that it is empty. The two are
+    # opposite claims on a trading surface: an empty tuple asserts "you have nothing
+    # resting", which is exactly the wrong thing to show when the lookup failed. Orders
+    # come from `/iserver/*` and the account half from `/portfolio/*`; those fail
+    # independently (measured 2026-08-04, ledger live while orders returned "no bridge"),
+    # so this field carries its own outcome rather than inheriting the account's.
+    orders: tuple[LiveOrder, ...] | None = None
     week: RealisedWindow | None = None
     month: RealisedWindow | None = None
     ytd: RealisedWindow | None = None
@@ -1040,7 +1047,94 @@ class DashboardSnapshot:
         because IBKR went away would be inventing an outage in the half of the dashboard
         that is still perfectly good.
         """
-        return replace(self, ledger=None, positions=())
+        return replace(self, ledger=None, positions=(), orders=None)
+
+
+@dataclass(frozen=True)
+class LiveOrder:
+    """One working order from `/iserver/account/orders`.
+
+    Added 2026-08-05 after a live place → modify → cancel run: the order book was
+    visible only in the chat's opening message, printed once and never updated, so an
+    order staged, modified and cancelled during a session left no trace on the dashboard.
+    Positions were correct throughout — a resting limit order is not a position — but
+    nothing on screen tracked the book.
+
+    `origin` preserves the distinction the chat block already drew: orders placed through
+    ClaudIA carry a `CLAUDIA-` local id, while anything from TWS, mobile or the web portal
+    does not and is read-only through this API.
+    """
+
+    order_id: str
+    symbol: str
+    side: str
+    quantity: float
+    filled: float
+    price: float | None
+    order_type: str
+    tif: str
+    status: str
+    origin: str = ""
+
+    @property
+    def is_claudia_staged(self) -> bool:
+        """Whether ClaudIA staged this order, by its local-id convention."""
+        return self.origin.upper().startswith("CLAUDIA-")
+
+
+def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
+    """Type IBKR's live-order rows, skipping any row that carries no order id.
+
+    IBKR's field names differ from the ones it accepts on placement — `orderDesc`,
+    `remainingQuantity`, `totalSize` — and a live-measured wrinkle it shares with the
+    positions endpoint: the same order can come back with `side` as `B` and `orderType`
+    as `LIMIT` on one call and the placement vocabulary on another. Nothing here
+    normalises that: this layer reports what IBKR said, and the comparison logic in
+    `order_flow` owns the equivalences.
+    """
+    out: list[LiveOrder] = []
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        order_id = row.get("orderId") or row.get("order_id")
+        if order_id in (None, ""):
+            continue
+        total = _as_float(row.get("totalSize") or row.get("quantity") or 0)
+        remaining = _as_float(row.get("remainingQuantity", total))
+        out.append(
+            LiveOrder(
+                order_id=str(order_id),
+                symbol=str(row.get("ticker") or row.get("symbol") or "").strip(),
+                side=str(row.get("side") or "").strip(),
+                quantity=total,
+                filled=max(0.0, total - remaining),
+                price=_as_float(row["price"]) if row.get("price") not in (None, "") else None,
+                order_type=str(row.get("orderType") or row.get("origOrderType") or "").strip(),
+                tif=str(row.get("timeInForce") or row.get("tif") or "").strip(),
+                status=str(row.get("status") or row.get("order_status") or "").strip(),
+                origin=str(row.get("order_ref") or row.get("orderRef") or "").strip(),
+            )
+        )
+    return tuple(out)
+
+
+def fetch_orders(client: IBKRClient) -> tuple[LiveOrder, ...] | None:
+    """Working orders, or **None when the book could not be established**.
+
+    None and `()` are different claims and the caller must keep them apart: `()` says
+    "nothing is resting", None says "unknown". Returning `()` on failure would put an
+    empty order table on screen and assert the first while meaning the second.
+
+    The brokerage session can be down while the account endpoints answer perfectly —
+    measured 2026-08-04, `/portfolio/{id}/ledger` live while `/iserver/account/orders`
+    returned HTTP 400 `{"error": "Bad Request: no bridge"}`. That is the case this None
+    exists for, and it is why an orders failure must not blank the account half.
+    """
+    try:
+        return parse_orders(client.get_live_orders())
+    except Exception as exc:
+        log.warning("Dashboard order poll failed: %s", exc)
+        return None
 
 
 def empty_snapshot(now: datetime | None = None, error: str | None = None) -> DashboardSnapshot:

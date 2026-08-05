@@ -1504,16 +1504,23 @@ async def test_session_root_composes_the_dashboard_tabs_and_table():
 
     tabs = [n for n in _iter_tree(root) if isinstance(n, pn.Tabs)]
     assert len(tabs) == 1
-    assert list(tabs[0]._names) == ["Chart", "Positions", "P&L"]
+    assert list(tabs[0]._names) == ["Chart", "Positions", "Orders", "P&L"]
 
     tables = [n for n in _iter_tree(root) if isinstance(n, pn.widgets.Tabulator)]
-    assert len(tables) == 1
+    assert len(tables) == 2  # positions, and the orders book added 2026-08-05
     # Hard Rule 1 regression guard, asserted at the composed-root level: a display
     # surface must never become an order path, and Tabulator cells are editable by
     # default. The absence of handlers is checked, not just the flag.
-    assert tables[0].disabled is True
-    assert not tables[0]._on_click_callbacks
-    assert not tables[0]._on_edit_callbacks
+    #
+    # Asserted over EVERY table rather than a fixed one. When the orders tab was added
+    # this test failed on the count alone, which would have been satisfied by bumping
+    # the number — and a fourth table could then arrive editable with nothing objecting.
+    # The order book is exactly where that matters: it is the one surface where a click
+    # could plausibly be wired to "cancel this".
+    for table in tables:
+        assert table.disabled is True
+        assert not table._on_click_callbacks
+        assert not table._on_edit_callbacks
 
     # Two HoloViews panes now: the candlestick pane inside the Chart tab, and the
     # realised-P&L pane inside the P&L tab.

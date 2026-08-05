@@ -402,7 +402,7 @@ def test_age_formatting(seconds, expected):
 
 def test_tabs_are_named_chart_positions_pnl():
     v = pdash.build_dashboard(chart_pane=pn.Column(pn.pane.Markdown("chart")))
-    assert list(v.tabs._names) == ["Chart", "Positions", "P&L"]
+    assert list(v.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
     assert isinstance(v.tabs, pn.Tabs)
 
 
@@ -944,3 +944,83 @@ def test_ledger_markdown_with_no_ledger():
 def test_ledger_markdown_discloses_other_currency_balances():
     snap = _snapshot(ledger=_ledger(other_currencies=("CHF", "EUR")))
     assert "CHF, EUR" in pdash.ledger_markdown(snap)
+
+
+# ── Orders tab (2026-08-05) ───────────────────────────────────────────────────
+#
+# Added after a live place → modify → cancel run left the dashboard unchanged throughout:
+# the working book existed only in the chat's opening message, printed once at startup and
+# never updated. Positions were correct the whole time — a resting limit order is not a
+# position — so the gap was a missing view, not a stale one.
+
+
+def _order(**kw):
+    from claudia.dashboard_data import LiveOrder
+
+    base = {
+        "order_id": "314390101", "symbol": "AAPL", "side": "BUY", "quantity": 1.0,
+        "filled": 0.0, "price": 100.0, "order_type": "LMT", "tif": "GTC",
+        "status": "Submitted", "origin": "",
+    }
+    base.update(kw)
+    return LiveOrder(**base)
+
+
+def test_orders_frame_keeps_its_columns_when_the_book_is_empty():
+    """A zero-column Tabulator renders as a blank rectangle — that reads as a broken
+    widget, not as an empty book (same reason positions_frame does this)."""
+    frame = pdash.orders_frame(_snapshot(orders=()))
+    assert list(frame.columns) == pdash._ORDER_COLUMNS
+    assert len(frame) == 0
+
+
+def test_orders_frame_renders_a_working_order():
+    frame = pdash.orders_frame(_snapshot(orders=(_order(),)))
+    row = frame.iloc[0]
+    assert row["Order"] == "314390101"
+    assert row["Symbol"] == "AAPL"
+    assert row["Limit"] == 100.0
+    assert row["Status"] == "Submitted"
+
+
+def test_an_unavailable_book_is_not_reported_as_an_empty_one():
+    """The distinction this whole feature turns on. `None` means the lookup failed;
+    saying "no working orders" there would tell a trader nothing is resting when
+    something might be."""
+    unknown = pdash.orders_status_line(_snapshot(orders=None))
+    empty = pdash.orders_status_line(_snapshot(orders=()))
+
+    assert unknown != empty
+    assert "unavailable" in unknown.lower()
+    # Not merely "avoids the phrase" — it names the distinction outright, which is what
+    # stops a reader filling the gap with the wrong one of the two.
+    assert "not the same as having no working orders" in unknown.lower()
+    assert empty.lower().strip("_ ") == "no working orders."
+
+
+def test_orders_status_counts_claudia_staged_separately():
+    snap = _snapshot(orders=(_order(origin="CLAUDIA-1785941569825"), _order(order_id="2")))
+    line = pdash.orders_status_line(snap)
+    assert "2 working order(s)" in line
+    assert "1 staged by ClaudIA" in line
+
+
+def test_the_orders_table_is_read_only_and_has_no_handlers(view):
+    """Hard Rule 1. An order row is the one place a click could plausibly be wired to
+    "cancel this" — it must not be. Cancelling goes through propose_cancel and both
+    gates, never a table cell."""
+    assert view._orders.disabled is True
+    assert not view._orders._on_click_callbacks
+    assert not view._orders._on_edit_callbacks
+
+
+def test_orders_blank_when_the_account_half_goes_stale(view):
+    """`without_account` clears the book along with the ledger and positions: it comes
+    from the same gateway, so continuing to show it would be the stale-figures failure
+    the rest of the dashboard already refuses."""
+    snap = _snapshot(orders=(_order(),))
+    assert snap.without_account().orders is None
+
+
+def test_the_dashboard_has_an_orders_tab(view):
+    assert list(view.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
