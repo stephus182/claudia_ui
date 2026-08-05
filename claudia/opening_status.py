@@ -23,11 +23,12 @@ reconciliation that re-parsed those rendered blocks against each other —
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
 
 from ibkr_core_mcp import ClaudeToolkit, Config
 
-from claudia.flex_sync import validate_dataset
+from claudia.flex_sync import last_import, validate_dataset_daily
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +149,56 @@ async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
         return OFFLINE_STATUS, True
 
 
+def _local_stamp(moment: datetime, with_date: bool = False) -> str:
+    """A timestamp in the reader's own timezone, labelled with it.
+
+    Stored times are UTC; a trader reading "12:18" for a fill they placed at 08:18 has to
+    do the conversion in their head, and the same rule that forbids a bare `$` forbids a
+    bare clock time — so the zone is always named.
+    """
+    local = moment.astimezone()
+    return local.strftime("%Y-%m-%d %H:%M %Z" if with_date else "%H:%M %Z")
+
+
+def _sync_note(config: Config, cov: dict[str, Any], ibkr_offline: bool) -> str:
+    """When the store was last actually updated — a real timestamp where one exists.
+
+    This line used to read "last refreshed {newest}", where `newest` is the newest
+    **trade date** in the dataset. Those are different things and Flex's T+1 lag puts a
+    full day between them: on 2026-08-05 the store was updated at 08:18 EDT with a
+    statement whose newest trade was 2026-08-04. Printing the second under the word
+    "refreshed" told the user the store was a day staler than it was.
+
+    `flex_import_log` records when each statement landed, so the honest answer is
+    available and is used. The old wording remains the fallback for a store that has
+    never recorded an import.
+    """
+    imported = last_import(config.sqlite_path)
+    if imported is not None:
+        note = f"updated {_local_stamp(imported.at, with_date=True)}"
+        return f"{note} — connect IBKR to refresh" if ibkr_offline else note
+    if ibkr_offline:
+        return f"last refreshed {cov['newest']} ({cov['days_since_newest']}d ago) — connect IBKR to refresh"
+    return f"last refreshed {cov['newest']}"
+
+
+def _store_updated_sentence(config: Config, cov: dict[str, Any]) -> str:
+    """The same fact as `_sync_note`, worded for the model rather than the user.
+
+    Kept separate from `_sync_note` on purpose: that one may end in "connect IBKR to
+    refresh", which is an instruction to a person looking at a button. Both read the same
+    source, so the two surfaces cannot drift into disagreeing about when the store was
+    updated.
+    """
+    imported = last_import(config.sqlite_path)
+    if imported is None:
+        return f"Newest trade date: {cov['newest']}."
+    return (
+        f"Store last updated {_local_stamp(imported.at, with_date=True)}; "
+        f"newest trade date {cov['newest']}."
+    )
+
+
 def _integrity_phrases(config: Config) -> tuple[str, str]:
     """(status_line_fragment, system_prompt_sentence) reflecting the dataset verdict.
 
@@ -163,16 +214,27 @@ def _integrity_phrases(config: Config) -> tuple[str, str]:
     Never raises: a validation error must not cost the user their opening status.
     """
     try:
-        validity = validate_dataset(config.sqlite_path)
+        outcome = validate_dataset_daily(config.sqlite_path)
     except Exception as exc:
         log.warning("Dataset validation could not run: %s", exc)
         return "", "Dataset integrity was not checked this session."
+    validity = outcome.validity
     if validity.empty:
         return "", "Dataset integrity was not checked this session."
     if validity.ok:
+        # Reused: the checks are not re-run, and the line says so rather than implying
+        # freshness it does not have. An unqualified "integrity validated" would be true
+        # of the data and misleading about the moment.
+        when = _local_stamp(outcome.validated_at)
+        note = (
+            f", integrity validated {when} — unchanged since, not re-checked"
+            if outcome.reused
+            else ", integrity validated"
+        )
         return (
-            ", integrity validated",
-            "Dataset is complete and verified — no missing imports.",
+            note,
+            f"Dataset is complete and verified — no missing imports "
+            f"(validated {when}).",
         )
     log.error("Flex dataset validation FAILED at session start — %s", validity.summary)
     return (
@@ -206,17 +268,18 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
         try:
             cov = toolkit._store.get_trade_date_coverage()
             if cov["oldest"]:
-                if ibkr_offline:
-                    days = cov["days_since_newest"]
-                    sync_note = f"last refreshed {cov['newest']} ({days}d ago) — connect IBKR to refresh"
-                else:
-                    sync_note = f"last refreshed {cov['newest']}"
+                sync_note = _sync_note(config, cov, ibkr_offline)
                 integrity_note, integrity_context = _integrity_phrases(config)
                 trade_status = f"Historical dataset loaded: {cov['total_trades']} trades ({cov['oldest']} → {cov['newest']}{integrity_note}) — {sync_note}"
                 trade_context = (
                     f"## Trade History (local store)\n"
+                    # "Last refreshed: {newest}" lived here until 2026-08-05 and was the
+                    # same mislabel the status line carried: it printed the newest TRADE
+                    # date under a word meaning "when we last pulled". The model reasons
+                    # about staleness from this sentence, so it got the two apart —
+                    # 2026-08-04 vs an actual update at 08-05 08:18 EDT.
                     f"{cov['total_trades']} executions from {cov['oldest']} to {cov['newest']}. "
-                    f"Last refreshed: {cov['newest']}. {integrity_context}\n"
+                    f"{_store_updated_sentence(config, cov)} {integrity_context}\n"
                     f"Flex data lags 1 day (T+1). Newest entry being yesterday is normal, not stale. "
                     f"Do not flag the data as stale or suggest syncing unless the user explicitly asks "
                     f"or days_since_newest > 3 on a weekday.\n"

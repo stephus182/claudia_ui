@@ -50,9 +50,11 @@ What this does NOT do, and will not: reconcile against the source XML. That is
 wrong place for it.
 """
 
+import json
 import logging
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -223,3 +225,192 @@ def dataset_fingerprint(sqlite_path: str | Path) -> tuple[int, int, str | None] 
         return None
     finally:
         conn.close()
+
+
+# ── "already updated today — do not check again" (user rule, 2026-08-05) ──────
+
+
+@dataclass(frozen=True)
+class LastImport:
+    """When the store was last updated by a Flex pull, and by which statement."""
+
+    at: datetime
+    filename: str
+    trade_count: int
+
+
+@dataclass(frozen=True)
+class ValidationOutcome:
+    """A verdict plus **when it was established** — which is not always now.
+
+    `reused` True means nothing was re-checked: a verdict from earlier today still
+    describes this exact dataset. `validated_at` is the moment the checks actually ran,
+    never the moment they were asked for, so the UI can state a time that is true.
+    """
+
+    validity: DatasetValidity
+    validated_at: datetime
+    reused: bool
+
+
+def _record_path(sqlite_path: str | Path) -> Path:
+    """Sidecar holding the last verdict. Named after the database it describes."""
+    return Path(f"{sqlite_path}.validation.json")
+
+
+def last_import(sqlite_path: str | Path) -> LastImport | None:
+    """The most recent row of `flex_import_log`, or None if there is nothing to report.
+
+    This is the honest answer to "when was the data last updated" — the moment a Flex
+    statement was imported. It is **not** the newest trade date, which is what the
+    opening line used to print under the label "last refreshed": on 2026-08-05 those
+    were 08-05 12:18 UTC and 2026-08-04 respectively, a full day apart, because Flex is
+    T+1. Showing the second and calling it the first tells the user the store is a day
+    staler than it is.
+
+    Returns None rather than a guess when the timestamp cannot be parsed: no time on
+    screen is better than a wrong one.
+    """
+    try:
+        conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT filename, imported_at, trade_id_count FROM flex_import_log "
+            "ORDER BY imported_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        return None  # table absent on a store that has never imported
+    finally:
+        conn.close()
+
+    if not row or not row[1]:
+        return None
+    try:
+        at = datetime.fromisoformat(str(row[1]))
+    except ValueError:
+        log.warning("last_import: unparseable imported_at %r", row[1])
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return LastImport(at=at, filename=str(row[0]), trade_count=int(row[2] or 0))
+
+
+def validate_dataset_daily(
+    sqlite_path: str | Path, now: datetime | None = None
+) -> ValidationOutcome:
+    """Validate at most once per calendar day per dataset, and say when it was proven.
+
+    The user's rule, 2026-08-05: *"If flex sync was performed and db already updated on
+    T, do not check again. Just explicitly mention it was already updated: state the date
+    and time."* Flex is T+1 and the store is pulled once a day, so re-running the checks
+    on a byte-identical dataset cannot produce a new answer — it is work that buys
+    nothing and, worse, prints an unqualified "integrity validated" with no indication of
+    when anything was actually established.
+
+    Reuse requires **both** conditions, and the fingerprint is the load-bearing one:
+
+    * the stored verdict was reached **today**, and
+    * `dataset_fingerprint` still matches what it was computed against.
+
+    So a pull that lands mid-session re-validates immediately rather than coasting on a
+    verdict about data that no longer exists. Two things are deliberately never reused: a
+    **failure** (it must be re-measured, not cached forward into a day of silence) and a
+    verdict from any earlier day.
+
+    The cache is an optimisation and is treated as one — an unwritable location, a
+    corrupt sidecar or a malformed record costs the reuse, never the check.
+    """
+    now = now or datetime.now(UTC)
+    fingerprint = dataset_fingerprint(sqlite_path)
+
+    reusable = _reusable_verdict(_read_record(_record_path(sqlite_path)), fingerprint, now)
+    if reusable is not None:
+        return reusable
+
+    validity = validate_dataset(sqlite_path)
+    _write_record(_record_path(sqlite_path), validity, fingerprint, now)
+    return ValidationOutcome(validity=validity, validated_at=now, reused=False)
+
+
+def _reusable_verdict(
+    stored: object, fingerprint: tuple[int, int, str | None] | None, now: datetime
+) -> ValidationOutcome | None:
+    """A stored verdict that still describes this dataset today, or None.
+
+    Every field is checked before it is believed. The sidecar is an ordinary JSON file on
+    disk that a person can edit, truncate or copy between machines, so it is parsed as
+    untrusted input: anything unexpected returns None and costs one re-validation, which
+    is the cheap failure. The expensive failure would be trusting a record that says
+    "valid" about a dataset it was not computed against.
+    """
+    if not isinstance(stored, dict) or stored.get("ok") is not True:
+        return None
+    if fingerprint is None or stored.get("fingerprint") != list(fingerprint):
+        return None
+
+    raw_at = stored.get("validated_at")
+    if not isinstance(raw_at, str):
+        return None
+    try:
+        validated_at = datetime.fromisoformat(raw_at)
+    except ValueError:
+        return None
+    if validated_at.tzinfo is None:
+        validated_at = validated_at.replace(tzinfo=UTC)
+    # Local calendar day, not UTC: "already checked today" has to mean the reader's today.
+    if validated_at.astimezone().date() != now.astimezone().date():
+        return None
+
+    raw_checks = stored.get("checks")
+    checks = tuple(
+        DatasetCheck(name=str(c["name"]), passed=True, detail=str(c.get("detail", "")))
+        for c in (raw_checks if isinstance(raw_checks, list) else [])
+        if isinstance(c, dict) and isinstance(c.get("name"), str)
+    )
+    return ValidationOutcome(
+        validity=DatasetValidity(checks, empty=bool(stored.get("empty"))),
+        validated_at=validated_at,
+        reused=True,
+    )
+
+
+def _read_record(path: Path) -> dict[str, object] | None:
+    """The stored verdict, or None if there is not a usable one. Never raises."""
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _write_record(
+    path: Path,
+    validity: DatasetValidity,
+    fingerprint: tuple[int, int, str | None] | None,
+    now: datetime,
+) -> None:
+    """Store the verdict beside the database. Never raises — see `validate_dataset_daily`.
+
+    **Nothing is written without a fingerprint.** Such a record could never be reused —
+    reuse requires a fingerprint match — so writing one is pure cost, and the cost turned
+    out to be real: an unreadable path still produced a file, and a test passing a
+    `MagicMock` config wrote `<MagicMock name='mock._config.sqlite_path' id=…>.validation.json`
+    into the repository root. Fourteen of them reached a commit before a pre-push file
+    listing caught it. A path we could not read is not a path we should write beside.
+    """
+    if fingerprint is None:
+        return
+    record = {
+        "validated_at": now.isoformat(),
+        "ok": validity.ok,
+        "empty": validity.empty,
+        "fingerprint": list(fingerprint) if fingerprint is not None else None,
+        "checks": [{"name": c.name, "detail": c.detail} for c in validity.checks if c.passed],
+        "summary": validity.summary,
+    }
+    try:
+        path.write_text(json.dumps(record, indent=2))
+    except OSError as exc:
+        log.warning("Could not cache the dataset verdict (%s) — it will be re-checked", exc)

@@ -4,6 +4,7 @@ returns (text, None) 2-tuples (claude_tools.py:1048); get_trade_date_coverage /
 get_market_calendar_context return the dict shapes the removed Chainlit app.py:426-513
 consumed (the port's parity source)."""
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -221,16 +222,22 @@ def test_build_trade_lines_calendar_error_is_swallowed():
 # explicitly forbids, and it was being asserted to the user AND to the model.
 
 
-def _validity(ok: bool = True, empty: bool = False):
-    from claudia.flex_sync import DatasetCheck, DatasetValidity
+_VALIDATED_AT = datetime(2026, 8, 5, 12, 18, tzinfo=UTC)
+
+
+def _outcome(ok: bool = True, empty: bool = False, reused: bool = False):
+    """A `ValidationOutcome` in the shape `validate_dataset_daily` returns."""
+    from claudia.flex_sync import DatasetCheck, DatasetValidity, ValidationOutcome
 
     if empty:
-        return DatasetValidity((), empty=True)
-    if ok:
-        return DatasetValidity((DatasetCheck("file integrity", True, "ok"),))
-    return DatasetValidity(
-        (DatasetCheck("execution_key is unique", False, "75 duplicated key(s)"),)
-    )
+        validity = DatasetValidity((), empty=True)
+    elif ok:
+        validity = DatasetValidity((DatasetCheck("file integrity", True, "ok"),))
+    else:
+        validity = DatasetValidity(
+            (DatasetCheck("execution_key is unique", False, "75 duplicated key(s)"),)
+        )
+    return ValidationOutcome(validity=validity, validated_at=_VALIDATED_AT, reused=reused)
 
 
 def _covered_toolkit():
@@ -244,14 +251,14 @@ def _covered_toolkit():
 
 
 def test_the_validated_claim_is_made_only_when_the_checks_actually_ran():
-    with patch("claudia.opening_status.validate_dataset", return_value=_validity(ok=True)):
+    with patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome(ok=True)):
         status, context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
     assert "integrity validated" in status
     assert context is not None and "verified" in context
 
 
 def test_a_failing_dataset_says_so_instead_of_claiming_validation():
-    with patch("claudia.opening_status.validate_dataset", return_value=_validity(ok=False)):
+    with patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome(ok=False)):
         status, context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
 
     assert "integrity validated" not in status
@@ -265,14 +272,107 @@ def test_a_failing_dataset_says_so_instead_of_claiming_validation():
 def test_an_unvalidated_dataset_makes_no_claim_either_way():
     """`empty` is neither a pass nor a failure. A first run has nothing to validate and
     must not open with an integrity alarm — nor with a validation it did not perform."""
-    with patch("claudia.opening_status.validate_dataset", return_value=_validity(empty=True)):
+    with patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome(empty=True)):
         status, _context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
     assert "integrity validated" not in status
     assert "duplicated" not in status
 
 
 def test_validation_blowing_up_never_takes_down_the_opening_status():
-    with patch("claudia.opening_status.validate_dataset", side_effect=RuntimeError("boom")):
+    with patch("claudia.opening_status.validate_dataset_daily", side_effect=RuntimeError("boom")):
         status, _context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
     assert "1234 trades" in status
     assert "integrity validated" not in status  # unproven is not proven
+
+
+# ── "already updated on T — say so, don't check again" (user rule, 2026-08-05) ─
+
+
+def test_a_reused_verdict_says_when_it_was_proven_and_that_nothing_was_rechecked():
+    """Transparency over implication. Flex is T+1 and the store is pulled once a day, so
+    the second session of the day validates nothing — and a bare "integrity validated"
+    would be true of the data while implying a check that did not just happen."""
+    with patch("claudia.opening_status.validate_dataset_daily",
+               return_value=_outcome(ok=True, reused=True)):
+        status, context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
+
+    assert "not re-checked" in status
+    assert "unchanged since" in status
+    local = _VALIDATED_AT.astimezone().strftime("%H:%M")
+    assert local in status          # the time it was PROVEN, in the reader's timezone
+    assert local in (context or "")  # and the model is told the same thing
+
+
+def test_a_fresh_verdict_does_not_claim_to_be_reused():
+    with patch("claudia.opening_status.validate_dataset_daily",
+               return_value=_outcome(ok=True, reused=False)):
+        status, _ = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
+
+    assert "integrity validated" in status
+    assert "not re-checked" not in status
+
+
+def test_the_line_reports_when_the_store_was_updated_not_the_newest_trade_date():
+    """These are different things and T+1 puts a day between them. The line used to read
+    "last refreshed 2026-08-04" for a store updated on 08-05 at 08:18 — telling the user
+    it was a day staler than it was."""
+    from claudia.flex_sync import LastImport
+
+    imported = LastImport(at=datetime(2026, 8, 5, 12, 18, tzinfo=UTC),
+                          filename="flex_U1675699_2026-08-05.xml", trade_count=105)
+    with (
+        patch("claudia.opening_status.last_import", return_value=imported),
+        patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()),
+    ):
+        status, _ = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
+
+    stamp = imported.at.astimezone().strftime("%Y-%m-%d %H:%M")
+    assert f"updated {stamp}" in status
+    assert "last refreshed" not in status  # the mislabel is gone, not merely supplemented
+
+
+def test_a_store_that_never_recorded_an_import_keeps_the_old_wording():
+    """No import log is not a reason to print nothing — fall back rather than go silent."""
+    with (
+        patch("claudia.opening_status.last_import", return_value=None),
+        patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()),
+    ):
+        status, _ = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
+
+    assert "last refreshed 2026-07-22" in status
+
+
+def test_the_update_stamp_names_its_timezone():
+    """The same rule that forbids a bare $ forbids a bare clock time."""
+    from claudia.flex_sync import LastImport
+
+    imported = LastImport(at=datetime(2026, 8, 5, 12, 18, tzinfo=UTC), filename="x", trade_count=1)
+    with (
+        patch("claudia.opening_status.last_import", return_value=imported),
+        patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()),
+    ):
+        status, _ = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
+
+    zone = imported.at.astimezone().strftime("%Z")
+    assert zone and zone in status
+
+
+def test_the_model_is_told_the_same_update_time_as_the_user():
+    """Two surfaces, one fact. The status line was corrected on 2026-08-05 while the
+    system-prompt copy still read "Last refreshed: {newest trade date}" — so the model
+    was reasoning about staleness from a date a full day behind what the user could see.
+    """
+    from claudia.flex_sync import LastImport
+
+    imported = LastImport(at=datetime(2026, 8, 5, 12, 18, tzinfo=UTC), filename="x", trade_count=105)
+    with (
+        patch("claudia.opening_status.last_import", return_value=imported),
+        patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()),
+    ):
+        status, context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
+
+    stamp = imported.at.astimezone().strftime("%Y-%m-%d %H:%M")
+    assert context is not None
+    assert stamp in context and stamp in status      # same moment on both surfaces
+    assert "Last refreshed: 2026-07-22" not in context  # the mislabel, gone from here too
+    assert "newest trade date 2026-07-22" in context    # stated as what it is
