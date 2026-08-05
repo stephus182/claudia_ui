@@ -69,6 +69,28 @@ files are verified by hash on re-check (full tradeID scan only if hash changed).
 `check_flex_coverage` is an activity distribution report only — gaps reflect genuine inactivity
 (30-day min hold periods produce 50–68 day gaps), not missing imports.
 
+**Two writers, two timestamp formats — and the report used to see only one (fixed 2026-08-05).**
+`trades` is written by `flex_query` in ISO (`2026-08-04T14:21:42`) and by the live CP API and
+streaming paths in IBKR's compact `20260804-14:21:42`. `upsert_trades`' `ON CONFLICT` does not
+update `time` — the first observation of a fill is authoritative — so a live-captured row kept
+the compact form permanently. The coverage query matched the ISO shape only and therefore could
+not see them: **38 of 1,206 rows (3%) on the live store**, and the newest date it could report
+was 2026-08-04 while the table already held 2026-08-05.
+
+The missing day was not the sharp part. A window containing *only* live-captured trades would
+have appeared as a 45+ day hole — and ClaudIA is told that date gaps are verified inactivity, so
+a gap fabricated by a timestamp format would have been reported to the user as fact.
+
+Two questions, deliberately split rather than fixed together:
+
+| | reads | why |
+|---|---|---|
+| **Activity report** (oldest / newest / gaps / total) | **every** row, both formats | a live-only window must not read as "no trading" |
+| **Staleness flag** | `flex_trade` rows with `source='flex'` only | it decides whether to pull a statement; Flex is T+1, so today's live fill is exactly the trade whose settled record has *not* arrived. Counting it would suppress the pull that brings the settled figures |
+
+`time` is now normalised to ISO on write, and the 38 existing rows were migrated (row count
+unchanged, the five audited gaps unchanged — see `project-flex-gap-audit`).
+
 See `docs/flex-query-setup.md` for full setup and troubleshooting.
 
 ## Live Orders Two-Call Pattern
