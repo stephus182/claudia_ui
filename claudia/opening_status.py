@@ -19,7 +19,19 @@ from claudia.execution_listener import get_live_pnl_text
 
 log = logging.getLogger(__name__)
 
-OFFLINE_STATUS = "*IBKR gateway not connected — data will load when gateway is online.*"
+OFFLINE_STATUS = (
+    "*IBKR not reachable — no account data. The dashboard is blank for the same reason, "
+    "and will fill in when the connection returns.*"
+)
+
+# The middle state: account endpoints answer, the brokerage session does not. Named as
+# what is missing rather than as "offline", because the balances on screen are live.
+BROKERAGE_SESSION_DOWN = (
+    "*Account data above is **live**. The **brokerage session** is not authenticated, so "
+    "live orders, market data and order staging are unavailable until it is — use "
+    "**Start IBKR Gateway** below. Balances and positions are served from the account "
+    "endpoints and are unaffected.*"
+)
 
 _EXCHANGE_LABELS = {
     "XNYS": "NYSE", "CME": "CME Futures",
@@ -122,27 +134,82 @@ def reconcile_positions_against_ledger(
     )
 
 
-async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
-    """(status_block_markdown, ibkr_offline).
+def account_readable(toolkit: ClaudeToolkit) -> bool:
+    """Whether IBKR's **account** endpoints answer, independent of `ping()`.
 
-    toolkit.execute() swallows all exceptions and returns an error string instead
-    of raising, so we pre-check reachability and skip the calls when the gateway
-    is unreachable. ping() verifies authentication (not just reachability); it
-    retries once internally for the IBKR first-call quirk where
-    authenticated=false on a fresh session. The 4-way gather over to_thread
-    matches the removed Chainlit app.py's cl.make_async concurrency exactly (same thread-pool
-    parallelism against IBKRClient — no new hazard)."""
+    Blocking — call via `asyncio.to_thread`.
+
+    `/portfolio/*` and `/iserver/*` are not one switch, and treating them as one is what
+    put a contradiction on screen: the chat said "IBKR gateway not connected" beside a
+    dashboard showing live, ticking account figures. Measured 2026-08-04, all three at
+    the same moment:
+
+        client.ping()                    -> False
+        /portfolio/{id}/ledger           -> live (netliq 59,118.00, unrealised -10,101.02)
+        /iserver/account/orders          -> HTTP 400 {"error": "Bad Request: no bridge"}
+
+    "no bridge" is IBKR naming the thing that is actually missing: the brokerage session.
+    Account data is served from the SSO session and keeps working without it. So `ping()`
+    is the right question for *orders* and the wrong one for *balances*, and this asks the
+    second question separately rather than inferring it from the first.
+
+    `get_accounts` is the probe because it is the same call the dashboard poller already
+    makes to resolve the account, so a pass here means the poller will populate too — the
+    two panels cannot disagree about whether the account is reachable.
+    """
+    try:
+        return bool(toolkit.client.get_accounts())
+    except Exception as exc:
+        log.warning("IBKR account endpoints unreachable: %s", exc)
+        return False
+
+
+async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
+    """(status_block_markdown, brokerage_session_down).
+
+    Three states, because IBKR has three — see `account_readable` for the measurement
+    that forced the middle one to exist:
+
+    | `ping()` | account reads | block | flag |
+    |---|---|---|---|
+    | up | up | full status, orders included | False |
+    | down | **up** | account status + what is unavailable and why | True |
+    | down | down | `OFFLINE_STATUS` | True |
+
+    The middle row is the one this function used to get wrong. It short-circuited on
+    `ping()` and declared the gateway disconnected, while the dashboard beside it drew
+    live balances from the account endpoints that were answering perfectly. Whichever
+    panel a user believed, the other one was telling them something false.
+
+    The returned flag stays "the brokerage session is down", which is what its consumers
+    actually want: it drives the Start-Gateway button and defers the background Flex
+    sync. It is deliberately True in the middle row — order actions really are
+    unavailable there — and the block says so in words instead of implying the account
+    is unreadable.
+
+    `toolkit.execute()` swallows exceptions and returns an error string rather than
+    raising, which is why reachability is probed first instead of being inferred from the
+    output. The gather over `to_thread` matches the removed Chainlit app.py's
+    `cl.make_async` concurrency exactly (same thread-pool parallelism against
+    `IBKRClient` — no new hazard).
+    """
+    orders_task: asyncio.Task[tuple[str, Any]] | None = None
     try:
         gateway_up = await asyncio.to_thread(toolkit.client.ping)
-        if not gateway_up:
-            raise ConnectionError("IBKR gateway not reachable")
-        (opening_text, _), (orders_text, _), (positions_text, _), pnl_text = (
-            await asyncio.gather(
-                asyncio.to_thread(toolkit.execute, "get_account_summary", {}),
-                asyncio.to_thread(toolkit.execute, "get_live_orders", {}),
-                asyncio.to_thread(toolkit.execute, "get_positions", {}),
-                asyncio.to_thread(get_live_pnl_text, toolkit),
+        if not gateway_up and not await asyncio.to_thread(account_readable, toolkit):
+            return OFFLINE_STATUS, True
+        # Only ask for live orders when the brokerage session can answer. Without it the
+        # call returns IBKR's "no bridge" 400, and rendering that under a **Live Orders**
+        # heading reads as an account fault rather than as the session state it is.
+        # Started first so it still overlaps the other three, as it always has.
+        if gateway_up:
+            orders_task = asyncio.create_task(
+                asyncio.to_thread(toolkit.execute, "get_live_orders", {})
             )
+        (opening_text, _), (positions_text, _), pnl_text = await asyncio.gather(
+            asyncio.to_thread(toolkit.execute, "get_account_summary", {}),
+            asyncio.to_thread(toolkit.execute, "get_positions", {}),
+            asyncio.to_thread(get_live_pnl_text, toolkit),
         )
         # Two different IBKR endpoints produced the two blocks above. They must agree
         # to rounding, and a session that opens on figures that do not is something the
@@ -150,14 +217,19 @@ async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
         mismatch = reconcile_positions_against_ledger(positions_text, pnl_text)
         if mismatch:
             log.warning("Opening status reconciliation failed: %s", mismatch)
-        return (
+        block = (
             f"**Account Summary**\n{opening_text}\n\n"
             f"**Open Positions**\n{positions_text}\n\n"
             f"**Account P&L**\n{pnl_text}\n\n"
             + (f"{mismatch}\n\n" if mismatch else "")
-            + f"**Live Orders**\n{orders_text}"
-        ), False
+        )
+        if orders_task is None:
+            return block + BROKERAGE_SESSION_DOWN, True
+        orders_text, _ = await orders_task
+        return block + f"**Live Orders**\n{orders_text}", False
     except Exception as exc:
+        if orders_task is not None and not orders_task.done():
+            orders_task.cancel()  # else the failure surfaces as a stray unretrieved task
         log.warning("Could not load IBKR opening status: %s", exc)
         return OFFLINE_STATUS, True
 

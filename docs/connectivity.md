@@ -16,6 +16,35 @@ header (green / red / gray), polled every 60 seconds by `ConnectivityChecker`.
 Gray (⚫) means the service is not configured for this session (TradingView sidecar not
 started). Gray never sends a disconnect alert.
 
+### ⚠ The IBKR light is about the **brokerage session**, not about account data
+
+`/portfolio/*` and `/iserver/*` are not one switch, and the red light only speaks for the
+second. Measured live 2026-08-04, all three at the same moment:
+
+```
+client.ping()                 -> False        # brokerage session
+/portfolio/{id}/ledger        -> live         # netliq 59,118.00, unrealised -10,101.02
+/iserver/account/orders       -> HTTP 400 {"error": "Bad Request: no bridge"}
+```
+
+"no bridge" is IBKR naming exactly what is missing. Account data is served from the SSO
+session and keeps working without a brokerage session, which is why the live dashboard
+went on updating while the chat announced *"IBKR gateway not connected"* — a contradiction
+on one screen, and the reason `opening_status.account_readable` now asks the second
+question separately. Three states, not two:
+
+| `ping()` | account reads | what the user is told |
+|---|---|---|
+| up | up | full status, live orders included |
+| down | **up** | account figures, plus what is unavailable and why (`BROKERAGE_SESSION_DOWN`) |
+| down | down | `OFFLINE_STATUS` — and the dashboard blanks to match |
+
+The dashboard follows the same rule: past `STALE_AFTER` the account figures are **not
+drawn at all** rather than left on screen under a warning, because a number that is
+minutes old looks exactly like one that is current. The Flex-derived realised windows
+keep rendering throughout — they are read from local SQLite and never depended on the
+gateway.
+
 ---
 
 ## IBKR Gateway

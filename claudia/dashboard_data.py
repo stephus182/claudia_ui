@@ -999,6 +999,24 @@ class DashboardSnapshot:
         ref = now or datetime.now(UTC)
         return max(0.0, (ref - self.as_of).total_seconds())
 
+    def without_account(self) -> DashboardSnapshot:
+        """A copy with the IBKR-derived half removed, Flex windows untouched.
+
+        What the view renders once the account data has gone genuinely stale. The poller
+        keeps carrying the last known ledger and positions — that is deliberate and
+        stays, because `as_of` must keep ageing for the status line to be able to say
+        *how long* it has been — but a trading surface should not keep displaying
+        figures it can no longer vouch for. Numbers that are minutes old look exactly
+        like numbers that are current, and the difference is only in a line of text
+        above them.
+
+        The Flex windows are **not** cleared, and that asymmetry is the point: they come
+        from a local SQLite file that has nothing to do with the gateway. Blanking them
+        because IBKR went away would be inventing an outage in the half of the dashboard
+        that is still perfectly good.
+        """
+        return replace(self, ledger=None, positions=())
+
 
 def empty_snapshot(now: datetime | None = None, error: str | None = None) -> DashboardSnapshot:
     """A snapshot carrying no data — what the poller serves before its first poll."""

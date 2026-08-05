@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from claudia.opening_status import (
+    BROKERAGE_SESSION_DOWN,
     OFFLINE_STATUS,
     build_trade_lines,
     gather_status_block,
@@ -60,16 +61,56 @@ async def test_gather_status_block_happy_path_contains_all_four_sections():
 
 
 @pytest.mark.asyncio
-async def test_gather_status_block_offline_when_ping_false():
-    """ping() returning False means unreachable/unauthenticated — the 4 status
-    calls must be SKIPPED entirely (toolkit.execute swallows exceptions into
-    error strings, so calling it offline would render 4 error blobs)."""
+async def test_gather_status_block_offline_when_nothing_answers():
+    """Neither the brokerage session nor the account endpoints — the real offline case.
+
+    Every status call must be SKIPPED: `toolkit.execute` swallows exceptions into error
+    strings, so calling it here would render a column of error blobs under real headings.
+    """
     toolkit = MagicMock()
     toolkit.client.ping.return_value = False
+    toolkit.client.get_accounts.return_value = []
     block, offline = await gather_status_block(toolkit)
     assert offline is True
     assert block == OFFLINE_STATUS
     toolkit.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_account_data_is_shown_when_only_the_brokerage_session_is_down():
+    """The state that used to put a contradiction on screen.
+
+    Measured live 2026-08-04: `ping()` False, `/portfolio/{id}/ledger` serving live
+    figures, `/iserver/account/orders` returning `{"error": "Bad Request: no bridge"}`.
+    The chat said "IBKR gateway not connected" while the dashboard drew live balances
+    from the endpoints that were answering. The account block must be rendered, the
+    reason for the missing half named, and `get_live_orders` NOT called — its "no bridge"
+    400 under a **Live Orders** heading reads as an account fault rather than a session
+    one.
+    """
+    toolkit = MagicMock()
+    toolkit.client.ping.return_value = False
+    toolkit.client.get_accounts.return_value = [{"accountId": "U1234567"}]
+    toolkit.execute.side_effect = lambda name, inputs: (f"{name} text", None)
+    with patch("claudia.opening_status.get_live_pnl_text", return_value="pnl text"):
+        block, offline = await gather_status_block(toolkit)
+    assert offline is True  # order actions really are unavailable
+    assert "**Account Summary**\nget_account_summary text" in block
+    assert "**Open Positions**\nget_positions text" in block
+    assert block.endswith(BROKERAGE_SESSION_DOWN)
+    assert "live" in BROKERAGE_SESSION_DOWN
+    assert "**Live Orders**" not in block
+    assert [c.args[0] for c in toolkit.execute.call_args_list] == [
+        "get_account_summary", "get_positions",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_offline_message_and_dashboard_agree_that_there_is_no_data():
+    """One outage, one story. The blank dashboard and this line must not contradict."""
+    assert "no account data" in OFFLINE_STATUS
+    assert "dashboard is blank" in OFFLINE_STATUS
+    assert "not connected" not in OFFLINE_STATUS  # the claim that was too broad
 
 
 @pytest.mark.asyncio

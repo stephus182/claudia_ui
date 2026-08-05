@@ -788,12 +788,23 @@ class DashboardView:
         down with it and freezes the dashboard silently — the exact failure mode the
         freshness line exists to expose, so it must not be caused by the repainter
         itself. A failure is logged and the previous frame stays on screen.
+
+        **Once the account data is stale it is not drawn at all** (`without_account`).
+        The alternative — last known figures under a STALE banner — asks the reader to
+        notice a line of text before trusting a number, and a number that is minutes old
+        looks exactly like one that is current. Blank is unambiguous; the status line
+        still says how long it has been. The Flex-derived windows keep rendering
+        throughout, because they never depended on the gateway.
+
+        Staleness is four missed polls, not one: a single timed-out request must not
+        blank a working dashboard for a second and then fill it back in.
         """
         try:
             self._snapshot = snapshot
-            self._refresh_tiles(snapshot, now)
-            self._refresh_positions(snapshot)
-            self._refresh_pnl(snapshot)
+            display = snapshot.without_account() if self.is_stale(snapshot, now) else snapshot
+            self._refresh_tiles(display, now)
+            self._refresh_positions(display)
+            self._refresh_pnl(display)
             self._notify_staleness(snapshot, now)
         except Exception:
             log.exception("Dashboard repaint failed; leaving the previous frame up")

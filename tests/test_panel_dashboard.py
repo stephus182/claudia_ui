@@ -28,7 +28,7 @@ pn.extension("tabulator")
 
 from claudia import dashboard_data as dd  # noqa: E402
 from claudia import panel_dashboard as pdash  # noqa: E402
-from claudia.dashboard_poller import STALE_AFTER  # noqa: E402
+from claudia.dashboard_poller import POLL_INTERVAL, STALE_AFTER  # noqa: E402
 
 _NOW = datetime(2026, 8, 6, 15, 30, tzinfo=UTC)
 _TODAY = date(2026, 8, 6)
@@ -553,6 +553,70 @@ def test_basis_note_reaches_the_positions_tab(view):
     view.refresh(_snapshot(positions=_with_entry(_positions(), ESU6=6400.0)), now=_NOW)
     assert "ESU6" in view._basis_note.object
     assert view._basis_note in list(view.tabs[1])
+
+
+
+# ── Offline is blank, not last-known ─────────────────────────────────────────
+
+
+def test_stale_account_data_is_blanked_not_left_on_screen(view):
+    """User call 2026-08-04: "blank showing it's offline, no ambiguity".
+
+    Last known figures under a STALE banner ask the reader to notice a line of text
+    before trusting a number, and a number that is minutes old looks exactly like one
+    that is current.
+    """
+    later = _NOW + timedelta(seconds=STALE_AFTER + 1)
+    view.refresh(_snapshot(), now=later)
+    assert view._tiles["net_liq"].value is None
+    assert view._tiles["cash"].value is None
+    assert view._tiles["unrealised"].value is None
+    assert view._tiles["realised_ledger"].value is None
+    assert len(view._positions.value) == 0
+    assert "unavailable" in view._ledger_detail.object
+
+
+def test_blanking_keeps_the_flex_windows_which_never_needed_the_gateway(view):
+    """The asymmetry is the point: local SQLite did not go offline with IBKR.
+
+    Blanking the realised windows too would invent an outage in the half of the
+    dashboard that is still perfectly good.
+    """
+    later = _NOW + timedelta(seconds=STALE_AFTER + 1)
+    view.refresh(_snapshot(), now=later)
+    assert view._tiles["realised_week"].value == pytest.approx(-2194.98)
+    assert "Realised P&L (executions)" in view._pnl_stats.object
+    assert "never includes today" in view._pnl_coverage.object
+
+
+def test_blanking_still_says_how_long_it_has_been(view):
+    """Blank without a duration is just a broken-looking screen."""
+    later = _NOW + timedelta(seconds=STALE_AFTER + 1)
+    view.refresh(_snapshot(), now=later)
+    assert "STALE" in view._freshness.object
+    assert "1m 01s" in view._freshness.object
+
+
+def test_a_single_missed_poll_does_not_blank_a_working_dashboard(view):
+    """Four missed polls, not one — a blip must not flash the screen empty and back."""
+    view.refresh(_snapshot(), now=_NOW + timedelta(seconds=POLL_INTERVAL + 1))
+    assert view._tiles["net_liq"].value == pytest.approx(100000.0)
+    assert len(view._positions.value) == 1
+
+
+def test_without_account_leaves_the_snapshot_itself_untouched():
+    """The poller's record keeps ageing; only the *view* declines to draw it.
+
+    `as_of` must survive so the status line can say how long it has been — clearing it
+    would make a stale dashboard look freshly polled, the one failure this whole surface
+    exists to prevent.
+    """
+    snap = _snapshot()
+    blanked = snap.without_account()
+    assert blanked.as_of == snap.as_of
+    assert blanked.ledger is None and blanked.positions == ()
+    assert blanked.week is snap.week and blanked.coverage is snap.coverage
+    assert snap.ledger is not None and snap.positions  # original unchanged
 
 
 # ── Enrichments (2026-08-04): reconciliation, filters, paging, notifications ──
