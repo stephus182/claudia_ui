@@ -5,7 +5,9 @@ These tests MUST stay green — a failure here means a security control was regr
 """
 
 import sqlite3
+import stat
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -647,3 +649,60 @@ def test_accepted_proposal_is_recorded_by_reference_not_reshaped():
     agent._handle_local_tool("propose_modify", payload)
     assert agent._pending_proposal is not None
     assert agent._pending_proposal[1] is payload
+
+
+# ── 2026-08-05 audit — L-1/L-2: app-written account files must be chmod 0600 ─────────────
+#
+# SECURITY.md §12 requires every app-written file holding private-document or account
+# content to be 0600 immediately after the write. Two writers had never honoured it, so
+# the reports and the Flex verdict sat at the umask default (0644, confirmed on disk over
+# 45 live session reports and the real store.db record). `Path.write_text` honours the
+# umask AND leaves an existing file's mode alone, which is why both chmods are
+# unconditional rather than create-only.
+
+
+def test_session_report_is_chmod_600(tmp_path, monkeypatch):
+    """A session report carries order proposals and prices — it must not be world-readable."""
+    from claudia import session_reporter
+
+    store = MagicMock()
+    store.get_history.return_value = []
+    store.get_decisions.return_value = []
+
+    # The report directory is `data/test-sessions` relative to the process cwd.
+    monkeypatch.chdir(tmp_path)
+    path = session_reporter.generate_session_report("s1", store)
+
+    assert path is not None, "report was not written"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600, (
+        f"session report is {oct(stat.S_IMODE(path.stat().st_mode))}, expected 0o600"
+    )
+
+
+def test_flex_validation_record_is_chmod_600(tmp_path):
+    """The cached Flex verdict summarises the trade dataset — same 0600 rule."""
+    from claudia import flex_sync
+
+    path = tmp_path / "store.db.validation.json"
+    validity = flex_sync.DatasetValidity(checks=(), empty=False)
+    flex_sync._write_record(path, validity, (1, 2, "2026-08-05"), datetime(2026, 8, 5, tzinfo=UTC))
+
+    assert path.exists(), "verdict was not written"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600, (
+        f"validation record is {oct(stat.S_IMODE(path.stat().st_mode))}, expected 0o600"
+    )
+
+
+def test_flex_validation_record_rewrite_stays_600(tmp_path):
+    """The chmod must be unconditional: write_text does not touch an existing file's mode,
+    so a record created before this fix (0644) must be corrected on the next write."""
+    from claudia import flex_sync
+
+    path = tmp_path / "store.db.validation.json"
+    path.write_text("{}")
+    path.chmod(0o644)
+
+    validity = flex_sync.DatasetValidity(checks=(), empty=False)
+    flex_sync._write_record(path, validity, (1, 2, None), datetime(2026, 8, 5, tzinfo=UTC))
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600, "pre-existing 0644 record was not corrected"

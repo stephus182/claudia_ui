@@ -28,7 +28,7 @@ conversation memory. The new principals and threats are:
 ClaudIA has **zero** tools for order execution. This is the most critical security property.
 
 ### What the LLM can do
-- Call any of the 42 read-only `ClaudeToolkit` tools (positions, PnL, market data, backtests, etc.)
+- Call any of the 44 read-only `ClaudeToolkit` tools (positions, PnL, market data, backtests, etc.)
 - Call `propose_order` / `propose_cancel` / `propose_modify` (`claudia/proposal_tools.py`).
   These are declaration-only: the handler records the proposal for the UI to render and
   returns a `tool_result`. They open no socket and touch no IBKR API — see CLAUDE.md Hard
@@ -57,7 +57,17 @@ ClaudIA has **zero** tools for order execution. This is the most critical securi
    layers reject; neither repairs** — order parameters are immutable. At most one proposal is
    accepted per turn; a second is refused, not silently dropped
 3. **Human physically clicks the button** — this is the first human gate
-4. `IBKRClient.place_order_and_confirm()` fires:
+4. The matching `IBKRClient` entry point fires. There are **three**, one per proposal kind,
+   and all three run both gates — the absence of an `_and_confirm` suffix on the cancel
+   path is a naming artefact, not a missing gate (re-verified 2026-08-05, because it reads
+   like one):
+
+   | Click | Entry point | Where the gates run |
+   |---|---|---|
+   | Stage this order | `place_order_and_confirm()` | inside `place_order()`, plus a gated reply loop |
+   | Cancel this order | `cancel_order()` | inside `cancel_order()` itself (`client.py`) |
+   | Modify this order | `modify_order_and_confirm()` | inside `modify_order()`, plus a gated reply loop |
+
    - **Gate 1:** Apple `LocalAuthentication` biometric (Touch ID, Face ID) — no password fallback
    - **Gate 2:** native macOS AppKit dialog (green/red banner by order side) with full order
      details + 60-second auto-cancel countdown; Return key disabled on the confirm button to
@@ -112,8 +122,18 @@ content could influence future responses.
 - FTS5 search results (used for "past decisions" recall) are truncated at a configurable
   token budget (default: 2,000 tokens) before injection into context.
 
-- Tool results from ibkr_core_mcp are sanitized by `_safe_error()` before being returned
-  to the LLM. Raw IBKR API responses never appear in conversation context.
+- Tool exceptions are sanitized before reaching the LLM: `ClaudeToolkit.execute()` wraps
+  every handler in `try/except` and returns `_safe_error(name, exc)`. That function lives
+  in **`ibkr_core_mcp/claude_tools.py`**, not in this repo — a grep of `claudia/` finds
+  nothing and should not be read as the control having been removed (it was, briefly, in
+  the 2026-08-05 audit).
+
+- Raw IBKR responses **do** reach two places, and neither is the LLM's context: the order
+  read-back sends `json.dumps(result, indent=2)` into chat (rendered through
+  `safe_markdown` — §9), and stores it under `decisions.metadata["ibkr_response"]`.
+  `decisions` has **no search path** — its FTS table was dropped as dead schema in the
+  2026-07-03 review — so those blobs are never re-injected into a later conversation.
+  Adding a decisions-recall tool would change that and requires re-reading this section.
 
 - `claudia.db` is local, single-user, and not accessible over the network.
 
@@ -121,7 +141,7 @@ content could influence future responses.
 
 ## 5. Hardcoded Safety Block
 
-`_SAFETY_BLOCK` (`claudia/agent.py:57-156`) is embedded directly in code and appended to
+`_SAFETY_BLOCK` (`claudia/agent.py:58-195`) is embedded directly in code and appended to
 every system prompt. It is **not** loaded from any user-editable file and cannot be
 overridden by `context.md` or `principles.md`. Modifications require a code change — a
 deliberate developer action, not a document edit (CLAUDE.md Hard Rule 3).
@@ -130,7 +150,7 @@ deliberate developer action, not a document edit (CLAUDE.md Hard Rule 3).
 here would duplicate content that changes whenever the prompt is tuned, and would go
 stale exactly the way the previous version of this section did (it quoted only the first
 of what are now 7 non-overridable subsections, and had never been updated to reflect the
-other 6). Read `claudia/agent.py:57-156` directly for the authoritative current text. As
+other 6). Read `claudia/agent.py:58-195` directly for the authoritative current text. As
 of this writing, the block's non-overridable subsections are:
 
 - **ABSOLUTE CONSTRAINTS** — no order execution, no financial-advisor claims, principles
@@ -180,11 +200,12 @@ via Chrome DevTools Protocol on `localhost:9222`.
   The sidecar can read and manipulate the TradingView UI — it cannot access IBKR or place trades.
 - **Full CDP access accepted.** The sidecar has full Chrome DevTools Protocol access to TradingView
   Desktop — it can read DOM, execute JavaScript in the renderer, and inspect TradingView's internal
-  state. This is intentional (required for 78-tool functionality) and accepted for a personal local
+  state. This is intentional (required for its full tool set) and accepted for a personal local
   tool with no remote access.
 - **Tool surface area reduced.** `_CURATED_TOOLS` in `tradingview.py` limits what Claude can call
-  to 16 high-value tools (of a 78-tool full sidecar set). The sidecar process itself has full
-  access regardless of this filter.
+  to 16 high-value tools, of the **84** the sidecar registers at `55534aa` (counted 2026-08-05;
+  this figure grows with every upgrade and was stale at 78 for three of them). The sidecar
+  process itself has full access regardless of this filter.
 - **PineScript injection** modifies the Pine Editor only. It does not execute strategies or trades.
 - **Fallback.** If the sidecar fails to start, ClaudIA degrades to screenshot mode.
 
@@ -273,10 +294,19 @@ including DNS rebinding. It does **not** substitute for the bind address:
   assume it did not come from a browser"), so any non-browser client simply omits it.
 - `Origin` is a client-supplied header and trivially forged in any case.
 
-**What a reachable session would expose:** the opening-status payload — Account Summary,
-Open Positions, Account P&L, Live Orders — plus the ability to drive every widget. Order
-placement would still require physical Touch ID and the local AppKit dialog, so the §2
-barriers hold; the exposure is read of live account data and control of the agent.
+**What a reachable session would expose:** as of 2026-08-04 this is materially more than
+it was, and the change ran in the opposite direction from where you would look for it.
+Chat stopped rendering account figures at startup (`gather_status_block` →
+`gather_session_state`, commit `2829789`) — but the **live dashboard** replaced them with
+something continuous. Serving `GET /` now paints, and keeps repainting every 5 seconds:
+net liquidation, cash, unrealised P&L, realised P&L windows, the full positions table, the
+working-order book, and the realised-P&L history. No user action is required; it is the
+page. Add the ability to drive every widget and the agent itself.
+
+Order placement would still require physical Touch ID and the local AppKit dialog, so the
+§2 barriers hold. The exposure is **read of live account data — now continuous rather than
+one opening payload — and control of the agent.** This is what makes the loopback bind
+load-bearing rather than cosmetic.
 
 **Never enable `--dev` / `autoreload`** on this app (currently off, and `start-claudia.sh`
 passes no flags): it starts a filesystem watcher that re-executes app source.
@@ -395,6 +425,41 @@ against `127.0.0.1:5055`:
 
 All JSON parsing is wrapped in `except Exception` so a malformed response returns `False`
 without raising.
+
+### Live dashboard (shipped 2026-08-04)
+
+Three modules — `dashboard_data.py` (pure data), `dashboard_poller.py` (one process-wide
+15s poller), `panel_dashboard.py` (widgets only). Audited 2026-08-05; four properties are
+security-relevant and two of them are load-bearing controls, not incidental.
+
+**Both `Tabulator`s are `disabled=True` with no `on_click`/`on_edit` handler bound
+anywhere in the module.** Panel's `Tabulator` cells are **editable by default**, so this is
+an active control, not a default. It matters most on the working-order book: that is the
+one surface in this app where a click could plausibly be wired to "cancel this row", and
+cancelling must stay behind `propose_cancel` and both §2 gates. The test suite asserts the
+handler set is empty across **every** `Tabulator`, not a named one, so a third table
+inherits the guarantee instead of silently escaping it. `header_filters`, sorting and
+pagination are permitted — they change what is displayed and reach no order path.
+
+**The dashboard is a direct `IBKRClient` consumer, deliberately outside `ClaudeToolkit`.**
+This is the one place that is true, and it does not weaken Hard Rule 5: that rule forbids
+bypassing the toolkit *from inside an LLM tool handler*, and this is a UI-layer background
+poller with no LLM reachability. The toolkit is bypassed because it returns rendered
+markdown and the dashboard needs data. The calls are `get_accounts`, `fetch_ledger`,
+`fetch_positions`, `fetch_orders` — **read-only, no write API reachable from this path.**
+
+**The trade store is opened read-only.** `dashboard_data.connect()` uses
+`sqlite3.connect("file:…?mode=ro", uri=True)` against the same `store.db` the Flex sync is
+writing. A display surface cannot corrupt the trade archive, and the handle cannot be
+turned into a write path by a later edit.
+
+**No SQL is built by interpolation** in `dashboard_data.py`, `flex_sync.py`, or
+`conversation_store.py` — every `execute()` is a literal or parameterised, verified by
+grep at the 2026-08-05 audit.
+
+One non-security note that keeps being mistaken for one: a failed poll republishes the
+**previous** `as_of` rather than stamping `now`. That is a correctness invariant (staleness
+must stay visible), and it must not be "fixed".
 
 ---
 
@@ -557,7 +622,9 @@ Run this checklist before any significant code change to ClaudIA:
 - [ ] `pn.serve` is still called with a loopback `address=` — `websocket_origin` alone is not a boundary (§8)
 - [ ] Any new Panel content rendered into a session goes through `safe_markdown()` / `escape_markup()` — never a bare `pn.pane.Markdown/HTML/Str` (§9). This replaces the old "new HTTP endpoint" check: the app authors no HTTP routes, so everything reaching the browser goes over the session websocket
 - [ ] Any new client-side JS passes untrusted values as **named CustomJS args**, never interpolated into the `code=` string (§9)
-- [ ] Any new file written by the app that contains private-document or account content is `chmod 0600` immediately after the write (`Path.write_text` honours the umask)
+- [ ] Any new file written by the app that contains private-document or account content is `chmod 0600` immediately after the write, **unconditionally** — `Path.write_text` honours the umask *and* leaves an existing file's mode untouched, so a create-only chmod leaves every pre-existing file wrong forever. Two writers missed this until 2026-08-05 (session reports, the Flex verdict); "it's only a summary" is not an exemption — the summary named symbol, side, quantity and limit price
+- [ ] Any new read-only consumer of live data opens SQLite with `mode=ro` and calls no write API — the dashboard pattern (§9), not a fresh `IBKRClient` write path
+- [ ] Any new `Tabulator` is `disabled=True` with no `on_click`/`on_edit` handler (§9). Cells are editable by default; the test asserts this over *all* tables, so a new one is covered automatically — do not add an exemption
 - [ ] Any new `IBKRClient` usage goes through `ClaudeToolkit` (not direct calls in tool handlers)
 - [ ] Any new subprocess call uses an env allowlist — never `{**os.environ}` or `env=None`
 - [ ] Any new Drive download has a size guard before the download loop
@@ -577,10 +644,18 @@ Run this checklist before any significant code change to ClaudIA:
 | 2026-06-25 | All 8 claudia_ui modules (full re-audit) | 1 High, 0 Medium, 3 Low | H-1 fixed; 3 Low accepted | [`docs/audits/security-audit-2026-06-25.md`](docs/audits/security-audit-2026-06-25.md) |
 | 2026-06-27 | ibkr_core_mcp v1.0 pre-release audit (ported back to `agent.py`) | 1 Medium ported | Decimal/hex IP bypass (`http://2130706433/`) fixed via `socket.gethostbyname()` resolve-then-check | see commit |
 | 2026-07-25 | Post-Panel-migration full audit — all 18 `claudia/` modules (7 had never been audited), `SECURITY.md`, git hygiene | 3 High, 3 Medium, 3 Low | All High + Medium fixed; Lows recorded | [`docs/audits/security-audit-2026-07-25.md`](docs/audits/security-audit-2026-07-25.md) |
+| 2026-08-05 | Post-dashboard — everything changed since `a8bfdf0` (33 files, ~13.9k insertions; 5 modules never audited), plus re-verification of every `SECURITY.md` invariant | 0 High, 0 Medium, 2 Low + 5 doc defects | Both Lows fixed and regression-tested; all 5 doc defects corrected here | [`docs/audits/security-audit-2026-08-05.md`](docs/audits/security-audit-2026-08-05.md) |
 
-**Regression tests:** `tests/test_security_regressions.py` — 46 tests covering all four
-audits, plus `test_chat_interface_installs_the_safe_markdown_renderer` in
+**Regression tests:** `tests/test_security_regressions.py` — **53** tests (counted by
+`pytest --collect-only`, 2026-08-05; the figure here read 46 against an actual 50) covering
+all five audits, plus `test_chat_interface_installs_the_safe_markdown_renderer` in
 `tests/test_panel_app.py` (needs that module's session scaffolding). These must stay green.
+
+**Two items are open and belong to `ibkr_core_mcp`, not here** (2026-08-05): the trade
+store `~/.ibkr_core/store.db` is world-readable at `0644` — the fix belongs in
+`SQLiteStore`'s constructor, since a one-off `chmod` is undone by the next recreate — and
+`~/.ibkr_core/credential.json` is a superseded OAuth client secret at `0644` that nothing
+references and that should be deleted rather than chmod'd.
 
 ---
 

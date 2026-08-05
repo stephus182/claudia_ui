@@ -412,5 +412,11 @@ def _write_record(
     }
     try:
         path.write_text(json.dumps(record, indent=2))
+        # 0600 for the same reason the session reports are (SECURITY.md §12): the record
+        # summarises the account's trade dataset — row counts, the newest trade date, the
+        # realised-P&L total the checks were satisfied by. `write_text` honours the umask
+        # and does not touch an existing file's mode, so this is unconditional and after
+        # every write. Found at 0644 on the live store, audit 2026-08-05.
+        path.chmod(0o600)
     except OSError as exc:
         log.warning("Could not cache the dataset verdict (%s) — it will be re-checked", exc)

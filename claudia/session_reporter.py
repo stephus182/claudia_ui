@@ -195,6 +195,14 @@ def generate_session_report(
         ]
 
         path.write_text("\n".join(lines), encoding="utf-8")
+        # 0600 unconditionally after every write. A report carries account content —
+        # order proposals with symbol/side/quantity/limit price, the live market price
+        # they were judged against, and the decision text — so it falls under the
+        # SECURITY.md §12 rule for app-written files holding account data.
+        # `Path.write_text` honours the process umask (0644 in practice) and leaves the
+        # mode of an *existing* file untouched, so the chmod cannot be conditional on
+        # having just created the file. Found at 0644 across 45 reports, audit 2026-08-05.
+        path.chmod(0o600)
         log.info("Session report: %s", path)
         return path
 
