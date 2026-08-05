@@ -65,9 +65,11 @@ from claudia.dashboard_data import (
     Position,
     build_flex_sections,
     connect,
+    economic_entries,
     empty_snapshot,
     fetch_ledger,
     fetch_positions,
+    with_economic_entries,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -201,6 +203,7 @@ class DashboardPoller:
             log.warning("Dashboard account poll failed: %s", exc)
             self._publish_stale(flex, f"IBKR unavailable: {exc}")
             return
+        positions = await asyncio.to_thread(self._read_entries, positions)
         self._snapshot = DashboardSnapshot(
             as_of=datetime.now(UTC),
             ledger=ledger,
@@ -284,6 +287,28 @@ class DashboardPoller:
         return fetch_ledger(self._client, account_id, base_currency), fetch_positions(
             self._client, account_id
         )
+
+    def _read_entries(self, positions: tuple[Position, ...]) -> tuple[Position, ...]:
+        """Attach reconstructed economic entry prices; never raise.
+
+        A second SQLite open per poll rather than folding this into `_read_flex`, which
+        runs *first and deliberately* so a logged-out gateway still gets its realised
+        windows. This one needs the positions, so it cannot run before them without
+        giving up that ordering. Two opens of a local read-only file every 15 seconds is
+        a cheap price for keeping the gateway-independent half gateway-independent.
+
+        A failure here degrades one column to blank, so it is logged and swallowed:
+        losing the whole account panel because a reconstruction query failed would be a
+        far worse trade than showing IBKR's basis alone.
+        """
+        if not positions:
+            return positions
+        try:
+            with closing(connect(self._db_path)) as conn:
+                return with_economic_entries(positions, economic_entries(conn, positions))
+        except Exception as exc:
+            log.warning("Dashboard economic-entry reconstruction failed: %s", exc)
+            return positions
 
     def _resolve_account(self) -> tuple[str, str | None]:
         """Return the cached `(account_id, base_currency)`, resolving once on first use.

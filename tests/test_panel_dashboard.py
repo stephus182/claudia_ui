@@ -15,6 +15,7 @@ Three groups, in descending order of how much they matter:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import panel as pn
@@ -64,14 +65,28 @@ def _ledger(**over):
 
 
 def _positions(*specs):
-    """Positions from `(symbol, qty, unrealised)` triples, or one default position."""
+    """Positions from `(symbol, qty, unrealised)` triples, or one default position.
+
+    `avgCost` is per contract and `avgPrice` per unit — the shape a real futures row has
+    (CL SEP2026 measured 80,932.36 against 80.93236 on 2026-08-04), so a test that reads
+    the wrong one fails here rather than on screen.
+    """
     specs = specs or (("ESU6", 1.0, -1000.0),)
     return dd.parse_positions([
         {"conid": i, "ticker": sym, "contractDesc": sym, "assetClass": "FUT",
-         "position": qty, "avgCost": 6500.0, "mktPrice": 6480.0, "mktValue": 324000.0,
+         "position": qty, "avgCost": 324000.0, "avgPrice": 6480.0, "multiplier": 50.0,
+         "mktPrice": 6480.0, "mktValue": 324000.0,
          "unrealizedPnl": upl, "realizedPnl": 0.0, "currency": "USD"}
         for i, (sym, qty, upl) in enumerate(specs)
     ])
+
+
+def _with_entry(positions, **entries):
+    """Attach economic entries by symbol, for the columns that compare the two bases."""
+    return tuple(
+        replace(p, economic_entry=entries[p.symbol]) if p.symbol in entries else p
+        for p in positions
+    )
 
 
 def _snapshot(**over):
@@ -452,10 +467,92 @@ def test_numeric_columns_are_formatted_and_right_aligned(view):
     fmts = view._positions.formatters
     assert fmts["Market value"].format == pdash._MONEY_FORMAT
     assert fmts["Unrealised"].format == pdash._MONEY_FORMAT
-    assert fmts["Avg cost"].format == pdash._PRICE_FORMAT
+    assert fmts["Avg entry"].format == pdash._PRICE_FORMAT
+    assert fmts["IBKR basis"].format == pdash._PRICE_FORMAT
+    assert fmts["Basis \u0394"].format == pdash._MONEY_FORMAT
     assert view._positions.text_align["Unrealised"] == "right"
     # The underlying frame is untouched — display precision must not become data.
     assert view._positions.value["Unrealised"].dtype.kind == "f"
+
+
+
+# ── The economic entry: the real level, beside IBKR's fiscal one ──────────────
+
+
+def test_positions_table_leads_with_the_entry_not_the_basis():
+    """A trader reading left to right must meet the tradeable number first."""
+    columns = pdash._POSITION_COLUMNS
+    assert columns.index("Avg entry") < columns.index("IBKR basis")
+    assert "Avg cost" not in columns
+
+
+def test_basis_column_is_per_unit_not_per_contract():
+    """The table used to render `avgCost`, which is per contract for anything with a
+    multiplier — CL showed 80,932.36 beside a last price of 75.14 (measured 2026-08-04).
+
+    The fixture's futures row carries avgCost 324,000 against avgPrice 6,480, so a
+    regression to the per-contract field is a 50x error here rather than a subtle one.
+    """
+    frame = pdash.positions_frame(_snapshot())
+    assert frame["IBKR basis"].iloc[0] == pytest.approx(6480.0)
+    assert frame["Last"].iloc[0] == pytest.approx(6480.0)
+
+
+def test_an_unreconstructed_entry_renders_blank_not_zero():
+    """`economic_entries` declines rather than approximating; the blank is that decision.
+
+    Zero would read as a tradeable level, and 0.0 in a price column beside a real last
+    price is worse than an empty cell.
+    """
+    frame = pdash.positions_frame(_snapshot())
+    assert frame["Avg entry"].iloc[0] is None
+    assert frame["Basis \u0394"].iloc[0] is None
+
+
+def test_reconstructed_entry_and_delta_reach_the_frame():
+    """6,480 basis against a 6,400 entry, 1 contract, multiplier 50 -> 4,000."""
+    snap = _snapshot(positions=_with_entry(_positions(), ESU6=6400.0))
+    frame = pdash.positions_frame(snap)
+    assert frame["Avg entry"].iloc[0] == pytest.approx(6400.0)
+    assert frame["Basis \u0394"].iloc[0] == pytest.approx(4000.0)
+
+
+def test_basis_note_is_silent_when_nothing_drifts():
+    """Below the threshold the difference is commission, and a note per position would
+    be scrolled past within a day."""
+    snap = _snapshot(positions=_with_entry(_positions(), ESU6=6479.9))
+    assert pdash.basis_note(snap) == ""
+
+
+def test_basis_note_is_silent_when_nothing_could_be_reconstructed():
+    """No claim either way — announcing "no drift" for a book we never checked would be
+    claiming a verification that never ran."""
+    assert pdash.basis_note(_snapshot()) == ""
+
+
+def test_basis_note_names_the_position_and_the_money():
+    """The number that matters is what the basis does to Unrealised, not per share."""
+    snap = _snapshot(positions=_with_entry(_positions(), ESU6=6400.0))
+    note = pdash.basis_note(snap)
+    assert "ESU6" in note
+    assert "+4,000.00 USD" in note
+    assert "6,480.0000" in note and "6,400.0000" in note
+
+
+def test_basis_note_orders_by_size_of_the_distortion():
+    """A trader scanning a book needs the worst one first, not the alphabetical one."""
+    positions = _with_entry(
+        _positions(("AAA", 1.0, -10.0), ("BBB", 1.0, -10.0)), AAA=6478.0, BBB=6400.0
+    )
+    note = pdash.basis_note(_snapshot(positions=positions))
+    assert note.index("BBB") < note.index("AAA")
+
+
+def test_basis_note_reaches_the_positions_tab(view):
+    """Wired into the repaint, not merely defined."""
+    view.refresh(_snapshot(positions=_with_entry(_positions(), ESU6=6400.0)), now=_NOW)
+    assert "ESU6" in view._basis_note.object
+    assert view._basis_note in list(view.tabs[1])
 
 
 # ── Enrichments (2026-08-04): reconciliation, filters, paging, notifications ──
@@ -516,7 +613,9 @@ def test_tabs_render_only_the_active_one(view):
     view.refresh(_snapshot(positions=_positions(("XYZ", 3.0, 42.0))), now=_NOW)
     assert list(view._positions.value["Symbol"]) == ["XYZ"]
     view.tabs.active = 1
-    assert view.tabs[1][2] is view._positions  # identity survives deactivation
+    # Located by identity, not by index: the Positions column has gained panes twice
+    # now, and an index here turns a layout change into a confusing failure elsewhere.
+    assert view._positions in list(view.tabs[1])  # identity survives deactivation
 
 
 class _Notifications:

@@ -524,6 +524,8 @@ Every item is scraped or probed, not inferred:
 | 23 | `pn.extension._loaded_extensions` is the only proof an extension took effect — assert on it, never on the argument string (see gotcha 1) | **[P]** |
 | 24 | Ledger `realizedpnl` has no documented window, but it is **exactly** the sum of the per-position `realizedPnl`, which IBKR *does* document — *"the total profit made today through trades"*. When an endpoint won't define a field, look for another endpoint that reports the same number | **[P]** live 2026-08-04 |
 | 25 | The positions endpoint's `avgCost` is **not** the FIFO purchase average — it carries earlier closes' disallowed losses (GLD: 380.3654 on FIFO vs **383.270899** reported, the difference being 290.55 over 100 replacement shares to six decimals). So a P&L derived from it is a different quantity from `flex_trade.fifo_pnl_realized` and the two must never be added | **[P]** live 2026-08-04 |
+| 26 | `avgCost` is per **contract**, `avgPrice` per **unit**. A price column must use `avgPrice`, or a futures row shows an entry three orders of magnitude off the last price in the next column (CL: 80,932.36 beside a last of 75.14) | **[P]** live 2026-08-04 |
+| 27 | The positions endpoint serves **lean rows** on some polls: the same CL SEP2026 came back with no `ticker` and no `multiplier`, then complete minutes later. Never default a missing `multiplier` to 1 — derive it as `avgCost / avgPrice` and publish nothing if you cannot; the default put +0.00472 on screen where the answer was +4.72 | **[P]** live 2026-08-04 |
 
 ---
 

@@ -309,10 +309,15 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
 # ── Positions table ───────────────────────────────────────────────────────────
 
 _POSITION_COLUMNS = [
-    "Symbol", "Class", "Qty", "Avg cost", "Last", "Market value", "Unrealised", "Ccy"
+    "Symbol", "Class", "Qty", "Avg entry", "IBKR basis", "Basis Δ",
+    "Last", "Market value", "Unrealised", "Ccy",
 ]
 # The columns `.style.map` colours by sign. Named once so the styler and the empty-frame
 # builder cannot disagree about which columns exist.
+#
+# "Basis Δ" is deliberately **not** here. Its sign says which way IBKR's basis leans, not
+# whether anything is good or bad, and the green/red map on this surface means profit and
+# loss. Colouring it would assert a judgement the number does not carry.
 _SIGNED_COLUMNS = ["Unrealised"]
 
 # Display precision. IBKR returns full float precision — the live account rendered
@@ -340,8 +345,14 @@ _POSITIONS_ROWS_PER_PAGE = 15
 # contract including the multiplier, and "Unrealised" is open P&L, not the day's move.
 _POSITION_TOOLTIPS = {
     "Qty": "Signed position size. Negative is short.",
-    "Avg cost": "IBKR avgCost — per unit for stock, per contract (multiplier included) "
-                "for futures.",
+    "Avg entry": "Where the position was actually entered: average price of the open "
+                 "lots, FIFO over this account's own fills, excluding commission. Blank "
+                 "when it could not be reconstructed exactly — never estimated.",
+    "IBKR basis": "IBKR avgPrice — the cost basis their P&L uses. Includes commission "
+                  "and any cost-basis adjustment, so it is a fiscal figure, not a level "
+                  "that was ever traded at.",
+    "Basis Δ": "(IBKR basis - avg entry) * qty * multiplier: exactly how much of the "
+               "Unrealised column comes from the basis rather than from the market.",
     "Last": "IBKR mktPrice at the last poll, not a live tick.",
     "Market value": "IBKR mktValue. For futures the ledger reports this as open P&L "
                     "rather than notional.",
@@ -364,13 +375,29 @@ def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     Always returns the full column set, even with no rows: a `Tabulator` handed a
     zero-column frame renders as a blank rectangle with no headers, which reads as a
     broken widget rather than as an empty book.
+
+    **"Avg entry" leads and "IBKR basis" follows**, which is the opposite of the order
+    the two were added in and is the point of the column. The entry is where the
+    position was actually taken; the basis is a fiscal figure that absorbs commission
+    and cost-basis adjustments. A trader reading left to right should meet the tradeable
+    number first.
+
+    Both are per *unit*. The table used to show IBKR's `avgCost`, which is per
+    *contract*: CL SEP2026 rendered an "Avg cost" of 80,932.36 beside a "Last" of 75.14
+    (measured 2026-08-04). `Position.average_price` is the per-unit field.
+
+    An entry that could not be reconstructed with certainty renders as `None`, not as a
+    guess and not as zero — `economic_entries` declines rather than approximates, and
+    the blank is what that decision looks like on screen.
     """
     rows = [
         {
             "Symbol": p.symbol,
             "Class": p.asset_class,
             "Qty": p.quantity,
-            "Avg cost": p.average_cost,
+            "Avg entry": p.economic_entry,
+            "IBKR basis": p.average_price,
+            "Basis Δ": p.basis_delta_value,
             "Last": p.market_price,
             "Market value": p.market_value,
             "Unrealised": p.unrealised_pnl,
@@ -381,6 +408,53 @@ def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame({c: pd.Series(dtype="object") for c in _POSITION_COLUMNS})
     return pd.DataFrame(rows, columns=_POSITION_COLUMNS)
+
+
+# Below this, in the position's own currency, the gap between IBKR's basis and the
+# actual entry is commission and rounding rather than anything a trader should act on.
+# CL measured 4.72 on two contracts on 2026-08-04, which is what a clean position looks
+# like; IGV measured 669.62, which is not. Set at 50 so the line stays quiet on ordinary
+# positions and speaks up on the ones where the basis has genuinely moved away from the
+# fills. A per-position threshold, not a total: one distorted position matters even in a
+# book whose net is small.
+_BASIS_NOTE_THRESHOLD = 50.00
+
+
+def basis_note(snapshot: DashboardSnapshot) -> str:
+    """State in words where IBKR's basis has drifted materially from the real entry.
+
+    The column carries every position; this line names the ones worth looking at, and
+    only those. A trader scanning a book does not read a column of small numbers looking
+    for a big one — and the number that matters here is not the per-share difference but
+    what it does to the Unrealised column beside it, which is what this states.
+
+    Silent when nothing crosses `_BASIS_NOTE_THRESHOLD`, including when nothing could be
+    reconstructed at all. A note that fires on every position would be scrolled past
+    within a day, and one that announced "no drift" for a book it could not check would
+    be claiming a verification it never ran.
+    """
+    material = sorted(
+        (
+            (p, value)
+            for p in snapshot.positions
+            if (value := p.basis_delta_value) is not None
+            and abs(value) >= _BASIS_NOTE_THRESHOLD
+        ),
+        key=lambda pair: abs(pair[1]),
+        reverse=True,
+    )
+    if not material:
+        return ""
+    parts = [
+        f"**{p.symbol}** {fmt_signed(value, p.currency)} "
+        f"(entry {p.economic_entry:,.4f} vs basis {p.average_price:,.4f})"
+        for p, value in material
+    ]
+    return (
+        "⚠ _IBKR's cost basis differs materially from where these positions were "
+        "actually entered, so that much of their Unrealised P&L is basis rather than "
+        "market: " + " · ".join(parts) + "._"
+    )
 
 
 def reconciliation_line(rec: Reconciliation) -> str:
@@ -613,13 +687,17 @@ class DashboardView:
             height=380,
             formatters={
                 "Qty": NumberFormatter(format=_QTY_FORMAT),
-                "Avg cost": NumberFormatter(format=_PRICE_FORMAT),
+                "Avg entry": NumberFormatter(format=_PRICE_FORMAT),
+                "IBKR basis": NumberFormatter(format=_PRICE_FORMAT),
+                "Basis Δ": NumberFormatter(format=_MONEY_FORMAT),
                 "Last": NumberFormatter(format=_PRICE_FORMAT),
                 "Market value": NumberFormatter(format=_MONEY_FORMAT),
                 "Unrealised": NumberFormatter(format=_MONEY_FORMAT),
             },
             text_align=dict.fromkeys(
-                ["Qty", "Avg cost", "Last", "Market value", "Unrealised"], "right"
+                ["Qty", "Avg entry", "IBKR basis", "Basis Δ", "Last", "Market value",
+                 "Unrealised"],
+                "right",
             ),
             # Read-only affordances only. Filtering, sorting and paging change what is
             # displayed and nothing else — none of them can reach an order path, which
@@ -639,6 +717,7 @@ class DashboardView:
         styler.map(_sign_style, subset=_SIGNED_COLUMNS)
         self._positions_status = safe_markdown("_Positions: waiting for the first poll…_")
         self._reconciliation = safe_markdown("")
+        self._basis_note = safe_markdown("")
 
         self._window = pn.widgets.RadioButtonGroup(
             # color=, not button_type=: `button_type` PendingDeprecationWarns on panel
@@ -660,7 +739,8 @@ class DashboardView:
         self.tabs = pn.Tabs(
             ("Chart", chart_pane if chart_pane is not None else pn.Column()),
             ("Positions", pn.Column(self._positions_status, self._reconciliation,
-                                    self._positions, sizing_mode="stretch_both")),
+                                    self._basis_note, self._positions,
+                                    sizing_mode="stretch_both")),
             ("P&L", pn.Column(self._window, self._pnl_chart, self._pnl_chart_note,
                               self._pnl_stats, self._pnl_coverage, self._ledger_detail,
                               sizing_mode="stretch_both")),
@@ -815,6 +895,7 @@ class DashboardView:
         """Positions tab: the table, a count/currency summary, and the reconciliation line."""
         self._positions.value = positions_frame(snapshot)
         self._reconciliation.object = reconciliation_line(reconcile(snapshot))
+        self._basis_note.object = basis_note(snapshot)
         count = len(snapshot.positions)
         if count == 0 and snapshot.ledger is None:
             self._positions_status.object = "_Positions unavailable — IBKR not connected._"

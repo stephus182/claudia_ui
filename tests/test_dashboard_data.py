@@ -490,6 +490,212 @@ def test_realised_ledger_label_falls_back_rather_than_overclaiming():
     assert dd.realised_ledger_label("session") == "Realised (ledger)"
 
 
+# ── Economic entry ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def fills(tmp_path):
+    """A store of raw fills, carrying every case `economic_entries` must decline on.
+
+    GLD  — built over two days, partly sold, and then sold again *today* through a
+           conid-less live row. The reconstruction must follow it to 50 shares.
+    IGV  — untouched today; reconstructs from Flex alone.
+    OLD  — a position whose opening fills are not in the store at all, which is what a
+           history that predates the Flex coverage looks like.
+    DUPa/DUPb — two conids that have both traded under the ticker "DUP", so a live row
+           saying "DUP" could belong to either.
+    """
+    path = tmp_path / "store.db"
+    with sqlite3.connect(path) as w:
+        w.execute(
+            "CREATE TABLE flex_trade (conid TEXT, symbol TEXT, underlying_symbol TEXT,"
+            " source TEXT, trade_date TEXT, date_time TEXT, quantity REAL,"
+            " trade_price REAL)"
+        )
+        w.executemany(
+            "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                # GLD: +60 @ 100, +40 @ 110, then -50 (FIFO eats the 100s)
+                ("1", "GLD", None, "flex", "20260601", "20260601;100000", 60.0, 100.0),
+                ("1", "GLD", None, "flex", "20260602", "20260602;100000", 40.0, 110.0),
+                # today's fill: live rows carry NO conid, only a symbol
+                (None, "GLD", None, "live", None, "20260804;140000", -50.0, 120.0),
+                # IGV: +100 @ 90, nothing today
+                ("2", "IGV", None, "flex", "20260610", "20260610;100000", 100.0, 90.0),
+                # OLD: only a partial sale is on record, never the opening buy
+                ("3", "OLD", None, "flex", "20260701", "20260701;100000", -5.0, 50.0),
+                # Two contracts sharing a ticker
+                ("4", "DUPa", "DUP", "flex", "20260601", "20260601;100000", 10.0, 10.0),
+                ("5", "DUPb", "DUP", "flex", "20260601", "20260601;110000", 10.0, 20.0),
+            ],
+        )
+    conn = dd.connect(path)
+    yield conn
+    conn.close()
+
+
+def _entry_pos(conid, symbol, quantity, **over):
+    """A `Position` carrying only the fields `economic_entries` and the deltas read."""
+    fields = {
+        "conid": conid, "symbol": symbol, "description": symbol, "asset_class": "STK",
+        "quantity": quantity, "average_cost": 0.0, "market_price": 0.0,
+        "market_value": 0.0, "unrealised_pnl": 0.0, "realised_pnl": 0.0,
+        "currency": "USD", "average_price": 0.0, "multiplier": 1.0,
+    }
+    fields.update(over)
+    return dd.Position(**fields)
+
+
+def test_fifo_open_average_prices_the_lots_still_open():
+    """A partial sale consumes the OLDEST lots, so the newest are what remains.
+
+    +60 @ 100 then +40 @ 110, sell 50: FIFO eats 50 of the 100s, leaving 10 @ 100 and
+    40 @ 110 -> (10*100 + 40*110) / 50 = 108.0. An average-cost method would answer
+    104.0 here, which is why the two are not interchangeable.
+    """
+    average, held = dd._fifo_open_average([(60.0, 100.0), (40.0, 110.0), (-50.0, 120.0)])
+    assert held == pytest.approx(50.0)
+    assert average == pytest.approx(108.0)
+
+
+def test_fifo_open_average_returns_none_when_flat():
+    """A flat book has no entry price, and 0.0 would look like a tradeable level."""
+    assert dd._fifo_open_average([(10.0, 5.0), (-10.0, 7.0)]) == (None, 0.0)
+
+
+def test_fifo_open_average_resets_after_going_flat():
+    """A closed position must not contaminate the next one — the six-year-history case."""
+    average, held = dd._fifo_open_average(
+        [(10.0, 5.0), (-10.0, 7.0), (4.0, 200.0)]
+    )
+    assert held == pytest.approx(4.0)
+    assert average == pytest.approx(200.0)
+
+
+def test_fifo_open_average_handles_a_reversal_through_zero():
+    """Selling through flat opens a short at the reversing fill's price, not an average."""
+    average, held = dd._fifo_open_average([(10.0, 5.0), (-15.0, 9.0)])
+    assert held == pytest.approx(-5.0)
+    assert average == pytest.approx(9.0)
+
+
+def test_economic_entry_follows_a_conid_less_live_fill(fills):
+    """Live rows carry no conid (measured 2026-08-04), so they match on symbol.
+
+    Without the live row the reconstruction would hold 100 shares against IBKR's 50 and
+    be declined; with it, the FIFO average of the surviving lots is 108.0.
+    """
+    entries = dd.economic_entries(fills, [_entry_pos(1, "GLD", 50.0)])
+    assert entries[1] == pytest.approx(108.0)
+
+
+def test_economic_entry_from_flex_alone(fills):
+    entries = dd.economic_entries(fills, [_entry_pos(2, "IGV", 100.0)])
+    assert entries[2] == pytest.approx(90.0)
+
+
+def test_economic_entry_declines_when_the_quantity_does_not_reconstruct(fills):
+    """The one safety check: if we cannot reproduce IBKR's own quantity, we say nothing.
+
+    A position whose opening fills predate the stored history reconstructs to the wrong
+    size, and a wrong size means a wrong average. Absence is the honest answer.
+    """
+    assert dd.economic_entries(fills, [_entry_pos(3, "OLD", 20.0)]) == {}
+
+
+def test_economic_entry_declines_on_a_shared_ticker(fills):
+    """A ticker is not a unique key — the IGV/MXN lesson, applied to the live rows.
+
+    Both conids have traded under "DUP", so a conid-less live row naming "DUP" could
+    belong to either. Every position the ambiguity touches is declined rather than one
+    of them being picked.
+    """
+    assert dd.economic_entries(fills, [_entry_pos(4, "DUPa", 10.0), _entry_pos(5, "DUPb", 10.0)]) == {}
+
+
+def test_economic_entry_ignores_positions_that_are_flat(fills):
+    assert dd.economic_entries(fills, [_entry_pos(1, "GLD", 0.0)]) == {}
+
+
+def test_with_economic_entries_leaves_unreconstructed_positions_at_none():
+    positions = (_entry_pos(1, "GLD", 50.0), _entry_pos(3, "OLD", 20.0))
+    out = dd.with_economic_entries(positions, {1: 108.0})
+    assert out[0].economic_entry == pytest.approx(108.0)
+    assert out[1].economic_entry is None
+
+
+def test_basis_delta_is_none_without_a_reconstructed_entry():
+    """No entry means no comparison — not a delta of zero, which would read as agreement."""
+    position = _entry_pos(1, "GLD", 50.0, average_price=110.0)
+    assert position.basis_delta is None
+    assert position.basis_delta_value is None
+
+
+
+def test_multiplier_is_derived_when_ibkr_omits_it():
+    """IBKR served a lean CL row with no `multiplier` and a full one minutes later.
+
+    `avgCost / avgPrice` is the multiplier by definition, and both come from the same
+    row, so deriving it keeps the three fields consistent. Defaulting to 1 instead put
+    +0.00472 on screen where the answer was +4.72 (measured live 2026-08-04).
+    """
+    (position,) = dd.parse_positions([
+        {"conid": 9, "ticker": "CL", "assetClass": "FUT", "position": 2.0,
+         "avgCost": 80932.36, "avgPrice": 80.93236, "currency": "USD"}
+    ])
+    assert position.multiplier == pytest.approx(1000.0)
+    assert position.average_price == pytest.approx(80.93236)
+
+
+def test_multiplier_stays_unknown_when_it_cannot_be_established():
+    """No multiplier and no way to derive one means no money figure — not a guess of 1."""
+    (position,) = dd.parse_positions([
+        {"conid": 9, "ticker": "CL", "assetClass": "FUT", "position": 2.0,
+         "currency": "USD"}
+    ])
+    assert position.multiplier is None
+    assert dd.replace(position, economic_entry=80.0).basis_delta_value is None
+
+
+def test_stock_multiplier_derives_to_one():
+    """`avgCost == avgPrice` for stock, so the ratio establishes 1 rather than assuming it."""
+    (position,) = dd.parse_positions([
+        {"conid": 1, "ticker": "GLD", "assetClass": "STK", "position": 50.0,
+         "avgCost": 383.270899, "avgPrice": 383.270899, "currency": "USD"}
+    ])
+    assert position.multiplier == pytest.approx(1.0)
+
+
+def test_basis_delta_is_none_without_a_basis():
+    """A missing `average_price` is not a basis of zero — subtracting from it would turn
+    an absent field into a confident, enormous number."""
+    position = _entry_pos(1, "GLD", 50.0, average_price=0.0, economic_entry=380.0)
+    assert position.basis_delta is None
+    assert position.basis_delta_value is None
+
+
+def test_basis_delta_value_applies_the_futures_multiplier():
+    """Per-unit difference times size times multiplier — the money the column means.
+
+    CL-shaped: 2 contracts, multiplier 1000, basis 80.93236 against an entry of 80.93
+    is 4.72, which is what commission looks like on a clean futures position.
+    """
+    position = _entry_pos(9, "CL", 2.0, average_price=80.93236, economic_entry=80.93,
+                    multiplier=1000.0)
+    assert position.basis_delta == pytest.approx(0.00236)
+    assert position.basis_delta_value == pytest.approx(4.72)
+
+
+def test_basis_delta_value_is_signed_by_direction_not_by_profit():
+    """A short with a basis BELOW its entry yields a positive figure, and must.
+
+    The delta answers "how much of Unrealised is basis", and for a short position a
+    lower basis inflates the P&L the same way a higher one deflates a long's.
+    """
+    position = _entry_pos(9, "XYZ", -100.0, average_price=9.0, economic_entry=10.0)
+    assert position.basis_delta_value == pytest.approx(100.0)
+
+
 # ── Positions ─────────────────────────────────────────────────────────────────
 
 

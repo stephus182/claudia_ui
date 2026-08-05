@@ -391,3 +391,55 @@ async def test_snapshot_is_replaced_wholesale_never_mutated(db):
     assert isinstance(first, dd.DashboardSnapshot)
     with pytest.raises(Exception):  # frozen dataclass  # noqa: B017
         first.as_of = datetime.now(UTC)  # type: ignore[misc]
+
+
+# ── Economic entry reconstruction ─────────────────────────────────────────────
+
+
+async def test_a_failed_entry_reconstruction_does_not_cost_the_poll(db):
+    """Degrade one column, never the panel.
+
+    The poller fixture's `flex_trade` has none of the columns the reconstruction reads,
+    so this exercises the real failure — a query against a store that cannot answer it —
+    rather than a patched exception. The poll must still publish a live snapshot with
+    its positions, ledger and realised windows intact.
+    """
+    p = _poller(db, FakeClient())
+    await p._poll_once()
+    snap = p.snapshot()
+    assert snap.error is None
+    assert snap.ledger is not None
+    assert len(snap.positions) == 1
+    assert snap.positions[0].economic_entry is None
+    assert snap.week is not None
+
+
+async def test_entries_are_attached_when_the_store_can_answer(tmp_path):
+    """The wiring itself: a store with fills must reach `Position.economic_entry`.
+
+    The fixture's position is conid 1, **one** unit. Buy at 100, buy at 110, sell one:
+    FIFO consumes the 100 and leaves the 110, so the published entry is 110.0. An
+    average-cost reconstruction would answer 105.0 here, which is why the number is
+    pinned rather than merely asserted non-None.
+    """
+    path = tmp_path / "store.db"
+    with sqlite3.connect(path) as w:
+        w.execute(
+            "CREATE TABLE flex_trade (trade_date_iso TEXT, trade_date TEXT, source TEXT,"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, conid TEXT,"
+            " symbol TEXT, underlying_symbol TEXT, date_time TEXT, quantity REAL,"
+            " trade_price REAL)"
+        )
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, fifo_pnl_realized REAL)")
+        w.executemany(
+            "INSERT INTO flex_trade (source, conid, symbol, trade_date, date_time,"
+            " quantity, trade_price) VALUES ('flex', '1', 'TEST', ?, ?, ?, ?)",
+            [("20260601", "20260601;100000", 1.0, 100.0),
+             ("20260602", "20260602;100000", 1.0, 110.0),
+             ("20260603", "20260603;100000", -1.0, 130.0)],
+        )
+    p = _poller(path, FakeClient())
+    await p._poll_once()
+    position = p.snapshot().positions[0]
+    assert position.conid == 1
+    assert position.economic_entry == pytest.approx(110.0)

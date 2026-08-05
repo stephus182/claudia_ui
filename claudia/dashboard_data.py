@@ -119,7 +119,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -137,6 +137,12 @@ _MAX_POSITION_PAGES = 40
 
 # The ledger key IBKR uses for its synthetic all-currency aggregate.
 _BASE_KEY = "BASE"
+
+# Quantity tolerance for "the same position". Quantities are exact in principle but pass
+# through float arithmetic on both sides; fractional shares make an integer test wrong,
+# and a strict `==` on floats would silently decline every reconstruction it should
+# accept. Far below any real fractional-share fill.
+_QTY_EPSILON = 1e-6
 
 
 def _as_float(value: Any) -> float:
@@ -360,14 +366,26 @@ class Position:
     contract month (`ESU6`) from its root, and the one a trader reads. `symbol` falls
     back to it when IBKR omits `ticker`.
 
-    The positions table renders `symbol`, `asset_class`, `quantity`, `average_cost`,
-    `market_price`, `market_value`, `unrealised_pnl` and `currency`. `conid` and
-    `realised_pnl` are carried but not yet displayed — deliberately, and named here so a
-    reader does not go looking for where they are shown: `conid` is the contract's only
-    unambiguous identity (a ticker is not a unique key, and IGV once priced a US ETF in
-    MXN because of it), and `realised_pnl` is the sibling of the figure beside it. Both
-    are free to carry and would otherwise force a data-layer change on the first
-    drill-down.
+    The positions table renders `symbol`, `asset_class`, `quantity`, `average_price`,
+    `economic_entry`, `market_price`, `market_value`, `unrealised_pnl` and `currency`.
+    `conid`, `average_cost`, `multiplier` and `realised_pnl` are carried but not
+    displayed — deliberately, and named here so a reader does not go looking for where
+    they are shown: `conid` is the contract's only unambiguous identity (a ticker is not
+    a unique key, and IGV once priced a US ETF in MXN because of it), and `realised_pnl`
+    is the sibling of the figure beside it.
+
+    ⚠ **`average_cost` is per *contract*; `average_price` is per *unit*.** For anything
+    with a multiplier they are different numbers, and only the second one is a price.
+    Measured 2026-08-04 on the live account, CL SEP2026 reported `avgCost` **80,932.36**
+    against `avgPrice` **80.93236** and `mktPrice` **75.14** — so the table, which was
+    rendering `avgCost`, put an entry level three orders of magnitude off its own last
+    price in the next column. `average_price` is what the table shows now; `average_cost`
+    is kept because it is the field IBKR's own P&L arithmetic uses.
+
+    `economic_entry` is **ours, not IBKR's**: the average price of the lots still open,
+    FIFO-matched over this account's own fills, with no cost basis adjustment of any
+    kind. It is None whenever it could not be reconstructed with certainty — see
+    `economic_entries`, which would rather show nothing than a plausible wrong entry.
     """
 
     conid: int
@@ -381,6 +399,57 @@ class Position:
     unrealised_pnl: float
     realised_pnl: float
     currency: str
+    average_price: float = 0.0
+    multiplier: float | None = None
+    economic_entry: float | None = None
+
+    @property
+    def basis_delta(self) -> float | None:
+        """`average_price - economic_entry` per unit, or None when either is unknown.
+
+        Positive means IBKR carries a *higher* basis than the position was actually
+        entered at, so IBKR's `unrealised_pnl` reads worse than the fills alone imply.
+
+        None when `average_price` is 0.0 as well as when the entry is unreconstructed:
+        a missing basis is not a basis of zero, and subtracting the entry from it would
+        turn an absent field into a confident, enormous number.
+
+        ⚠ **On a position that has been partly sold, some of this is lot-matching
+        convention rather than adjustment.** `economic_entry` is FIFO over open lots;
+        IBKR's basis did not move when 50 of 100 GLD shares were sold on 2026-08-04,
+        which an average-cost figure does not and a FIFO one would. So the two are not
+        guaranteed to be answering with the same lot convention, and the delta is
+        honestly "the gap between these two numbers", not "the tax adjustment". The
+        distinction is why nothing here is labelled a wash-sale figure and why the
+        column is disclosed rather than alarmed on. It does not weaken the large cases:
+        GLD's whole delta is 7.69 while IGV's is 669.62, and no choice of lot convention
+        moves a number that size.
+        """
+        if self.economic_entry is None or not self.average_price:
+            return None
+        return self.average_price - self.economic_entry
+
+    @property
+    def basis_delta_value(self) -> float | None:
+        """`basis_delta` in money — exactly the gap between the two unrealised P&Ls.
+
+        `(average_price - economic_entry) * quantity * multiplier`. On the live account
+        2026-08-04 this was +669.62 on IGV: IBKR showed +437.41 unrealised where the
+        fills alone imply roughly +1,107. That is the number a sizing decision turns on,
+        which is why it is money and not a per-share difference.
+
+        **None when the multiplier could not be established**, which is not a
+        hypothetical: IBKR served a *lean* CL SEP2026 row on one poll and a full one on
+        the next, minutes apart (measured 2026-08-04 — the lean row had no `ticker`
+        either, so the symbol column fell back to `contractDesc`). Defaulting a missing
+        multiplier to 1 published +0.00472 where the answer was +4.72, understating it
+        by a factor of a thousand and silently. A blank cell is recoverable; a money
+        figure off by 1000x on a futures row is not.
+        """
+        delta = self.basis_delta
+        if delta is None or not self.multiplier:
+            return None
+        return delta * self.quantity * self.multiplier
 
 
 def parse_positions(rows: Sequence[Any]) -> tuple[Position, ...]:
@@ -403,6 +472,19 @@ def parse_positions(rows: Sequence[Any]) -> tuple[Position, ...]:
         if "position" in row and _as_float(row.get("position")) == 0.0:
             continue
         desc = str(row.get("contractDesc") or "").strip()
+        # `avgCost` is per contract, `avgPrice` per unit, and their ratio *is* the
+        # multiplier — which matters because IBKR does not always send the `multiplier`
+        # field (see `Position.basis_delta_value`). Deriving it from two fields on the
+        # same row keeps the three internally consistent; when neither route works the
+        # multiplier stays None and no money figure is computed from it.
+        avg_cost = _as_float(row.get("avgCost"))
+        raw_multiplier = _as_float(row.get("multiplier"))
+        avg_price = _as_float(row.get("avgPrice"))
+        if not avg_price and avg_cost and raw_multiplier:
+            avg_price = avg_cost / raw_multiplier
+        multiplier = raw_multiplier or (
+            avg_cost / avg_price if avg_price and avg_cost else None
+        )
         out.append(
             Position(
                 conid=int(_as_float(row.get("conid"))),
@@ -410,12 +492,14 @@ def parse_positions(rows: Sequence[Any]) -> tuple[Position, ...]:
                 description=desc,
                 asset_class=str(row.get("assetClass") or "").strip(),
                 quantity=_as_float(row.get("position")),
-                average_cost=_as_float(row.get("avgCost")),
+                average_cost=avg_cost,
                 market_price=_as_float(row.get("mktPrice")),
                 market_value=_as_float(row.get("mktValue")),
                 unrealised_pnl=_as_float(row.get("unrealizedPnl")),
                 realised_pnl=_as_float(row.get("realizedPnl")),
                 currency=str(row.get("currency") or "").strip().upper(),
+                average_price=avg_price,
+                multiplier=multiplier,
             )
         )
     return tuple(out)
@@ -446,6 +530,156 @@ def fetch_positions(client: IBKRClient, account_id: str) -> tuple[Position, ...]
             _MAX_POSITION_PAGES,
         )
     return parse_positions(rows)
+
+
+# ── Economic entry: what the position was actually entered at ─────────────────
+#
+# IBKR's `avgPrice` is a *basis*, and a basis is a fiscal object: it absorbs costs and
+# adjustments that have nothing to do with where the trade was entered. Measured
+# 2026-08-04 on the live account, IGV carried a basis of 97.634216 against fills whose
+# open lots average **90.938050** — 6.70 a share, 669.62 on the position. A trader
+# reading the basis as an entry level is reading a number that was never traded at.
+#
+# So the entry is reconstructed from the account's own fills, and the *method* is chosen
+# to match the realised windows rather than to match IBKR: FIFO over open lots, at fill
+# price, with no adjustment of any kind. `flex_trade.fifo_pnl_realized` is FIFO, so the
+# lots this leaves open are exactly the ones those windows have not yet realised. A
+# running-average reconstruction was tried first and rejected — it disagreed with IBKR
+# on every position, including CL where the only real difference is commission, which
+# means it was measuring the method rather than the adjustment.
+
+
+def _fifo_open_average(fills: Sequence[tuple[float, float]]) -> tuple[float | None, float]:
+    """FIFO the `(signed_quantity, price)` fills and return `(open average, open qty)`.
+
+    Oldest first. A fill on the same side as the position opens a lot; a fill on the
+    opposite side consumes lots from the front. Reaching flat clears the queue, so the
+    next fill starts a fresh position rather than averaging against a closed one — the
+    reason a six-year history does not contaminate a position opened last week.
+
+    Returns `(None, 0.0)` for a flat book: there is no entry price for a position that
+    is not held, and returning 0.0 would put a tradeable-looking level on screen.
+    """
+    lots: list[list[float]] = []  # [remaining signed qty, price]
+    position = 0.0
+    for quantity, price in fills:
+        if not quantity:
+            continue
+        if position == 0.0 or (position > 0) == (quantity > 0):
+            lots.append([quantity, price])
+        else:
+            remaining = abs(quantity)
+            while remaining > _QTY_EPSILON and lots:
+                lot = lots[0]
+                take = min(remaining, abs(lot[0]))
+                lot[0] += -take if lot[0] > 0 else take
+                remaining -= take
+                if abs(lot[0]) < _QTY_EPSILON:
+                    lots.pop(0)
+            # A reversal through zero leaves `remaining` unconsumed; it becomes the
+            # opening lot of the new, opposite-side position.
+            if remaining > _QTY_EPSILON:
+                lots.append([remaining if quantity > 0 else -remaining, price])
+        position = round(position + quantity, 8)
+    held = sum(lot[0] for lot in lots)
+    if abs(held) < _QTY_EPSILON:
+        return None, 0.0
+    return sum(lot[0] * lot[1] for lot in lots) / held, held
+
+
+def economic_entries(
+    conn: sqlite3.Connection, positions: Sequence[Position]
+) -> dict[int, float]:
+    """Average entry price per conid, for the positions it can reconstruct *exactly*.
+
+    A conid is in the result only when the reconstruction independently reproduces
+    IBKR's own reported quantity to `_QTY_EPSILON`. That check is the whole safety
+    argument: it is one line, it is not a heuristic, and it catches every way this can
+    go wrong at once — a position opened before the stored history begins, a transfer or
+    corporate action that never appeared as a fill, a split, a symbol mismatch on the
+    live rows. Absence from the dict means "not established", and the view shows nothing
+    rather than a plausible wrong entry. On a trading surface those are not close to
+    equivalent.
+
+    **Live rows are matched by symbol, because they carry no `conid`** (measured
+    2026-08-04: all nine of them). Flex states the conid on the same row T+1, so this
+    only ever affects today's fills — but a ticker is not a unique key, so any symbol
+    that could belong to more than one held contract disqualifies *every* position it
+    touches rather than being resolved by a guess. Futures are matched on
+    `underlying_symbol` too, since the live feed reports `CL` where Flex reports `CLU6`.
+
+    Prices are fill prices, deliberately excluding commission: the question this answers
+    is "where did I get in", which is a level on a chart, not a cost. IBKR's basis
+    includes commission, so a position with no adjustment at all still shows a small
+    delta — CL measured +0.00236 a barrel, 4.72 on two contracts, which is what
+    commission looks like and is exactly why the column is disclosed rather than alarmed
+    on.
+    """
+    wanted = {p.conid: p for p in positions if p.conid and abs(p.quantity) > _QTY_EPSILON}
+    if not wanted:
+        return {}
+
+    # Symbols each candidate conid has traded under, for matching the conid-less live
+    # rows. Built for all candidates at once so ambiguity is visible across the account.
+    aliases: dict[int, set[str]] = {}
+    placeholders = ",".join("?" * len(wanted))
+    for row in conn.execute(
+        f"SELECT conid, symbol, underlying_symbol FROM flex_trade "
+        f"WHERE conid IN ({placeholders})",
+        [str(c) for c in wanted],
+    ):
+        names = aliases.setdefault(int(row["conid"]), set())
+        names.update(str(n).strip().upper() for n in (row["symbol"], row["underlying_symbol"]) if n)
+
+    ambiguous = {
+        conid
+        for conid, names in aliases.items()
+        for other, other_names in aliases.items()
+        if other != conid and names & other_names
+    }
+
+    live_rows = [
+        (str(r["symbol"] or "").strip().upper(), _as_float(r["quantity"]), _as_float(r["trade_price"]))
+        for r in conn.execute(
+            "SELECT symbol, quantity, trade_price FROM flex_trade "
+            "WHERE source != 'flex' ORDER BY date_time"
+        )
+    ]
+
+    entries: dict[int, float] = {}
+    for conid, position in wanted.items():
+        if conid in ambiguous:
+            log.debug("Economic entry declined for conid %s: symbol shared with another position", conid)
+            continue
+        fills = [
+            (_as_float(r["quantity"]), _as_float(r["trade_price"]))
+            for r in conn.execute(
+                "SELECT quantity, trade_price FROM flex_trade "
+                "WHERE conid = ? AND source = 'flex' ORDER BY trade_date, date_time",
+                (str(conid),),
+            )
+        ]
+        names = aliases.get(conid, set())
+        fills += [(q, price) for symbol, q, price in live_rows if symbol in names]
+        average, held = _fifo_open_average(fills)
+        if average is None or abs(held - position.quantity) > _QTY_EPSILON:
+            log.debug(
+                "Economic entry declined for conid %s: reconstructed %s vs IBKR %s",
+                conid, held, position.quantity,
+            )
+            continue
+        entries[conid] = average
+    return entries
+
+
+def with_economic_entries(
+    positions: Sequence[Position], entries: Mapping[int, float]
+) -> tuple[Position, ...]:
+    """Attach reconstructed entries to positions, leaving unreconstructed ones at None."""
+    return tuple(
+        replace(p, economic_entry=entries[p.conid]) if p.conid in entries else p
+        for p in positions
+    )
 
 
 # ── Realised P&L from the Flex dataset ────────────────────────────────────────

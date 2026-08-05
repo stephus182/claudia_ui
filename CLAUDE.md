@@ -243,7 +243,7 @@ the fix that established this (75,480 → 2,910 tokens/session).
 - Panel UI design & styling (no-styling baseline, shadow-DOM constraint, scraped styling
   surface, proposed restyle direction): `docs/panel/ui-design-reference.md`
 - Panel data surfaces — Tabulator/Number/ECharts, the `pn.extension()` gate, side windows,
-  stream/patch + connectivity, and 25 measured gotchas (16 onwards found live against the
+  stream/patch + connectivity, and 27 measured gotchas (16 onwards found live against the
   account): `docs/panel/data-surfaces-reference.md`
 - **Live dashboard** (KPI strip · Positions · P&L, shipped 2026-08-04): the three modules in
   the diagram above. Read `claudia/dashboard_data.py`'s module docstring first — it carries the
@@ -255,7 +255,13 @@ the fix that established this (75,480 → 2,910 tokens/session).
   `realizedpnl` is today only, on IBKR's real-time `avgCost`; the week/month/YTD windows are
   IBKR's statement basis via `flex_trade.fifo_pnl_realized`. They also use different day
   boundaries (calendar vs session). Never add them or "fix" one to match the other — both
-  measured 2026-08-04, evidence at `dashboard_data.REALISED_LEDGER_WINDOW` and `RealisedWindow`
+  measured 2026-08-04, evidence at `dashboard_data.REALISED_LEDGER_WINDOW` and `RealisedWindow`.
+  For the same reason the positions table leads with **"Avg entry"** — the average price of
+  the open lots, FIFO over the account's own fills (`dashboard_data.economic_entries`) —
+  and shows IBKR's basis beside it: a basis is a fiscal figure, and a trader sizing an exit
+  needs the level actually traded at. The reconstruction publishes a number **only when it
+  independently reproduces IBKR's own position quantity**; that one check is the whole safety
+  argument, and a blank cell means it declined
 - Panel folder hub (both references + dated research + smoke screenshots): `docs/panel/README.md`
 - Startup flow, phase by phase (diagnose startup failures): `docs/startup-flow.md`
 - Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and
