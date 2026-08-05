@@ -121,6 +121,91 @@ session"* — confirming `check_ibkr()`'s `authStatus.competing` warning
 Mobile/TWS/another browser tab during a live ClaudIA session can force-kick the gateway session.
 Source: [Launching and Authenticating the Gateway](https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/).
 
+### A borrowed session — the login that could not succeed (diagnosed 2026-08-05)
+
+For days, the gateway login failed with a correctly-formatted 8-digit IB Key response and
+the right username, while IBKR Mobile logged in on demand. The cause was not 2FA at all.
+
+**`/tickle` alone could not see it, and every field it does expose pointed the wrong way:**
+
+| Signal | Reading | What it suggested | Why it was wrong |
+|---|---|---|---|
+| `userId` | populated | a good session | SSO was valid — but not *ours* |
+| `ssoExpires` | renewing | session alive | kept alive by our own ticklers |
+| `competing` | **false** | uncontested | the gateway never got far enough to register a claim; the flag describes a fight, and there was no fight |
+| `authStatus` | `authenticated:false, connected:false` | just log in again | the retry was doomed before it started |
+
+**`GET /sso/validate` answered it in one field:**
+
+```text
+CLIENT_APP : IBKRMOBILE_000.a-000      ← the phone's session, held by the gateway
+USER_NAME  : ibkruser
+RESULT     : True
+```
+
+Only one brokerage session exists per username across Client Portal, TWS and IBKR Mobile
+([multiple sessions](https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md)).
+The gateway was holding a session **issued to the phone**, which it cannot authenticate as
+— so the login page rejected a correct code however often it was retried.
+
+Two follow-ons, both measured rather than reasoned about:
+
+- **`POST /iserver/auth/ssodh/init` cannot rescue this.** Twice, it moved `connected`
+  False→True and left `authenticated` False. It raises the bridge; it cannot supply an
+  authentication that never happened.
+- **`POST /logout` returned `{"status": true}` and the session came straight back**, with a
+  full 10-minute window. Three independent ticklers renew it every ~60s — the container's
+  own `tickler.sh`, the host launchd keepalive, and `ConnectivityChecker`. **The keepalive
+  built to protect a good session cannot tell a good session from a borrowed one**, and had
+  been preserving an unusable one all day.
+
+**What resolved it: `docker restart`.** The session is held in the gateway's local process
+memory, not re-served from IBKR, so a restart drops it with nothing to race. Login then
+succeeded first time, and `/sso/validate` came back `CLIENT_APP: None` — the session
+belonged to the gateway itself. Four theories died before this one: a stale gateway build
+(SHA-256 identical to a fresh download), a wrong `ip2loc` (IBKR's own shipped default), an
+IB Key registered to another username (same username, user-confirmed), and 2FA itself.
+
+### Runbook: a login that will not take
+
+```bash
+python -m claudia.gateway_preflight     # ALWAYS first — read-only, two GETs, no writes
+```
+
+| Verdict | Exit | What it means | Do this |
+|---|---|---|---|
+| `[OK] Session is LIVE` | 0 | already authenticated | **Nothing.** A needless re-login is what escalates into the IB Key challenge |
+| `[DOWN] Gateway is NOT answering` | 1 | no usable HTTP response | start the container |
+| `[FREE] …` | 2 | nothing holds the slot | log in now, through to *"Client login succeeds"* |
+| `[BUSY] Another IBKR client holds the session` | 3 | `competing`/`collision` set | fully close the other client, re-check |
+| `[BORROWED] SSO session belongs to X` | 4 | the gateway holds another app's session | log out of X **from its Log Out menu item**, then `./scripts/gateway-reset.sh` |
+
+Closing or swiping an app away is **not** logging out — IBKR's own gateway walkthrough
+warns it *"may cause a stale login session"*, which is precisely the state above.
+
+`./scripts/gateway-reset.sh` restarts the container and re-checks. It **refuses to run
+against a healthy session** (`--force` overrides) — a tool built to fix a login must not be
+able to break one.
+
+**HTTP 401 is not a failure.** It is the gateway answering that it holds no session — a
+freshly started or freshly logged-out gateway, and the best possible moment to log in.
+`read_state` treats it as `reachable=True`; folding it into `reachable=False` once produced
+*"Gateway is NOT answering. Start it first"* about a gateway that was running perfectly and
+waiting (fixed 2026-08-05, pinned by `test_a_401_means_alive_and_ready_not_down`, with a
+sibling test proving the carve-out still reports a genuine outage as DOWN).
+
+### Where the check runs by itself
+
+- **Startup** — `warn_if_session_borrowed()` in `panel_app.main()`, beside
+  `install_check.warn_if_stale()` and `agent.warn_if_model_lacks_operator_channel()`. It
+  fires only on positive proof: valid SSO **and** a named `CLIENT_APP` **and** an
+  unauthenticated gateway. Never on absence — a warning that fires when it need not is one
+  that gets ignored when it must not.
+- **The "Start IBKR Gateway" button** — `_on_start_gateway` pre-flights before
+  `open_login_page()` and refuses to open it on `EXIT_READY` (nothing to do) or
+  `EXIT_BORROWED` (the login cannot succeed until the other app logs out). The button used
+  to open the page unconditionally, which is how an unwinnable login got retried for days.
+
 ### ibkr_core_mcp ping
 
 `IBKRClient.ping()` (used by tools, not the UI) uses a different endpoint:
