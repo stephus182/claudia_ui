@@ -568,7 +568,7 @@ async def test_execute_staged_order_fut_cme_536b_fields():
     """FUT order body includes manualIndicator=True but NOT extOperator — IBKR rejects
     extOperator with any non-empty value as undocumented field 8089 on this account
     class (proven via whatif isolation 2026-07-23; see
-    docs/2026-07-23-futures-order-field-8089-bug.md)."""
+    docs/plans/2026-07-23-futures-order-field-8089-bug.md)."""
     ibkr_mod, client = _make_ibkr_mock()
     action = _make_action({
         "symbol": "ES", "action": "BUY", "quantity": 1,
@@ -716,7 +716,7 @@ async def test_execute_staged_order_fop_with_conid_proceeds():
 # ── IBKR 200-with-rejection payloads (2026-07-23 live FUT test) ──────────────
 # IBKR returns order rejections as an HTTP 200 payload — no exception raised —
 # so the result must be classified, not assumed successful.
-# Shape copied verbatim from docs/2026-07-23-futures-order-field-8089-bug.md.
+# Shape copied verbatim from docs/plans/2026-07-23-futures-order-field-8089-bug.md.
 
 _REJECTION_PAYLOAD = [{
     "error": "\"BUY 1 ES SEP'26 @ 6000.00\"\nCan not contain field # 8089",
@@ -1047,7 +1047,7 @@ async def test_execute_modify_order_stk_no_cme_fields():
 @pytest.mark.asyncio
 async def test_execute_modify_order_fut_cme_536b_fields():
     """FUT modify body includes manualIndicator=True but NOT extOperator — same
-    field-8089 rejection as the place path (docs/2026-07-23-futures-order-field-8089-bug.md)."""
+    field-8089 rejection as the place path (docs/plans/2026-07-23-futures-order-field-8089-bug.md)."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({
         "order_id": "1", "conid": 495512557, "symbol": "ES", "action": "BUY",
