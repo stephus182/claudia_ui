@@ -178,6 +178,7 @@ def test_module_reaches_no_order_path_and_no_io():
 
 
 def test_fresh_data_reads_as_live(view):
+    """A recent poll renders as live, without the stale warning."""
     assert "live" in view._freshness.object
     assert "STALE" not in view._freshness.object
 
@@ -223,10 +224,12 @@ def test_a_long_connection_error_does_not_bury_the_word_stale():
     ],
 )
 def test_short_reason(raw, expected):
+    """A long connection error is trimmed to fit a status line, without hiding the failure."""
     assert pdash.short_reason(raw) == expected
 
 
 def test_never_polled_says_so_rather_than_showing_a_flat_account():
+    """Before the first poll the strip says it is waiting, not an account of zeros."""
     snap = dd.empty_snapshot(now=_NOW, error="Dashboard has not polled yet.")
     assert "waiting for the first poll" in pdash.freshness_line(snap, _NOW)
 
@@ -276,11 +279,13 @@ def test_coverage_line_discloses_the_cost_basis_difference_without_overstating_i
 
 
 def test_coverage_line_without_pending_fills_omits_the_warning():
+    """With no fills awaiting a statement, the pending-fills warning is left off."""
     snap = _snapshot(coverage=dd.FlexCoverage(through=date(2026, 8, 5), live_pending=0))
     assert "not yet in a statement" not in pdash.coverage_line(snap)
 
 
 def test_coverage_line_with_no_flex_data():
+    """With no Flex data the line says so rather than describing an empty window."""
     assert "no Flex data" in pdash.coverage_line(_snapshot(coverage=None))
 
 
@@ -375,11 +380,13 @@ def test_with_neither_a_window_currency_nor_a_ledger_no_code_is_stated():
 
 
 def test_formatters_omit_a_trailing_space_for_an_unknown_currency():
+    """An unknown currency renders a bare number with no dangling space."""
     assert pdash.fmt_money(1234.5, "") == "1,234.50"
     assert pdash.fmt_signed(-1234.5, "") == "-1,234.50"
 
 
 def test_signed_figures_always_show_their_sign():
+    """A P&L figure always carries its sign, so profit and loss differ by more than a minus."""
     assert pdash.fmt_signed(250.25, "USD") == "+250.25 USD"
     assert pdash.fmt_signed(-3516.98, "USD") == "-3,516.98 USD"
     assert pdash.fmt_signed(0.0, "USD") == "+0.00 USD"
@@ -394,6 +401,7 @@ def test_signed_figures_always_show_their_sign():
      (3600, "1h 00m"), (4500, "1h 15m"), (-5, "0s")],
 )
 def test_age_formatting(seconds, expected):
+    """Poll ages render compactly across seconds, minutes and hours."""
     assert pdash.fmt_age(seconds) == expected
 
 
@@ -401,12 +409,14 @@ def test_age_formatting(seconds, expected):
 
 
 def test_tabs_are_named_chart_positions_pnl():
+    """The tab set is the one the layout specifies."""
     v = pdash.build_dashboard(chart_pane=pn.Column(pn.pane.Markdown("chart")))
     assert list(v.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
     assert isinstance(v.tabs, pn.Tabs)
 
 
 def test_kpi_strip_holds_six_number_tiles(view):
+    """The strip holds exactly the six KPI tiles."""
     tiles = [o for o in view.kpi_strip[0] if isinstance(o, pn.indicators.Number)]
     assert len(tiles) == 6
     assert [t.label for t in tiles] == [
@@ -416,6 +426,7 @@ def test_kpi_strip_holds_six_number_tiles(view):
 
 
 def test_tiles_carry_the_live_currency_in_their_format(view):
+    """Each tile's format carries the account's live ISO code, never a bare symbol."""
     assert view._tiles["net_liq"].value == 100000.0
     assert view._tiles["net_liq"].format == "{value:,.2f} USD"
     assert view._tiles["unrealised"].format == "{value:+,.2f} USD"
@@ -423,6 +434,7 @@ def test_tiles_carry_the_live_currency_in_their_format(view):
 
 
 def test_tiles_are_empty_and_neutral_before_the_first_poll():
+    """Unpolled tiles render an em dash in a neutral colour, not a zero in red."""
     v = pdash.build_dashboard()
     assert all(t.value is None for t in v._tiles.values())
     assert all(t.nan_format == "—" for t in v._tiles.values())
@@ -452,6 +464,7 @@ def test_a_blank_tile_shows_no_currency_code_and_no_sign():
 
 
 def test_win_rate_tile_is_blank_when_nothing_closed():
+    """No closed lots leaves the win rate blank rather than showing 0%."""
     v = pdash.build_dashboard()
     v.refresh(_snapshot(stats={"week": _stats(lots=0, wins=0, losses=0)}), now=_NOW)
     assert v._tiles["win_rate"].value is None
@@ -651,12 +664,14 @@ def test_a_failed_reconciliation_leads_with_lag_not_with_a_data_error():
 
 
 def test_an_unrun_reconciliation_does_not_claim_a_pass():
+    """A check that never ran says so — rendering "reconciled" would be the worst outcome."""
     v = pdash.build_dashboard()
     v.refresh(_snapshot(positions=(), ledger=None), now=_NOW)
     assert "not checked" in v._reconciliation.object
 
 
 def test_a_cross_currency_book_claims_no_reconciliation():
+    """A book spanning currencies cannot be summed against one ledger, so no delta is claimed."""
     rows = dd.parse_positions([
         {"ticker": "AAPL", "position": 1.0, "unrealizedPnl": 10.0, "currency": "USD"},
         {"ticker": "SAP", "position": 1.0, "unrealizedPnl": -4.0, "currency": "EUR"},
@@ -736,6 +751,7 @@ def test_going_stale_toasts_once_not_every_poll(toasts):
 
 
 def test_recovery_toasts_once(toasts):
+    """Coming back from stale toasts exactly once, not on every poll."""
     v = pdash.build_dashboard()
     v.refresh(_snapshot(), now=_NOW)
     v.refresh(_snapshot(error="boom"), now=_NOW)
@@ -779,12 +795,14 @@ def test_positions_frame_has_headers_even_with_no_rows():
 
 
 def test_positions_table_is_populated_and_summarised(view):
+    """The table renders the positions and the summary line counts them."""
     assert list(view._positions.value["Symbol"]) == ["ESU6"]
     assert "1 open position(s)" in view._positions_status.object
     assert "-1,000.00 USD" in view._positions_status.object
 
 
 def test_positions_summary_distinguishes_empty_from_unavailable():
+    """An empty book and an unavailable one read differently — they are opposite claims."""
     v = pdash.build_dashboard()
     v.refresh(_snapshot(positions=()), now=_NOW)
     assert "No open positions" in v._positions_status.object
@@ -794,6 +812,7 @@ def test_positions_summary_distinguishes_empty_from_unavailable():
 
 
 def test_multi_currency_positions_are_labelled_mixed():
+    """A cross-currency total is labelled mixed rather than stamped with one code."""
     rows = dd.parse_positions([
         {"ticker": "AAPL", "position": 1.0, "unrealizedPnl": 10.0, "currency": "USD"},
         {"ticker": "SAP", "position": 1.0, "unrealizedPnl": -4.0, "currency": "EUR"},
@@ -817,10 +836,12 @@ def test_pnl_colouring_is_bound_to_the_unrealised_column(view):
      (0.0, f"color: {pdash._FLAT_COLOR}"), ("text", ""), (True, "")],
 )
 def test_sign_style(value, expected):
+    """Positive, negative and zero cells get their own colours, and non-numbers get none."""
     assert pdash._sign_style(value) == expected
 
 
 def test_chart_is_built_for_the_selected_window(view):
+    """The chart is drawn from the window the selector names."""
     import holoviews as hv
 
     view._window.value = "Week"
@@ -838,6 +859,7 @@ def test_switching_the_window_repaints_without_a_new_poll(view):
 
 
 def test_window_selector_before_any_snapshot_does_not_raise():
+    """Changing the window before the first poll is a no-op, not an error."""
     v = pdash.build_dashboard()
     v._window.value = "YTD"  # no snapshot yet
     assert v._pnl_chart.object is None
@@ -886,16 +908,19 @@ def test_a_single_point_window_explains_itself_instead_of_drawing_a_broken_axis(
 
 
 def test_the_chart_note_is_empty_when_a_chart_was_drawn(view):
+    """The explanatory note is empty when there is a chart to look at."""
     view._window.value = "Week"
     assert view._pnl_chart.object is not None
     assert view._pnl_chart_note.object == ""
 
 
 def test_the_chart_note_reports_an_empty_window():
+    """An empty window is explained in words instead of an empty axis."""
     assert "No realised P&L" in pdash.realised_chart_note((), "USD")
 
 
 def test_chart_layout_has_two_stacked_rows():
+    """The realised chart is the cumulative curve over the daily bars."""
     import holoviews as hv
 
     pts = tuple(
@@ -924,6 +949,7 @@ def test_refresh_never_raises_and_keeps_the_previous_frame(view, caplog):
 
 
 def test_stats_markdown_handles_a_window_with_no_lots():
+    """A window with no closed lots omits the win/loss rows rather than printing zeros."""
     text = pdash.stats_markdown(
         _window(date(2026, 8, 3), _TODAY, 0.0, 0, {}),
         _stats(lots=0, wins=0, losses=0, gross_win=0.0, gross_loss=0.0),
@@ -934,14 +960,17 @@ def test_stats_markdown_handles_a_window_with_no_lots():
 
 
 def test_stats_markdown_with_no_data():
+    """With no window at all the block says so."""
     assert "No trade data" in pdash.stats_markdown(None, None, "Week")
 
 
 def test_ledger_markdown_with_no_ledger():
+    """With no ledger the block says it is unavailable rather than rendering blanks."""
     assert "unavailable" in pdash.ledger_markdown(_snapshot(ledger=None))
 
 
 def test_ledger_markdown_discloses_other_currency_balances():
+    """Other currency balances are disclosed, so one currency is not read as the account."""
     snap = _snapshot(ledger=_ledger(other_currencies=("CHF", "EUR")))
     assert "CHF, EUR" in pdash.ledger_markdown(snap)
 
@@ -955,6 +984,7 @@ def test_ledger_markdown_discloses_other_currency_balances():
 
 
 def _order(**kw):
+    """A LiveOrder with the fields the order table renders."""
     from claudia.dashboard_data import LiveOrder
 
     base = {
@@ -975,6 +1005,7 @@ def test_orders_frame_keeps_its_columns_when_the_book_is_empty():
 
 
 def test_orders_frame_renders_a_working_order():
+    """A working order renders across the full column set."""
     frame = pdash.orders_frame(_snapshot(orders=(_order(),)))
     row = frame.iloc[0]
     assert row["Order"] == "314390101"
@@ -999,6 +1030,7 @@ def test_an_unavailable_book_is_not_reported_as_an_empty_one():
 
 
 def test_orders_status_counts_claudia_staged_separately():
+    """The status line separates ClaudIA-staged orders from external ones."""
     snap = _snapshot(orders=(_order(origin="CLAUDIA-1785941569825"), _order(order_id="2")))
     line = pdash.orders_status_line(snap)
     assert "2 working order(s)" in line
@@ -1023,4 +1055,18 @@ def test_orders_blank_when_the_account_half_goes_stale(view):
 
 
 def test_the_dashboard_has_an_orders_tab(view):
+    """The order book has its own tab."""
     assert list(view.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
+
+
+def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
+    """Numeric order columns carry a format and right alignment — they had neither.
+
+    Raw IBKR floats rendered as `1.0` and `6000.5` beside the positions table's `1` and
+    `6,000.50`, which is the unscannable column that table already fixed once. The
+    read-only guarantees these sit alongside are asserted by
+    `test_order_table_is_read_only_no_click_or_edit_handlers`, not repeated here.
+    """
+    assert set(view._orders.formatters) == {"Qty", "Filled", "Limit"}
+    assert view._orders.text_align == {"Qty": "right", "Filled": "right", "Limit": "right"}
+    assert set(view._orders.header_tooltips) <= set(pdash._ORDER_COLUMNS)

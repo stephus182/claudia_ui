@@ -27,8 +27,8 @@ silently dropping any execution that arrives after a capture timeout.
 Cancelling a queue.get() waiter has no such effect on the queue or the pump
 task producing into it.
 
-Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ws-trades-sub
-Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ws-pnl-sub
+Source: https://ibkrcampus.com/docs/web-api/v1/ws/order-position-operations/request-trades-data.md
+Source: https://ibkrcampus.com/docs/web-api/v1/ws/order-position-operations/request-profit-loss.md
 """
 
 from __future__ import annotations

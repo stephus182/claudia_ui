@@ -37,24 +37,29 @@ def _sample_df() -> pd.DataFrame:
 
 
 def _iter_tree(node):
+    """Walk a Panel layout depth-first, yielding every object in it."""
     yield node
     for child in getattr(node, "objects", []):
         yield from _iter_tree(child)
 
 
 def _first(pane, kind):
+    """The first object in the tree matching `predicate`."""
     return next(n for n in _iter_tree(pane) if isinstance(n, kind))
 
 
 def _button(pane):
+    """The button in the pane whose label matches."""
     return _first(pane, pn.widgets.Button)
 
 
 def _chart(pane):
+    """The chart pane inside the built column."""
     return _first(pane, pn.pane.HoloViews)
 
 
 def _status(pane):
+    """The status markdown pane inside the built column."""
     return _first(pane, pn.pane.Markdown)
 
 
@@ -75,6 +80,7 @@ def hv_title(obj):
 
 
 def _ms(td: pd.Timedelta) -> float:
+    """A datetime as epoch milliseconds, the unit the bokeh x-axis uses."""
     return td / pd.Timedelta(milliseconds=1)
 
 
@@ -82,6 +88,7 @@ def _ms(td: pd.Timedelta) -> float:
 
 
 def test_build_chart_pane_has_controls_status_and_chart():
+    """The pane ships controls, a status line and a chart placeholder before any data loads."""
     pane = build_chart_pane()
     assert isinstance(pane, pn.Column)
     nodes = list(_iter_tree(pane))
@@ -98,6 +105,7 @@ def test_build_chart_pane_has_controls_status_and_chart():
 
 
 def _mock_toolkit(*, cached: bool, df):
+    """A stub toolkit whose cache and history responses can be posed."""
     from unittest.mock import MagicMock
 
     tk = MagicMock()
@@ -109,6 +117,7 @@ def _mock_toolkit(*, cached: bool, df):
 
 @pytest.mark.asyncio
 async def test_on_load_cache_hit_renders_figure_without_fetching():
+    """A cache hit renders straight from the cache and makes no IBKR call."""
     from unittest.mock import patch
 
     tk = _mock_toolkit(cached=True, df=_sample_df())
@@ -132,6 +141,7 @@ async def test_on_load_cache_hit_renders_figure_without_fetching():
 
 @pytest.mark.asyncio
 async def test_on_load_strips_and_uppercases_symbol():
+    """The typed symbol is normalised before it is used as a cache or lookup key."""
     from unittest.mock import patch
 
     tk = _mock_toolkit(cached=False, df=_sample_df())
@@ -148,6 +158,7 @@ async def test_on_load_strips_and_uppercases_symbol():
 
 @pytest.mark.asyncio
 async def test_on_load_cache_miss_fetches_then_loads():
+    """A cache miss fetches, then renders what it fetched."""
     from unittest.mock import patch
 
     tk = _mock_toolkit(cached=False, df=_sample_df())
@@ -166,6 +177,7 @@ async def test_on_load_cache_miss_fetches_then_loads():
 
 @pytest.mark.asyncio
 async def test_on_load_empty_df_shows_honest_no_data_and_leaves_chart():
+    """No data says so and leaves the previous chart standing rather than blanking it."""
     from unittest.mock import patch
 
     tk = _mock_toolkit(cached=True, df=pd.DataFrame())
@@ -181,6 +193,7 @@ async def test_on_load_empty_df_shows_honest_no_data_and_leaves_chart():
 
 @pytest.mark.asyncio
 async def test_on_load_exception_is_caught_as_honest_error():
+    """A load failure becomes a visible error line, never an unhandled callback exception."""
     from unittest.mock import patch
 
     pane = build_chart_pane()
@@ -222,6 +235,7 @@ async def test_on_load_single_row_frame_is_honest_error_not_a_crash():
 
 @pytest.mark.asyncio
 async def test_on_load_sets_loading_during_and_clears_after():
+    """The loading indicator is set for the duration of the load and cleared afterwards."""
     from unittest.mock import patch
 
     pane = build_chart_pane()
@@ -230,6 +244,7 @@ async def test_on_load_sets_loading_during_and_clears_after():
     seen = {}
 
     def _capture_loading(*_a, **_k):
+        """Record the loading flag when read, so the during-load state can be asserted."""
         seen["loading"] = btn.loading
         return _sample_df()
 
@@ -282,11 +297,13 @@ def _rects(obj):
 
 
 def _body_width_ms_of(obj) -> float:
+    """The candle body width, in milliseconds, taken from the built figure."""
     d = _rects(obj).data
     return (d["ubound"].iloc[0] - d["lbound"].iloc[0]) / pd.Timedelta(milliseconds=1)
 
 
 def test_build_chart_object_has_wicks_and_bodies():
+    """The figure carries both the wick segments and the candle bodies."""
     from claudia.panel_chart import build_chart_object
 
     obj = build_chart_object(_sample_df(), "AAPL 1d (6m)")
@@ -302,6 +319,7 @@ def test_build_chart_object_body_width_is_070_of_bar_spacing():
     # bar_width, see build_chart_object's docstring), so 0.7 x 24h for the daily
     # fixture. NOT exactly equal to Timedelta(hours=24)*0.7 -- float rounding puts it
     # fractionally under -- hence approx.
+    """Body width is 70% of bar spacing, which is what stops candles touching."""
     from claudia.panel_chart import build_chart_object
 
     layout = build_chart_object(_sample_df(), "T")
@@ -313,9 +331,11 @@ def test_build_chart_object_body_width_tracks_intraday_spacing():
     # The smear regression (a51b454, not 794d7c0 -- see build_chart_object's docstring)
     # restated for the new engine: 30m candles must be strictly narrower than 1h, which
     # must be strictly narrower than daily.
+    """Intraday bars size their bodies off intraday spacing, not a daily assumption."""
     from claudia.panel_chart import build_chart_object
 
     def width(freq):
+        """The candle body width from the built figure, in milliseconds."""
         idx = pd.date_range("2024-01-01 09:30", periods=6, freq=freq)
         df = pd.DataFrame(
             {"open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 100.0},
@@ -331,6 +351,7 @@ def test_build_chart_object_body_width_tracks_intraday_spacing():
 def test_build_chart_object_colors_up_and_down_bodies():
     # hvplot encodes the partition as ONE dim expression, not two glyphs. The fixture is
     # up, up, down, down -- so applying the expression must yield teal, teal, red, red.
+    """Up and down candles get their own colours."""
     import holoviews as hv
 
     from claudia.panel_chart import _DOWN_COLOR, _UP_COLOR, build_chart_object
@@ -342,6 +363,7 @@ def test_build_chart_object_colors_up_and_down_bodies():
 
 
 def test_build_chart_object_carries_the_title():
+    """The requested title reaches the figure."""
     import holoviews as hv
 
     from claudia.panel_chart import build_chart_object
@@ -358,6 +380,7 @@ def test_build_chart_object_is_column_order_independent():
     # that -- this test is what would fail if that y= were ever "cleaned up" as
     # redundant. Move volume before open/high/low/close (a real risk: nothing in the
     # cache contract fixes column order) and require identical geometry and colors.
+    """Columns are bound by name — hvplot binds some positionally, which plots wrong series."""
     import holoviews as hv
 
     from claudia.panel_chart import build_chart_object
@@ -399,6 +422,7 @@ def test_build_chart_object_body_width_uses_min_not_median_spacing():
     # the min gap 12h while the median gap stays 24h. Assert what hvplot ACTUALLY does
     # (min-based) here, not parity with the deleted helper -- they are genuinely
     # different statistics and are not expected to agree on this fixture.
+    """Minimum spacing sets the width, so a single tight gap cannot make bodies overlap."""
     from claudia.panel_chart import build_chart_object
 
     idx = pd.to_datetime(
@@ -424,6 +448,7 @@ def test_build_chart_object_rejects_single_row_frame():
     # array and numpy raises "zero-size array to reduction operation minimum". 0 rows and
     # 2 rows are both fine. We convert it to an honest failure rather than letting a numpy
     # internals message reach the chart pane's status line.
+    """A one-bar frame is refused rather than rendered with a nonsense width."""
     from claudia.panel_chart import build_chart_object
 
     with pytest.raises(ValueError, match="at least 2 bars"):
@@ -431,6 +456,7 @@ def test_build_chart_object_rejects_single_row_frame():
 
 
 def test_build_chart_object_accepts_two_row_frame():
+    """Two bars is the smallest frame that has a spacing to measure, and is accepted."""
     from claudia.panel_chart import build_chart_object
 
     obj = build_chart_object(_sample_df().iloc[:2], "T")
@@ -454,6 +480,7 @@ def _long_df(n: int = 40) -> pd.DataFrame:
 
 
 def test_build_chart_object_overlays_the_sma():
+    """The moving average is overlaid on the price figure."""
     from ibkr_core_mcp import indicators
 
     from claudia.panel_chart import _SMA_PERIOD, build_chart_object
@@ -484,6 +511,7 @@ def test_sma_overlay_is_renamed_not_left_as_close():
     # average renders labelled 'close' and collides with the price series. This test pins
     # our rename; it deliberately also pins the upstream reality so that if indicators.sma
     # is ever fixed to match its docstring, this fails loudly rather than silently.
+    """The overlay is labelled as the SMA, not left carrying the close column's name."""
     from ibkr_core_mcp import indicators
 
     from claudia.panel_chart import build_chart_object
@@ -495,6 +523,7 @@ def test_sma_overlay_is_renamed_not_left_as_close():
 def test_build_chart_object_tolerates_frame_shorter_than_sma_period():
     # A 4-row frame makes sma(20) all-NaN. That composes and renders without a crash, so
     # there is no guard for it -- just an empty overlay.
+    """A frame shorter than the SMA window still renders, without the overlay."""
     from claudia.panel_chart import build_chart_object
 
     values = list(_price(build_chart_object(_sample_df(), "T")).Curve.Sma_20.dimension_values("sma_20"))
@@ -503,6 +532,7 @@ def test_build_chart_object_tolerates_frame_shorter_than_sma_period():
 
 
 def test_build_chart_object_adds_a_volume_subplot():
+    """Volume is drawn as its own row beneath price."""
     from claudia.panel_chart import build_chart_object
 
     layout = build_chart_object(_long_df(), "T")
@@ -519,6 +549,7 @@ def test_volume_subplot_keeps_a_continuous_x_axis():
     # (FactorRange) volume axis paired with the datetime candle axis would silently break
     # the sync (verified 2026-08-03: pairing a datetime element with a categorical one
     # under shared_axes=True yields two distinct range objects, not one shared one).
+    """The volume row keeps the same continuous time axis as price."""
     import holoviews as hv
     from bokeh.models import FactorRange
 
@@ -537,6 +568,7 @@ def test_layout_figures_share_one_x_range():
     # is what actually turns sharing off, proven below. `linked_axes=True` stays on the
     # pane because that pane is how this chart ships in the app, not because it does
     # anything measurable in this test.
+    """Both rows share one x-range, so zooming price zooms volume with it."""
     import holoviews as hv
     import panel as pn
     from bokeh.plotting import figure as bk_figure
@@ -569,6 +601,7 @@ def test_build_chart_object_stacks_price_over_volume():
     # what forces the stacked, single-column layout instead: removing it changes
     # GridPlot.children row/col positions from [(0,0),(1,0)] (stacked) to [(0,0),(0,1)]
     # (side by side) -- verified both ways before writing this assertion.
+    """Price sits above volume in the layout, one column wide."""
     import holoviews as hv
     from bokeh.plotting import figure as bk_figure
 
@@ -705,6 +738,7 @@ def _idx(*, minutes: float, n: int = 10, first_gap: float | None = None):
 
 
 def test_infer_bar_label_recognises_the_standard_bars():
+    """Each standard bar size is inferred from the actual spacing between rows."""
     from claudia.panel_chart import _infer_bar_label
 
     assert _infer_bar_label(_idx(minutes=30)) == "30m"
@@ -726,6 +760,7 @@ def test_infer_bar_label_uses_median_not_min():
 
 def test_infer_bar_label_is_robust_to_weekend_gaps():
     # Daily bars with a 72h weekend gap: the median stays 24h.
+    """A weekend gap does not fool the inference into reporting a larger bar."""
     from claudia.panel_chart import _infer_bar_label
 
     idx = pd.to_datetime(
@@ -768,6 +803,7 @@ async def test_on_load_discloses_when_ibkr_returns_a_coarser_bar():
 
 @pytest.mark.asyncio
 async def test_on_load_says_nothing_when_the_bar_size_matches():
+    """No warning is shown when IBKR returned the bar size that was asked for."""
     from unittest.mock import patch
 
     tk = _mock_toolkit(cached=True, df=_sample_df())  # daily fixture, 1d requested

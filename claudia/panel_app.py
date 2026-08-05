@@ -48,12 +48,20 @@ from ibkr_core_mcp import (
 )
 from ibkr_core_mcp.gateway import GatewayManager
 
-from claudia.agent import ClaudIAAgent
+from claudia.agent import ClaudIAAgent, warn_if_model_lacks_operator_channel
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.dashboard_poller import DashboardPoller
 from claudia.execution_listener import ExecutionListener
 from claudia.flex_sync import dataset_fingerprint, validate_dataset
+from claudia.gateway_preflight import (
+    EXIT_BORROWED,
+    EXIT_READY,
+    gateway_url,
+    read_state,
+    verdict,
+    warn_if_session_borrowed,
+)
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
 from claudia.opening_status import build_trade_lines, gather_session_state
@@ -466,6 +474,28 @@ def _send_action_buttons(
                     chat.send("✕ Gateway did not start within timeout. Check Docker logs.",
                               user="System", respond=False)
                     return
+
+                # Pre-flight BEFORE sending anyone to the login page. Reachable only means
+                # the process answers; it says nothing about whose session it holds. Two
+                # states must not lead to a login: one that already works (re-authenticating
+                # it for nothing is what escalates into the IB Key challenge/response) and
+                # one held by another IBKR app (which cannot be authenticated here at all,
+                # so every retry is wasted and makes the next attempt worse).
+                state = await asyncio.to_thread(read_state, gateway_url())
+                code, headline, guidance = verdict(state)
+                if code == EXIT_READY:
+                    chat.send(f"✅ **{headline}** — {guidance}", user="System", respond=False)
+                    return
+                if code == EXIT_BORROWED:
+                    chat.send(
+                        f"⚠️ **LOG OUT OF YOUR IBKR APP FIRST — {headline}**\n\n{guidance}\n\n"
+                        "The login page has **not** been opened: doing so now would fail and "
+                        "count as another attempt. Log out, then click **Start IBKR Gateway** "
+                        "again.",
+                        user="System", respond=False,
+                    )
+                    return
+
                 await asyncio.to_thread(gm.open_login_page)
                 if _connectivity_checker is not None:
                     await _connectivity_checker._run_checks()
@@ -1206,6 +1236,29 @@ def _configure_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+def _port_is_free(port: int, address: str = "127.0.0.1") -> bool:
+    """Whether `port` can be bound on `address` right now.
+
+    Checked against the same loopback address `pn.serve` binds — a port free on one
+    interface and taken on another is a real state, and testing the wrong one would give
+    a confident wrong answer.
+
+    Inherently racy: something could take the port between this call and `pn.serve`. That
+    is acceptable because the failure it prevents is the *common* one (a second ClaudIA
+    started by hand), and losing the race merely restores today's behaviour — an
+    EADDRINUSE traceback — rather than introducing a new failure.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((address, port))
+        except OSError:
+            return False
+    return True
+
+
 def main() -> None:
     """Serve ClaudIA on Panel's native Tornado server (design principle 2026-07-24:
     Panel-native serving, no workarounds — pn.serve(callable) invokes
@@ -1225,6 +1278,26 @@ def main() -> None:
     # a web tool is called — see claudia/install_check.py for the three times that cost
     # real debugging. Warns, never refuses: it breaks the web tools, not the trading ones.
     warn_if_stale()
+    # Same shape and the same reason: a misconfiguration that lets ClaudIA start cleanly
+    # and fail much later, where nobody would connect the symptom to the setting.
+    warn_if_model_lacks_operator_channel(_MODEL)
+    # Third of the same family: provable-only, and it names the app holding the
+    # session so the fix is one action rather than a retry loop on the 2FA code.
+    warn_if_session_borrowed()
+    # The port has to be checked BEFORE the banner. `pn.serve` blocks until shutdown, so
+    # there is no "after" in which to announce success — and until 2026-08-05 the banner
+    # was simply logged first, which meant a start that then died on EADDRINUSE printed
+    # "ClaudIA serving on …" and a stack trace. That is the precise inverse of the
+    # guarantee the line exists for: it made a *failed* start look like a good one.
+    if not _port_is_free(_PANEL_PORT):
+        log.error(
+            "PORT %d IS ALREADY IN USE — ClaudIA is very likely already running, and this "
+            "process would have died with EADDRINUSE. Find the owner with: "
+            "lsof -nP -iTCP:%d -sTCP:LISTEN   then stop it by PID (pkill -f "
+            "'claudia.panel_app' does NOT match — the binary is named Python).",
+            _PANEL_PORT, _PANEL_PORT,
+        )
+        return
     # The only "server is up" signal. pn.serve(show=False) opens no browser, and
     # _configure_logging pins bokeh to WARNING, which suppresses its own
     # "Bokeh app running at" banner — so without this line a correctly-started

@@ -101,10 +101,12 @@ def store(tmp_path):
     ],
 )
 def test_week_start_is_monday(today, expected):
+    """The trading week starts Monday, whichever day it is read on."""
     assert dd.week_start(today) == expected
 
 
 def test_month_and_year_start():
+    """Month and year windows start on the first calendar day."""
     assert dd.month_start(date(2026, 8, 6)) == date(2026, 8, 1)
     assert dd.year_start(date(2026, 8, 6)) == date(2026, 1, 1)
 
@@ -416,6 +418,7 @@ def test_parse_ledger_will_not_label_a_lone_base_row():
 
 
 def test_parse_ledger_accepts_a_single_currency_with_no_base_row():
+    """A single-currency response resolves without a BASE row to disambiguate against."""
     snap = dd.parse_ledger({"USD": _ledger_row()})
     assert snap is not None
     assert snap.currency == "USD"
@@ -433,6 +436,7 @@ def test_parse_ledger_refuses_to_guess_between_currencies():
 
 @pytest.mark.parametrize("payload", [None, {}, {"USD": "not-a-dict"}, "nonsense"])
 def test_parse_ledger_handles_junk(payload):
+    """A malformed or empty payload resolves to None rather than a half-built snapshot."""
     assert dd.parse_ledger(payload) is None
 
 
@@ -447,10 +451,12 @@ def test_parse_ledger_coerces_string_and_missing_numbers():
 
 
 def test_fetch_ledger_passes_the_account_id_and_currency_hint_through():
+    """The resolved account id reaches the client and the currency hint picks the right row."""
     class _Client:
         """Records the account id it was asked for."""
 
         def __init__(self):
+            """Start with no recorded account id."""
             self.seen = None
 
         def get_account_ledger(self, account_id):
@@ -590,6 +596,7 @@ def test_economic_entry_follows_a_conid_less_live_fill(fills):
 
 
 def test_economic_entry_from_flex_alone(fills):
+    """FIFO over Flex fills alone reconstructs the open-lot average."""
     entries = dd.economic_entries(fills, [_entry_pos(2, "IGV", 100.0)])
     assert entries[2] == pytest.approx(90.0)
 
@@ -614,10 +621,12 @@ def test_economic_entry_declines_on_a_shared_ticker(fills):
 
 
 def test_economic_entry_ignores_positions_that_are_flat(fills):
+    """A flat position has no entry price and is left out entirely."""
     assert dd.economic_entries(fills, [_entry_pos(1, "GLD", 0.0)]) == {}
 
 
 def test_with_economic_entries_leaves_unreconstructed_positions_at_none():
+    """An unreconstructed position keeps `economic_entry` None — a blank cell, never a guess."""
     positions = (_entry_pos(1, "GLD", 50.0), _entry_pos(3, "OLD", 20.0))
     out = dd.with_economic_entries(positions, {1: 108.0})
     assert out[0].economic_entry == pytest.approx(108.0)
@@ -719,6 +728,7 @@ def _position_row(**over):
 
 
 def test_parse_positions_types_the_fields():
+    """A raw position row is typed field by field."""
     (pos,) = dd.parse_positions([_position_row()])
     assert (pos.symbol, pos.asset_class, pos.quantity) == ("ESU6", "FUT", 1.0)
     assert pos.unrealised_pnl == -1000.0
@@ -737,11 +747,13 @@ def test_parse_positions_drops_closed_rows_but_keeps_unparseable_ones():
 
 
 def test_parse_positions_falls_back_to_contract_desc_for_the_symbol():
+    """A lean row with no ticker falls back to `contractDesc` rather than showing blank."""
     (pos,) = dd.parse_positions([_position_row(ticker="", contractDesc="CLU6")])
     assert pos.symbol == "CLU6"
 
 
 def test_parse_positions_skips_non_mapping_rows():
+    """Junk entries inside the list are skipped without affecting the real rows."""
     assert dd.parse_positions(["junk", None, _position_row()]) == dd.parse_positions(
         [_position_row()]
     )
@@ -751,6 +763,7 @@ class _PagingClient:
     """A client that serves `pages` in order and records which pages were asked for."""
 
     def __init__(self, pages):
+        """Serve the given pages in order and record which page numbers were asked for."""
         self.pages = pages
         self.asked = []
 
@@ -771,12 +784,14 @@ def test_fetch_positions_pages_past_the_first_thirty():
 
 
 def test_fetch_positions_stops_on_a_short_page():
+    """A short page ends paging — IBKR reports no total, so that is the only signal."""
     client = _PagingClient([[_position_row()]])
     assert len(dd.fetch_positions(client, "U1")) == 1
     assert client.asked == [0]
 
 
 def test_fetch_positions_stops_on_an_empty_first_page():
+    """An empty first page ends paging immediately."""
     client = _PagingClient([[]])
     assert dd.fetch_positions(client, "U1") == ()
     assert client.asked == [0]
@@ -801,6 +816,7 @@ def test_fetch_positions_is_capped_against_a_never_shortening_response(caplog):
 
 
 def test_snapshot_age_grows_and_never_goes_negative():
+    """Age tracks elapsed time and clamps at zero for a clock that ran backwards."""
     now = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
     snap = dd.DashboardSnapshot(as_of=now)
     assert snap.age_seconds(now + timedelta(seconds=45)) == pytest.approx(45.0)
@@ -808,6 +824,7 @@ def test_snapshot_age_grows_and_never_goes_negative():
 
 
 def test_empty_snapshot_carries_an_error_and_no_data():
+    """The pre-first-poll snapshot carries its reason and no account figures."""
     snap = dd.empty_snapshot(error="IBKR gateway not reachable")
     assert snap.ledger is None
     assert snap.positions == ()
@@ -859,6 +876,7 @@ def test_reconcile_rounds_to_cents_before_comparing():
 
 
 def test_reconcile_fails_past_the_tolerance():
+    """A gap beyond the tolerance is reported as a real disagreement, with the tolerance pinned."""
     rec = dd.reconcile(_snapshot_for_reconcile((_pos("CL", -1000.0),), -2000.0))
     assert rec.checked and not rec.agrees
     assert rec.delta == pytest.approx(1000.0)
@@ -891,6 +909,7 @@ def test_an_unrun_check_is_never_a_pass():
 
 
 def test_parse_orders_reads_a_working_order():
+    """A working order is typed, with nothing filled and ClaudIA attribution from the local id."""
     orders = dd.parse_orders([{
         "orderId": 314390101, "ticker": "AAPL", "side": "BUY", "totalSize": 1,
         "remainingQuantity": 1, "price": 100.0, "orderType": "Limit",
@@ -924,6 +943,7 @@ def test_a_blank_remaining_quantity_does_not_read_as_fully_filled():
 
 
 def test_a_partial_fill_is_reported_as_such():
+    """Filled quantity is total minus remaining."""
     orders = dd.parse_orders([{
         "orderId": "1", "ticker": "CL", "totalSize": 5, "remainingQuantity": 2,
     }])
@@ -938,6 +958,7 @@ def test_rows_without_an_order_id_are_skipped():
 
 
 def test_an_external_order_is_not_attributed_to_claudia():
+    """An order with no ClaudIA local id is reported as external."""
     orders = dd.parse_orders([{"orderId": "1", "ticker": "CL", "order_ref": ""}])
     assert orders[0].is_claudia_staged is False
 
@@ -945,7 +966,9 @@ def test_an_external_order_is_not_attributed_to_claudia():
 def test_fetch_orders_returns_none_when_the_lookup_fails(monkeypatch):
     """None is "unknown", () is "nothing resting" — the whole point of the field."""
     class _Boom:
+        """A client whose order lookup always fails."""
         def get_live_orders(self):
+            """Fail the way a downed brokerage session does."""
             raise RuntimeError("no bridge")
 
     assert dd.fetch_orders(_Boom()) is None

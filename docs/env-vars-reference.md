@@ -14,7 +14,7 @@
 | `IBKR_SQLITE_PATH` | optional | ibkr_core_mcp SQLite store path (default: `~/.ibkr_core/store.db`) |
 | `IBKR_FLEX_TOKEN` | optional | For full trade history sync |
 | `IBKR_FLEX_QUERY_ID` | optional | For full trade history sync |
-| `CLAUDIA_MODEL` | optional | Claude model (default: `claude-opus-4-8`). Must support **adaptive thinking** — `agent.py` sends `thinking={"type": "adaptive"}` unconditionally, and extended-thinking-only models (`claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-opus-4-5`) reject it with a 400 on every message. `claude-sonnet-4-6` is the supported alternative. [Per-model table](https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting) |
+| `CLAUDIA_MODEL` | optional | Claude model (default: `claude-opus-4-8`). **Two independent requirements — see the note below.** Known-good: `claude-opus-4-8`, `claude-opus-5`, `claude-fable-5`, `claude-mythos-5`. |
 | `CLAUDIA_DOCS_PATH` | optional | Path to context.md / principles.md (default: `docs/`) |
 | `CLAUDIA_DB_PATH` | optional | ClaudIA SQLite DB path (default: `data/claudia.db`) |
 | `CLAUDIA_VOICE_ENABLED` | optional | Reserved — TTS output not yet implemented |
@@ -23,3 +23,44 @@
 | `CRAWL4AI_PROFILES_DIR` | optional | Directory for Crawl4AI browser login profiles (default: `~/.ibkr_core/crawl4ai_profiles`); used by `ibkr_core_mcp/scrape_fallback.py` both as the Firecrawl fallback *and* as the `fetch_page` tool's direct route. **This is what makes paywalled sites (FT, WSJ, NYT) return full articles.** Create one per domain with `python -m ibkr_core_mcp.scrape_fallback create-profile <url>` — interactive, needs a real terminal. |
 | `TRADINGVIEW_MCP_PATH` | optional | Path to `tradingview-mcp` entry point (`src/server.js`); auto-discovered if unset |
 | `TRADINGVIEW_DEBUG_PORT` | optional | Chrome debugging port (default: `9222`). Forwarded to the sidecar under **three** names — `TV_CDP_PORT`, `CDP_PORT` (current sidecar) and `CHROME_REMOTE_DEBUG_PORT` (older builds + the `vendor/` fallback). The sidecar renamed this once and a rename fails silently at 9222; see `docs/tradingview-reference.md` § Upgrading the sidecar |
+
+## `CLAUDIA_MODEL` — both requirements must hold
+
+A model has to satisfy **two independent** constraints, and meeting one says nothing about
+the other. Checking only the first is how `claude-sonnet-4-6` came to be recommended here:
+it satisfies requirement 1, fails requirement 2, and was named as "the supported
+alternative" from 2026-07-24 until this was corrected on 2026-08-05.
+
+1. **Adaptive thinking.** `agent.py` sends `thinking={"type": "adaptive"}` unconditionally.
+   Extended-thinking-only models (`claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-opus-4-5`)
+   reject it with a 400 on **every** message, so the failure is immediate and obvious.
+   [Per-model table](https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting)
+
+2. **Mid-conversation system messages.** `agent._append_operator_message` appends a
+   `{"role": "system"}` entry to `messages` — the non-spoofable operator channel carrying
+   the proposal-emission and completed-order records. Supported on **Claude Opus 4.8,
+   Claude Opus 5, Claude Fable 5 and Claude Mythos 5 only**; the docs exclude the Sonnet
+   line explicitly (*"not available on Claude Sonnet 5; use the top-level `system` field
+   instead"*, read 2026-08-05).
+   [Docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+
+   Measured rather than inferred — the page states the exclusion but gives no error.
+   Probed 2026-08-05 against `claude-sonnet-4-6` with the production message shape:
+
+   ```text
+   400 invalid_request_error: "role 'system' is not supported on this model"
+   ```
+
+**Requirement 2 fails late, not at startup.** The operator message is only appended when
+there is something to deliver, so an unsupported model behaves perfectly until the first
+order proposal renders — and then returns a 400 on every turn thereafter, because each one
+now replays an emission record. The channel that breaks is the one whose whole job is
+stopping ClaudIA from denying that a staged order exists.
+
+`agent.warn_if_model_lacks_operator_channel` logs a loud ERROR at startup for anything
+outside the known-good set. It warns rather than refusing, since the list can only go stale
+by omitting a *newly supported* model — add it to `agent._OPERATOR_CHANNEL_MODELS` in that
+case. There is deliberately **no** silent fallback to a `<system-reminder>` block in the
+user turn (which the Anthropic docs suggest for unsupported models): that channel is
+forgeable by the model, and quietly downgrading a non-spoofable one is worse than not
+running on that model at all.

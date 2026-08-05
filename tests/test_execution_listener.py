@@ -10,6 +10,7 @@ from claudia.execution_listener import ExecutionListener
 
 
 def _make_listener():
+    """An ExecutionListener wired to a mock store, returned alongside that store."""
     store = MagicMock()
     return ExecutionListener("https://localhost:5055/v1/api", store), store
 
@@ -17,6 +18,7 @@ def _make_listener():
 def _fake_ws(listen_items):
     """Build a MagicMock IBKRWebSocket whose listen() yields the given items."""
     async def fake_listen():
+        """Replay the given feed items as an async generator, standing in for the socket."""
         for item in listen_items:
             yield item
 
@@ -34,6 +36,7 @@ def _fake_ws(listen_items):
 
 @pytest.mark.asyncio
 async def test_capture_pnl_once_records_and_returns_false_when_no_extra_execution():
+    """One P&L tick is recorded, and the quiet case reports no further execution to wait for."""
     from ibkr_core_mcp.streaming import PnLUpdate
 
     listener, store = _make_listener()
@@ -61,6 +64,7 @@ async def test_capture_pnl_once_records_and_returns_false_when_no_extra_executio
 
 @pytest.mark.asyncio
 async def test_capture_pnl_once_returns_true_when_execution_seen_mid_wait():
+    """An execution arriving during the wait reports that another capture round is owed."""
     from ibkr_core_mcp.streaming import PnLUpdate, TradeExecution
 
     listener, store = _make_listener()
@@ -82,6 +86,7 @@ async def test_capture_pnl_once_returns_true_when_execution_seen_mid_wait():
 
 @pytest.mark.asyncio
 async def test_capture_pnl_once_times_out_without_pnl_update():
+    """A silent window times out and records nothing rather than inventing a snapshot."""
     listener, store = _make_listener()
     queue: asyncio.Queue = asyncio.Queue()  # nothing ever put on it
 
@@ -106,7 +111,9 @@ async def test_capture_pnl_once_unsubscribe_error_does_not_mask_original_excepti
     ws.unsubscribe_pnl = AsyncMock(side_effect=RuntimeError("also broken"))
 
     class _BrokenQueue:
+        """A queue whose reads always fail, standing in for a dropped connection."""
         async def get(self):
+            """Fail the way a dropped connection does."""
             raise ConnectionError("dropped")
 
     with pytest.raises(ConnectionError, match="dropped"):
@@ -188,6 +195,7 @@ async def test_capture_pnl_once_propagates_forwarded_exception_mid_wait():
 
 @pytest.mark.asyncio
 async def test_capture_pnl_until_settled_single_round():
+    """A quiet capture settles in one round."""
     listener, _ = _make_listener()
     with patch.object(listener, "_capture_pnl_once", new=AsyncMock(return_value=False)) as mock_once:
         await listener._capture_pnl_until_settled(MagicMock(), MagicMock())
@@ -196,6 +204,7 @@ async def test_capture_pnl_until_settled_single_round():
 
 @pytest.mark.asyncio
 async def test_capture_pnl_until_settled_reruns_on_burst():
+    """An execution burst re-runs the capture until the account stops moving."""
     listener, _ = _make_listener()
     with patch.object(
         listener, "_capture_pnl_once", new=AsyncMock(side_effect=[True, False])
@@ -208,6 +217,7 @@ async def test_capture_pnl_until_settled_reruns_on_burst():
 
 @pytest.mark.asyncio
 async def test_run_once_triggers_capture_per_top_level_execution():
+    """The execution feed is subscribed once and each execution triggers a capture."""
     from ibkr_core_mcp.streaming import TradeExecution
 
     listener, _ = _make_listener()
@@ -240,9 +250,11 @@ async def test_run_once_returns_cleanly_when_websocket_closes():
 
 @pytest.mark.asyncio
 async def test_run_once_disconnects_even_on_listen_error():
+    """The socket is disconnected on the error path, so a drop cannot leak a connection."""
     listener, _ = _make_listener()
 
     async def broken_listen():
+        """Fail on first read, as a dropped socket does."""
         raise ConnectionError("dropped")
         yield  # type: ignore[unreachable]  # pragma: no cover — makes this an async generator
 
@@ -295,6 +307,7 @@ async def test_run_with_retry_retries_on_error_then_cancels():
     call_count = 0
 
     async def flaky_run_once():
+        """Fail once with a transient error, then cancel to end the retry loop."""
         nonlocal call_count
         call_count += 1
         if call_count < 2:
@@ -315,6 +328,7 @@ async def test_run_with_retry_cancelled_propagates_immediately():
     listener, _ = _make_listener()
 
     async def always_cancel():
+        """Cancel immediately, so the loop exits on its first pass."""
         raise asyncio.CancelledError
 
     with patch.object(listener, "_run_once", side_effect=always_cancel), \
@@ -330,6 +344,7 @@ async def test_run_with_retry_clean_return_reconnects_after_5s():
     call_count = 0
 
     async def clean_then_cancel():
+        """Return cleanly once, then cancel to end the loop."""
         nonlocal call_count
         call_count += 1
         if call_count < 2:
@@ -354,6 +369,7 @@ async def test_run_with_retry_logs_traceback_on_error(caplog):
     call_count = 0
 
     async def fail_then_cancel():
+        """Raise the loop-misuse error once, then cancel to end the loop."""
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -376,6 +392,7 @@ async def test_run_with_retry_escalates_backoff_then_caps():
     call_count = 0
 
     async def always_fail_then_cancel():
+        """Fail through every retry delay, then cancel to end the loop."""
         nonlocal call_count
         call_count += 1
         if call_count <= 5:
@@ -407,9 +424,11 @@ async def test_start_is_idempotent():
 
 @pytest.mark.asyncio
 async def test_stop_cancels_cleanly():
+    """Stopping cancels the task and clears the handle."""
     listener, _ = _make_listener()
 
     async def never_ending():
+        """Block forever, so `stop()` has a live task to cancel."""
         await asyncio.sleep(100)
 
     with patch.object(listener, "_run_with_retry", side_effect=never_ending):
@@ -421,6 +440,7 @@ async def test_stop_cancels_cleanly():
 
 @pytest.mark.asyncio
 async def test_stop_before_start_is_noop():
+    """Stopping before starting is a no-op, not an error."""
     listener, _ = _make_listener()
     await listener.stop()  # must not raise
     assert listener._task is None
@@ -429,12 +449,14 @@ async def test_stop_before_start_is_noop():
 # ── format_pnl_snapshot ────────────────────────────────────────────────────────
 
 def test_format_pnl_snapshot_none():
+    """With no snapshot the line says so plainly rather than rendering zeros."""
     from claudia.execution_listener import format_pnl_snapshot
     result = format_pnl_snapshot(None)
     assert "not yet available" in result.lower()
 
 
 def test_format_pnl_snapshot_full():
+    """A full snapshot renders the account and every figure, signed where it is a P&L."""
     from claudia.execution_listener import format_pnl_snapshot
     result = format_pnl_snapshot({
         "account": "DU1234567.Core", "dpl": 12.5, "nl": 10000.0,
@@ -461,6 +483,7 @@ def test_format_pnl_snapshot_partial_fields_format_as_na():
 # ── get_live_pnl_text ──────────────────────────────────────────────────────────
 
 def test_get_live_pnl_text_uses_cache_when_populated():
+    """A cached snapshot is used and no live call is made."""
     from unittest.mock import MagicMock
 
     from claudia.execution_listener import get_live_pnl_text
@@ -475,6 +498,7 @@ def test_get_live_pnl_text_uses_cache_when_populated():
 
 
 def test_get_live_pnl_text_falls_back_to_ledger_when_cache_empty():
+    """An empty cache falls back to a live ledger pull — the cache starts empty each process."""
     from unittest.mock import MagicMock
 
     from claudia.execution_listener import get_live_pnl_text

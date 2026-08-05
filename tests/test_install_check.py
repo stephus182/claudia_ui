@@ -40,6 +40,7 @@ def test_reports_modules_present_in_source_but_missing_from_the_install(tmp_path
 
 
 def test_reports_nothing_when_the_install_is_current(tmp_path):
+    """A snapshot matching the source tree reports no stale modules."""
     from claudia.install_check import stale_modules
 
     source = tmp_path / "src" / "ibkr_core_mcp"
@@ -91,6 +92,7 @@ def test_the_warning_names_the_modules_and_the_fix(caplog):
 
 
 def test_warn_is_silent_on_a_healthy_install(caplog):
+    """A healthy install logs nothing — the warning must stay rare enough to be believed."""
     from claudia.install_check import warn_if_stale
 
     with patch("claudia.install_check.stale_modules", return_value=[]), caplog.at_level("ERROR"):

@@ -9,10 +9,12 @@ from claudia.conversation_store import ConversationStore
 
 @pytest.fixture
 def store(tmp_path):
+    """A ConversationStore backed by a throwaway database."""
     return ConversationStore(tmp_path / "test.db")
 
 
 def test_create_and_get_session(store):
+    """A created session round-trips with its context hash and no end time."""
     store.create_session("sess-1", context_hash="abc123")
     session = store.get_session("sess-1")
     assert session is not None
@@ -22,6 +24,7 @@ def test_create_and_get_session(store):
 
 
 def test_close_session(store):
+    """Closing stamps `ended_at`."""
     store.create_session("sess-2")
     store.close_session("sess-2", metadata={"model": "test"})
     session = store.get_session("sess-2")
@@ -29,6 +32,7 @@ def test_close_session(store):
 
 
 def test_add_and_get_messages(store):
+    """Messages come back in chronological order with their roles."""
     store.create_session("sess-3")
     store.add_message("sess-3", "user", "Hello ClaudIA")
     store.add_message("sess-3", "assistant", "Hello! How can I help?")
@@ -39,6 +43,7 @@ def test_add_and_get_messages(store):
 
 
 def test_add_tool_message(store):
+    """A tool row stores its name, input and result, and returns a usable id."""
     store.create_session("sess-4")
     mid = store.add_message(
         "sess-4",
@@ -53,6 +58,7 @@ def test_add_tool_message(store):
 
 
 def test_fts5_search(store):
+    """Full-text search finds a message by its content."""
     store.create_session("sess-5")
     store.add_message("sess-5", "user", "What is my NVDA position?")
     store.add_message("sess-5", "assistant", "You hold 50 shares of NVDA at $850 average.")
@@ -61,6 +67,7 @@ def test_fts5_search(store):
 
 
 def test_add_decision_readable_via_get_decisions(store):
+    """A recorded decision is readable back with its symbol."""
     store.create_session("sess-6")
     store.add_decision(
         session_id="sess-6",
@@ -74,6 +81,7 @@ def test_add_decision_readable_via_get_decisions(store):
 
 
 def test_get_decisions_for_symbol(store):
+    """Every decision for one symbol is returned regardless of type."""
     store.create_session("sess-7")
     store.add_decision("sess-7", "trade_staged", "STAGED BUY 10 MSFT", symbol="MSFT")
     store.add_decision("sess-7", "backtest_run", "Backtest 20/50 SMA on MSFT", symbol="MSFT")
@@ -82,6 +90,7 @@ def test_get_decisions_for_symbol(store):
 
 
 def test_list_sessions(store):
+    """Sessions are listable."""
     for i in range(3):
         store.create_session(f"list-sess-{i}")
     sessions = store.list_sessions()
@@ -89,6 +98,7 @@ def test_list_sessions(store):
 
 
 def test_history_limit(store):
+    """`limit` caps how many messages are replayed into context."""
     store.create_session("sess-limit")
     for i in range(60):
         store.add_message("sess-limit", "user", f"message {i}")
@@ -97,6 +107,7 @@ def test_history_limit(store):
 
 
 def test_count_messages(store):
+    """Message counts are per-session, and an unknown session counts zero rather than raising."""
     store.create_session("sess-count")
     assert store.count_messages("sess-count") == 0
     store.add_message("sess-count", "user", "hello")
@@ -106,11 +117,13 @@ def test_count_messages(store):
 
 
 def test_get_last_context_hash_no_sessions(tmp_path):
+    """An empty store reports no previous hash, so the first session raises no change alert."""
     store = ConversationStore(tmp_path / "claudia.db")
     assert store.get_last_context_hash() is None
 
 
 def test_get_last_context_hash_open_session_returned(tmp_path):
+    """An open session counts — the hash is tracked for all sessions, not just closed ones."""
     store = ConversationStore(tmp_path / "claudia.db")
     store.create_session("sess-open", context_hash="abc123")
     # Open session is still returned — we track all sessions, not just closed ones
@@ -118,6 +131,7 @@ def test_get_last_context_hash_open_session_returned(tmp_path):
 
 
 def test_get_last_context_hash_returns_most_recent_started(tmp_path):
+    """The newest session's hash wins, which is what the change alert compares against."""
     store = ConversationStore(tmp_path / "claudia.db")
     store.create_session("sess-1", context_hash="hash-old")
     store.close_session("sess-1")
@@ -127,6 +141,7 @@ def test_get_last_context_hash_returns_most_recent_started(tmp_path):
 
 
 def test_get_last_context_hash_includes_open_session(tmp_path):
+    """A still-open newer session outranks an older closed one."""
     store = ConversationStore(tmp_path / "claudia.db")
     store.create_session("sess-closed", context_hash="hash-old")
     store.close_session("sess-closed")
@@ -138,32 +153,38 @@ def test_get_last_context_hash_includes_open_session(tmp_path):
 # ── Doc versions ──────────────────────────────────────────────────────────────
 
 def test_register_doc_version_first_time_is_v1(store):
+    """The first registration is labelled v1."""
     label = store.register_doc_version_if_new("hash-a", "context text", "principles text")
     assert label == "v1"
 
 
 def test_register_doc_version_same_hash_returns_same_label(store):
+    """Re-registering an unchanged hash is idempotent — no phantom version."""
     store.register_doc_version_if_new("hash-a", "context", "principles")
     label2 = store.register_doc_version_if_new("hash-a", "context", "principles")
     assert label2 == "v1"
 
 
 def test_register_doc_version_new_hash_increments(store):
+    """A changed hash gets the next label."""
     store.register_doc_version_if_new("hash-a", "context v1", "principles v1")
     label2 = store.register_doc_version_if_new("hash-b", "context v2", "principles v2")
     assert label2 == "v2"
 
 
 def test_get_version_label_known_hash(store):
+    """A registered hash resolves to its label."""
     store.register_doc_version_if_new("hash-x", "ctx", "pri")
     assert store.get_version_label("hash-x") == "v1"
 
 
 def test_get_version_label_unknown_hash_returns_none(store):
+    """An unregistered hash resolves to None rather than a guessed label."""
     assert store.get_version_label("nonexistent-hash") is None
 
 
 def test_get_doc_version_returns_content(store):
+    """A version label returns both document snapshots verbatim."""
     store.register_doc_version_if_new("hash-v1", "my context", "my principles")
     data = store.get_doc_version("v1")
     assert data is not None
@@ -173,14 +194,17 @@ def test_get_doc_version_returns_content(store):
 
 
 def test_get_doc_version_unknown_returns_none(store):
+    """An unknown label returns None."""
     assert store.get_doc_version("v99") is None
 
 
 def test_list_doc_versions_empty(store):
+    """A store with no versions lists none."""
     assert store.list_doc_versions() == []
 
 
 def test_list_doc_versions_ordered_oldest_first(store):
+    """Versions list oldest first, so the agent can name the predecessor."""
     store.register_doc_version_if_new("hash-1", "ctx1", "pri1")
     store.register_doc_version_if_new("hash-2", "ctx2", "pri2")
     versions = store.list_doc_versions()
@@ -188,12 +212,14 @@ def test_list_doc_versions_ordered_oldest_first(store):
 
 
 def test_create_session_stores_doc_version(store):
+    """The session row records which document version it ran under."""
     store.create_session("sess-v1", context_hash="hash-a", doc_version="v1")
     session = store.get_session("sess-v1")
     assert session["doc_version"] == "v1"
 
 
 def test_get_decisions_for_symbol_includes_doc_version(store):
+    """A decision carries the version active when made, so past reasoning reads under its rules."""
     store.register_doc_version_if_new("hash-v1", "ctx", "pri")
     store.create_session("sess-dec", context_hash="hash-v1", doc_version="v1")
     store.add_decision("sess-dec", "trade_proposed", "BUY 100 AAPL: strong breakout", symbol="AAPL")
@@ -237,6 +263,7 @@ _OLD_DEAD_DDL = """
 
 
 def _schema_names(db_path):
+    """Every object name in the database's schema."""
     conn = sqlite3.connect(str(db_path))
     try:
         return {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
@@ -245,6 +272,7 @@ def _schema_names(db_path):
 
 
 def test_fresh_store_has_no_dead_schema(tmp_path):
+    """A new database omits the retired relationships/decisions-FTS objects, keeping message FTS."""
     db = tmp_path / "fresh.db"
     ConversationStore(db)
     names = _schema_names(db)
@@ -256,6 +284,7 @@ def test_fresh_store_has_no_dead_schema(tmp_path):
 
 
 def test_migration_drops_dead_schema_and_preserves_decisions(tmp_path):
+    """Opening an old database drops the dead schema without touching decision rows."""
     db = tmp_path / "old.db"
     conn = sqlite3.connect(str(db))
     conn.executescript(_OLD_DEAD_DDL)
@@ -315,6 +344,7 @@ _SYNTHETIC_CANCEL = {
 
 
 def test_get_rendered_proposals_returns_the_three_rendered_types_oldest_first(store):
+    """All three rendered types are returned oldest first — the order the model replays."""
     store.create_session("sess-l3")
     msg = store.add_message("sess-l3", "assistant", "proposed")
     for dtype in ("trade_proposed", "trade_cancel_proposed", "trade_modify_proposed"):
@@ -380,6 +410,7 @@ def test_get_rendered_proposals_requires_a_message_id(store):
 
 
 def test_get_rendered_proposals_is_scoped_to_one_session(store):
+    """One session's emissions never leak into another's operator record."""
     store.create_session("sess-l3-a")
     store.create_session("sess-l3-b")
     msg = store.add_message("sess-l3-a", "assistant", "proposed")
@@ -422,6 +453,7 @@ _SYNTHETIC_STAGED_META = {
 
 
 def test_get_completed_order_actions_returns_the_three_post_click_types_oldest_first(store):
+    """All three post-click types return oldest first, with metadata decoded not raw JSON."""
     store.create_session("sess-l4")
     for dtype in ("trade_staged", "trade_cancelled", "trade_modified"):
         store.add_decision(
@@ -462,6 +494,7 @@ def test_get_completed_order_actions_excludes_proposals_and_unrelated_types(stor
 
 
 def test_get_completed_order_actions_is_scoped_to_one_session(store):
+    """One session's completed actions never leak into another's operator record."""
     store.create_session("sess-l4-a")
     store.create_session("sess-l4-b")
     store.add_decision(
@@ -493,3 +526,123 @@ def test_completed_and_rendered_allowlists_are_disjoint():
     )
 
     assert not set(COMPLETED_ORDER_ACTION_TYPES) & set(RENDERED_PROPOSAL_TYPES)
+
+
+# ── FTS5 query sanitisation ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "AAPL",                      # already valid, must keep working
+        "AAPL (long)",               # parentheses are FTS5 grouping
+        'AAPL "unclosed',            # unterminated string
+        "note: something",           # colon is a column filter
+        "AAPL OR",                   # dangling operator
+        "-AAPL",                     # leading hyphen
+        "C++ risk",                  # plus signs
+        "what's the P&L?",           # apostrophe + ampersand — an ordinary question
+        "did we discuss the dashboard?",
+        "*",                         # bare wildcard
+        "^ $ ( ) : -",               # punctuation only, no tokens at all
+        "",                          # empty
+    ],
+)
+def test_ordinary_phrasing_never_raises_a_search_error(store, query):
+    """Every realistic query returns rows, not an exception.
+
+    `MATCH` takes a query *expression*, so raw text is a syntax error for most of what a
+    person types — measured 2026-08-05, 7 of 8 realistic queries raised
+    `sqlite3.OperationalError`, and it escaped the store and killed the whole turn.
+    `what's the P&L?` is the plainest possible example.
+    """
+    store.create_session("s-fts")
+    store.add_message("s-fts", "user", "We discussed the AAPL P&L and the dashboard.")
+    assert isinstance(store.search_messages(query), list)
+
+
+def test_a_query_with_no_searchable_token_returns_nothing_rather_than_querying(store):
+    """Punctuation-only text has nothing to search, so no query is run."""
+    store.create_session("s-fts2")
+    store.add_message("s-fts2", "user", "anything at all")
+    assert store.search_messages("?!()") == []
+
+
+def test_search_still_finds_what_it_should(store):
+    """Sanitisation must not cost recall — the whole point is that search keeps working."""
+    store.create_session("s-fts3")
+    store.add_message("s-fts3", "user", "What is my NVDA position?")
+    store.add_message("s-fts3", "assistant", "Totally unrelated content about weather.")
+    hits = store.search_messages("NVDA position")
+    assert any("NVDA" in (h.get("content") or "") for h in hits)
+
+
+def test_tokens_are_or_ed_so_a_partial_match_still_returns_rows(store):
+    """OR, not AND: a query whose terms never co-occur must still surface the relevant row.
+
+    Over the live store, AND returned zero rows for `NVDA position` — a false "nothing
+    found" about a subject the store demonstrably contained. Reporting that as fact is
+    worse than reporting a loose match.
+    """
+    store.create_session("s-fts4")
+    store.add_message("s-fts4", "user", "NVDA looks strong")   # has NVDA, not "position"
+    hits = store.search_messages("NVDA position")
+    assert hits, "AND semantics would return nothing here"
+
+
+def test_fts_query_quotes_every_token():
+    """The expression is built from quoted literals, which is what makes punctuation inert."""
+    from claudia.conversation_store import _fts_query
+
+    assert _fts_query("C++ risk") == '"C" OR "risk"'
+    assert _fts_query("?!") == ""
+
+
+def test_the_fts_index_has_exactly_the_triggers_the_schema_claims(tmp_path):
+    """Insert and delete triggers, and no update trigger — pinned against the docstring.
+
+    The docstring claimed an update trigger until 2026-08-05. A wrong claim here fails
+    silently: the index would drift from the table with no error at all.
+    """
+    db = tmp_path / "triggers.db"
+    ConversationStore(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        triggers = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        )}
+    finally:
+        conn.close()
+    assert triggers == {"messages_ai", "messages_ad"}
+
+
+def test_no_sql_in_the_package_updates_a_message_row():
+    """The reason no update trigger is needed — asserted, not assumed.
+
+    Inspects the SQL actually handed to `execute`/`executescript`, not the file text: a
+    substring scan matches `_init_schema`'s own docstring, which *documents* the absence of
+    an update path. Prose that explains a rule must never be able to trip the rule.
+
+    If this fails, an `UPDATE messages` path has appeared and the FTS index will silently
+    go stale until a `messages_au` trigger is added alongside it.
+    """
+    import ast
+    import pathlib
+    import re
+
+    import claudia
+
+    offenders: list[str] = []
+    for path in sorted(pathlib.Path(claudia.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            if node.func.attr not in ("execute", "executescript", "executemany"):
+                continue
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) \
+                        and re.search(r"\bUPDATE\s+messages\b", arg.value, re.I):
+                    offenders.append(f"{path.name}:{node.lineno}")
+
+    assert not offenders, f"UPDATE on messages found at {offenders} — add an FTS update trigger"

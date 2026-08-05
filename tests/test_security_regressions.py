@@ -28,12 +28,18 @@ async def test_sidecar_subprocess_env_excludes_secrets(tmp_path, monkeypatch):
     captured_env = {}
 
     def fake_params(**kwargs):
+        """Capture the environment the subprocess would have been given."""
         captured_env.update(kwargs.get("env", {}))
         return MagicMock()
 
     class FakeCM:
-        async def __aenter__(self): return (AsyncMock(), AsyncMock())
-        async def __aexit__(self, *a): pass
+        """A stand-in for the sidecar's stdio context manager."""
+        async def __aenter__(self):
+            """Hand back a read/write pair, as the real stdio client does."""
+            return (AsyncMock(), AsyncMock())
+        async def __aexit__(self, *a):
+            """Nothing to tear down for the stub."""
+            pass
 
     fake_session = AsyncMock()
     fake_session.__aenter__ = AsyncMock(return_value=fake_session)
@@ -122,9 +128,12 @@ def test_read_text_accepts_file_under_limit():
     small_size = len(content.encode())
 
     class FakeDownloader:
+        """A downloader that yields the prepared document text in one chunk."""
         def __init__(self, buf, _req):
+            """Write the encoded document into the caller's buffer."""
             buf.write(content.encode())
         def next_chunk(self):
+            """Report the single chunk as complete."""
             return None, True
 
     svc = MagicMock()
@@ -174,18 +183,23 @@ def test_upload_db_is_protected_by_lock(tmp_path):
     lock_acquired = []
 
     class TrackingLock:
+        """A lock recording every acquisition, so serialisation is asserted not assumed."""
         def acquire(self, *args, **kwargs):
+            """Record the acquisition and take the real lock."""
             lock_acquired.append(True)
             return real_lock.acquire(*args, **kwargs)
 
         def release(self):
+            """Release the real lock."""
             return real_lock.release()
 
         def __enter__(self):
+            """Acquire on entry, matching the real lock's context-manager contract."""
             self.acquire()
             return self
 
         def __exit__(self, *a):
+            """Release on exit."""
             self.release()
 
     # Duck-typed test double (acquire/release/__enter__/__exit__ only) — not a real RLock
@@ -249,8 +263,13 @@ async def test_start_logs_selected_binary_path(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("TRADINGVIEW_MCP_PATH", str(fake_bin))
 
     class FakeCM:
-        async def __aenter__(self): return (AsyncMock(), AsyncMock())
-        async def __aexit__(self, *a): pass
+        """A stand-in for the sidecar's stdio context manager."""
+        async def __aenter__(self):
+            """Hand back a read/write pair, as the real stdio client does."""
+            return (AsyncMock(), AsyncMock())
+        async def __aexit__(self, *a):
+            """Nothing to tear down for the stub."""
+            pass
 
     fake_session = AsyncMock()
     fake_session.__aenter__ = AsyncMock(return_value=fake_session)
@@ -445,7 +464,11 @@ def test_pn_serve_binds_loopback_only():
     """
     from claudia import panel_app
 
+    # `_port_is_free` is patched only so this test does not depend on whether 8001 happens
+    # to be free on the machine running it — main() now returns early on a taken port,
+    # which would skip pn.serve entirely and make this security assertion vacuous.
     with patch("claudia.panel_app.pn.serve") as mock_serve, \
+         patch("claudia.panel_app._port_is_free", return_value=True), \
          patch("claudia.panel_app.signal.signal"), \
          patch.object(panel_app, "_gdrive_sync", None):
         panel_app.main()

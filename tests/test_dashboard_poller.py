@@ -58,6 +58,12 @@ _LEDGER = {
     "BASE": {"currency": "BASE", "netliquidationvalue": 100010.0},
 }
 
+_ORDER = {
+    "orderId": 314390101, "ticker": "AAPL", "side": "BUY", "totalSize": 1,
+    "remainingQuantity": 1, "price": 100.0, "orderType": "Limit",
+    "timeInForce": "GTC", "status": "Submitted", "order_ref": "CLAUDIA-178594",
+}
+
 _POSITION = {"conid": 1, "ticker": "ESU6", "contractDesc": "ESU6", "assetClass": "FUT",
              "position": 1.0, "mktValue": 324000.0, "unrealizedPnl": -1234.5,
              "currency": "USD"}
@@ -76,6 +82,7 @@ class FakeClient:
         self.accounts_calls = 0
         self.ledger_calls = 0
         self.position_pages: list[int] = []
+        self.order_calls = 0
         self._accounts = (
             [{"accountId": "U1234567", "currency": "USD"}] if accounts is None else accounts
         )
@@ -96,6 +103,16 @@ class FakeClient:
         """Return one position on page 0 and nothing after it."""
         self.position_pages.append(page)
         return [_POSITION] if page == 0 else []
+
+    def get_live_orders(self):
+        """Return one working order, counting the call.
+
+        The fake had no such method until 2026-08-05, so `fetch_orders` caught the
+        resulting AttributeError and every test silently saw `orders=None` — which is
+        how the poller's order handling went entirely uncovered.
+        """
+        self.order_calls += 1
+        return [_ORDER]
 
 
 def _poller(db, client, **kw):
@@ -372,6 +389,7 @@ async def test_start_is_idempotent_and_restarts_a_finished_task(db):
 
 
 async def test_stop_without_start_is_safe(db):
+    """Stopping a poller that never started is a no-op, not an error."""
     _poller(db, FakeClient()).stop()  # must not raise
 
 
@@ -443,3 +461,63 @@ async def test_entries_are_attached_when_the_store_can_answer(tmp_path):
     position = p.snapshot().positions[0]
     assert position.conid == 1
     assert position.economic_entry == pytest.approx(110.0)
+
+
+# ── The order book ────────────────────────────────────────────────────────────
+
+
+async def test_a_successful_poll_populates_the_order_book(db):
+    """Orders reach the snapshot at all — untested until 2026-08-05."""
+    p = _poller(db, FakeClient())
+    await p._poll_once()
+    snap = p.snapshot()
+
+    assert snap.orders is not None, "None means the book was never established"
+    assert [o.order_id for o in snap.orders] == ["314390101"]
+    assert snap.orders[0].is_claudia_staged is True
+
+
+async def test_a_stale_republish_carries_the_order_book_forward(db):
+    """A failed poll keeps the last known book, exactly as it keeps ledger and positions.
+
+    `orders` was omitted from `_publish_stale` until 2026-08-05 and defaulted to None —
+    which on that field asserts "the book was never established", the opposite of what
+    ledger and positions were saying in the very same snapshot. It was invisible because
+    the view blanks the whole account half on `error`; that made the two routes agree by
+    accident, not by design.
+    """
+    client = FakeClient(fail_from=2)
+    p = _poller(db, client)
+
+    await p._poll_once()
+    good = p.snapshot()
+    assert good.orders is not None
+
+    await p._poll_once()  # raises inside the client
+    stale = p.snapshot()
+
+    assert stale.error, "this poll must have failed"
+    assert stale.orders == good.orders, "the last known book must survive, like the ledger"
+    assert stale.as_of == good.as_of
+
+
+async def test_an_unreadable_order_book_is_none_not_empty(db):
+    """A failed lookup must not render as 'you have no working orders'.
+
+    `()` and None are opposite claims: one says nothing is resting, the other says the
+    book could not be read. Orders come from /iserver/* and can fail while /portfolio/*
+    answers perfectly.
+    """
+    class _NoBridge(FakeClient):
+        """A client whose /iserver order lookup fails while /portfolio still answers."""
+
+        def get_live_orders(self):
+            """Fail the way a downed brokerage session does."""
+            raise RuntimeError("Bad Request: no bridge")
+
+    p = _poller(db, _NoBridge())
+    await p._poll_once()
+    snap = p.snapshot()
+
+    assert snap.orders is None
+    assert snap.ledger is not None, "an orders failure must not take the account half down"

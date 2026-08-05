@@ -161,7 +161,7 @@ class ConnectivityChecker:
         (same response shape as /tickle) rather than an error status, so this
         method checks the body, not just the status code, before reporting success.
 
-        Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#ssodh-init
+        Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/session/initialize-brokerage-session.md
         Endpoint: POST /iserver/auth/ssodh/init
         """
         try:

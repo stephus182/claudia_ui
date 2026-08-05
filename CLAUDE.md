@@ -109,10 +109,12 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ## Testing
 
 ```bash
-pytest        # full suite — all unit, no IBKR gateway needed (1,046 tests as of 2026-08-05)
+source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
+                            # system Python and dies on `ModuleNotFoundError: panel`
+pytest        # full suite — all unit, no IBKR gateway needed (1,154 tests as of 2026-08-05)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
-# Opt-in only — bills real Anthropic API calls, skipped by default (3 tests):
+# Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
 ```
 
@@ -197,8 +199,17 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
 - Modify requests require the **full original order**, not a diff (IBKR API requirement).
   `propose_modify` carries the replacement order in its top-level fields plus a `changes`
   array of `{field, previous_value}` objects, used only to render the before/after diff.
-- FUT/FOP require `conid` pre-resolved via `get_option_chain`/`get_futures` — no fallback
-  symbol-based resolution for modify/cancel.
+- **Placement resolves no symbols. Every sec_type except FUT requires a `conid` already in
+  the proposal** (`order_flow._needs_conid_text`, 2026-08-05). The order path used to fall
+  back to `search_contract` → `contracts[0]`, which is `/iserver/secdef/search`: no `isUS`,
+  no currency, and an undocumented result order, so `contracts[0]` for IGV is the *Mexican*
+  listing — the defect ibkr_core_mcp had already removed from every read path. FUT is the
+  one exception, resolved by front month via `get_futures`, unambiguous by construction.
+  This costs nothing: the model gets its conid from `get_market_snapshot`/`preview_order`,
+  which route through the authoritative resolver, and **every real placement proposal since
+  2026-07-10 already carried one** (measured over the full order history 2026-08-05). Do not
+  "restore" symbol resolution here — re-implementing it would put a second, drifting
+  definition next to the authoritative one.
 - `strict: true` enforces types, `enum`s, required keys and closed objects at the API
   boundary. Four guarantees it cannot express — positive quantity, non-blank `symbol`,
   non-blank `order_id`, no duplicate `changes` entries — are checked by `_proposal_defect()`
@@ -238,7 +249,18 @@ a real import ("expanded and loaded into context at launch"); backtick-wrapping 
 literal path instead. See `docs/plans/2026-07-10-claude-md-delink-imports.md` for
 the fix that established this (75,480 → 2,910 tokens/session).
 
-- Connectivity (IBKR/GDrive/TV status dots, check logic, reconnection flows): `docs/connectivity.md`
+- Connectivity (IBKR/GDrive/TV status dots, check logic, reconnection flows): `docs/connectivity.md`.
+  **Before opening the IBKR login page — from a script, a button, or by hand — run
+  `python -m claudia.gateway_preflight`** (read-only: two GETs, never a write). Only one
+  brokerage session exists per username across Client Portal, TWS and IBKR Mobile, so a
+  needless re-login is what escalates into the IB Key challenge/response, and some login
+  failures *cannot* be fixed by retrying. The case that cost days on 2026-08-05: the gateway
+  held an SSO session issued to **IBKR Mobile**, so it could not authenticate as itself —
+  visible only in `/sso/validate`'s `CLIENT_APP`, while `/tickle` showed `userId` populated,
+  `ssoExpires` renewing and `competing` *false*. `POST /logout` could not clear it (three
+  ticklers renewed it every 60s); `docker restart` could. Recovery: `./scripts/gateway-reset.sh`,
+  which refuses to run against a healthy session. Full diagnosis + verdict table:
+  `docs/connectivity.md` § A borrowed session / § Runbook
 - Panel implementation (serving model, session lifecycle, MessageSink seam, widget gotchas,
   headless button testing): `docs/panel/panel-reference.md`
 - Panel UI design & styling (no-styling baseline, shadow-DOM constraint, scraped styling

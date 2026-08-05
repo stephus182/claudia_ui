@@ -14,6 +14,7 @@ from claudia.tradingview import (
 # ── _find_tv_mcp_bin — TRADINGVIEW_MCP_PATH env var ──────────────────────────
 
 def test_find_bin_env_var_valid_js(tmp_path, monkeypatch):
+    """An env-var path pointing at a real .js entry point is used as-is."""
     fake = tmp_path / "server.js"
     fake.write_text("// fake")
     monkeypatch.setenv("TRADINGVIEW_MCP_PATH", str(fake))
@@ -23,6 +24,7 @@ def test_find_bin_env_var_valid_js(tmp_path, monkeypatch):
 
 
 def test_find_bin_env_var_missing_file_falls_through(tmp_path, monkeypatch):
+    """An env var naming a file that does not exist falls through to the search."""
     monkeypatch.setenv("TRADINGVIEW_MCP_PATH", str(tmp_path / "nonexistent.js"))
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -34,6 +36,7 @@ def test_find_bin_env_var_missing_file_falls_through(tmp_path, monkeypatch):
 
 
 def test_find_bin_env_var_not_js_falls_through(tmp_path, monkeypatch):
+    """An env var naming a non-.js file falls through to the search."""
     fake = tmp_path / "server.sh"
     fake.write_text("#!/bin/bash")
     monkeypatch.setenv("TRADINGVIEW_MCP_PATH", str(fake))
@@ -49,6 +52,7 @@ def test_find_bin_env_var_not_js_falls_through(tmp_path, monkeypatch):
 # ── _find_tv_mcp_bin — shutil.which ──────────────────────────────────────────
 
 def test_find_bin_uses_which_when_env_unset(tmp_path, monkeypatch):
+    """With no env var, a binary on PATH is used."""
     monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -61,6 +65,7 @@ def test_find_bin_uses_which_when_env_unset(tmp_path, monkeypatch):
 # ── _find_tv_mcp_bin — home-based paths ──────────────────────────────────────
 
 def test_find_bin_js_src_in_home(tmp_path, monkeypatch):
+    """A JS source checkout in the home directory is found."""
     monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     js_src = tmp_path / ".tradingview-mcp" / "src" / "server.js"
@@ -72,6 +77,7 @@ def test_find_bin_js_src_in_home(tmp_path, monkeypatch):
 
 
 def test_find_bin_ts_build_in_home(tmp_path, monkeypatch):
+    """A TypeScript build output in the home directory is found."""
     monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     ts_build = tmp_path / ".tradingview-mcp" / "build" / "index.js"
@@ -83,6 +89,7 @@ def test_find_bin_ts_build_in_home(tmp_path, monkeypatch):
 
 
 def test_find_bin_prefers_js_src_over_ts_build(tmp_path, monkeypatch):
+    """JS source wins over a build directory when both exist."""
     monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     js_src = tmp_path / ".tradingview-mcp" / "src" / "server.js"
@@ -99,6 +106,7 @@ def test_find_bin_prefers_js_src_over_ts_build(tmp_path, monkeypatch):
 # ── _find_tv_mcp_bin — vendor fallback paths ─────────────────────────────────
 
 def test_find_bin_vendor_js_requires_node_modules(tmp_path, monkeypatch):
+    """A vendored copy without installed dependencies is not usable and is skipped."""
     monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -114,6 +122,7 @@ def test_find_bin_vendor_js_requires_node_modules(tmp_path, monkeypatch):
 
 
 def test_find_bin_vendor_js_with_node_modules(tmp_path, monkeypatch):
+    """A vendored copy with dependencies installed is used."""
     monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -145,6 +154,7 @@ def test_find_bin_vendor_bundle_fallback(tmp_path, monkeypatch):
 
 
 def test_find_bin_returns_none_when_nothing_found(tmp_path, monkeypatch):
+    """With no sidecar anywhere, None is returned — TradingView is optional."""
     monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -158,11 +168,13 @@ def test_find_bin_returns_none_when_nothing_found(tmp_path, monkeypatch):
 # ── check_cdp_running ─────────────────────────────────────────────────────────
 
 def test_check_cdp_running_true_when_port_open():
+    """An open CDP port means TradingView Desktop is reachable."""
     with patch("claudia.tradingview.socket.create_connection"):
         assert check_cdp_running() is True
 
 
 def test_check_cdp_running_false_when_port_closed():
+    """A closed CDP port means the desktop app is not reachable, even if the sidecar is up."""
     with patch("claudia.tradingview.socket.create_connection", side_effect=OSError):
         assert check_cdp_running() is False
 
@@ -170,6 +182,7 @@ def test_check_cdp_running_false_when_port_closed():
 # ── TradingViewBridge — tool filtering ───────────────────────────────────────
 
 def test_get_tools_returns_only_curated_subset():
+    """Only the curated tools are offered to the model, not the sidecar's full surface."""
     bridge = TradingViewBridge()
     all_tools = [
         {"name": "chart_get_state", "description": "", "input_schema": {}},
@@ -188,6 +201,7 @@ def test_get_tools_returns_only_curated_subset():
 
 
 def test_get_all_tools_returns_everything():
+    """The uncurated accessor still exposes the full set, for diagnostics."""
     bridge = TradingViewBridge()
     all_tools = [
         {"name": "chart_get_state", "description": "", "input_schema": {}},
@@ -201,6 +215,7 @@ def test_get_all_tools_returns_everything():
 def test_curated_tools_set_has_16_entries():
     # 16 tools verified against live sidecar 2026-06-30:
     # data_get_equity_curve renamed to data_get_equity; data_get_trades added.
+    """The curated set is pinned at its size, so a sidecar upgrade cannot change it silently."""
     assert len(tv_module._CURATED_TOOLS) == 16
 
 
@@ -219,13 +234,17 @@ async def test_start_env_excludes_secrets(tmp_path, monkeypatch):
     captured_env = {}
 
     def fake_params(**kwargs):
+        """Capture the environment the subprocess would have been given."""
         captured_env.update(kwargs.get("env", {}))
         return MagicMock()
 
     class FakeCM:
+        """A stand-in for the sidecar's stdio context manager."""
         async def __aenter__(self):
+            """Hand back a read/write pair, as the real stdio client does."""
             return (AsyncMock(), AsyncMock())
         async def __aexit__(self, *a):
+            """Nothing to tear down for the stub."""
             pass
 
     fake_session = AsyncMock()
@@ -265,13 +284,17 @@ async def test_start_sets_every_cdp_port_name(tmp_path, monkeypatch):
     captured_env: dict[str, str] = {}
 
     def fake_params(**kwargs):
+        """Capture the environment the subprocess would have been given."""
         captured_env.update(kwargs.get("env", {}))
         return MagicMock()
 
     class FakeCM:
+        """A stand-in for the sidecar's stdio context manager."""
         async def __aenter__(self):
+            """Hand back a read/write pair, as the real stdio client does."""
             return (AsyncMock(), AsyncMock())
         async def __aexit__(self, *a):
+            """Nothing to tear down for the stub."""
             pass
 
     fake_session = AsyncMock()

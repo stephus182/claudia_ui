@@ -18,6 +18,7 @@ from claudia.opening_status import (
 
 
 def _make_toolkit(flex: bool = True) -> MagicMock:
+    """A stub toolkit whose Flex configuration and market calendar can be posed."""
     toolkit = MagicMock()
     toolkit._config.flex_token = "tok" if flex else ""
     toolkit._config.flex_query_id = "qid" if flex else ""
@@ -130,6 +131,7 @@ async def test_offline_message_and_dashboard_agree_that_there_is_no_data():
 
 @pytest.mark.asyncio
 async def test_gather_session_state_offline_when_ping_raises():
+    """An unreachable gateway is reported as offline with the standard caveat, not as an error."""
     toolkit = MagicMock()
     toolkit.client.ping.side_effect = ConnectionError("gateway down")
     block, offline = await gather_session_state(toolkit)
@@ -138,6 +140,7 @@ async def test_gather_session_state_offline_when_ping_raises():
 
 
 def test_build_trade_lines_flex_not_configured_still_appends_calendar():
+    """With Flex unconfigured no coverage lookup runs, but the calendar still reaches context."""
     toolkit = _make_toolkit(flex=False)
     toolkit._store.get_market_calendar_context.return_value = _MKT
     status, context = build_trade_lines(toolkit, ibkr_offline=False)
@@ -154,6 +157,7 @@ def test_build_trade_lines_flex_not_configured_still_appends_calendar():
 
 
 def test_build_trade_lines_flex_configured_with_data():
+    """A covered dataset reports its trade count and refresh date, with no refresh nudge."""
     toolkit = _make_toolkit()
     toolkit._store.get_trade_date_coverage.return_value = {
         "oldest": "2024-01-02",
@@ -171,6 +175,7 @@ def test_build_trade_lines_flex_configured_with_data():
 
 
 def test_build_trade_lines_offline_notes_connect_to_refresh():
+    """Offline, the line says the data cannot be refreshed rather than implying it is current."""
     toolkit = _make_toolkit()
     toolkit._store.get_trade_date_coverage.return_value = {
         "oldest": "2024-01-02",
@@ -183,6 +188,7 @@ def test_build_trade_lines_offline_notes_connect_to_refresh():
 
 
 def test_build_trade_lines_no_data_yet():
+    """An empty dataset says so instead of reporting zero trades as a fact about the account."""
     toolkit = _make_toolkit()
     # Real empty-store return shape from SQLiteStore.get_trade_date_coverage (store.py:355).
     toolkit._store.get_trade_date_coverage.return_value = {
@@ -198,6 +204,7 @@ def test_build_trade_lines_no_data_yet():
 
 
 def test_build_trade_lines_coverage_error_degrades_to_syncing():
+    """A coverage lookup failure degrades to a neutral syncing line rather than failing."""
     toolkit = _make_toolkit()
     toolkit._store.get_trade_date_coverage.side_effect = RuntimeError("db locked")
     status, context = build_trade_lines(toolkit, ibkr_offline=False)
@@ -206,6 +213,7 @@ def test_build_trade_lines_coverage_error_degrades_to_syncing():
 
 
 def test_build_trade_lines_calendar_error_is_swallowed():
+    """A calendar failure is swallowed — it is optional context, not a reason to fail a session."""
     toolkit = _make_toolkit(flex=False)
     toolkit._store.get_market_calendar_context.side_effect = RuntimeError("boom")
     status, context = build_trade_lines(toolkit, ibkr_offline=False)
@@ -242,6 +250,7 @@ def _outcome(ok: bool = True, empty: bool = False, reused: bool = False):
 
 
 def _covered_toolkit():
+    """A stub toolkit reporting a covered, non-stale Flex dataset."""
     toolkit = _make_toolkit()
     toolkit._config.sqlite_path = "/tmp/store.db"
     toolkit._store.get_trade_date_coverage.return_value = {
@@ -252,6 +261,7 @@ def _covered_toolkit():
 
 
 def test_the_validated_claim_is_made_only_when_the_checks_actually_ran():
+    """The word "validated" appears only when the checks really ran — the claim is earned."""
     with patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome(ok=True)):
         status, context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
     assert "integrity validated" in status
@@ -259,6 +269,7 @@ def test_the_validated_claim_is_made_only_when_the_checks_actually_ran():
 
 
 def test_a_failing_dataset_says_so_instead_of_claiming_validation():
+    """A failing dataset is reported as failing, never as validated."""
     with patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome(ok=False)):
         status, context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
 
@@ -280,6 +291,7 @@ def test_an_unvalidated_dataset_makes_no_claim_either_way():
 
 
 def test_validation_blowing_up_never_takes_down_the_opening_status():
+    """A validation crash degrades the line rather than failing session init."""
     with patch("claudia.opening_status.validate_dataset_daily", side_effect=RuntimeError("boom")):
         status, _context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
     assert "1234 trades" in status
@@ -305,6 +317,7 @@ def test_a_reused_verdict_says_when_it_was_proven_and_that_nothing_was_rechecked
 
 
 def test_a_fresh_verdict_does_not_claim_to_be_reused():
+    """A freshly-proven verdict is not described as reused."""
     with patch("claudia.opening_status.validate_dataset_daily",
                return_value=_outcome(ok=True, reused=False)):
         status, _ = build_trade_lines(_covered_toolkit(), ibkr_offline=False)

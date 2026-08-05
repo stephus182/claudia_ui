@@ -50,6 +50,55 @@ progress and results. Injected by the caller (panel_order_flow) so the cores sta
 framework-agnostic: they never import or know about any specific UI toolkit."""
 
 
+_MISSING_PRICE = "⚠️ NO %s PRICE GIVEN"
+"""Shown when a priced order type arrives without the price it needs.
+
+`_PRICE` is nullable in the schema, so `{"order_type": "LMT", "limit_price": null}` is a
+valid proposal. Rendering that as a bare `(LMT, DAY)` would put a limit order with no
+visible limit in front of the user — the same silent omission as the STOP_LIMIT gap, and
+the execution core would then send IBKR a LMT body with no `price` field at all.
+
+This only makes the gap visible. Refusing the proposal outright belongs in
+`agent._proposal_defect`, alongside the other four guarantees `strict` cannot express;
+until that lands, the approval screen must at least not hide it.
+"""
+
+
+def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> str:
+    """The price clause of an approval line, e.g. `" @ 6,000.00 limit / 5,950.00 stop"`.
+
+    Shared by `_format_order_summary` and `_format_cancel_summary` so the two cannot drift;
+    each used to carry its own copy, and only one of them showed a stop price.
+
+    **No currency symbol.** A bare `$` is shared by USD/MXN/CAD/AUD/HKD/SGD, so on a
+    wrong-currency contract it reads as an ordinary price — and this account trades
+    EUR-denominated equities. The proposal carries no currency field, so the honest render
+    is the number alone: exactly what `panel_dashboard.fmt_money` does when the currency is
+    unknown ("a bare `0.00` is honest where `0.00 USD` on a EUR account would not be").
+    Thousands separator matches that formatter too.
+
+    **STOP_LIMIT shows both prices.** It is in the `order_type` enum and
+    `_execute_staged_order_core` sends `price` (limit) *and* `auxPrice` (stop) for it, but
+    neither formatter rendered either one — so the last screen before Touch ID showed a
+    stop-limit order with no price at all.
+
+    Args:
+        order_type: MKT, LMT, STP or STOP_LIMIT.
+        limit: Limit price, or None.
+        stop: Stop price, or None.
+
+    Returns:
+        A leading-space clause ready to append, or `""` when the type carries no price (MKT)
+        or the price it needs is absent.
+    """
+    parts = []
+    if order_type in ("LMT", "STOP_LIMIT"):
+        parts.append(f"{limit:,.2f} limit" if limit is not None else _MISSING_PRICE % "LIMIT")
+    if order_type in ("STP", "STOP_LIMIT"):
+        parts.append(f"{stop:,.2f} stop" if stop is not None else _MISSING_PRICE % "STOP")
+    return f" @ {' / '.join(parts)}" if parts else ""
+
+
 def _format_order_summary(proposal: dict) -> str:
     """Build the human-approval text for a new order.
 
@@ -58,11 +107,11 @@ def _format_order_summary(proposal: dict) -> str:
     the consequence of the click is never implicit.
 
     Recognised keys: `symbol`, `action`, `quantity`, `order_type` (default MKT),
-    `limit_price` / `stop_price` (shown only for LMT / STP respectively), `sec_type`
-    (default STK; labelled inline only when it is not STK), and `reason`. TIF is read from
-    `tif`, then `time_in_force`, then `timeInForce`, defaulting to DAY — the identical
-    expression `_execute_staged_order_core` uses, so display and execution cannot diverge.
-    Do not change one without the other.
+    `limit_price` / `stop_price` (rendered by `_price_suffix`, which covers LMT, STP and
+    STOP_LIMIT), `sec_type` (default STK; labelled inline only when it is not STK), and
+    `reason`. TIF is read from `tif`, then `time_in_force`, then `timeInForce`, defaulting
+    to DAY — the identical expression `_execute_staged_order_core` uses, so display and
+    execution cannot diverge. Do not change one without the other.
 
     Args:
         proposal: Schema-checked order-proposal dict.
@@ -81,11 +130,7 @@ def _format_order_summary(proposal: dict) -> str:
     sec_type = proposal.get("sec_type", "STK").upper()
     reason = proposal.get("reason", "")
 
-    price_str = ""
-    if otype == "LMT" and limit is not None:
-        price_str = f" @ ${limit:.2f} limit"
-    elif otype == "STP" and stop is not None:
-        price_str = f" @ ${stop:.2f} stop"
+    price_str = _price_suffix(otype, limit, stop)
 
     sec_label = f" [{sec_type}]" if sec_type != "STK" else ""
     lines = [
@@ -144,6 +189,91 @@ def _classify_execution_error(exc: Exception) -> str:
             "re-initialisation. Try logging in to the Client Portal gateway and retrying."
         )
     return f"{exc_type}: {error_msg}"
+
+
+_CONID_LOOKUP = {
+    # sec_type -> (tool that resolves it, why a bare symbol is not enough for THIS type)
+    "OPT": ("get_option_chain", "expiry, strike and call/put are all needed"),
+    "FOP": ("get_option_chain", "expiry, strike and call/put are all needed"),
+    "CASH": ("get_market_snapshot", "an FX pair must be given as BASE.QUOTE, e.g. EUR.USD"),
+}
+"""sec_type -> (resolving tool, the reason specific to that type).
+
+The reasons are per-type on purpose. A single shared justification read plausibly but was
+false for CASH — an FX pair is not a company with rival listings, it is a pair that has to
+be named as one — and a *mostly* true explanation is the failure mode this whole guard
+exists to remove.
+
+`get_currency_pairs` is deliberately not named for CASH even though resolution goes through
+that endpoint: it is an `IBKRClient` method, **not** a declared tool, so naming it would
+send the model after something it cannot call. Checked against `TOOL_DEFINITIONS` rather
+than assumed — naming a nonexistent tool is the same class of error as resolving a
+nonexistent listing.
+"""
+
+_CONID_LOOKUP_DEFAULT = (
+    "get_market_snapshot",
+    "IBKR assigns a distinct conid per listing and currency, and one ticker can belong to "
+    "more than one company",
+)
+"""STK/IND/BOND. `get_market_snapshot` routes through ibkr_core_mcp's
+`_resolve_snapshot_conid`, the authoritative symbol->conid implementation.
+
+The reason is stated universally, with no ticker named. The evidence behind it — IGV
+resolving to both a US ETF and an Italian company, VOD to Vodafone Group and Vodacom — is
+in `_needs_conid_text`'s docstring, which is where it belongs: a message that cites one
+instrument reads as a rule about that instrument.
+"""
+
+
+def _needs_conid_text(sec_type: str, symbol: str) -> str:
+    """Refuse a placement whose contract identity was never established. Names the fix.
+
+    ## Why this is a refusal and not a lookup
+
+    Until 2026-08-05 this branch called `IBKRClient.search_contract(symbol)` and took
+    `contracts[0]["conid"]`. That is `/iserver/secdef/search`, and ibkr_core_mcp documents
+    the exact pattern as a defect it already removed from every read path
+    (`ClaudeToolkit._resolve_stock_conid`): the endpoint returns neither `isUS` nor a
+    currency, **its result order is not documented as meaningful**, and `contracts[0]` for
+    IGV is the *Mexican* listing — "Right by luck, wrong by luck". IBKR assigns a distinct
+    conid per product *and currency*, and the same ticker can be a different company
+    outright (IGV is also I GRANDI VIAGGI SPA; VOD is Vodafone Group and Vodacom Group).
+
+    A wrong listing does not look wrong: it is a plausible price for the wrong instrument,
+    in the wrong currency, bought with real money. So the money path must not guess.
+
+    ## Why refusing costs nothing
+
+    The authoritative resolver is already in the loop one turn earlier — `get_market_snapshot`
+    and `preview_order` both route through `_resolve_snapshot_conid`, and that is where the
+    model gets the conid it puts in the proposal. Measured over this account's whole order
+    history on 2026-08-05, across the 18 `trade_proposed`/`trade_staged` rows: 16 carried a
+    conid, and the 2 that did not are a single order proposed and staged on 2026-07-06.
+    **On and after 2026-07-10 it is 16 of 16 — no placement has gone without one.** This
+    guard therefore makes mandatory what production already does, rather than adding a step.
+    Re-implementing the resolution rule here was rejected for the opposite reason: it would
+    put a second, drifting definition of symbol resolution next to the authoritative one.
+
+    FUT is the one type still resolved here, by front month via `get_futures` — unambiguous
+    by construction, and unchanged.
+
+    Args:
+        sec_type: The proposal's security type, already upper-cased.
+        symbol: The proposal's symbol, echoed back so the model can act without re-deriving it.
+
+    Returns:
+        Markdown naming the type, the reason, and the exact tool to call — the model has to
+        be able to fix this in one turn, or the guard just becomes a dead end.
+    """
+    tool, reason = _CONID_LOOKUP.get(sec_type, _CONID_LOOKUP_DEFAULT)
+    return (
+        f"**{sec_type} orders require a pre-resolved contract ID.** A symbol alone does not "
+        f"identify a contract here — {reason} — so resolving **{symbol}** at this point "
+        f"would risk trading the wrong instrument.\n\n"
+        f"Ask ClaudIA to look up **{symbol}** with `{tool}`, then re-issue the proposal with "
+        f"the `conid` field set. **Order not placed.**"
+    )
 
 
 def _resolve_account_id(accounts: list[dict]) -> str:
@@ -374,7 +504,7 @@ async def _live_book_presence(ibkr: Any, order_id: str) -> tuple[str, dict | Non
     (?force=true, a 1 s sleep, then the data call), so this costs ~1 s plus two round
     trips on top of the caller's settle delay. Synchronous client, hence to_thread.
 
-    Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#live-orders
+    Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/live-orders.md
     """
     try:
         orders = await asyncio.to_thread(ibkr.get_live_orders)
@@ -639,10 +769,8 @@ async def _execute_staged_order_core(
         ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))
 
         # Resolve conid — routing depends on sec_type and optional conid override.
-        # /iserver/secdef/search only documents STK, IND, BOND — NOT FUT, FOP, or CASH.
-        # FOP requires expiry+strike+right — cannot infer from symbol alone; caller must
-        # pre-resolve via get_option_chain and embed conid in the proposal.
-        # Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#sec-search
+        # Only two routes reach an order body: a conid the caller pre-resolved, or the
+        # front-month lookup for FUT. Everything else is refused — see `_needs_conid_text`.
         multiplier: float | None = None
         override_conid = proposal.get("conid")
         if override_conid is not None:
@@ -650,20 +778,6 @@ async def _execute_staged_order_core(
             # ClaudIA resolves options chain in conversation and embeds the conid.
             conid = int(override_conid)
             company_name = proposal.get("_companyName", "")
-        elif sec_type == "FOP":
-            # FOP conid resolution requires expiry + strike + put/call — cannot derive
-            # from symbol alone. ClaudIA must call get_option_chain first and re-issue
-            # the order proposal with the conid field set.
-            await send_status(
-                (
-                    f"Futures Options (FOP) orders require a pre-resolved contract ID. "
-                    f"Ask ClaudIA to look up the specific contract "
-                    f"(expiry, strike, call/put) for **{symbol}** via `get_option_chain`, "
-                    f"then re-issue the order proposal with the `conid` field set."
-                ),
-                "System",
-            )
-            return
         elif sec_type == "FUT":
             futures = ibkr.get_futures([symbol])
             if not futures:
@@ -688,25 +802,15 @@ async def _execute_staged_order_core(
             except (ValueError, TypeError):
                 multiplier = None
         else:
-            contracts = ibkr.search_contract(symbol)
-            if not contracts:
-                await send_status(
-                    f"Could not find contract for {symbol}. Order not placed.",
-                    "System",
-                )
-                return
-            # conid is IBKR's mandatory contract identifier — always present on a successful
-            # search_contract() lookup (the `if not contracts` guard above already handles
-            # the no-match case). Not user/LLM-supplied — IBKR's own response data.
-            conid = int(contracts[0].get("conid"))  # type: ignore[arg-type]
-            company_name = contracts[0].get("companyName", "")
+            await send_status(_needs_conid_text(sec_type, symbol), "System")
+            return
 
         claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"
         tif = (proposal.get("tif") or proposal.get("time_in_force") or proposal.get("timeInForce") or "DAY").upper()
 
         # ----------------------------------------------------------------
         # Order body — field spec from IBKR CP API docs (2026-07-02)
-        # Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#place-order
+        # Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md
         #
         # Field          Type     Req?       Notes
         # -------------- -------- ---------- ---------------------------------
@@ -872,11 +976,7 @@ def _format_cancel_summary(proposal: dict) -> str:
     tif = (proposal.get("tif") or "DAY").upper()
     reason = proposal.get("reason", "")
 
-    price_str = ""
-    if otype == "LMT" and limit is not None:
-        price_str = f" @ ${limit:.2f} limit"
-    elif otype == "STP" and stop is not None:
-        price_str = f" @ ${stop:.2f} stop"
+    price_str = _price_suffix(otype, limit, stop)
 
     lines = [
         f"**CANCEL order {order_id}: {action} {qty} {symbol}** ({otype}{price_str}, {tif})",

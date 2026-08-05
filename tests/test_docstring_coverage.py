@@ -1,4 +1,4 @@
-"""Docstring coverage gate for `claudia/`.
+"""Docstring coverage gate for `claudia/` **and** `tests/`.
 
 The 2026-07-25 audit found 67 undocumented definitions, including the three handlers that
 fire live IBKR orders, the SSRF boundary (`_fetch_web_page`), and the 157-line
@@ -8,6 +8,13 @@ ruff's pydocstyle rules are enabled (`"D"` in pyproject) but only reach **public
 D103 is "undocumented-*public*-function". Roughly half of this package is `_`-prefixed, and
 that half contains nearly every safety-critical function, so ruff alone would leave the
 important cases unguarded. This AST sweep covers all of them.
+
+`tests/` is swept on the same terms since the 2026-08-05 audit, which found 525
+undocumented definitions there against zero in `claudia/` — the production gate had been
+holding for months while the suite drifted. A test's docstring is not decoration: it states
+what the test pins and why, which is the difference between a failing assertion you can act
+on and one you can only delete. Fixtures and stub doubles matter most, since a name like
+`FakeCM` says nothing about what it stands in for.
 """
 
 from __future__ import annotations
@@ -17,7 +24,9 @@ from pathlib import Path
 
 import pytest
 
-_PACKAGE = Path(__file__).resolve().parent.parent / "claudia"
+_ROOT = Path(__file__).resolve().parent.parent
+_PACKAGE = _ROOT / "claudia"
+_TESTS = _ROOT / "tests"
 
 # Dunder methods whose contract is fully defined by the language. Anything with a
 # non-obvious contract — __aenter__/__aexit__ govern exception suppression — is NOT here.
@@ -48,6 +57,23 @@ def test_every_definition_has_a_docstring(module: Path):
 
     Includes private (`_`-prefixed) and nested definitions, which ruff's D1xx rules skip —
     that is the whole reason this test exists alongside them.
+    """
+    missing = _undocumented(module)
+    assert not missing, (
+        f"{module.name} has {len(missing)} undocumented definition(s):\n  "
+        + "\n  ".join(missing)
+    )
+
+
+@pytest.mark.parametrize(
+    "module", sorted(_TESTS.glob("*.py")), ids=lambda p: p.name
+)
+def test_every_test_definition_has_a_docstring(module: Path):
+    """Every module, class, function, and method in tests/ must be documented too.
+
+    Same sweep as the package gate above, on the same terms — nested helpers, stub
+    doubles and fixtures included. A test that does not say what it pins is one nobody
+    can safely change.
     """
     missing = _undocumented(module)
     assert not missing, (

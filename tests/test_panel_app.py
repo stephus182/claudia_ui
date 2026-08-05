@@ -51,6 +51,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 import panel as pn
 import pytest
 
+from claudia.gateway_preflight import GatewayState
 from claudia.panel_app import (
     _DOCS_PATH,
     _build_chat_app,
@@ -64,6 +65,7 @@ _CALLBACK_TIMEOUT = 5
 
 
 def _message_texts(chat) -> list[str]:
+    """Every plain-string message sent into a chat feed, in order."""
     return [(m.object if hasattr(m, "object") else str(m)) for m in chat.objects]
 
 
@@ -78,6 +80,7 @@ def _iter_tree(node):
 
 
 def _find_chat(root) -> pn.chat.ChatInterface:
+    """Locate the ChatInterface inside a built session root."""
     return next(n for n in _iter_tree(root) if isinstance(n, pn.chat.ChatInterface))
 
 
@@ -164,6 +167,7 @@ def tv_connect(request):
 
 @pytest.mark.asyncio
 async def test_build_chat_app_returns_a_chat_interface_with_callback_wired():
+    """The per-session factory returns a chat interface with its input callback attached."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -513,6 +517,7 @@ async def test_init_reads_context_docs_from_drive_when_sync_available(monkeypatc
     mock_sync = MagicMock()
 
     def _drive_read_text(filename, local_path=None):
+        """Return posed Drive content for the requested document."""
         return "drive ctx" if filename == "context.md" else "drive pri"
 
     mock_sync.read_text.side_effect = _drive_read_text
@@ -819,6 +824,7 @@ async def test_run_session_cleanup_closes_reports_uploads(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_session_cleanup_drive_failure_is_nonfatal(monkeypatch):
+    """A Drive upload failure at session end is reported in the status line, not raised."""
     from claudia.panel_app import _run_session_cleanup
 
     mock_sync = MagicMock()
@@ -873,6 +879,7 @@ async def test_session_destroy_hook_registered_and_runs_cleanup_once():
 
 @pytest.mark.asyncio
 async def test_end_session_button_always_present_and_runs_cleanup():
+    """End Session is offered in every session and runs cleanup when clicked."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -908,6 +915,7 @@ async def test_end_session_button_always_present_and_runs_cleanup():
 
 @pytest.mark.asyncio
 async def test_start_gateway_button_present_only_when_ibkr_offline():
+    """The gateway button appears only when IBKR is actually down."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -985,6 +993,12 @@ async def test_start_gateway_click_success_path_streams_and_refreshes_status(mon
         patch("claudia.panel_app._send_opening_status",
               new=AsyncMock(return_value=(None, True))),   # offline → button present
         patch("claudia.panel_app.GatewayManager") as mock_gm_cls,
+        # The click path now pre-flights the session before opening the login page.
+        # Without this the unit test would make a real network call to a live gateway
+        # and its verdict would decide the outcome — mocked to the free state so this
+        # test keeps exercising the success path it was written for.
+        patch("claudia.panel_app.read_state",
+              return_value=GatewayState(reachable=True, user_id=1)),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -1062,6 +1076,9 @@ def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
     with (
         patch("claudia.panel_app.pn.serve", side_effect=KeyboardInterrupt) as mock_serve,
         patch("claudia.panel_app.signal.signal") as mock_signal,
+        # main() now refuses to serve on a taken port; without this the suite would
+        # depend on whether 8001 happens to be free on the machine running it.
+        patch("claudia.panel_app._port_is_free", return_value=True),
         pytest.raises(KeyboardInterrupt),
     ):
         main()
@@ -1095,6 +1112,7 @@ async def _drain_flex_sync() -> None:
 
 
 def _flex_toolkit(stale: bool, attempts: list[dict] | None = None) -> MagicMock:
+    """A stub toolkit whose Flex coverage and sync log can be posed."""
     toolkit = MagicMock()
     toolkit._config.flex_token = "tok"
     toolkit._config.flex_query_id = "qid"
@@ -1110,6 +1128,7 @@ def _flex_toolkit(stale: bool, attempts: list[dict] | None = None) -> MagicMock:
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
 async def test_flex_sync_skips_when_data_current(caplog):
+    """Current data means no Flex API call at all."""
     from claudia.panel_app import _maybe_background_flex_sync
     toolkit = _flex_toolkit(stale=False)
     chat = MagicMock()
@@ -1122,6 +1141,7 @@ async def test_flex_sync_skips_when_data_current(caplog):
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
 async def test_flex_sync_skips_on_recent_attempt():
+    """A recent attempt suppresses another, keeping clear of the rate-limited Flex API."""
     from datetime import UTC, datetime
 
     from claudia.panel_app import _maybe_background_flex_sync
@@ -1136,6 +1156,7 @@ async def test_flex_sync_skips_on_recent_attempt():
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
 async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
+    """Stale and never attempted triggers a sync, then a Drive backup of the store."""
     from claudia.panel_app import _maybe_background_flex_sync
     toolkit = _flex_toolkit(stale=True, attempts=[])
     chat = MagicMock()
@@ -1162,6 +1183,7 @@ async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
 async def test_flex_sync_failure_sends_coverage_fallback():
+    """A failed sync still reports what data is present, rather than only that something broke."""
     from claudia.panel_app import _maybe_background_flex_sync
     toolkit = _flex_toolkit(stale=True, attempts=[])
     toolkit.execute.side_effect = [
@@ -1318,6 +1340,7 @@ async def test_a_sound_pull_stays_quiet():
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
 async def test_flex_sync_noop_when_offline_or_unconfigured():
+    """Offline or unconfigured, the startup sync does nothing at all."""
     from claudia.panel_app import _maybe_background_flex_sync
     toolkit = _flex_toolkit(stale=True)
     await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=True)
@@ -1332,6 +1355,7 @@ async def test_flex_sync_noop_when_offline_or_unconfigured():
 
 
 def test_apply_status_maps_enum_to_value_and_color():
+    """Each service status maps to its indicator value and colour, with unknown left unlit."""
     from claudia.panel_app import _apply_status, _make_status_indicators
     from claudia.status import ServiceStatus
 
@@ -1363,6 +1387,7 @@ def test_indicator_keys_match_real_checker_status_keys():
 
 @pytest.mark.asyncio
 async def test_build_session_root_composes_indicators_above_chat():
+    """The session root places the status indicators above the chat feed."""
     from claudia.panel_app import _build_session_root
 
     mock_toolkit = MagicMock()
@@ -1418,6 +1443,7 @@ async def test_build_session_root_composes_indicators_above_chat():
 
 @pytest.mark.asyncio
 async def test_build_session_root_registers_5s_periodic_refresh():
+    """One 5-second periodic callback drives both the dots and the dashboard."""
     from claudia.panel_app import _build_session_root
 
     mock_toolkit = MagicMock()
@@ -1765,6 +1791,7 @@ async def test_destroy_during_init_undoes_fresh_subscription(backend_singletons)
 
 @pytest.mark.asyncio
 async def test_end_session_button_unsubscribes_too(backend_singletons):
+    """Ending a session drops its connectivity subscription, so a closed session gets no alerts."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -1977,6 +2004,7 @@ async def test_upload_metadata_snapshotted_before_init_gate():
     release_init = asyncio.Event()
 
     async def _blocked_status(chat, toolkit, tv_offline):
+        """Record the status line and block, so ordering around the await can be asserted."""
         await release_init.wait()
         return (None, False)
 
@@ -2391,6 +2419,7 @@ def test_configure_logging_keeps_third_party_quiet(_restore_root_logging):
 
 
 def test_configure_logging_honours_claudia_log_level(_restore_root_logging):
+    """The log level is taken from the environment, defaulting sanely."""
     from claudia.panel_app import _configure_logging
 
     logging.getLogger().handlers.clear()
@@ -2408,6 +2437,9 @@ def test_main_logs_a_startup_banner(_restore_root_logging, caplog):
 
     with (
         patch("claudia.panel_app.pn.serve") as mock_serve,
+        # main() now refuses to serve on a taken port; without this the suite would
+        # depend on whether 8001 happens to be free on the machine running it.
+        patch("claudia.panel_app._port_is_free", return_value=True),
         patch("claudia.panel_app.signal.signal"),
         patch("claudia.panel_app._gdrive_sync", None),
         caplog.at_level(logging.INFO, logger="claudia.panel_app"),
@@ -2418,3 +2450,159 @@ def test_main_logs_a_startup_banner(_restore_root_logging, caplog):
     banner = [r.getMessage() for r in caplog.records if "ClaudIA serving on" in r.getMessage()]
     assert banner, f"no startup banner logged; got {[r.getMessage() for r in caplog.records]}"
     assert "http://localhost:" in banner[0]
+
+
+def test_main_runs_both_startup_checks_before_serving(_restore_root_logging):
+    """`main()` reaches both misconfiguration checks, and reaches them before serving.
+
+    Both exist to catch a setting that lets ClaudIA start cleanly and fail much later —
+    a stale editable install (web tools die at call time) and a model that cannot carry
+    the operator channel (every turn 400s once a proposal has rendered). Neither warning
+    is worth anything if the call is dropped, and dropping one would not fail any other
+    test, so the wiring is pinned here rather than assumed.
+    """
+    from claudia import panel_app
+
+    with (
+        patch("claudia.panel_app.warn_if_stale") as mock_stale,
+        patch("claudia.panel_app.warn_if_model_lacks_operator_channel") as mock_model,
+        patch("claudia.panel_app.pn.serve") as mock_serve,
+        # main() now refuses to serve on a taken port; without this the suite would
+        # depend on whether 8001 happens to be free on the machine running it.
+        patch("claudia.panel_app._port_is_free", return_value=True),
+        patch("claudia.panel_app.signal.signal"),
+        patch("claudia.panel_app._gdrive_sync", None),
+    ):
+        panel_app.main()
+
+    mock_stale.assert_called_once_with()
+    mock_model.assert_called_once_with(panel_app._MODEL)
+    assert mock_serve.called
+
+
+def test_main_warns_when_another_ibkr_app_holds_the_session(_restore_root_logging):
+    """`main()` reaches the borrowed-session check before serving.
+
+    Third of the same family as the stale-install and model checks. Without it, ClaudIA
+    starts cleanly against a gateway holding the phone's SSO session and every IBKR call
+    fails for a reason nothing on screen explains.
+    """
+    from claudia import panel_app
+
+    with (
+        patch("claudia.panel_app.warn_if_session_borrowed") as mock_borrowed,
+        patch("claudia.panel_app.warn_if_stale"),
+        patch("claudia.panel_app.warn_if_model_lacks_operator_channel"),
+        patch("claudia.panel_app.pn.serve"),
+        # main() now refuses to serve on a taken port; without this the suite would
+        # depend on whether 8001 happens to be free on the machine running it.
+        patch("claudia.panel_app._port_is_free", return_value=True),
+        patch("claudia.panel_app.signal.signal"),
+        patch("claudia.panel_app._gdrive_sync", None),
+    ):
+        panel_app.main()
+
+    mock_borrowed.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_refuses_to_open_the_login_page_on_a_borrowed_session():
+    """A borrowed session must not send the user to the login page.
+
+    Reachable only means the process answers; it says nothing about whose session it
+    holds. Opening the page here fails and counts as another attempt, which is what
+    escalates into the IB Key challenge/response.
+    """
+    from claudia import panel_app
+    from claudia.gateway_preflight import EXIT_BORROWED, GatewayState
+
+    chat = MagicMock()
+    session = {"closed": False, "unsubscribe": None, "store": None,
+               "loader": None, "agent": None}
+    borrowed = GatewayState(reachable=True, sso_valid=True, authenticated=False,
+                            client_app="IBKRMOBILE_000.a-000", sso_user="ibkruser")
+    gm = MagicMock()
+    gm.wait_for_gateway.return_value = True
+
+    with (
+        patch("claudia.panel_app.GatewayManager", return_value=gm),
+        patch("claudia.panel_app.read_state", return_value=borrowed),
+    ):
+        panel_app._send_action_buttons(chat, session, "s1", ibkr_offline=True, tv_offline=True)
+        row = chat.send.call_args.args[0]
+        gw_btn = next(b for b in row if getattr(b, "label", "") == "Start IBKR Gateway")
+        await _get_click_callback(gw_btn)(None)
+
+    gm.open_login_page.assert_not_called()
+    texts = " ".join(str(c.args[0]) for c in chat.send.call_args_list if c.args)
+    assert "LOG OUT OF YOUR IBKR APP FIRST" in texts
+    assert "IBKRMOBILE_000.a-000" in texts
+    assert EXIT_BORROWED == 4
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_does_not_relogin_a_session_that_already_works():
+    """An authenticated session is left alone — re-authenticating it is the harm."""
+    from claudia import panel_app
+    from claudia.gateway_preflight import GatewayState
+
+    chat = MagicMock()
+    session = {"closed": False, "unsubscribe": None, "store": None,
+               "loader": None, "agent": None}
+    gm = MagicMock()
+    gm.wait_for_gateway.return_value = True
+
+    with (
+        patch("claudia.panel_app.GatewayManager", return_value=gm),
+        patch("claudia.panel_app.read_state",
+              return_value=GatewayState(reachable=True, authenticated=True, connected=True)),
+    ):
+        panel_app._send_action_buttons(chat, session, "s1", ibkr_offline=True, tv_offline=True)
+        row = chat.send.call_args.args[0]
+        gw_btn = next(b for b in row if getattr(b, "label", "") == "Start IBKR Gateway")
+        await _get_click_callback(gw_btn)(None)
+
+    gm.open_login_page.assert_not_called()
+
+
+def test_main_refuses_to_announce_a_server_it_cannot_start(_restore_root_logging, caplog):
+    """A taken port must not print the 'serving on' banner and then die.
+
+    `pn.serve` blocks until shutdown, so there is no moment after it in which to announce
+    success — the banner therefore has to be guarded before it. Until 2026-08-05 it was
+    logged unconditionally, so an EADDRINUSE start printed "ClaudIA serving on …"
+    immediately followed by a stack trace: the exact inverse of what the line is for.
+    """
+    from claudia import panel_app
+
+    with (
+        patch("claudia.panel_app._port_is_free", return_value=False),
+        patch("claudia.panel_app.pn.serve") as mock_serve,
+        patch("claudia.panel_app.signal.signal"),
+        patch("claudia.panel_app.warn_if_stale"),
+        patch("claudia.panel_app.warn_if_model_lacks_operator_channel"),
+        patch("claudia.panel_app.warn_if_session_borrowed"),
+        patch("claudia.panel_app._gdrive_sync", None),
+        caplog.at_level(logging.INFO, logger="claudia.panel_app"),
+    ):
+        panel_app.main()
+
+    assert not mock_serve.called, "must not attempt to serve on a taken port"
+    assert "serving on" not in caplog.text, "announced a server it never started"
+    assert "ALREADY IN USE" in caplog.text
+    assert "lsof" in caplog.text, "the message must say how to find the owner"
+
+
+def test_port_is_free_detects_a_bound_port():
+    """Measured against a really-bound socket, not a mock of one."""
+    import socket
+
+    from claudia.panel_app import _port_is_free
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        taken = held.getsockname()[1]
+        assert _port_is_free(taken) is False
+    # released once the with-block closes it
+    assert _port_is_free(taken) is True

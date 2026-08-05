@@ -228,12 +228,22 @@ class DashboardPoller:
         this poll's if the local read succeeded, the previous poll's if it did not.
         Withholding good Flex data because an unrelated IBKR call failed would hide the
         half of the dashboard that still works.
+
+        **All three IBKR-derived fields carry forward, orders included.** Until 2026-08-05
+        `orders` was omitted here and silently defaulted to None — which on that field does
+        not mean "stale", it means *the book was never established*, the opposite claim to
+        the one ledger and positions were making in the same snapshot. It had no visible
+        effect, because `DashboardView.refresh` blanks the whole account half via
+        `without_account()` as soon as `error` is set, so both routes agreed by accident.
+        Relying on a consumer to mask an inconsistency is not the same as not having one:
+        the snapshot is the contract, and every field in it now describes the same instant.
         """
         previous = self._snapshot
         self._snapshot = DashboardSnapshot(
             as_of=previous.as_of,
             ledger=previous.ledger,
             positions=previous.positions,
+            orders=previous.orders,
             error=error,
             **flex,
         )

@@ -15,6 +15,7 @@ planned knowledge layer.)
 
 import json
 import logging
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -68,6 +69,60 @@ staged, confirmed `Submitted`, and recorded here.
 def _utcnow() -> str:
     """Current UTC time as an ISO-8601 string — the storage format for every timestamp."""
     return datetime.now(UTC).isoformat()
+
+
+def _fts_query(text: str) -> str:
+    """Turn arbitrary user text into a valid FTS5 query. "" when there is nothing to search.
+
+    **FTS5 `MATCH` takes a query expression, not a search string.** Passing raw text through
+    is a syntax error for most of what a person actually types — measured against the live
+    store on 2026-08-05, 7 of 8 realistic queries raised `sqlite3.OperationalError`::
+
+        "AAPL (long)"        fts5: syntax error near "AAPL"
+        "note: something"    no such column: note
+        "-AAPL"              no such column: AAPL
+        "C++ risk"           fts5: syntax error near "+"
+        "what's the P&L?"    fts5: syntax error near "'"
+
+    Every token is extracted and quoted, which makes punctuation inert: a double-quoted
+    FTS5 string is a literal, so `(`, `:`, `-` and `+` can no longer be read as operators.
+
+    The quoting cannot be broken out of, and that is structural rather than careful: `\\w+`
+    matches no `"`, so no token can contain the one character that would close the literal
+    early. There is no escaping step here to get wrong — the only way in would be to widen
+    that pattern.
+
+    ## Why OR, not AND — measured, not preferred
+
+    FTS5's implicit connective for adjacent terms is AND, so preserving the old semantics
+    was the smaller change. It is also the wrong one. Over the live store (646 messages),
+    AND returned **zero rows** for `NVDA position` and for `did we discuss the dashboard?`
+    — ordinary questions about subjects the store demonstrably contains. Zero rows makes
+    the tool answer "No past conversations found", which is a false negative reported as a
+    fact, and this codebase treats a confident wrong answer as worse than a vague one.
+
+    OR always returns candidates and lets bm25 (`ORDER BY rank`) do the discriminating,
+    which is what the caller's `LIMIT` consumes — the row *count* is irrelevant, only the
+    top few matter. Measured share of the top 5 that were genuinely relevant: `what's the
+    P&L?` 5/5, `order staging` 5/5, `flex sync` 5/5, `C++ risk` 5/5, `NVDA position` 2/5.
+
+    Dropping short tokens was tried and rejected on the same evidence: it made `what's the
+    P&L?` *worse* (5/5 to 1/5), because `p` and `l` are the signal in that query. There is
+    no stopword list here for the same reason — it is a list to maintain that the
+    measurement did not justify.
+
+    Residual, accepted and not papered over: a question dominated by common words can still
+    rank badly (`did we discuss the dashboard?` scored 0/5). That is a relevance limit, not
+    a crash, and it reports honestly as "no relevant matches" rather than as an error.
+
+    Args:
+        text: Whatever the caller typed or the model passed through.
+
+    Returns:
+        A quoted OR-expression, or "" when the text holds no searchable token at all
+        (`"?!"`) — the caller must treat that as "nothing to search", not as a query.
+    """
+    return " OR ".join(f'"{token}"' for token in re.findall(r"\w+", text))
 
 
 class ConversationStore:
@@ -127,8 +182,15 @@ class ConversationStore:
         Tables: `sessions` (one row per browser session, carrying the context hash and doc
         version), `messages` (user/assistant/tool turns), `decisions` (order proposals and
         their outcomes), and `doc_versions` (hash-keyed context/principles history).
-        Plus a `messages_fts` FTS5 virtual table with insert/update/delete triggers keeping
-        it in sync, and indexes on the session foreign keys.
+        Plus a `messages_fts` FTS5 virtual table and indexes on the session foreign keys.
+
+        **The FTS index has insert and delete triggers only — there is deliberately no
+        update trigger**, and this docstring claimed one until 2026-08-05. Nothing in the
+        package issues `UPDATE messages` (a message row is written once and never edited),
+        so an `messages_au` trigger would be dead code on an external-content FTS table.
+        The consequence of that being wrong is silent — the index would simply drift from
+        the table with no error — so if an update path is ever added, the trigger has to be
+        added with it. `tests/test_conversation_store.py` pins both facts.
 
         Everything uses `CREATE ... IF NOT EXISTS`; the one additive column migration is
         wrapped in `suppress(sqlite3.OperationalError)` so re-running against an
@@ -377,10 +439,22 @@ class ConversationStore:
     def search_messages(self, query: str, max_results: int = 10, max_tokens: int = 2000) -> list[dict]:
         """FTS5 full-text search across all conversation history.
 
+        `query` is arbitrary user/model text and is converted by `_fts_query` before it
+        reaches `MATCH`, which takes a query *expression* — raw text is a syntax error for
+        most of what anyone actually types, and that error used to escape this method and
+        kill the whole turn. See `_fts_query` for the measurement and for why the tokens
+        are OR-ed rather than AND-ed.
+
+        Returns [] when the text holds no searchable token, rather than running a query
+        that cannot match anything.
+
         max_tokens is a rough budget: results are trimmed when the cumulative
         character count exceeds max_tokens * 4 (i.e. ~4 chars per token, not
         exact token counting).
         """
+        expression = _fts_query(query)
+        if not expression:
+            return []
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT m.*, highlight(messages_fts, 0, '[', ']') AS snippet
@@ -389,7 +463,7 @@ class ConversationStore:
                    WHERE messages_fts MATCH ?
                    ORDER BY rank
                    LIMIT ?""",
-                (query, max_results),
+                (expression, max_results),
             ).fetchall()
             results = [dict(r) for r in rows]
         # Rough token budget guard

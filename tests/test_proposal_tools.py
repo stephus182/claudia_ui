@@ -1,3 +1,12 @@
+"""Tests for the strict proposal tool schemas.
+
+These schemas are a registration-time contract: an unsupported JSON Schema keyword is a
+hard 400 on *every* request, not a silent strip. Local `jsonschema` validation cannot
+prove API acceptance — it accepted both keywords the live API rejected — so the checks
+here cover shape and handler obligations, and `test_live_api_accepts_proposal_tools`
+(opt-in, `live_api` marker) covers acceptance.
+"""
+
 import os
 from collections.abc import Iterator
 from typing import Any
@@ -16,6 +25,7 @@ _BANNED_NUMERIC_KEYWORDS = frozenset({"exclusiveMinimum", "exclusiveMaximum", "m
 
 
 def _schema(name: str) -> Any:
+    """The input schema of the named proposal tool."""
     return next(t["input_schema"] for t in PROPOSAL_TOOLS if t["name"] == name)
 
 
@@ -31,6 +41,7 @@ def _walk_items(node: Any) -> Iterator[tuple[str, Any]]:
 
 
 def _walk_keys(node: Any) -> Iterator[str]:
+    """Every key appearing anywhere in a nested schema, for whole-tree assertions."""
     for key, _ in _walk_items(node):
         yield key
 
@@ -98,6 +109,7 @@ def test_schema_rejects_every_known_crash_vector(payload: Any) -> None:
 
 
 def test_every_tool_is_strict_and_closed() -> None:
+    """Every tool is `strict: true` with closed objects — the crash vectors are impossible."""
     for tool in PROPOSAL_TOOLS:
         assert tool["strict"] is True
         assert tool["input_schema"]["additionalProperties"] is False
@@ -265,6 +277,7 @@ def test_live_api_accepts_proposal_tools() -> None:
 
 
 def test_valid_proposal_is_accepted() -> None:
+    """A well-formed order proposal validates."""
     ok = {
         "symbol": "ES",
         "action": "BUY",
@@ -281,6 +294,7 @@ def test_valid_proposal_is_accepted() -> None:
 
 
 def test_valid_cancel_proposal_is_accepted() -> None:
+    """A well-formed cancel proposal validates."""
     ok = {
         "order_id": "716373691",
         "symbol": "ES",
@@ -327,6 +341,7 @@ def test_valid_modify_proposal_is_accepted() -> None:
     ],
 )
 def test_modify_rejects_malformed_changes(changes: Any) -> None:
+    """A malformed `changes` entry is rejected rather than rendered as a broken diff."""
     proposal = {
         "order_id": "1",
         "conid": 1,

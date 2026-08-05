@@ -62,6 +62,7 @@ def _make_db(path, *, trades=1, lots=True, wash=True) -> None:
 
 @pytest.fixture
 def good_db(tmp_path):
+    """Path to a throwaway store holding a sound Flex dataset."""
     path = tmp_path / "store.db"
     _make_db(path)
     return str(path)
@@ -71,6 +72,7 @@ def good_db(tmp_path):
 
 
 def test_a_sound_dataset_passes_every_check(good_db):
+    """A sound dataset passes, is not flagged empty, and really ran every check."""
     validity = validate_dataset(good_db)
     assert validity.ok is True
     assert validity.empty is False
@@ -91,6 +93,7 @@ def test_duplicate_execution_keys_fail(good_db):
 
 
 def test_null_execution_key_fails(good_db):
+    """A NULL execution key fails validation — it is the row's identity."""
     conn = sqlite3.connect(good_db)
     conn.execute("INSERT INTO flex_trade VALUES (NULL, 'flex', -100.0, '2026-08-04')")
     conn.commit()
@@ -127,6 +130,7 @@ def test_an_empty_dataset_is_not_a_corrupt_one(tmp_path):
 
 
 def test_a_database_without_flex_tables_is_empty_not_broken(tmp_path):
+    """No Flex tables means empty, not broken: a fresh install has nothing to validate yet."""
     path = tmp_path / "store.db"
     sqlite3.connect(path).close()
 
@@ -136,6 +140,7 @@ def test_a_database_without_flex_tables_is_empty_not_broken(tmp_path):
 
 
 def test_a_missing_file_reports_honestly_instead_of_raising(tmp_path):
+    """A missing file reports a failure with a reason rather than crashing startup."""
     validity = validate_dataset(str(tmp_path / "nope.db"))
     assert validity.ok is False
     assert validity.failures  # says what happened rather than crashing startup
@@ -168,6 +173,7 @@ def test_a_damaged_file_fails_validation(tmp_path):
 
 
 def test_summary_line_names_the_first_failure(good_db):
+    """The one-line summary names the check that failed, so the log is actionable."""
     conn = sqlite3.connect(good_db)
     conn.execute("INSERT INTO flex_trade VALUES ('key-0', 'flex', -100.0, '2026-08-04')")
     conn.commit()
@@ -181,10 +187,12 @@ def test_summary_line_names_the_first_failure(good_db):
 
 
 def test_fingerprint_is_stable_when_nothing_changes(good_db):
+    """An unchanged dataset fingerprints identically — that is what skips the Drive re-upload."""
     assert dataset_fingerprint(good_db) == dataset_fingerprint(good_db)
 
 
 def test_fingerprint_moves_when_a_trade_lands(good_db):
+    """A new trade moves the fingerprint, so the backup follows the data."""
     before = dataset_fingerprint(good_db)
     conn = sqlite3.connect(good_db)
     conn.execute("INSERT INTO flex_trade VALUES ('key-new', 'flex', -1.0, '2026-08-05')")
@@ -237,6 +245,7 @@ _NOW = datetime(2026, 8, 5, 14, 30, tzinfo=UTC)
 
 
 def _import_log(path, when: datetime, filename: str = "flex_U1675699_2026-08-05.xml") -> None:
+    """Write one `flex_import_log` row stamped at `when`, creating the table if needed."""
     conn = sqlite3.connect(path)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS flex_import_log ("
@@ -253,6 +262,7 @@ def _import_log(path, when: datetime, filename: str = "flex_U1675699_2026-08-05.
 
 
 def test_the_first_run_of_the_day_actually_validates(good_db):
+    """The day's first run really validates and reports when it proved it."""
     outcome = validate_dataset_daily(good_db, now=_NOW)
     assert outcome.reused is False
     assert outcome.validity.ok is True
@@ -260,6 +270,7 @@ def test_the_first_run_of_the_day_actually_validates(good_db):
 
 
 def test_the_second_run_reuses_the_verdict_without_rechecking(good_db):
+    """The second run does no work, and reports when the verdict was proven, not when asked."""
     validate_dataset_daily(good_db, now=_NOW)
     with patch("claudia.flex_sync.validate_dataset") as never:
         outcome = validate_dataset_daily(good_db, now=_NOW + timedelta(hours=2))
@@ -270,6 +281,7 @@ def test_the_second_run_reuses_the_verdict_without_rechecking(good_db):
 
 
 def test_a_changed_dataset_is_revalidated_the_same_day(good_db):
+    """A pull that changed the data invalidates the cached verdict, same day or not."""
     validate_dataset_daily(good_db, now=_NOW)
     conn = sqlite3.connect(good_db)
     conn.execute("INSERT INTO flex_trade VALUES ('key-new', 'flex', -1.0, '2026-08-05')")
@@ -281,12 +293,14 @@ def test_a_changed_dataset_is_revalidated_the_same_day(good_db):
 
 
 def test_yesterdays_verdict_is_not_reused_today(good_db):
+    """A verdict does not survive the day boundary."""
     validate_dataset_daily(good_db, now=_NOW - timedelta(days=1))
     outcome = validate_dataset_daily(good_db, now=_NOW)
     assert outcome.reused is False
 
 
 def test_a_failed_verdict_is_never_reused(good_db):
+    """A failure is re-measured every time, never cached forward."""
     conn = sqlite3.connect(good_db)
     conn.execute("INSERT INTO flex_trade VALUES ('key-0', 'flex', -100.0, '2026-08-04')")
     conn.commit()
@@ -307,6 +321,7 @@ def test_an_unwritable_location_still_validates(good_db):
 
 
 def test_a_corrupt_cache_file_is_ignored_rather_than_trusted(good_db):
+    """An unreadable cache file causes a fresh validation rather than a trusted stale verdict."""
     validate_dataset_daily(good_db, now=_NOW)
     Path(f"{good_db}.validation.json").write_text("{not json")
 
@@ -319,6 +334,7 @@ def test_a_corrupt_cache_file_is_ignored_rather_than_trusted(good_db):
 
 
 def test_last_import_reports_the_most_recent_pull(good_db):
+    """The newest import row wins, by timestamp rather than insertion order."""
     _import_log(good_db, datetime(2026, 8, 4, 17, 59, tzinfo=UTC), "older.xml")
     _import_log(good_db, datetime(2026, 8, 5, 12, 18, 1, tzinfo=UTC), "newest.xml")
 
@@ -329,10 +345,12 @@ def test_last_import_reports_the_most_recent_pull(good_db):
 
 
 def test_last_import_is_none_before_anything_was_ever_imported(good_db):
+    """With no import history there is no last import to report."""
     assert last_import(good_db) is None
 
 
 def test_last_import_survives_an_unparseable_timestamp(good_db):
+    """An unparseable timestamp yields None — no time is better than a wrong time on screen."""
     conn = sqlite3.connect(good_db)
     conn.execute(
         "CREATE TABLE flex_import_log (id INTEGER PRIMARY KEY, filename TEXT, sha256 TEXT,"

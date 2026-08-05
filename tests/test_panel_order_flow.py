@@ -20,6 +20,7 @@ from tests.conftest import _get_click_callback
 
 
 def _make_chat():
+    """A chat interface stub that records what was sent."""
     chat = MagicMock()
     chat.send = MagicMock()
     return chat
@@ -44,6 +45,7 @@ def _make_ibkr_mock():
 
 @pytest.mark.asyncio
 async def test_render_order_proposal_sends_message_with_two_buttons():
+    """An order proposal renders one message carrying a stage and a cancel button."""
     chat = _make_chat()
     proposal = {"symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "MKT"}
     await render_order_proposal(chat, proposal, session_id="s1", store=None)
@@ -60,9 +62,12 @@ async def test_render_order_proposal_sends_message_with_two_buttons():
 
 @pytest.mark.asyncio
 async def test_render_order_proposal_stage_click_executes_and_disables_buttons():
+    """Clicking stage runs the execution core and disables both buttons — one-shot."""
     chat = _make_chat()
+    # Carries a conid because real proposals do, and because a placement without one is
+    # now refused before it reaches IBKR (order_flow._needs_conid_text).
     proposal = {
-        "symbol": "AAPL", "action": "BUY", "quantity": 10,
+        "symbol": "AAPL", "action": "BUY", "quantity": 10, "conid": 265598,
         "order_type": "MKT", "limit_price": None, "stop_price": None,
     }
     ibkr_mod, client = _make_ibkr_mock()
@@ -80,6 +85,7 @@ async def test_render_order_proposal_stage_click_executes_and_disables_buttons()
 
 @pytest.mark.asyncio
 async def test_render_order_proposal_cancel_click_disables_without_executing():
+    """Dismissing disables the buttons and reaches no IBKR path."""
     chat = _make_chat()
     proposal = {"symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "MKT"}
     await render_order_proposal(chat, proposal, session_id="s1", store=None)
@@ -96,6 +102,7 @@ async def test_render_order_proposal_cancel_click_disables_without_executing():
 
 @pytest.mark.asyncio
 async def test_render_cancel_proposal_sends_message_with_two_buttons():
+    """A cancel proposal renders one message carrying a cancel and a keep button."""
     chat = _make_chat()
     proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
     await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
@@ -107,6 +114,7 @@ async def test_render_cancel_proposal_sends_message_with_two_buttons():
 
 @pytest.mark.asyncio
 async def test_render_cancel_proposal_confirm_click_calls_cancel_core():
+    """Confirming routes to the cancel core, not to any other path."""
     chat = _make_chat()
     proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
     ibkr_mod, client = _make_ibkr_mock()
@@ -122,6 +130,7 @@ async def test_render_cancel_proposal_confirm_click_calls_cancel_core():
 
 @pytest.mark.asyncio
 async def test_render_modify_proposal_sends_message_with_two_buttons():
+    """A modify proposal renders one message carrying a modify and a discard button."""
     chat = _make_chat()
     proposal = {
         "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
@@ -137,6 +146,7 @@ async def test_render_modify_proposal_sends_message_with_two_buttons():
 
 @pytest.mark.asyncio
 async def test_render_modify_proposal_confirm_click_calls_modify_core():
+    """Confirming routes to the modify core, not to any other path."""
     chat = _make_chat()
     proposal = {
         "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",

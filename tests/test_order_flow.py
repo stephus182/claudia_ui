@@ -3,7 +3,9 @@ _execute_{staged,cancel,modify}_order_core execution paths (Gate 1/Gate 2, place
 IBKR rejection handling, decision logging), driven through a send_status recorder."""
 
 # ── Imports ──────────────────────────────────────────────────────────────────
+import ast
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,24 +29,29 @@ from claudia.order_flow import (
 # ── _resolve_account_id ──────────────────────────────────────────────────────
 
 def test_resolve_account_id_accountid_key():
+    """The documented `accountId` key is used when present."""
     assert _resolve_account_id([{"accountId": "U12345"}]) == "U12345"
 
 
 def test_resolve_account_id_acctid_fallback():
+    """`acctId` is accepted — IBKR has used different key names across endpoints."""
     assert _resolve_account_id([{"acctId": "U777"}]) == "U777"
 
 
 def test_resolve_account_id_id_fallback():
+    """A bare `id` is accepted as the last of the three known spellings."""
     assert _resolve_account_id([{"id": "U999"}]) == "U999"
 
 
 def test_resolve_account_id_empty_list():
+    """No accounts yields an empty string rather than an index error."""
     assert _resolve_account_id([]) == ""
 
 
 # ── _format_order_summary ────────────────────────────────────────────────────
 
 def test_format_market_order():
+    """A market order renders its side, size, symbol, type and TIF."""
     proposal = {
         "symbol": "AAPL",
         "action": "BUY",
@@ -64,6 +71,7 @@ def test_format_market_order():
 
 
 def test_format_limit_order():
+    """A limit order additionally renders its limit price."""
     proposal = {
         "symbol": "NVDA",
         "action": "BUY",
@@ -74,12 +82,14 @@ def test_format_limit_order():
         "reason": "Support bounce",
     }
     summary = _format_order_summary(proposal)
-    assert "$850.00" in summary
+    assert "850.00" in summary
+    assert "$" not in summary
     assert "limit" in summary.lower()
     assert "NVDA" in summary
 
 
 def test_format_stop_order():
+    """A stop order additionally renders its stop price."""
     proposal = {
         "symbol": "MSFT",
         "action": "SELL",
@@ -90,12 +100,14 @@ def test_format_stop_order():
         "reason": "Stop loss",
     }
     summary = _format_order_summary(proposal)
-    assert "$395.00" in summary
+    assert "395.00" in summary
+    assert "$" not in summary
     assert "stop" in summary.lower()
     assert "SELL" in summary
 
 
 def test_format_order_missing_reason():
+    """A proposal with no reason renders without an empty reason line."""
     proposal = {
         "symbol": "SPY",
         "action": "BUY",
@@ -167,6 +179,7 @@ def test_format_order_tif_shown():
 # ── _format_cancel_summary ───────────────────────────────────────────────────
 
 def test_format_cancel_summary_basic():
+    """A cancel summary leads with the order id being cancelled."""
     proposal = {
         "order_id": "242538143", "symbol": "AAPL", "action": "BUY",
         "quantity": 1, "order_type": "LMT", "limit_price": 100.0, "tif": "GTC",
@@ -182,6 +195,7 @@ def test_format_cancel_summary_basic():
 
 
 def test_format_cancel_summary_missing_reason():
+    """A cancel with no reason renders without an empty reason line."""
     proposal = {"order_id": "1", "symbol": "SPY", "action": "SELL", "quantity": 5, "order_type": "MKT"}
     summary = _format_cancel_summary(proposal)
     assert "SPY" in summary
@@ -189,12 +203,14 @@ def test_format_cancel_summary_missing_reason():
 
 
 def test_format_cancel_summary_shows_limit_price():
+    """The resting limit price is shown as context for what is being pulled."""
     proposal = {
         "order_id": "5", "symbol": "NVDA", "action": "BUY", "quantity": 10,
         "order_type": "LMT", "limit_price": 850.0,
     }
     summary = _format_cancel_summary(proposal)
-    assert "$850.00" in summary
+    assert "850.00" in summary
+    assert "$" not in summary
 
 
 def test_format_cancel_summary_shows_stop_price():
@@ -204,12 +220,14 @@ def test_format_cancel_summary_shows_stop_price():
         "order_type": "STP", "stop_price": 395.0,
     }
     summary = _format_cancel_summary(proposal)
-    assert "$395.00" in summary
+    assert "395.00" in summary
+    assert "$" not in summary
 
 
 # ── _format_modify_summary ───────────────────────────────────────────────────
 
 def test_format_modify_summary_shows_changed_fields():
+    """Each `changes` entry renders as a before/after line."""
     proposal = {
         "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
         "limit_price": 105.0,
@@ -238,6 +256,7 @@ def test_format_modify_summary_shows_every_changed_field():
 
 
 def test_format_modify_summary_no_changed_fields_noted():
+    """An empty `changes` array says so rather than rendering an empty diff."""
     proposal = {"order_id": "1", "conid": 1, "symbol": "AAPL", "changes": []}
     summary = _format_modify_summary(proposal)
     assert "AAPL" in summary
@@ -255,6 +274,7 @@ def test_format_modify_summary_renders_a_malformed_entry_instead_of_raising():
 
 
 def test_format_modify_summary_shows_reason():
+    """The model's stated reason is rendered when present."""
     proposal = {
         "order_id": "1", "conid": 1, "symbol": "AAPL", "tif": "GTC",
         "changes": [{"field": "tif", "previous_value": "DAY"}],
@@ -266,6 +286,73 @@ def test_format_modify_summary_shows_reason():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+@pytest.mark.parametrize(
+    "summary_of",
+    [_format_order_summary, _format_cancel_summary],
+    ids=["order", "cancel"],
+)
+def test_a_stop_limit_shows_both_of_its_prices(summary_of):
+    """STOP_LIMIT renders limit AND stop — it used to render neither, on both surfaces.
+
+    `STOP_LIMIT` is in the `order_type` enum and the execution core sends `price` (limit)
+    plus `auxPrice` (stop) for it, but each formatter only handled its own single type. The
+    last screen before Touch ID therefore showed a stop-limit order with no price at all.
+    """
+    summary = summary_of({
+        "order_id": "1", "symbol": "ES", "action": "BUY", "quantity": 1,
+        "order_type": "STOP_LIMIT", "limit_price": 6000.0, "stop_price": 5950.0,
+    })
+    assert "6,000.00 limit" in summary
+    assert "5,950.00 stop" in summary
+
+
+@pytest.mark.parametrize(
+    "summary_of",
+    [_format_order_summary, _format_cancel_summary],
+    ids=["order", "cancel"],
+)
+def test_no_approval_line_ever_claims_a_currency(summary_of):
+    """No `$` on the pre-Touch-ID surface — the proposal carries no currency to justify one.
+
+    `$` is shared by USD/MXN/CAD/AUD/HKD/SGD, and this account trades EUR-denominated
+    equities, so a symbol here reads as an ordinary price on a wrong-currency contract. The
+    bare number is what `panel_dashboard.fmt_money` renders for an unknown currency.
+    """
+    summary = summary_of({
+        "order_id": "1", "symbol": "P911d", "action": "BUY", "quantity": 10,
+        "order_type": "LMT", "limit_price": 1234.5, "stop_price": None,
+    })
+    assert "1,234.50 limit" in summary
+    assert "$" not in summary
+
+
+def test_a_market_order_carries_no_price_clause():
+    """MKT has no price to show, so the clause is omitted rather than left dangling."""
+    summary = _format_order_summary({
+        "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT",
+        "limit_price": None, "stop_price": None,
+    })
+    assert " @ " not in summary
+
+
+@pytest.mark.parametrize(
+    ("order_type", "missing"),
+    [("LMT", "LIMIT"), ("STP", "STOP"), ("STOP_LIMIT", "LIMIT")],
+)
+def test_a_priced_order_missing_its_price_says_so(order_type, missing):
+    """A priced type with a null price is flagged, never rendered as if it had none to show.
+
+    `_PRICE` is nullable, so `{"order_type": "LMT", "limit_price": null}` is a valid
+    proposal. Rendering it as a bare `(LMT, DAY)` would put a limit order with no visible
+    limit in front of the user one click before Touch ID.
+    """
+    summary = _format_order_summary({
+        "symbol": "AAPL", "action": "BUY", "quantity": 1,
+        "order_type": order_type, "limit_price": None, "stop_price": None,
+    })
+    assert f"NO {missing} PRICE GIVEN" in summary
+
+
 def _no_readback_delay():
     """Collapse the L2 read-back wait so the suite never actually sleeps 2 s per test.
 
@@ -276,9 +363,19 @@ def _no_readback_delay():
 
 
 def _make_action(order_payload=None):
+    """A staged-order proposal dict with the fields the execution core reads.
+
+    The default carries a `conid` because real proposals do: measured over this account's
+    whole order history on 2026-08-05, every placement since 2026-07-10 supplied one (the
+    model resolves it via `get_market_snapshot`/`preview_order` before proposing). A
+    conid-less default was unrepresentative, and since `_needs_conid_text` now refuses
+    those it would also have made every downstream test exercise the refusal path instead
+    of the flow it was written for. 265598 is AAPL's own conid, used here as a fixture
+    value only.
+    """
     if order_payload is None:
         order_payload = {
-            "symbol": "AAPL", "action": "BUY", "quantity": 50,
+            "symbol": "AAPL", "action": "BUY", "quantity": 50, "conid": 265598,
             "order_type": "MKT", "limit_price": None, "stop_price": None, "reason": "Test",
         }
     action = MagicMock()
@@ -312,6 +409,7 @@ def _set_readback(client, **fields):
 
 
 def _make_ibkr_mock():
+    """Patch the IBKR client and return the module and client mocks for assertion."""
     mod = MagicMock()
     client = MagicMock()
     mod.IBKRClient.return_value = client
@@ -362,6 +460,7 @@ def _sent_contents(calls):
 
 
 def _make_cancel_action(payload=None):
+    """A cancel proposal dict carrying the order id and display context."""
     if payload is None:
         payload = {
             "order_id": "242538143", "symbol": "AAPL", "action": "BUY",
@@ -373,6 +472,7 @@ def _make_cancel_action(payload=None):
 
 
 def _make_modify_action(payload=None):
+    """A modify proposal dict carrying the full replacement order plus its conid."""
     if payload is None:
         payload = {
             "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
@@ -386,6 +486,7 @@ def _make_modify_action(payload=None):
 
 
 def _make_cancel_modify_ibkr_mock():
+    """Patch the IBKR client for the cancel and modify paths."""
     mod = MagicMock()
     client = MagicMock()
     mod.IBKRClient.return_value = client
@@ -404,6 +505,7 @@ def _make_cancel_modify_ibkr_mock():
 
 
 async def _run_cancel(action, ibkr_mod, store=None, session_id="test-session"):
+    """Run the cancel core against a captured status callback and return what it reported."""
     proposal = json.loads(action.payload["order"])
     send_status, calls = _make_send_status_recorder()
     with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), _no_readback_delay():
@@ -412,6 +514,7 @@ async def _run_cancel(action, ibkr_mod, store=None, session_id="test-session"):
 
 
 async def _run_modify(action, ibkr_mod, store=None, session_id="test-session"):
+    """Run the modify core against a captured status callback and return what it reported."""
     proposal = json.loads(action.payload["order"])
     send_status, calls = _make_send_status_recorder()
     with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), _no_readback_delay():
@@ -422,15 +525,58 @@ async def _run_modify(action, ibkr_mod, store=None, session_id="test-session"):
 # ── execute_staged_order — basic paths ───────────────────────────────────────
 
 
+@pytest.mark.parametrize(
+    ("sec_type", "tool"),
+    [
+        ("STK", "get_market_snapshot"),
+        ("CASH", "get_market_snapshot"),
+        ("OPT", "get_option_chain"),
+        ("FOP", "get_option_chain"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_execute_staged_order_contract_not_found():
-    """STK: search_contract returns [] → error message, no place_order, button removed."""
+async def test_a_placement_without_a_resolved_contract_is_refused(sec_type, tool):
+    """No conid → refused, naming the type and the tool that resolves it. Nothing dispatched.
+
+    The money path must never resolve a bare ticker itself: `/iserver/secdef/search` returns
+    no `isUS` and no currency and its order is undocumented, so `contracts[0]` for IGV is the
+    Mexican listing. IGV, RACE, NVO and P911d are all in this account's traded universe, so
+    the exposure is real rather than theoretical.
+    """
     ibkr_mod, client = _make_ibkr_mock()
-    client.search_contract.return_value = []
-    action = _make_action()
-    recorded = await _run(action, ibkr_mod)
-    assert any("Could not find contract" in c for c in _sent_contents(recorded))
+    action = _make_action({
+        "symbol": "IGV", "action": "BUY", "quantity": 10,
+        "order_type": "MKT", "sec_type": sec_type,
+    })
+    contents = _sent_contents(await _run(action, ibkr_mod))
+    assert any(sec_type in c and "conid" in c and tool in c for c in contents)
     client.place_order_and_confirm.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_defective_symbol_search_is_never_reached_from_the_order_path():
+    """`search_contract` must not be called at all — that branch is gone, not merely guarded.
+
+    A guard that still leaves the defective call reachable would be one refactor away from
+    being live again. This asserts the absence, not the behaviour.
+    """
+    ibkr_mod, client = _make_ibkr_mock()
+    await _run(_make_action({
+        "symbol": "IGV", "action": "BUY", "quantity": 10, "order_type": "MKT",
+    }), ibkr_mod)
+    client.search_contract.assert_not_called()
+
+    # AST, not a substring search: `_needs_conid_text`'s docstring names the method when
+    # explaining why it was removed, and that history is worth keeping. Only a real call
+    # site should fail this.
+    tree = ast.parse(Path(order_flow.__file__).read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "search_contract"
+    ]
+    assert not calls, f"order_flow still calls search_contract at line(s) {[n.lineno for n in calls]}"
 
 
 @pytest.mark.asyncio
@@ -511,7 +657,7 @@ async def test_execute_staged_order_limit_price_in_order_body():
     """LMT order with limit_price → 'price' field in order body sent to place_order."""
     ibkr_mod, client = _make_ibkr_mock()
     action = _make_action({
-        "symbol": "TSLA", "action": "BUY", "quantity": 10,
+        "symbol": "TSLA", "action": "BUY", "quantity": 10, "conid": 76792991,
         "order_type": "LMT", "limit_price": 245.0, "stop_price": None, "reason": "Dip buy",
     })
     await _run(action, ibkr_mod)
@@ -526,7 +672,7 @@ async def test_execute_staged_order_quantity_is_int():
     """quantity sent to place_order is int, not float."""
     ibkr_mod, client = _make_ibkr_mock()
     action = _make_action({
-        "symbol": "AAPL", "action": "BUY", "quantity": 5,
+        "symbol": "AAPL", "action": "BUY", "quantity": 5, "conid": 265598,
         "order_type": "MKT",
     })
     await _run(action, ibkr_mod)
@@ -539,7 +685,7 @@ async def test_execute_staged_order_stk_no_cme_fields():
     """STK order body must NOT contain manualIndicator or extOperator."""
     ibkr_mod, client = _make_ibkr_mock()
     action = _make_action({
-        "symbol": "AAPL", "action": "BUY", "quantity": 1,
+        "symbol": "AAPL", "action": "BUY", "quantity": 1, "conid": 265598,
         "order_type": "MKT", "sec_type": "STK",
     })
     await _run(action, ibkr_mod)
@@ -864,6 +1010,7 @@ async def test_execute_modify_order_rejection_payload_reports_failure():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_missing_order_id_sends_error():
+    """A cancel with no order id is refused before any IBKR call."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_cancel_action({"symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
     recorded = await _run_cancel(action, ibkr_mod)
@@ -884,6 +1031,7 @@ async def test_execute_cancel_order_success_sends_success_message():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_calls_client_with_account_and_order_id():
+    """The cancel reaches the client with the resolved account and the order id."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
     action = _make_cancel_action(proposal)
@@ -893,6 +1041,7 @@ async def test_execute_cancel_order_calls_client_with_account_and_order_id():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_success_logs_decision():
+    """A dispatched cancel writes its decision row with the observed state."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, order_status="Cancelled")
     store = MagicMock()
@@ -907,6 +1056,7 @@ async def test_execute_cancel_order_success_logs_decision():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_touch_id_error():
+    """A Touch ID failure is reported as such and nothing is cancelled."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.cancel_order.side_effect = RuntimeError("Authentication challenge failed")
     action = _make_cancel_action()
@@ -916,6 +1066,7 @@ async def test_execute_cancel_order_touch_id_error():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_dialog_cancel_error():
+    """Declining at the confirmation dialog is reported as a user cancel, not a failure."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.cancel_order.side_effect = RuntimeError("Order cancelled by user")
     action = _make_cancel_action()
@@ -925,6 +1076,7 @@ async def test_execute_cancel_order_dialog_cancel_error():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_generic_error():
+    """An unclassified error is surfaced with its type and message rather than swallowed."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.cancel_order.side_effect = RuntimeError("Connection reset")
     action = _make_cancel_action()
@@ -934,6 +1086,7 @@ async def test_execute_cancel_order_generic_error():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_403_error():
+    """A 403 is explained as a brokerage-session problem with a next step."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.cancel_order.side_effect = RuntimeError("403 Forbidden")
     action = _make_cancel_action()
@@ -946,6 +1099,7 @@ async def test_execute_cancel_order_403_error():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_missing_order_id_sends_error():
+    """A modify with no order id is refused before any IBKR call."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({"conid": 265598, "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
     recorded = await _run_modify(action, ibkr_mod)
@@ -955,6 +1109,7 @@ async def test_execute_modify_order_missing_order_id_sends_error():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_missing_conid_sends_error_directing_to_get_order_status():
+    """A modify with no conid is refused and points at `get_order_status`, which returns it."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({"order_id": "1", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
     recorded = await _run_modify(action, ibkr_mod)
@@ -976,6 +1131,7 @@ async def test_execute_modify_order_success_sends_success_message():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_success_logs_decision():
+    """A dispatched modify writes its decision row with the observed state."""
     ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     store = MagicMock()
     action = _make_modify_action()
@@ -989,6 +1145,7 @@ async def test_execute_modify_order_success_logs_decision():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_calls_client_with_account_order_id_and_body():
+    """The modify reaches the client with the account, order id and a full replacement body."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({
         "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
@@ -1021,6 +1178,7 @@ async def test_execute_modify_order_builds_fresh_body_not_raw_proposal():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_quantity_is_int():
+    """Quantity is sent as a whole number, matching the placement path."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({
         "order_id": "1", "conid": 1, "symbol": "AAPL", "action": "BUY",
@@ -1033,6 +1191,7 @@ async def test_execute_modify_order_quantity_is_int():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_stk_no_cme_fields():
+    """A stock modify carries no CME 536-B fields — those are futures-only."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({
         "order_id": "1", "conid": 1, "symbol": "AAPL", "action": "BUY",
@@ -1061,6 +1220,7 @@ async def test_execute_modify_order_fut_cme_536b_fields():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_stop_limit_price_and_aux_price():
+    """A stop-limit modify sends the limit in `price` and the stop in `auxPrice`."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action({
         "order_id": "1", "conid": 1, "symbol": "AAPL", "action": "SELL", "quantity": 1,
@@ -1074,6 +1234,7 @@ async def test_execute_modify_order_stop_limit_price_and_aux_price():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_touch_id_error():
+    """A Touch ID failure is reported as such and nothing is modified."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.modify_order_and_confirm.side_effect = RuntimeError("Authentication challenge failed")
     action = _make_modify_action()
@@ -1083,6 +1244,7 @@ async def test_execute_modify_order_touch_id_error():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_dialog_cancel_error():
+    """Declining at the confirmation dialog is reported as a user cancel."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.modify_order_and_confirm.side_effect = RuntimeError("Order cancelled by user")
     action = _make_modify_action()
@@ -1092,6 +1254,7 @@ async def test_execute_modify_order_dialog_cancel_error():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_reply_chain_decline_error():
+    """A decline at a follow-up IBKR prompt is named as such — the order's state is unknown."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.modify_order_and_confirm.side_effect = RuntimeError("User declined IBKR order reply")
     action = _make_modify_action()
@@ -1102,6 +1265,7 @@ async def test_execute_modify_order_reply_chain_decline_error():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_generic_error():
+    """An unclassified error is surfaced with its type and message."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.modify_order_and_confirm.side_effect = RuntimeError("Connection reset")
     action = _make_modify_action()
@@ -1118,6 +1282,7 @@ def _make_send_status_recorder():
     calls = []
 
     async def _send_status(text: str, author: str) -> None:
+        """Capture one status line instead of rendering it."""
         calls.append((text, author))
 
     return _send_status, calls
@@ -1130,7 +1295,7 @@ async def test_execute_staged_order_core_success_calls_send_status():
     from claudia.order_flow import _execute_staged_order_core
     ibkr_mod, _client = _make_ibkr_mock()
     proposal = {
-        "symbol": "AAPL", "action": "BUY", "quantity": 50,
+        "symbol": "AAPL", "action": "BUY", "quantity": 50, "conid": 265598,
         "order_type": "MKT", "limit_price": None, "stop_price": None, "reason": "Test",
     }
     send_status, calls = _make_send_status_recorder()
@@ -1154,6 +1319,7 @@ async def test_execute_staged_order_core_never_touches_action_or_removes_anythin
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_core_calls_client_with_account_and_order_id():
+    """The framework-agnostic core passes the account and order id straight through."""
     from claudia.order_flow import _execute_cancel_order_core
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
@@ -1176,6 +1342,7 @@ def test_execute_cancel_order_core_never_touches_action_or_removes_anything():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_core_builds_fresh_body_not_raw_proposal():
+    """The core builds a clean IBKR body rather than forwarding the display-carrying proposal."""
     from claudia.order_flow import _execute_modify_order_core
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     proposal = {
@@ -1235,10 +1402,12 @@ async def test_read_back_waits_before_reading():
     seen = []
 
     def _status(order_id):
+        """Capture one status line instead of rendering it."""
         seen.append(("read", order_id))
         return {"order_status": "Submitted", "order_status_description": "working"}
 
     async def _fake_sleep(seconds):
+        """Skip the read-back settle delay so the test does not really wait."""
         seen.append(("sleep", seconds))
 
     client = MagicMock()
@@ -1272,6 +1441,7 @@ async def test_read_back_happens_after_the_dispatch_never_before():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", CONFIRMED_PLACE)
 async def test_place_reports_confirmed_only_on_working_states(status):
+    """Only a documented working state counts as confirmed; anything else is unconfirmed."""
     ibkr_mod, client = _make_ibkr_mock()
     _set_readback(client, order_status=status, order_status_description="d")
     store = MagicMock()
@@ -1468,6 +1638,7 @@ async def test_the_live_book_is_read_after_the_wait_and_after_the_dispatch():
     send_status, _calls = _make_send_status_recorder()
 
     async def _fake_sleep(seconds):
+        """Skip the read-back settle delay so the test does not really wait."""
         seen.append(("sleep", seconds))
 
     proposal = json.loads(_make_action().payload["order"])
@@ -1667,6 +1838,7 @@ async def test_modify_price_caveat_absent_for_a_non_price_modify():
 
 @pytest.mark.asyncio
 async def test_modify_non_working_status_is_not_confirmed_even_if_fields_match():
+    """Matching fields on a non-working order is still not a confirmation — both must hold."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, order_status="Inactive")
     contents = _sent_contents(await _run_modify(_make_modify_action(), ibkr_mod))
@@ -1699,6 +1871,7 @@ def test_compare_modify_readback_reports_no_comparable_fields_as_unconfirmed():
     ],
 )
 def test_extract_order_id_contract(result, expected):
+    """Both id spellings are read, last write wins, and IBKR's "0" is treated as no id."""
     assert _extract_order_id(result) == expected
 
 
@@ -1728,6 +1901,7 @@ async def test_provisional_line_precedes_the_verified_one(status):
 
 @pytest.mark.asyncio
 async def test_place_post_dispatch_failure_does_not_claim_the_order_was_not_placed():
+    """A failure after the write says the order WAS dispatched — otherwise it hides exposure."""
     ibkr_mod, _client = _make_ibkr_mock()
     store = MagicMock()
     store.add_decision.side_effect = RuntimeError("database is locked")
@@ -1739,6 +1913,7 @@ async def test_place_post_dispatch_failure_does_not_claim_the_order_was_not_plac
 
 @pytest.mark.asyncio
 async def test_cancel_post_dispatch_failure_does_not_claim_the_order_was_not_cancelled():
+    """A failure after the cancel says the request WAS dispatched, live state unknown."""
     ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     store = MagicMock()
     store.add_decision.side_effect = RuntimeError("database is locked")
@@ -1750,6 +1925,7 @@ async def test_cancel_post_dispatch_failure_does_not_claim_the_order_was_not_can
 
 @pytest.mark.asyncio
 async def test_modify_post_dispatch_failure_does_not_claim_the_order_was_not_modified():
+    """A failure after the modify says the request WAS dispatched, live state unknown."""
     ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     store = MagicMock()
     store.add_decision.side_effect = RuntimeError("database is locked")
@@ -1859,6 +2035,7 @@ def test_a_successful_modify_now_reads_as_confirmed():
 
 
 def test_a_genuinely_changed_side_is_still_caught():
+    """A real side difference is still a mismatch — the synonym table must not swallow it."""
     from claudia.order_flow import _compare_modify_readback
 
     agree, line = _compare_modify_readback(

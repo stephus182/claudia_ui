@@ -11,12 +11,14 @@ from claudia.context_loader import ContextLoader
 
 @pytest.fixture
 def docs_dir(tmp_path):
+    """A docs directory holding a minimal context.md / principles.md pair."""
     (tmp_path / "context.md").write_text("# Role\nI am ClaudIA.")
     (tmp_path / "principles.md").write_text("# Principles\n- Risk first.")
     return tmp_path
 
 
 def test_load_system_prompt(docs_dir):
+    """Both documents reach the prompt under their own labelled sections."""
     loader = ContextLoader(docs_dir)
     prompt = loader.load_system_prompt()
     assert "ClaudIA" in prompt
@@ -26,6 +28,7 @@ def test_load_system_prompt(docs_dir):
 
 
 def test_compute_hash_is_deterministic(docs_dir):
+    """The same content hashes to the same 64-hex SHA-256 every call."""
     loader = ContextLoader(docs_dir)
     h1 = loader.compute_hash()
     h2 = loader.compute_hash()
@@ -34,6 +37,7 @@ def test_compute_hash_is_deterministic(docs_dir):
 
 
 def test_hash_changes_on_file_edit(docs_dir):
+    """Editing either document moves the hash — that is what triggers a new version."""
     loader = ContextLoader(docs_dir)
     h1 = loader.compute_hash()
     (docs_dir / "principles.md").write_text("# Principles\n- Updated rule.")
@@ -42,6 +46,7 @@ def test_hash_changes_on_file_edit(docs_dir):
 
 
 def test_missing_context_raises(tmp_path):
+    """A missing context.md fails loudly and names the file, rather than loading a half prompt."""
     (tmp_path / "principles.md").write_text("# Principles")
     loader = ContextLoader(tmp_path)
     with pytest.raises(FileNotFoundError, match=re.escape("context.md")):
@@ -49,6 +54,7 @@ def test_missing_context_raises(tmp_path):
 
 
 def test_missing_principles_raises(tmp_path):
+    """A missing principles.md fails loudly and names the file."""
     (tmp_path / "context.md").write_text("# Role")
     loader = ContextLoader(tmp_path)
     with pytest.raises(FileNotFoundError, match=re.escape("principles.md")):
@@ -56,10 +62,12 @@ def test_missing_principles_raises(tmp_path):
 
 
 def test_watchdog_fires_callback(docs_dir):
+    """Editing a watched document fires the reload callback with the filename."""
     loader = ContextLoader(docs_dir)
     fired = []
 
     def on_reload(filename, new_prompt):
+        """Record which file the watchdog reported."""
         fired.append(filename)
 
     loader.start_watching(on_reload)
@@ -75,6 +83,7 @@ def test_watchdog_fires_callback(docs_dir):
 
 
 def test_context_text_override_used_instead_of_file(docs_dir):
+    """A Drive-supplied context replaces the local file entirely, rather than appending to it."""
     loader = ContextLoader(docs_dir, context_text="# Drive Context\nDrive role.")
     prompt = loader.load_system_prompt()
     assert "Drive Context" in prompt
@@ -84,6 +93,7 @@ def test_context_text_override_used_instead_of_file(docs_dir):
 
 
 def test_principles_text_override_used_instead_of_file(docs_dir):
+    """A Drive-supplied principles document replaces the local file entirely."""
     loader = ContextLoader(docs_dir, principles_text="# Drive Principles\n- Drive rule.")
     prompt = loader.load_system_prompt()
     assert "Drive Principles" in prompt
@@ -93,6 +103,7 @@ def test_principles_text_override_used_instead_of_file(docs_dir):
 
 def test_both_overrides_no_local_files_needed(tmp_path):
     # When both overrides are provided, local files are not read at all
+    """With both documents supplied, no local file is read — a Drive-only setup needs none."""
     loader = ContextLoader(tmp_path, context_text="Context text", principles_text="Principles text")
     prompt = loader.load_system_prompt()
     assert "Context text" in prompt
@@ -100,12 +111,14 @@ def test_both_overrides_no_local_files_needed(tmp_path):
 
 
 def test_compute_hash_reflects_override_text(docs_dir):
+    """The hash covers the effective text, so a Drive change registers as a new version."""
     loader_local = ContextLoader(docs_dir)
     loader_drive = ContextLoader(docs_dir, context_text="# Different Drive context")
     assert loader_local.compute_hash() != loader_drive.compute_hash()
 
 
 def test_get_effective_texts_returns_file_content(docs_dir):
+    """Without overrides the effective texts are the files' contents."""
     loader = ContextLoader(docs_dir)
     ctx, pri = loader.get_effective_texts()
     assert "ClaudIA" in ctx
@@ -113,6 +126,7 @@ def test_get_effective_texts_returns_file_content(docs_dir):
 
 
 def test_get_effective_texts_returns_overrides(docs_dir):
+    """With overrides the effective texts are the supplied strings, verbatim."""
     loader = ContextLoader(docs_dir, context_text="override ctx", principles_text="override pri")
     ctx, pri = loader.get_effective_texts()
     assert ctx == "override ctx"
@@ -123,6 +137,7 @@ def test_compute_hash_stable_across_drive_and_local_sources(docs_dir):
     # Drive content with surrounding whitespace must hash the same as the
     # equivalent local file (which _read_required always strips). Prevents
     # spurious security alerts when switching between Drive and local sources.
+    """Whitespace-only differences hash identically, so switching Drive/local raises no alert."""
     local_content = (docs_dir / "context.md").read_text()
     loader_local = ContextLoader(docs_dir)
     loader_drive = ContextLoader(docs_dir, context_text=f"\n{local_content}\n")
@@ -130,10 +145,12 @@ def test_compute_hash_stable_across_drive_and_local_sources(docs_dir):
 
 
 def test_file_change_clears_context_override(docs_dir):
+    """A local edit drops the Drive override — the file just edited is what takes effect."""
     loader = ContextLoader(docs_dir, context_text="# Drive Context\nDrive role.")
     fired_prompts = []
 
     def on_reload(filename, new_prompt):
+        """Record the rebuilt prompt so the test can assert the override was dropped."""
         fired_prompts.append(new_prompt)
 
     loader.start_watching(on_reload)
@@ -167,6 +184,7 @@ def test_stop_watching_removes_only_this_loaders_handler(tmp_path):
 
 
 def test_stop_watching_twice_is_safe(tmp_path):
+    """A second stop is a no-op: the handler is removed exactly once."""
     (tmp_path / "context.md").write_text("c")
     (tmp_path / "principles.md").write_text("p")
     loader = ContextLoader(tmp_path)
@@ -179,6 +197,7 @@ def test_stop_watching_twice_is_safe(tmp_path):
 
 
 def test_reload_count_increments_on_change(tmp_path):
+    """Each handled change bumps `reload_count`, which invalidates the agent's cached prompt."""
     (tmp_path / "context.md").write_text("# Role\nX")
     (tmp_path / "principles.md").write_text("# P\nY")
     loader = ContextLoader(tmp_path)

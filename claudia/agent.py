@@ -13,12 +13,30 @@ Anthropic SDK: anthropic.AsyncAnthropic with client.messages.stream() for
 server-sent event streaming. Tool use follows the multi-turn loop pattern:
 stream → collect tool_use blocks → execute tools → append tool_result → stream again.
 
-Source (Messages API streaming): https://docs.anthropic.com/en/api/messages-streaming
-Source (Tool use): https://docs.anthropic.com/en/docs/build-with-claude/tool-use
-Source (Models): https://docs.anthropic.com/en/docs/about-claude/models
-  Current default: claude-opus-4-8 (1M token context, $5/$25 per MTok input/output)
-  Latest most-capable: claude-fable-5 ($10/$50 per MTok)
-  Balance of speed/intelligence: claude-sonnet-4-6 ($3/$15 per MTok)
+Source (Messages API streaming): https://platform.claude.com/docs/en/api/messages-streaming
+Source (Tool use): https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview
+
+Models — read 2026-08-05 from
+https://platform.claude.com/docs/en/about-claude/models/overview
+
+  | model              | ctx | out  | $/MTok in-out | notes                            |
+  |--------------------|-----|------|---------------|----------------------------------|
+  | claude-fable-5     | 1M  | 128k | 10 / 50       | most capable widely released     |
+  | claude-opus-5      | 1M  | 128k |  5 / 25       | the docs' starting recommendation|
+  | claude-opus-4-8    | 1M  | 128k |  5 / 25       | **this app's default — legacy**  |
+  | claude-sonnet-5    | 1M  | 128k |  3 / 15       | speed/intelligence balance       |
+
+**`claude-opus-4-8` is listed under "Legacy models" as of this reading**, and Opus 5 is
+priced identically with the same context and output limits. The default in
+`panel_app._MODEL` has deliberately NOT been moved: switching the model a live trading
+assistant runs on is a behaviour change, not a docs correction, and it belongs to whoever
+owns the account rather than to a docstring refresh.
+
+Whatever it moves to must satisfy **both** constraints in `docs/env-vars-reference.md`
+§ `CLAUDIA_MODEL` — adaptive thinking *and* mid-conversation system messages. Opus 5 and
+Fable 5 satisfy both; the Sonnet line satisfies only the first, which is what
+`warn_if_model_lacks_operator_channel` exists to catch. Sonnet 5 also carries introductory
+pricing of $2/$10 through 2026-08-31, so its steady-state cost is the $3/$15 above.
 """
 
 from __future__ import annotations
@@ -223,6 +241,84 @@ _OPERATOR_NOTE = (
     "No staging button exists and nothing was staged. Do not tell the user it was staged."
 )
 """Operator-channel body for a failed render — see `_append_operator_message` for the why."""
+
+
+_OPERATOR_CHANNEL_MODELS = frozenset({
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-mythos-5",
+})
+"""Models that accept a mid-conversation `role: "system"` message.
+
+Documented on the official prompt-caching page (read 2026-08-05), which names exactly
+these four and excludes the Sonnet line outright: *"This feature is not available on
+Claude Sonnet 5; use the top-level `system` field instead."* Sonnet 4.6 is likewise absent
+from the supported set.
+
+**Measured, not merely read** — the page states the exclusion but gives no error, and a doc
+is a claim where execution is evidence. Probed 2026-08-05 with the production message
+shape (`test_live_api_rejects_the_operator_channel_on_an_excluded_model`)::
+
+    claude-sonnet-4-6  ->  400 invalid_request_error
+                           "role 'system' is not supported on this model"
+
+`claude-opus-4-8` accepts the same shape, in all three placements the agent really
+produces — probed 2026-07-27 and re-run 2026-08-05
+(`test_live_api_accepts_mid_conversation_system_message`).
+
+`CLAUDIA_MODEL` is a documented user-facing knob, and until 2026-08-05
+`docs/env-vars-reference.md` named `claude-sonnet-4-6` as "the supported alternative" — it
+had been checked against the adaptive-thinking requirement only, which Sonnet does meet.
+The operator channel arrived later (2026-07-27) and nothing re-checked the recommendation
+against it.
+
+**The failure is delayed, which is what makes it worth a startup warning.**
+`_append_operator_message` only appends when there is something to deliver, so a session on
+an unsupported model runs perfectly until the first proposal renders — and from then on
+*every* turn carries an emission record and 400s. The channel that breaks is the one
+carrying the evidence that ClaudIA staged an order, i.e. the thing that stops it telling
+the user a live order does not exist.
+
+Deliberately NOT solved by falling back to a `<system-reminder>` block in the user turn,
+which is what the docs suggest for unsupported models: `_append_operator_message` exists
+*because* a user-turn block is forgeable by the model, and silently downgrading a
+non-spoofable channel to a spoofable one is a worse outcome than refusing to run on that
+model. This is an allowlist rather than a denylist for the same reason the store's decision
+allowlists are: a model absent from it gets a warning, never silent acceptance.
+"""
+
+
+def warn_if_model_lacks_operator_channel(model: str) -> str | None:
+    """Log a loud, actionable error when `model` cannot carry the operator channel.
+
+    Called once at startup, mirroring `install_check.warn_if_stale`. Warns and returns
+    rather than raising, for the same reason that one does: the list above can only go
+    stale in the direction of a *new* supported model, and refusing to start would turn a
+    lagging constant into an outage. The log line says what will break and when, because
+    the symptom — a 400 that only begins after the first order proposal — is not something
+    anyone would trace back to a model id unaided.
+
+    Args:
+        model: The resolved `CLAUDIA_MODEL` value.
+
+    Returns:
+        The model id when it is not known to support the channel, else None.
+    """
+    if model in _OPERATOR_CHANNEL_MODELS:
+        return None
+    log.error(
+        "MODEL %r IS NOT KNOWN TO SUPPORT MID-CONVERSATION SYSTEM MESSAGES. ClaudIA will "
+        "start and answer normally, then fail with an API 400 on EVERY turn once the "
+        "first order proposal has rendered — that is when the operator channel starts "
+        "carrying emission records. Those records are what stop ClaudIA denying that a "
+        "staged order exists. Known-good: %s. If this model is newly supported, add it to "
+        "agent._OPERATOR_CHANNEL_MODELS; check "
+        "https://platform.claude.com/docs/en/build-with-claude/prompt-caching",
+        model,
+        ", ".join(sorted(_OPERATOR_CHANNEL_MODELS)),
+    )
+    return model
 
 
 _PROPOSAL_DECISION_TOOLS: dict[str, str] = {
@@ -1685,7 +1781,18 @@ class ClaudIAAgent:
             query = inputs.get("query", "").strip()
             if not query:
                 return "No query provided."
-            results = self._store.search_messages(query, max_results=5)
+            # Belt and braces behind `_fts_query`'s sanitisation. This method's contract is
+            # that it never raises — the store escaping one used to take down the entire
+            # turn, and a search is the least important thing in a session to fail hard on.
+            try:
+                results = self._store.search_messages(query, max_results=5)
+            except Exception as exc:
+                log.warning("Past-conversation search failed for %r: %s", query, exc)
+                return (
+                    f"The conversation search failed ({exc}). Nothing was searched — this "
+                    f"is not evidence that the topic was never discussed. Say so plainly "
+                    f"rather than concluding anything from it."
+                )
             if not results:
                 return f"No past conversations found matching '{query}'."
             parts = []

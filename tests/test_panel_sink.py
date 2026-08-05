@@ -13,6 +13,7 @@ from claudia.panel_sink import PanelMessageSink
 
 
 def _make_chat():
+    """A chat interface stub that records what was sent."""
     chat = MagicMock()
     chat.send = MagicMock()
     return chat
@@ -20,6 +21,7 @@ def _make_chat():
 
 @pytest.mark.asyncio
 async def test_send_message_sends_to_chat_interface_as_claudia():
+    """Assistant text is sent under ClaudIA's name without triggering a reply."""
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1")
     await sink.send_message("Hello there.")
@@ -28,9 +30,11 @@ async def test_send_message_sends_to_chat_interface_as_claudia():
 
 @pytest.mark.asyncio
 async def test_send_message_with_pine_block_triggers_pinescript_render():
+    """A message carrying a pine block also renders its buttons — detection lives in the sink."""
     chat = _make_chat()
 
     def getter():  # sentinel getter — the sink just passes it straight through
+        """Resolve the TradingView bridge at click time, as the real getter does."""
         return None
 
     sink = PanelMessageSink(chat=chat, session_id="s1", tv_bridge_getter=getter)
@@ -44,6 +48,7 @@ async def test_send_message_with_pine_block_triggers_pinescript_render():
 
 @pytest.mark.asyncio
 async def test_send_message_without_pine_block_does_not_render_pinescript():
+    """Ordinary text renders no PineScript buttons."""
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1")
     with patch("claudia.panel_pinescript.render_pinescript_blocks", new=AsyncMock()) as mock_render:
@@ -53,6 +58,7 @@ async def test_send_message_without_pine_block_does_not_render_pinescript():
 
 @pytest.mark.asyncio
 async def test_send_max_tokens_warning_sends_as_system():
+    """The truncation warning is attributed to System, not to ClaudIA."""
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1")
     await sink.send_max_tokens_warning()
@@ -63,6 +69,7 @@ async def test_send_max_tokens_warning_sends_as_system():
 
 @pytest.mark.asyncio
 async def test_tool_step_success_streams_input_then_output_with_separator():
+    """Input and output stream into one step, separated so they do not run together."""
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1")
     async with sink.tool_step("get_positions") as step:
@@ -79,6 +86,7 @@ async def test_tool_step_success_streams_input_then_output_with_separator():
 
 @pytest.mark.asyncio
 async def test_tool_step_exception_sets_failed_status_and_reraises():
+    """A failing tool marks the step failed and lets the exception through."""
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1")
     with pytest.raises(RuntimeError, match="boom"):
@@ -92,6 +100,7 @@ async def test_tool_step_exception_sets_failed_status_and_reraises():
 
 @pytest.mark.asyncio
 async def test_tool_step_sends_a_real_chatstep_not_a_plain_message():
+    """The step is a real ChatStep, which is what gives it status transitions."""
     import panel as pn
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1")
@@ -106,6 +115,7 @@ async def test_tool_step_sends_a_real_chatstep_not_a_plain_message():
 
 @pytest.mark.asyncio
 async def test_send_order_proposal_delegates_to_panel_order_flow():
+    """Order rendering is delegated rather than reimplemented in the sink."""
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1", store=None)
     proposal = {"symbol": "AAPL", "action": "BUY", "quantity": 10}
@@ -116,6 +126,7 @@ async def test_send_order_proposal_delegates_to_panel_order_flow():
 
 @pytest.mark.asyncio
 async def test_send_cancel_proposal_delegates_to_panel_order_flow():
+    """Cancel rendering is delegated rather than reimplemented in the sink."""
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1", store=None)
     proposal = {"order_id": "123", "symbol": "AAPL"}
@@ -126,6 +137,7 @@ async def test_send_cancel_proposal_delegates_to_panel_order_flow():
 
 @pytest.mark.asyncio
 async def test_send_modify_proposal_delegates_to_panel_order_flow():
+    """Modify rendering is delegated rather than reimplemented in the sink."""
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1", store=None)
     proposal = {"order_id": "123", "symbol": "AAPL"}

@@ -381,6 +381,31 @@ _EMPTY = DashboardSnapshot(as_of=datetime.min.replace(tzinfo=UTC))
 
 _ORDER_COLUMNS = ["Order", "Symbol", "Side", "Qty", "Filled", "Limit", "Type", "TIF", "Status", "Origin"]
 
+_ORDER_NUMERIC = ["Qty", "Filled", "Limit"]
+"""The order columns that are numbers, and so need the same treatment as the positions
+table's: a format and right alignment. Without them IBKR's raw floats render as `1.0` and
+`6000.5` against `1` and `6,000.50` two tabs away — the same unscannable column the
+positions table already fixed once.
+
+**No currency column.** `/iserver/account/orders` is not documented to carry one and
+`parse_orders` extracts none, so `Limit` renders as a bare number — the same thing
+`fmt_money` does for an unknown currency, and the same choice `order_flow._price_suffix`
+makes on the approval screen. Inventing a code from an unverified field would be worse
+than omitting it.
+"""
+
+_ORDER_TOOLTIPS = {
+    "Order": "IBKR's order id — the identity `propose_cancel` / `propose_modify` need.",
+    "Qty": "Total order size, not the remainder.",
+    "Filled": "How much has executed. Shows 0 when IBKR reports no remaining quantity, "
+              "which is the safe direction to be wrong in.",
+    "Limit": "The resting price where the order type has one. No currency: the live-order "
+             "feed does not carry one, so none is claimed.",
+    "Status": "IBKR's own status string, verbatim.",
+    "Origin": "ClaudIA for orders staged through this app; external for TWS, mobile or the "
+              "web portal — those cannot be modified or cancelled through the API.",
+}
+
 
 def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     """Working orders as the DataFrame the `Tabulator` renders.
@@ -798,6 +823,13 @@ class DashboardView:
             layout="fit_data_stretch",
             sizing_mode="stretch_width",
             height=300,
+            formatters={
+                "Qty": NumberFormatter(format=_QTY_FORMAT),
+                "Filled": NumberFormatter(format=_QTY_FORMAT),
+                "Limit": NumberFormatter(format=_PRICE_FORMAT),
+            },
+            text_align=dict.fromkeys(_ORDER_NUMERIC, "right"),
+            header_tooltips=dict(_ORDER_TOOLTIPS),
         )
         self._orders_status = safe_markdown("_Orders: waiting for the first poll…_")
         self._window.param.watch(self._on_window_change, "value")

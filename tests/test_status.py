@@ -1,3 +1,11 @@
+"""Tests for ConnectivityChecker — the IBKR/GDrive/TradingView status poller.
+
+The IBKR half is not cosmetic: the 60-second `/tickle` poll is what keeps the brokerage
+session alive, and losing that session is expensive to recover. Several tests here pin
+behaviour that exists to protect it — notably that a soft timeout is reported without
+triggering any API side effect.
+"""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +36,7 @@ def _ibkr_unauthed_response():
 
 @pytest.fixture
 def checker(tmp_path):
+    """A ConnectivityChecker pointed at a fake gateway and a throwaway token path."""
     return ConnectivityChecker(
         gateway_url="https://localhost:5055/v1/api",
         gdrive_token_file=tmp_path / "token.json",
@@ -35,6 +44,7 @@ def checker(tmp_path):
 
 
 def test_check_ibkr_ok(checker):
+    """A healthy gateway answers `/tickle` on the documented URL and reports OK."""
     with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()) as mock_get:
         assert checker.check_ibkr() is True
         mock_get.assert_called_once_with(
@@ -51,6 +61,7 @@ def test_check_ibkr_unauthenticated(checker):
 
 
 def test_check_ibkr_non_200(checker):
+    """A non-200 is reported as down."""
     m = MagicMock()
     m.status_code = 401
     with patch("claudia.status.requests.get", return_value=m):
@@ -58,22 +69,26 @@ def test_check_ibkr_non_200(checker):
 
 
 def test_check_ibkr_connection_error(checker):
+    """A refused connection is reported as down rather than raised."""
     with patch("claudia.status.requests.get", side_effect=ConnectionError("refused")):
         assert checker.check_ibkr() is False
 
 
 def test_check_ibkr_timeout(checker):
+    """A timeout is reported as down rather than raised."""
     with patch("claudia.status.requests.get", side_effect=req.Timeout("timeout")):
         assert checker.check_ibkr() is False
 
 
 def test_check_ibkr_ok_stashes_auth_status(checker):
+    """The observed auth status is kept, so a later transition can be described."""
     with patch("claudia.status.requests.get", return_value=_ibkr_ok_response()):
         checker.check_ibkr()
     assert checker._last_ibkr_auth_status == {"authenticated": True, "connected": True}
 
 
 def test_check_ibkr_soft_timeout_stashes_auth_status(checker):
+    """A soft timeout — reachable but unauthenticated — reads down, keeping the status."""
     m = MagicMock()
     m.status_code = 200
     m.json.return_value = {
@@ -85,6 +100,7 @@ def test_check_ibkr_soft_timeout_stashes_auth_status(checker):
 
 
 def test_check_ibkr_non_200_clears_auth_status(checker):
+    """A non-200 clears the stashed status rather than leaving a stale claim standing."""
     checker._last_ibkr_auth_status = {"authenticated": True, "connected": True}
     m = MagicMock()
     m.status_code = 401
@@ -94,6 +110,7 @@ def test_check_ibkr_non_200_clears_auth_status(checker):
 
 
 def test_check_ibkr_exception_clears_auth_status(checker):
+    """A connection failure clears the stashed status rather than leaving a stale claim."""
     checker._last_ibkr_auth_status = {"authenticated": True, "connected": True}
     with patch("claudia.status.requests.get", side_effect=ConnectionError("refused")):
         checker.check_ibkr()
@@ -101,6 +118,7 @@ def test_check_ibkr_exception_clears_auth_status(checker):
 
 
 def test_check_gdrive_falls_back_to_token_file_when_no_sync(checker, tmp_path):
+    """With no sync wired, the token file's presence is the best available signal."""
     token = tmp_path / "token.json"
     token.write_text("{}")
     checker._gdrive_token_file = token
@@ -108,11 +126,13 @@ def test_check_gdrive_falls_back_to_token_file_when_no_sync(checker, tmp_path):
 
 
 def test_check_gdrive_token_file_missing_no_sync(checker, tmp_path):
+    """No token file means not configured, reported as down."""
     checker._gdrive_token_file = tmp_path / "missing.json"
     assert checker.check_gdrive() is False
 
 
 def test_check_gdrive_uses_ping_when_sync_provided(checker):
+    """With a sync wired, a real ping outranks the token file."""
     from unittest.mock import MagicMock
     sync = MagicMock()
     sync.ping.return_value = True
@@ -122,6 +142,7 @@ def test_check_gdrive_uses_ping_when_sync_provided(checker):
 
 
 def test_check_gdrive_ping_failure_returns_false(checker):
+    """A failed ping is reported as down."""
     from unittest.mock import MagicMock
     sync = MagicMock()
     sync.ping.return_value = False
@@ -151,6 +172,7 @@ def test_check_tradingview_cdp_timeout(checker):
 
 
 def test_get_status_initial(checker):
+    """Before the first poll every service reads UNKNOWN, not an error."""
     s = checker.get_status()
     assert s == {
         "ibkr":   ServiceStatus.UNKNOWN,
@@ -160,6 +182,7 @@ def test_get_status_initial(checker):
 
 
 def test_get_status_returns_copy(checker):
+    """Callers get a copy, so a UI mutation cannot corrupt the checker's state."""
     s1 = checker.get_status()
     s1["ibkr"] = "tampered"
     assert checker.get_status()["ibkr"] == ServiceStatus.UNKNOWN  # original unchanged
@@ -177,7 +200,9 @@ def test_check_tradingview_no_bridge_returns_false(checker):
 
 @pytest.mark.asyncio
 async def test_subscribe_returns_unsubscribe_callable(checker):
+    """Subscribing hands back the callable that undoes it."""
     async def _subscriber(msg: str) -> None:
+        """Record the alert text this subscriber received."""
         pass
     unsubscribe = checker.subscribe(_subscriber)
     assert callable(unsubscribe)
@@ -186,10 +211,13 @@ async def test_subscribe_returns_unsubscribe_callable(checker):
 
 @pytest.mark.asyncio
 async def test_send_alert_notifies_all_subscribers_with_formatted_message(checker):
+    """Every subscriber receives the same pre-formatted alert text."""
     received_a, received_b = [], []
     async def _sub_a(msg: str) -> None:
+        """Record the alert text this subscriber received."""
         received_a.append(msg)
     async def _sub_b(msg: str) -> None:
+        """Record the alert text this subscriber received."""
         received_b.append(msg)
     checker.subscribe(_sub_a)
     checker.subscribe(_sub_b)
@@ -206,6 +234,7 @@ async def test_send_alert_unknown_to_ok_notifies_no_subscribers(checker):
     startup settling into a good state is silent, not an alert-worthy transition."""
     received = []
     async def _subscriber(msg: str) -> None:
+        """Record the alert text this subscriber received."""
         received.append(msg)
     checker.subscribe(_subscriber)
 
@@ -216,8 +245,10 @@ async def test_send_alert_unknown_to_ok_notifies_no_subscribers(checker):
 
 @pytest.mark.asyncio
 async def test_send_alert_unsubscribed_callback_stops_receiving(checker):
+    """An unsubscribed callback receives nothing further."""
     received = []
     async def _subscriber(msg: str) -> None:
+        """Record the alert text this subscriber received."""
         received.append(msg)
     unsubscribe = checker.subscribe(_subscriber)
     unsubscribe()
@@ -236,11 +267,13 @@ async def test_send_alert_subscriber_unsubscribing_itself_midloop_does_not_skip_
     _send_alert call. (Fails if _send_alert iterates the live list instead of a copy.)"""
     received = []
     async def _self_unsubscribing(msg: str) -> None:
+        """Unsubscribe from inside the callback, exercising mutation during iteration."""
         received.append(("first", msg))
         unsubscribe_first()  # mutate the subscriber list mid-notify
     unsubscribe_first = checker.subscribe(_self_unsubscribing)
 
     async def _second(msg: str) -> None:
+        """Record that this subscriber still ran after the first unsubscribed itself."""
         received.append(("second", msg))
     checker.subscribe(_second)
 
@@ -259,8 +292,10 @@ async def test_send_alert_one_subscriber_exception_does_not_block_others(checker
     subscribers (or the status update itself) from proceeding."""
     received = []
     async def _broken_subscriber(msg: str) -> None:
+        """Raise, so a failing subscriber cannot silence the others."""
         raise RuntimeError("subscriber blew up")
     async def _good_subscriber(msg: str) -> None:
+        """Record delivery, proving the broken subscriber did not stop the fan-out."""
         received.append(msg)
     checker.subscribe(_broken_subscriber)
     checker.subscribe(_good_subscriber)
@@ -274,6 +309,7 @@ async def test_send_alert_one_subscriber_exception_does_not_block_others(checker
 
 @pytest.fixture
 def checker_with_token(tmp_path):
+    """A ConnectivityChecker whose Drive token file exists."""
     token = tmp_path / "token.json"
     token.write_text("{}")
     return ConnectivityChecker(
@@ -287,6 +323,7 @@ async def test_run_checks_unknown_to_ok_no_alert(checker_with_token):
     """UNKNOWN → OK at startup: _send_alert runs but notifies no subscribers."""
     received = []
     async def _subscriber(msg: str) -> None:
+        """Record the alert text this subscriber received."""
         received.append(msg)
     checker_with_token.subscribe(_subscriber)
 
@@ -550,6 +587,7 @@ async def test_run_checks_tv_unknown_when_no_bridge(checker):
 # ── _attempt_soft_recovery() ────────────────────────────────────────────────
 
 def test_attempt_soft_recovery_success(checker):
+    """A successful soft recovery is reported as such."""
     m = MagicMock()
     m.status_code = 200
     m.json.return_value = {"authenticated": True, "connected": True, "competing": False}
@@ -575,6 +613,7 @@ def test_attempt_soft_recovery_200_but_body_says_not_authenticated_returns_false
 
 
 def test_attempt_soft_recovery_non_200_returns_false(checker):
+    """A non-200 recovery attempt is reported as failed."""
     m = MagicMock()
     m.status_code = 500
     with patch("claudia.status.requests.post", return_value=m):
@@ -582,6 +621,7 @@ def test_attempt_soft_recovery_non_200_returns_false(checker):
 
 
 def test_attempt_soft_recovery_exception_returns_false(checker):
+    """A raising recovery attempt is reported as failed rather than propagating."""
     with patch("claudia.status.requests.post", side_effect=req.ConnectionError()):
         assert checker._attempt_soft_recovery() is False
 

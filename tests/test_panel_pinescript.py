@@ -21,6 +21,7 @@ from tests.conftest import _get_click_callback
 
 
 def _make_chat():
+    """A chat interface stub that records what was sent."""
     chat = MagicMock()
     chat.send = MagicMock()
     return chat
@@ -43,37 +44,44 @@ def _first_row(chat):
 
 
 def test_extract_pine_blocks_none_when_no_pine_fence():
+    """Text with no pine fence yields no blocks."""
     assert extract_pine_blocks("Just some prose, no code at all.") == []
 
 
 def test_extract_pine_blocks_ignores_non_pine_fences():
+    """A python or plain fence is not mistaken for pine."""
     text = "```python\nprint('hi')\n```\n```js\nconsole.log(1)\n```"
     assert extract_pine_blocks(text) == []
 
 
 def test_extract_pine_blocks_single():
+    """One fenced block is extracted with its body intact."""
     text = "Here you go:\n```pine\n//@version=5\nstrategy(\"X\")\n```\nEnjoy."
     assert extract_pine_blocks(text) == ['//@version=5\nstrategy("X")']
 
 
 def test_extract_pine_blocks_strips_surrounding_whitespace():
+    """Leading and trailing whitespace is stripped from the extracted code."""
     text = "```pine\n\n   //@version=5\n   \n```"
     # Inner content is stripped on both ends.
     assert extract_pine_blocks(text) == ["//@version=5"]
 
 
 def test_extract_pine_blocks_tolerates_info_string_after_pine():
+    """An info string after the language tag still parses as a pine block."""
     text = "```pine version=5 title=foo\nindicator(\"RSI\")\n```"
     assert extract_pine_blocks(text) == ['indicator("RSI")']
 
 
 def test_extract_pine_blocks_does_not_match_longer_fence_tag():
     # ```pinescript is a different (longer) tag — \b guards against a partial match.
+    """A longer tag beginning with "pine" is not treated as pine."""
     text = "```pinescript\nindicator(\"RSI\")\n```"
     assert extract_pine_blocks(text) == []
 
 
 def test_extract_pine_blocks_multiple():
+    """Several blocks in one message are all extracted, in order."""
     text = (
         "First:\n```pine\nstudy(\"A\")\n```\n"
         "Second:\n```pine v5\nstudy(\"B\")\n```\n"
@@ -86,6 +94,7 @@ def test_extract_pine_blocks_multiple():
 
 @pytest.mark.asyncio
 async def test_render_sends_one_row_of_two_buttons_per_block():
+    """Each block gets its own copy and inject buttons."""
     chat = _make_chat()
     text = "```pine\nstudy(\"A\")\n```\n```pine\nstudy(\"B\")\n```"
     await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: None)
@@ -103,6 +112,7 @@ async def test_render_sends_one_row_of_two_buttons_per_block():
 
 @pytest.mark.asyncio
 async def test_render_copy_button_carries_code_in_js_on_click_args():
+    """Copy is a real client-side clipboard write, so the code is passed to the JS callback."""
     chat = _make_chat()
     code = 'strategy("Q")\n// "quotes" and `backticks` and \\n'
     text = f"```pine\n{code}\n```"
@@ -158,6 +168,7 @@ async def test_render_multiple_blocks_each_inject_button_sends_its_own_source():
 
 @pytest.mark.asyncio
 async def test_inject_when_bridge_none_sends_not_connected_and_never_calls_execute():
+    """With no TradingView bridge, inject reports not-connected and calls nothing."""
     chat = _make_chat()
     text = "```pine\nstudy(\"A\")\n```"
     await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: None)
@@ -176,6 +187,7 @@ async def test_inject_when_bridge_none_sends_not_connected_and_never_calls_execu
 @pytest.mark.asyncio
 async def test_inject_when_getter_itself_none_sends_not_connected():
     # The sink default is tv_bridge_getter=None (not a getter returning None).
+    """With no bridge getter at all, inject reports not-connected."""
     chat = _make_chat()
     text = "```pine\nstudy(\"A\")\n```"
     await render_pinescript_blocks(chat, text, tv_bridge_getter=None)
@@ -188,6 +200,7 @@ async def test_inject_when_getter_itself_none_sends_not_connected():
 
 def test_pine_inject_succeeded_classifies_result_shapes():
     # Explicit success signal — the only truthy case.
+    """Each observed sidecar result shape is classified as success or failure."""
     assert _pine_inject_succeeded('{"success": true}') is True
     assert _pine_inject_succeeded('{"success": true, "source": "internal_api"}') is True
     # Explicit failure from the sidecar.
@@ -203,6 +216,7 @@ def test_pine_inject_succeeded_classifies_result_shapes():
 
 @pytest.mark.asyncio
 async def test_inject_success_calls_pine_set_source_and_confirms():
+    """A successful inject calls the sidecar's set-source tool and confirms it."""
     chat = _make_chat()
     code = 'study("A")'
     text = f"```pine\n{code}\n```"
@@ -265,6 +279,7 @@ async def test_inject_non_json_status_string_is_treated_as_failure():
 
 @pytest.mark.asyncio
 async def test_inject_failure_sends_honest_message_and_does_not_raise():
+    """A failed inject reports honestly and never raises — injection can be retried."""
     chat = _make_chat()
     text = "```pine\nstudy(\"A\")\n```"
     bridge = MagicMock()

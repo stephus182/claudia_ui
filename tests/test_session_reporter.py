@@ -8,6 +8,7 @@ from claudia.session_reporter import _TOOL_LABELS, generate_session_report
 
 @pytest.fixture
 def store(tmp_path):
+    """A ConversationStore backed by a throwaway database."""
     return ConversationStore(tmp_path / "test.db")
 
 
@@ -77,6 +78,7 @@ def test_report_filename_is_timestamp(store, session_with_tools, tmp_path, monke
 # ---------------------------------------------------------------------------
 
 def test_report_contains_session_id(store, session_with_tools, tmp_path, monkeypatch):
+    """The generated report names the session it describes."""
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_with_tools, store)
     assert path is not None
