@@ -35,7 +35,7 @@ question separately. Three states, not two:
 
 | `ping()` | account reads | what the user is told |
 |---|---|---|
-| up | up | full status, live orders included |
+| up | up | nothing — no caveat to give, and every figure lives in the dashboard |
 | down | **up** | account figures, plus what is unavailable and why (`BROKERAGE_SESSION_DOWN`) |
 | down | down | `OFFLINE_STATUS` — and the dashboard blanks to match |
 

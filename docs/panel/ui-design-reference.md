@@ -71,6 +71,13 @@ smokes, which predate both the screenshot `FileInput` (Task 8.1) and the candles
 `pn.Row` (see `panel-reference.md` §4). Treat them as a chat-surface baseline, not a
 full-window one.
 
+⚠ **And the account content above is gone (2026-08-05).** The positions table, the live-order
+bullets and the P&L figures described here were the startup message; the live dashboard now
+owns all of them and chat renders none. What that costs this section is only its *examples* —
+the uncoloured `-$1,009.95` was the sharpest illustration of the styling gap, not the gap
+itself, and the same rule applies wherever a number lands. The dashboard's own colouring is a
+separate surface with a separate baseline.
+
 ---
 
 ## 2. The shadow-DOM constraint — the one finding that dictates everything

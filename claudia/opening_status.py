@@ -5,28 +5,26 @@ and tests can feed dict fixtures directly. Uses the `toolkit._store` reach-in; f
 it uses `toolkit._config`, since `ClaudeToolkit` exposes no public config/store property.
 
 Began as a faithful port of the Chainlit app's startup status logic and **deliberately
-stopped being one on 2026-08-05**, when the live dashboard took over the account figures.
-What this builds now is the half chat still owns:
+stopped being one on 2026-08-05**, when the live dashboard took over every account figure.
+What this builds now is only the half chat still owns:
 
 * the **session state** — which of IBKR's two independent halves is answering
   (`account_readable`), and the `brokerage_session_down` flag that drives the
   Start-Gateway button and defers the background Flex sync;
-* the **trade-dataset line** and the system-prompt trade/calendar context;
-* a **one-shot snapshot of the working order book** at session start.
+* the **trade-dataset line** and the system-prompt trade/calendar context.
 
-Account Summary, Open Positions and Account P&L were removed with the port's last
-Chainlit-shaped assumption: that chat is the only place a number can live. So was the
-reconciliation that re-parsed those rendered blocks against each other —
-`dashboard_data.reconcile` does that on structured figures instead.
+**No account figure is rendered here any more, and none is fetched.** Account Summary,
+Open Positions and Account P&L went first, then the working order book once the dashboard
+gained its Orders tab the same afternoon (user's call: "order and pnl functions are now
+externalised to dashboard… lighter startup is better"). The argument is the same in every
+case: chat prints once, the dashboard polls every 15s, so a startup copy is stale the
+moment it renders — and two surfaces disagreeing about the account is the exact failure
+`account_readable`'s docstring records. The reconciliation that used to re-parse those
+rendered blocks against each other went with them; `dashboard_data.reconcile` does it on
+structured figures instead.
 
-⚠ **Open question, raised 2026-08-05 by the change that caused it.** The order book was
-kept here on the grounds that no other surface showed it. Later the same day the dashboard
-gained an **Orders** tab, which polls it live — so this block is now a once-rendered copy
-of a continuously-updated surface, which is precisely the argument that retired the other
-three. It is deliberately *not* removed yet: unlike those, it is a glance at session start
-before any tab is chosen, and the same call also produces the `brokerage_session_down`
-flag that the buttons and the Flex sync depend on. Whether the *rendering* stays is a UX
-decision for the account holder; the probe stays regardless.
+What survives is the *probe*, not the print: `gather_session_state` still asks IBKR which
+halves are up, because the flag it returns is what the buttons and the Flex sync read.
 """
 
 import asyncio
@@ -98,67 +96,56 @@ def account_readable(toolkit: ClaudeToolkit) -> bool:
         return False
 
 
-async def gather_status_block(toolkit: ClaudeToolkit) -> tuple[str, bool]:
-    """(status_block_markdown, brokerage_session_down).
+async def gather_session_state(toolkit: ClaudeToolkit) -> tuple[str, bool]:
+    """(caveat_markdown, brokerage_session_down) — **the caveat is empty when all is well.**
 
     Three states, because IBKR has three — see `account_readable` for the measurement
     that forced the middle one to exist:
 
-    | `ping()` | account reads | block | flag |
+    | `ping()` | account reads | caveat | flag |
     |---|---|---|---|
-    | up | up | live orders | False |
+    | up | up | `""` — say nothing | False |
     | down | **up** | what is unavailable and why | True |
     | down | down | `OFFLINE_STATUS` | True |
 
-    The middle row is the one this function used to get wrong. It short-circuited on
-    `ping()` and declared the gateway disconnected, while the dashboard beside it drew
-    live balances from the account endpoints that were answering perfectly. Whichever
-    panel a user believed, the other one was telling them something false.
+    The middle row is the one this used to get wrong. It short-circuited on `ping()` and
+    declared the gateway disconnected, while the dashboard beside it drew live balances
+    from the account endpoints that were answering perfectly. Whichever panel a user
+    believed, the other one was telling them something false.
 
     The returned flag stays "the brokerage session is down", which is what its consumers
     actually want: it drives the Start-Gateway button and defers the background Flex
     sync. It is deliberately True in the middle row — order actions really are
-    unavailable there — and the block says so in words instead of implying the account
+    unavailable there — and the caveat says so in words instead of implying the account
     is unreadable.
 
-    **Live orders are all this returns (2026-08-05).** It used to open with Account
-    Summary, Open Positions and Account P&L as well — the Chainlit-era opening statement,
-    written when chat was the only surface there was. The live dashboard now polls all
-    three every 15 seconds, so printing them here produced a second copy that was stale
-    the moment it rendered, of exactly the figures the panel beside it keeps current.
-    Two surfaces disagreeing about the account is the failure the middle row above exists
-    to prevent; keeping a frozen duplicate was inviting it back in another form.
+    **The healthy path now prints nothing, because there is nothing chat can say that the
+    dashboard is not already saying better** (2026-08-05, renamed from
+    `gather_status_block` when the last rendered block left). It returned Account Summary,
+    Open Positions and Account P&L until that morning, then the working order book until
+    that afternoon; each left as soon as a live surface covered it. A caveat is different
+    in kind from a figure: it is true for as long as the condition holds, it names
+    something the dashboard *cannot* show (a session that is down does not draw), and it
+    is what the Start-Gateway button below it acts on.
 
-    Live orders stayed because, at that moment, nothing else showed them. **That reason
-    expired the same afternoon** — the dashboard gained an Orders tab hours later, so this
-    is now a session-start snapshot beside a live one rather than the only view of the
-    book. See the module docstring for why it was left in place anyway and what is still
-    an open question.
-
-    Removing the other three also took the three `toolkit.execute` calls and the ledger
-    fetch off the startup path, and with them the text-reparsing reconciliation that used
-    to compare the rendered positions block against the rendered ledger block. The
-    dashboard runs the same check on structured figures (`dashboard_data.reconcile`),
-    where it cannot fail to parse and can compare currencies instead of guessing at a
-    bare `$`.
-
-    `toolkit.execute()` swallows exceptions and returns an error string rather than
-    raising, which is why reachability is probed first instead of being inferred from the
-    output.
+    That leaves one IBKR call at startup on the healthy path — `ping()` — where there
+    were five: three `toolkit.execute` calls, a ledger fetch, and the text-reparsing
+    reconciliation that compared the rendered positions block against the rendered ledger
+    block. The dashboard runs that same check on structured figures
+    (`dashboard_data.reconcile`), where it cannot fail to parse and can compare currencies
+    instead of guessing at a bare `$`.
     """
     try:
-        gateway_up = await asyncio.to_thread(toolkit.client.ping)
-        if not gateway_up and not await asyncio.to_thread(account_readable, toolkit):
-            return OFFLINE_STATUS, True
-        # Only ask for live orders when the brokerage session can answer. Without it the
-        # call returns IBKR's "no bridge" 400, and rendering that under a **Live Orders**
-        # heading reads as an account fault rather than as the session state it is.
-        if not gateway_up:
+        if await asyncio.to_thread(toolkit.client.ping):
+            return "", False
+        # Brokerage session down. Which of the other two states this is depends on whether
+        # the account endpoints answer — they are served from the SSO session and commonly
+        # do. Never inferred from `ping()`; that inference is the bug above.
+        if await asyncio.to_thread(account_readable, toolkit):
             return BROKERAGE_SESSION_DOWN, True
-        orders_text, _ = await asyncio.to_thread(toolkit.execute, "get_live_orders", {})
-        return f"**Live Orders**\n{orders_text}", False
+        return OFFLINE_STATUS, True
     except Exception as exc:
-        log.warning("Could not load IBKR opening status: %s", exc)
+        log.warning("Could not determine IBKR session state: %s", exc)
         return OFFLINE_STATUS, True
 
 

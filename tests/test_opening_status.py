@@ -13,7 +13,7 @@ from claudia.opening_status import (
     BROKERAGE_SESSION_DOWN,
     OFFLINE_STATUS,
     build_trade_lines,
-    gather_status_block,
+    gather_session_state,
 )
 
 
@@ -48,34 +48,32 @@ _MKT = {
 
 
 @pytest.mark.asyncio
-async def test_the_opening_block_is_live_orders_and_nothing_the_dashboard_shows():
-    """2026-08-05, user's call: the live dashboard replaces the opening statement.
+async def test_a_healthy_session_says_nothing_because_the_dashboard_says_it_all():
+    """2026-08-05, user's call: every account figure is externalised to the dashboard.
 
-    Account Summary, Open Positions and Account P&L were the Chainlit-era opening
-    statement, written when chat was the only surface. The dashboard now polls all three
-    every 15s, so printing them once at startup is a second, immediately-stale copy of
-    the same figures — and two surfaces disagreeing about the account is precisely the
-    failure the 2026-08-04 status work was about.
+    Account Summary, Open Positions and Account P&L went that morning — Chainlit-era
+    blocks, written when chat was the only surface. The working order book went that
+    afternoon, once the dashboard's Orders tab polled it live. Same argument each time:
+    chat prints once, the dashboard polls every 15s, so a startup copy is stale on
+    arrival, and two surfaces disagreeing about the account is the exact failure the
+    2026-08-04 status work was about.
 
-    Live Orders stays because nothing else shows it: the dashboard's tabs are
-    Chart · Positions · P&L. Dropping it too would have made the resting book invisible
-    at open.
+    So a healthy start contributes NO text — the empty string, not a heading with nothing
+    under it — and, just as importantly, no IBKR data call. `ping()` is the whole probe.
     """
     toolkit = MagicMock()
     toolkit.client.ping.return_value = True
     toolkit.execute.side_effect = lambda name, inputs: (f"{name} text", None)
-    block, offline = await gather_status_block(toolkit)
+    caveat, offline = await gather_session_state(toolkit)
 
-    assert offline is False
-    assert "**Live Orders**\nget_live_orders text" in block
-    for gone in ("Account Summary", "Open Positions", "Account P&L"):
-        assert gone not in block
-    # and the three IBKR calls behind them are no longer made at startup
-    assert [c.args[0] for c in toolkit.execute.call_args_list] == ["get_live_orders"]
+    assert (caveat, offline) == ("", False)
+    # No account fetch of any kind at startup — not the three retired blocks, and since
+    # this afternoon not get_live_orders either.
+    toolkit.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_gather_status_block_offline_when_nothing_answers():
+async def test_gather_session_state_offline_when_nothing_answers():
     """Neither the brokerage session nor the account endpoints — the real offline case.
 
     Every status call must be SKIPPED: `toolkit.execute` swallows exceptions into error
@@ -84,7 +82,7 @@ async def test_gather_status_block_offline_when_nothing_answers():
     toolkit = MagicMock()
     toolkit.client.ping.return_value = False
     toolkit.client.get_accounts.return_value = []
-    block, offline = await gather_status_block(toolkit)
+    block, offline = await gather_session_state(toolkit)
     assert offline is True
     assert block == OFFLINE_STATUS
     toolkit.execute.assert_not_called()
@@ -97,16 +95,19 @@ async def test_account_data_is_shown_when_only_the_brokerage_session_is_down():
     Measured live 2026-08-04: `ping()` False, `/portfolio/{id}/ledger` serving live
     figures, `/iserver/account/orders` returning `{"error": "Bad Request: no bridge"}`.
     The chat said "IBKR gateway not connected" while the dashboard drew live balances
-    from the endpoints that were answering. The account block must be rendered, the
-    reason for the missing half named, and `get_live_orders` NOT called — its "no bridge"
-    400 under a **Live Orders** heading reads as an account fault rather than a session
-    one.
+    from the endpoints that were answering.
+
+    This is the one state that still produces text, and it is why the caveat survived the
+    2026-08-05 cleanup that removed every rendered figure: the dashboard cannot report a
+    session that is down — it just shows the balances it *can* still reach — so nothing
+    else on screen names the missing half. The message must say what is unavailable and
+    why, and must not imply the account is unreadable when it plainly is.
     """
     toolkit = MagicMock()
     toolkit.client.ping.return_value = False
     toolkit.client.get_accounts.return_value = [{"accountId": "U1234567"}]
     toolkit.execute.side_effect = lambda name, inputs: (f"{name} text", None)
-    block, offline = await gather_status_block(toolkit)
+    block, offline = await gather_session_state(toolkit)
 
     assert offline is True  # order actions really are unavailable
     assert block == BROKERAGE_SESSION_DOWN
@@ -128,10 +129,10 @@ async def test_offline_message_and_dashboard_agree_that_there_is_no_data():
 
 
 @pytest.mark.asyncio
-async def test_gather_status_block_offline_when_ping_raises():
+async def test_gather_session_state_offline_when_ping_raises():
     toolkit = MagicMock()
     toolkit.client.ping.side_effect = ConnectionError("gateway down")
-    block, offline = await gather_status_block(toolkit)
+    block, offline = await gather_session_state(toolkit)
     assert offline is True
     assert block == OFFLINE_STATUS
 

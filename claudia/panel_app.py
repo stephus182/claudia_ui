@@ -56,7 +56,7 @@ from claudia.execution_listener import ExecutionListener
 from claudia.flex_sync import dataset_fingerprint, validate_dataset
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
-from claudia.opening_status import build_trade_lines, gather_status_block
+from claudia.opening_status import build_trade_lines, gather_session_state
 from claudia.panel_chart import build_chart_pane
 from claudia.panel_dashboard import build_dashboard
 from claudia.panel_markdown import safe_markdown
@@ -329,15 +329,21 @@ async def _connect_tradingview(agent: ClaudIAAgent) -> bool:
 async def _send_opening_status(
     chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, tv_offline: bool
 ) -> tuple[str | None, bool]:
-    """Send the second chat message with live account status and return
-    (trade_context, ibkr_offline): the trade/calendar context for the caller to
+    """Send the second chat message — what is *not* working, plus the local dataset — and
+    return (trade_context, ibkr_offline): the trade/calendar context for the caller to
     stamp on agent._trade_context, and the offline flag so _init_session can
     decide whether to offer the Start-Gateway button (Task 5.3/5.6b —
     parity with the removed app.py). tv_offline (from _connect_tradingview) drives the
     TradingView status line. Effectively non-raising: both builders catch their
     own IBKR/store failures internally and degrade to offline/fallback text; an
-    unexpected escape is caught by _init_session's generic handler."""
-    status_block, ibkr_offline = await gather_status_block(toolkit)
+    unexpected escape is caught by _init_session's generic handler.
+
+    The IBKR half is a caveat, not a report: `gather_session_state` returns `""` when both
+    halves of the gateway answer, and the empty part is dropped rather than sent as a
+    leading blank line. Account figures and the order book live in the dashboard and are
+    no longer echoed here (2026-08-05) — so on a healthy start this message is two lines:
+    the trade dataset and TradingView."""
+    ibkr_caveat, ibkr_offline = await gather_session_state(toolkit)
     trade_status, trade_context = await asyncio.to_thread(
         build_trade_lines, toolkit, ibkr_offline
     )
@@ -346,11 +352,8 @@ async def _send_opening_status(
         if tv_offline
         else "_TradingView: connected._"
     )
-    chat.send(
-        f"{status_block}\n\n_{trade_status}_\n\n{tv_line}",
-        user="ClaudIA",
-        respond=False,
-    )
+    parts = ([ibkr_caveat] if ibkr_caveat else []) + [f"_{trade_status}_", tv_line]
+    chat.send("\n\n".join(parts), user="ClaudIA", respond=False)
     return trade_context, ibkr_offline
 
 
@@ -803,7 +806,11 @@ def _build_chat_app() -> pn.chat.ChatInterface:
 
     chat.callback = _on_user_input
     chat.send(
-        "**ClaudIA is ready** — gathering your account status…",  # status block follows via _send_opening_status once init completes
+        # Was "gathering your account status…", which stopped being true on 2026-08-05:
+        # the dashboard gathers it, continuously, and this message no longer waits on any
+        # account call. What still follows via _send_opening_status is the local dataset
+        # line, TradingView, and a caveat if either half of IBKR is down.
+        "**ClaudIA is ready** — loading your trade history…",
         user="ClaudIA",
         respond=False,
     )

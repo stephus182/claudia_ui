@@ -157,8 +157,10 @@ right after the connectivity checker (`claudia/app.py`, `on_chat_start` step 8),
 IBKR ping check in Phase 5.
 
 - Subscribes to IBKR's execution WebSocket feed (any order origin, not just ClaudIA's own)
-- On each trade execution, triggers a one-shot P&L snapshot check, which drives the
-  "Account P&L" line shown in the welcome message
+- On each trade execution, triggers a one-shot P&L snapshot check. This used to drive an
+  "Account P&L" line in the welcome message; that line was retired on 2026-08-05 (the
+  dashboard's KPI strip polls it live). The snapshot itself still runs and is still what
+  `get_live_pnl` reads
 - Connection failures retry on a backoff schedule (5s, 10s, 30s, 60s) rather than failing the
   session — a listener outage only affects the auto-triggered P&L snapshot after a fill, not
   order placement/modify/cancel (`get_live_pnl` still works by reading the last stored snapshot)
@@ -176,15 +178,27 @@ IBKR ping check in Phase 5.
   logged in)
 - Returns `False` on any network error, 401, or non-authenticated state
 
-**If ping returns False:**
-- `ibkr_offline = True`
-- Account summary, live orders, and positions are skipped (would fail anyway)
-- "Start IBKR Gateway" action button is added to the welcome message
+**If ping returns False:** a second, independent question is asked —
+`opening_status.account_readable`, which probes `/portfolio/*` via `get_accounts`. IBKR's two
+halves fail separately, and inferring one from the other put a "gateway not connected" line
+beside a dashboard drawing live balances (2026-08-04, `docs/connectivity.md`).
 
-**If ping returns True:**
-- Account summary, live orders, and positions are fetched in parallel
+- `ibkr_offline = True` either way — it means *the brokerage session* is down, which is what
+  the flag's consumers act on: it adds the "Start IBKR Gateway" button and defers the Flex sync
+- account endpoints answering → `BROKERAGE_SESSION_DOWN`: the dashboard keeps drawing, and the
+  chat names the half that is missing
+- neither answering → `OFFLINE_STATUS`, and the dashboard blanks to match
+
+**If ping returns True:** chat says nothing about the account at all.
+
 - Flex sync staleness check runs
 - Market calendar context is injected into system prompt
+
+**No account figure is fetched here (2026-08-05).** Account summary, live orders and positions
+were fetched in parallel and rendered into the welcome message until the live dashboard took
+over: it polls all of them every 15s, so a startup copy was a second, immediately-stale set of
+the same numbers. On the healthy path the whole phase is now one `ping()`. See
+`claudia/opening_status.py`'s module docstring.
 
 ---
 

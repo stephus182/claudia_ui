@@ -21,7 +21,7 @@ claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prom
 claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
 claudia/order_flow.py       — framework-agnostic order-execution cores → ibkr_core_mcp biometric gates
-claudia/opening_status.py   — UI-free opening-status builders (live orders + session state + trade line)
+claudia/opening_status.py   — UI-free opening-status builders (session state + trade line; no account figures)
 claudia/flex_sync.py        — session-start dataset validation + the "did this pull change anything" gate
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions

@@ -551,9 +551,10 @@ async def test_init_reads_context_docs_from_drive_when_sync_available(monkeypatc
 @pytest.mark.asyncio
 async def test_init_sends_opening_status_and_stamps_trade_context():
     """Task 5.3: after the agent is built, init must send the status message
-    (status block + trade status line) and stamp agent._trade_context BEFORE the
-    input gate opens (app.py:399-514 parity) — an agent published without its
-    trade context would silently answer without trade-history grounding."""
+    (trade status line, plus an IBKR caveat when there is one) and stamp
+    agent._trade_context BEFORE the input gate opens (app.py:399-514 parity) — an agent
+    published without its trade context would silently answer without trade-history
+    grounding."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -566,8 +567,8 @@ async def test_init_sends_opening_status_and_stamps_trade_context():
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch(
-            "claudia.panel_app.gather_status_block",
-            new=AsyncMock(return_value=("STATUS BLOCK", False)),
+            "claudia.panel_app.gather_session_state",
+            new=AsyncMock(return_value=("", False)),
         ),
         patch(
             "claudia.panel_app.build_trade_lines",
@@ -580,7 +581,12 @@ async def test_init_sends_opening_status_and_stamps_trade_context():
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
     texts = _message_texts(chat)
-    assert any("STATUS BLOCK" in t and "trade status line" in t for t in texts)
+    status = [t for t in texts if "trade status line" in t]
+    assert len(status) == 1
+    # An empty caveat must be DROPPED, not joined — a healthy start opened with a blank
+    # line and a separator where the account blocks used to be, which reads as a message
+    # that failed to load rather than one with nothing to report.
+    assert status[0].startswith("_trade status line_")
     assert mock_agent_cls.return_value._trade_context == "TRADE CTX"
     mock_build.assert_called_once_with(mock_toolkit, False)
     mock_agent_cls.return_value.handle_message.assert_called_once_with("hello")
@@ -588,9 +594,10 @@ async def test_init_sends_opening_status_and_stamps_trade_context():
 
 @pytest.mark.asyncio
 async def test_init_offline_flag_flows_from_gather_to_trade_lines():
-    """Pins the ibkr_offline plumbing: gather_status_block's offline result must
+    """Pins the ibkr_offline plumbing: gather_session_state's offline result must
     flow into build_trade_lines as its second argument — a hardcoded False or an
-    argument swap must fail this test."""
+    argument swap must fail this test. Also the only state that still renders IBKR text
+    at startup, so it pins that the caveat is not dropped along with the figures."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -603,7 +610,7 @@ async def test_init_offline_flag_flows_from_gather_to_trade_lines():
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch(
-            "claudia.panel_app.gather_status_block",
+            "claudia.panel_app.gather_session_state",
             new=AsyncMock(return_value=("OFFLINE BLOCK", True)),
         ),
         patch(
