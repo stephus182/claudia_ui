@@ -172,6 +172,21 @@ _SUSPENDED_PHASES = frozenset({SessionPhase.AUTHENTICATING, SessionPhase.RECOVER
 # under which a figure on screen can be vouched for.
 _DATA_PHASES = frozenset({SessionPhase.LIVE})
 
+POLL_INTERVAL = 60.0
+"""Seconds between session reads.
+
+Matches IBKR's *"It is expected to call this endpoint approximately every 60 seconds"*
+(https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md). The read
+is a `/tickle`, so polling and renewing are the same act — which is the whole reason the
+suspend lock has to cover this loop too.
+
+Declared **here**, above `GatewaySession`, rather than in the stage-3 section where it
+used to live. Defined after the class, it could not be used as a default, so the real
+interval was two hardcoded `60.0` literals and this constant — the one carrying the IBKR
+citation — was read by nothing: editing it changed no behaviour. Found 2026-08-06 by
+grepping for its own readers.
+"""
+
 
 @dataclass(frozen=True)
 class SessionState:
@@ -352,7 +367,7 @@ class GatewaySession:
     _subscribers: list[Callable[[SessionState], None]] = field(default_factory=list)
     _task: asyncio.Task[None] | None = None
     _poll_url: str | None = None
-    _interval: float = 60.0
+    _interval: float = POLL_INTERVAL
 
     def state(self) -> SessionState:
         """The current state. Synchronous, no I/O — safe from a Panel callback.
@@ -450,7 +465,7 @@ class GatewaySession:
 
     # ── Background polling (stage 3) ────────────────────────────────────────
 
-    def start(self, url: str | None = None, interval: float = 60.0) -> None:
+    def start(self, url: str | None = None, interval: float = POLL_INTERVAL) -> None:
         """Begin polling the session. Idempotent; restarts a finished task.
 
         Same lifecycle shape as `ConnectivityChecker` and `DashboardPoller`: one task for
@@ -702,6 +717,55 @@ def confirm_session(url: str, timeout: float = 10.0) -> tuple[bool, str]:
     return True, f"account(s) {', '.join(i for i in ids if i) or 'unnamed'}"
 
 
+def release_session(gateway_url_: str, timeout: float = 10.0) -> tuple[bool, str]:
+    """`POST /logout` — make the gateway drop the session it is holding. Opt-in only.
+
+    Deliberately **not** part of `read_state`: that function's contract is that it cannot
+    change anything, and a check which might destroy a session is not a check. This is the
+    one call in the module that writes, it is reached only via `--release`, and it is never
+    run automatically.
+
+    ⚠ **Scope is NOT documented, and an earlier version of this docstring said it was.**
+    IBKR's page says exactly one thing about it — *"Logs the user out of the gateway
+    session. Any further activity requires re-authentication."*
+    (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/logout-of-the-current-session.md).
+    It says nothing about whether that cascades to a session held by TWS or IBKR Mobile.
+    This docstring used to assert "it ends the gateway's local session, not the SSO
+    session globally — so releasing a borrowed IBKR Mobile session does not log the phone
+    out", attributed to IBKR. **IBKR does not say that**; it was our inference wearing the
+    documentation's authority, and it is the reassuring half of the claim, which is the
+    worst half to get wrong.
+
+    Only one brokerage session exists per username across Client Portal, TWS and IBKR
+    Mobile (https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md), so
+    the *a priori* case for a cascade is real rather than paranoid. Until someone
+    deliberately tests it — with nothing at risk on the phone — treat `--release` as
+    **potentially ending an IBKR Mobile session too**, and never run it while another app
+    is being used to manage a live position.
+
+    This is not `reauthenticate`, which `feedback-ibkr-session-safety` forbids calling
+    speculatively — that one re-establishes a session and kills fresh logins. This one only
+    drops what is already held, and is worth doing precisely when what is held is unusable.
+
+    Returns:
+        (released, detail). `released` reflects IBKR's own `status` field, not merely a
+        200 — the endpoint returns `{"status": true}` on success and the distinction
+        matters when the point is to know whether the slot is actually free.
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+            resp = requests.post(f"{gateway_url_}/logout", timeout=timeout, verify=False)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    if resp.status_code != 200:
+        return False, f"HTTP {resp.status_code}"
+    try:
+        return bool(resp.json().get("status")), resp.text.strip()
+    except Exception:
+        return False, resp.text.strip()[:120]
+
+
 # Guidance attached to a login that never completed. It leads with the other-app
 # collision because that is both the likeliest cause and the one the pre-flight is
 # structurally unable to see: measured 2026-08-06, a live IBKR Mobile login left
@@ -787,7 +851,8 @@ def _establish(
                 as_of=datetime.now(UTC),
                 detail=(
                     f"The gateway did not answer within {reach_timeout}s. The login page "
-                    "will not load either — check `docker logs ibkr_core_gateway`."
+                    "will not load either — run `python -m claudia.gateway_launch "
+                    "--diagnose` for the gateway's own log."
                 ),
             )
         )
@@ -887,7 +952,8 @@ def _recover(
        logging a user out of the phone they are managing a live position on is not a risk
        worth taking for a call that did not work anyway.
 
-    `gateway_preflight.release_session` still exists behind `--release` for deliberate
+    `release_session` (above, moved into this module on 2026-08-06 so the owner holds
+    every session write) still exists behind `gateway_preflight --release` for deliberate
     manual use. Nothing automatic calls it.
 
     The suspend lock is held across the whole operation so no tickler can re-establish
@@ -939,16 +1005,6 @@ def get_session() -> GatewaySession:
 # ══════════════════════════════════════════════════════════════════════════════
 # Stage 3 — the owner polls, and owns the last session-affecting write.
 # ══════════════════════════════════════════════════════════════════════════════
-
-POLL_INTERVAL = 60.0
-"""Seconds between session reads.
-
-Matches IBKR's *"It is expected to call this endpoint approximately every 60 seconds"*
-(https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md). The read
-is a `/tickle`, so polling and renewing are the same act — which is the whole reason the
-suspend lock has to cover this loop too.
-"""
-
 
 def attempt_soft_recovery(url: str, timeout: float = 5.0) -> bool:
     """`POST /iserver/auth/ssodh/init` — raise the brokerage bridge after a soft timeout.

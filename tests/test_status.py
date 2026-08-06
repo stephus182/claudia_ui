@@ -391,7 +391,9 @@ async def test_run_checks_tv_unknown_when_no_bridge(checker):
     assert checker.get_status()["tv"] == ServiceStatus.UNKNOWN
 
 
-# ── _attempt_soft_recovery() ────────────────────────────────────────────────
+# ── Poll-loop lifecycle ─────────────────────────────────────────────────────
+# (The soft-recovery tests that used to sit under this banner moved to
+#  tests/test_gateway_session.py on 2026-08-06 with the write itself.)
 
 @pytest.mark.asyncio
 async def test_stop_cancels_task(checker):

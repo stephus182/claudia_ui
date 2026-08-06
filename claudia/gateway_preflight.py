@@ -67,9 +67,11 @@ authenticated, `/sso/validate` for **whose** it is. It never posts, which
 establish or destroy a session is not a check, and re-authenticating speculatively is what
 breaks a fresh login (`feedback-ibkr-session-safety`).
 
-`release_session` is the single exception and is reached only through `--release`. It is
-`POST /logout`, which IBKR scopes to the gateway's **local** session, so releasing a
-borrowed mobile session does not log the phone out.
+**There is no exception any more.** `--release` still exists, but the `POST /logout` it
+performs lives in `claudia.gateway_session` — the session owner — and is merely *invoked*
+from this CLI. That move (2026-08-06) emptied `_SESSION_WRITE_ALLOWED` in
+`tests/test_gateway_ownership.py`, which is what that allowlist was always for: it records
+permissions that are meant to shrink to nothing, and this was the last entry.
 
 The one side effect the GETs do have is benign: `/tickle` resets the keepalive timer,
 exactly as `ConnectivityChecker.check_ibkr` does every 60 seconds anyway. Reading can
@@ -311,55 +313,6 @@ def gateway_url() -> str:
     return os.environ.get("IBKR_GATEWAY_URL", DEFAULT_GATEWAY_URL)
 
 
-def release_session(gateway_url_: str, timeout: float = 10.0) -> tuple[bool, str]:
-    """`POST /logout` — make the gateway drop the session it is holding. Opt-in only.
-
-    Deliberately **not** part of `read_state`: that function's contract is that it cannot
-    change anything, and a check which might destroy a session is not a check. This is the
-    one call in the module that writes, it is reached only via `--release`, and it is never
-    run automatically.
-
-    ⚠ **Scope is NOT documented, and an earlier version of this docstring said it was.**
-    IBKR's page says exactly one thing about it — *"Logs the user out of the gateway
-    session. Any further activity requires re-authentication."*
-    (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/logout-of-the-current-session.md).
-    It says nothing about whether that cascades to a session held by TWS or IBKR Mobile.
-    This docstring used to assert "it ends the gateway's local session, not the SSO
-    session globally — so releasing a borrowed IBKR Mobile session does not log the phone
-    out", attributed to IBKR. **IBKR does not say that**; it was our inference wearing the
-    documentation's authority, and it is the reassuring half of the claim, which is the
-    worst half to get wrong.
-
-    Only one brokerage session exists per username across Client Portal, TWS and IBKR
-    Mobile (https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md), so
-    the *a priori* case for a cascade is real rather than paranoid. Until someone
-    deliberately tests it — with nothing at risk on the phone — treat `--release` as
-    **potentially ending an IBKR Mobile session too**, and never run it while another app
-    is being used to manage a live position.
-
-    This is not `reauthenticate`, which `feedback-ibkr-session-safety` forbids calling
-    speculatively — that one re-establishes a session and kills fresh logins. This one only
-    drops what is already held, and is worth doing precisely when what is held is unusable.
-
-    Returns:
-        (released, detail). `released` reflects IBKR's own `status` field, not merely a
-        200 — the endpoint returns `{"status": true}` on success and the distinction
-        matters when the point is to know whether the slot is actually free.
-    """
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-            resp = requests.post(f"{gateway_url_}/logout", timeout=timeout, verify=False)
-    except Exception as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    if resp.status_code != 200:
-        return False, f"HTTP {resp.status_code}"
-    try:
-        return bool(resp.json().get("status")), resp.text.strip()
-    except Exception:
-        return False, resp.text.strip()[:120]
-
-
 def warn_if_session_borrowed(url: str | None = None) -> str | None:
     """Log a loud error when another IBKR app **provably** holds the gateway's session.
 
@@ -430,6 +383,10 @@ def main(argv: list[str] | None = None) -> int:
     url = gateway_url()
 
     if "--release" in args:
+        # Imported here, not at module level: `gateway_session` imports this module for
+        # `read_state`/`GatewayState`, so a top-level import would be a circular one.
+        from claudia.gateway_session import release_session
+
         print("Releasing the gateway's held session (POST /logout)…\n")
         released, detail = release_session(url)
         print(f"  released={released}  {detail}\n")

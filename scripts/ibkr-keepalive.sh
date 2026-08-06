@@ -3,8 +3,10 @@
 # independent of whether ClaudIA is running.
 #
 # The IBKR session lives in Docker (localhost:5055), not in ClaudIA.
-# ClaudIA's ConnectivityChecker calls /tickle every 60s to prevent the
-# ~5-6 min inactivity timeout, but only while ClaudIA itself is running.
+# ClaudIA's GatewaySession reads /tickle every 60s, which prevents the
+# ~5-6 min inactivity timeout as a side effect — but only while ClaudIA
+# itself is running. (That read used to be ConnectivityChecker's; it moved
+# to the session owner on 2026-08-06 and the checker now issues no HTTP.)
 # This script provides the same protection independent of ClaudIA's
 # process lifecycle — safe to run standalone (foreground, Ctrl-C to stop)
 # or as a launchd daemon (see scripts/install-ibkr-keepalive-daemon.sh).
@@ -45,10 +47,45 @@
 
 set -euo pipefail
 
-GATEWAY_URL="${IBKR_GATEWAY_URL:-https://localhost:5055}"
 INTERVAL=55  # slightly under IBKR's recommended ~1 tickle/min
-TICKLE_URL="${GATEWAY_URL%/}/tickle"
 SUSPEND_LOCK="${HOME}/.ibkr_core/session.suspend"
+
+# THE URL IS DERIVED ONCE, AFTER .env, AND VALIDATED. Both halves matter — measured
+# 2026-08-06, this block previously had two ways to silently stop renewing anything:
+#
+#   1. The default was `https://localhost:5055` with NO `/v1/api`, so with no .env this
+#      tickled `https://localhost:5055/tickle` — probed live, that returns **HTTP 302**,
+#      not 200. The loop below would then log WARN forever AND release `caffeinate`,
+#      letting the Mac sleep the session away. A keepalive that reports a problem it is
+#      itself causing is worse than no keepalive.
+#   2. The URL was computed BEFORE .env was sourced and then recomputed inside the
+#      `if`, from `${IBKR_GATEWAY_URL%/}` — unset if .env exists but omits the var.
+#      Executed: that yields the bare string `/tickle`, and `set -u` does NOT catch it
+#      because `${var%pattern}` is not a plain expansion.
+#
+# Both failures are silent and look identical to "the gateway is down". Hence: load .env
+# first, default once with the suffix, then refuse to start on anything unusable.
+ENV_FILE="$(dirname "$0")/../.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+fi
+
+GATEWAY_URL="${IBKR_GATEWAY_URL:-https://localhost:5055/v1/api}"
+TICKLE_URL="${GATEWAY_URL%/}/tickle"
+
+case "$TICKLE_URL" in
+    http://*|https://*) ;;
+    *)
+        echo "[ibkr-keepalive] FATAL: IBKR_GATEWAY_URL is set but unusable — the tickle" >&2
+        echo "  URL came out as '${TICKLE_URL}'. Refusing to start: a keepalive that" >&2
+        echo "  cannot reach the gateway would log WARN forever and release caffeinate," >&2
+        echo "  which reads exactly like the gateway being down." >&2
+        exit 1
+        ;;
+esac
 
 # 0 (true) only when a LIVE process is holding the lock.
 is_suspended() {
@@ -60,16 +97,6 @@ is_suspended() {
     kill -0 "$pid" 2>/dev/null || return 1    # dead owner -> stale -> fail open
     return 0
 }
-
-# Load .env if present (for IBKR_GATEWAY_URL)
-ENV_FILE="$(dirname "$0")/../.env"
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-    set +a
-    TICKLE_URL="${IBKR_GATEWAY_URL%/}/tickle"
-fi
 
 echo "[ibkr-keepalive] Starting — tickling ${TICKLE_URL} every ${INTERVAL}s"
 

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 
+from ibkr_core_mcp.gateway import GatewayManager
+
 from claudia.gateway_preflight import gateway_url, read_state, verdict
 from claudia.gateway_session import SessionPhase, get_session
 
@@ -28,7 +30,18 @@ log = logging.getLogger(__name__)
 # no corresponding line. Every request the Java process serves is written here instead,
 # which is where a failing login is actually visible.
 GATEWAY_LOG_DIR = "/app/api_gateway/logs"
-GATEWAY_CONTAINER = "ibkr_core_gateway"
+
+GATEWAY_CONTAINER = GatewayManager.CONTAINER_NAME
+"""The container's name, **derived** rather than restated.
+
+ibkr_core_mcp owns the container's identity; it creates it and it is the only thing that
+can rename it. Until 2026-08-06 this was the literal `"ibkr_core_gateway"`, which meant a
+rename in that repo would have left this module running `docker exec` against a container
+that no longer existed — and the failure would have surfaced as "could not read the
+gateway log" during a diagnosis, which is the worst moment for a tool to be quietly wrong
+about what it is inspecting.
+
+`scripts/gateway-reset.sh` already derived it this way and was the model for this."""
 
 
 def gateway_log_tail(
@@ -70,8 +83,6 @@ def main(argv: list[str] | None = None) -> int:
     or a login that did not complete).
     """
     import argparse
-
-    from ibkr_core_mcp.gateway import GatewayManager
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(

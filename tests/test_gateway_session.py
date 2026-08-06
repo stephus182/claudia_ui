@@ -758,3 +758,70 @@ async def test_no_soft_recovery_on_a_hard_disconnect(monkeypatch):
         await session._poll_once()
 
     assert calls == []
+
+
+# ── F1: the two interpretations of one reading must agree, by mechanism ──────
+
+
+def test_classify_and_verdict_agree_over_every_possible_reading():
+    """`classify` and `gateway_preflight.verdict` interpret the same fields — exhaustively.
+
+    `classify`'s docstring says it "deliberately matches `gateway_preflight.verdict` step
+    for step, so the two can never disagree about the same reading". A docstring is a
+    claim, not a mechanism: nothing stopped either function from being edited alone, and
+    two definitions of "the session is borrowed" drifting apart is exactly the failure
+    this project has already been bitten by elsewhere (the realised-P&L rule, the
+    accounting day boundary).
+
+    So the agreement is asserted here over the **complete cross-product** of every field
+    either function reads — 512 readings — rather than over a handful of examples. A
+    representative case is what the original lifecycle defect passed.
+
+    The correspondence is written as data because it is not one-to-one: `verdict` has no
+    `DEGRADED`, since the pre-flight makes no data call and cannot tell a confirmed
+    session from an authenticated-but-dark one. `EXIT_READY` therefore legitimately
+    covers both, and that is the single place the two are allowed to differ in
+    granularity — never in conclusion.
+    """
+    from itertools import product
+
+    from claudia.gateway_preflight import (
+        EXIT_BORROWED,
+        EXIT_CONTESTED,
+        EXIT_FREE,
+        EXIT_READY,
+        EXIT_UNREACHABLE,
+        verdict,
+    )
+
+    equivalent = {
+        EXIT_UNREACHABLE: {SessionPhase.DOWN},
+        EXIT_READY: {SessionPhase.LIVE, SessionPhase.DEGRADED},
+        EXIT_CONTESTED: {SessionPhase.CONTESTED},
+        EXIT_BORROWED: {SessionPhase.BORROWED},
+        EXIT_FREE: {SessionPhase.FREE},
+    }
+
+    readings = 0
+    for (reachable, authenticated, connected, competing, collision, sso_valid,
+         client_app, user_id, data_ok) in product(
+        (False, True), (False, True), (False, True), (False, True), (False, True),
+        (False, True), ("", "IBKRMOBILE_000.a-000"), (None, 10541387), (False, True),
+    ):
+        state = GatewayState(
+            reachable=reachable, authenticated=authenticated, connected=connected,
+            competing=competing, collision=collision, sso_valid=sso_valid,
+            client_app=client_app, user_id=user_id,
+        )
+        code, _, _ = verdict(state)
+        phase = classify(state, data_ok)
+        readings += 1
+        assert phase in equivalent[code], (
+            f"verdict() and classify() disagree about {state!r} (data_ok={data_ok}): "
+            f"exit code {code} vs phase {phase.value}. They read the same fields and "
+            "must reach the same conclusion — change both, or derive one from the other."
+        )
+
+    # Pinned so a field added to GatewayState without extending this loop is visible as a
+    # dropped count rather than passing quietly over a smaller space than it claims.
+    assert readings == 512

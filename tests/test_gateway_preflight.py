@@ -19,10 +19,10 @@ from claudia.gateway_preflight import (
     EXIT_UNREACHABLE,
     GatewayState,
     read_state,
-    release_session,
     verdict,
     warn_if_session_borrowed,
 )
+from claudia.gateway_session import release_session  # moved here 2026-08-06
 
 
 def _tickle(**auth):
