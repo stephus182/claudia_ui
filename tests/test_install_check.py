@@ -122,3 +122,52 @@ def test_panel_app_checks_at_startup():
     source = Path("claudia/panel_app.py").read_text()
     assert "from claudia.install_check import warn_if_stale" in source
     assert "warn_if_stale()" in source
+
+
+# ── The Docker build context: the fourth time this root cause bit ───────────
+
+
+def test_the_gateway_build_context_is_readable_by_docker():
+    """`GatewayManager.build_image()` must point Docker at a context it can read.
+
+    Found 2026-08-06 by running a real cold start, after the image was deleted to force
+    the rebuild that the in-container tickler removal needed. The build failed instantly:
+
+        ERROR: failed to read dockerfile: open Dockerfile: no such file or directory
+
+    `_DOCKER_DIR` was `Path(__file__).parent`. Imported from claudia_ui — which installs
+    ibkr_core_mcp with `editable_mode=strict`, as CLAUDE.md requires for mypy — `__file__`
+    is inside `build/__editable__…/ibkr_core_mcp/gateway/`, a farm in which every entry,
+    `Dockerfile` included, is a symlink to an absolute path outside the directory.
+    **Docker does not follow a symlink that leaves the build context.**
+
+    ## Why this test lives in claudia_ui and not in ibkr_core_mcp
+
+    It was written there first and **could not fail**: pytest run from that repo imports
+    the package from its own source tree, so `__file__` is already the real file and the
+    broken expression produced the right answer. The bug is only reachable through the
+    editable install, which is to say only from here. A test that cannot fail is worse
+    than no test — it reports safety it never checked.
+
+    ## Why `is_symlink`, not `exists`
+
+    A symlink to a real file exists perfectly well from Python's point of view, so an
+    existence check passes against the broken version too. Docker needs a **real file
+    inside the context**, and that is the property asserted.
+    """
+    from ibkr_core_mcp.gateway.manager import _DOCKER_DIR
+
+    assert "__editable__" not in str(_DOCKER_DIR), (
+        f"The gateway Docker build context is the editable-install symlink farm "
+        f"({_DOCKER_DIR}). `docker build` cannot read a Dockerfile from there. "
+        "_DOCKER_DIR must resolve through symlinks."
+    )
+    assert _DOCKER_DIR.is_dir(), f"{_DOCKER_DIR} is not a directory"
+
+    for name in ("Dockerfile", "conf.yaml", "run_gateway.sh", "healthcheck.sh"):
+        entry = _DOCKER_DIR / name
+        assert entry.is_file(), f"{name} is missing from the build context {_DOCKER_DIR}"
+        assert not entry.is_symlink(), (
+            f"{name} is a SYMLINK inside the Docker build context ({_DOCKER_DIR}); the "
+            "build will fail with 'failed to read dockerfile'."
+        )
