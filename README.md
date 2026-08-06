@@ -11,6 +11,7 @@ ClaudIA is a Panel-based trading assistant that gives you a persistent, principl
 - **Full trade history** — 7-year backfill via IBKR Flex Queries; `sync_flex_trades` keeps it current; `get_trades source='store'` queries with no date limit
 - **Human-confirmed order staging** — ClaudIA proposes trades (equities and futures); you click a button → Touch ID → AppKit colored dialog (green/BUY, red/SELL). The LLM has no order-execution tools. CME Rule 536-B fields auto-added for futures
 - **TradingView live integration** — reads your active chart, sets symbols/timeframes; every ```pine block ClaudIA emits gets a **Copy** button (real client-side clipboard) and an **Inject into TradingView** button that sets the Pine Editor source directly
+- **Live account dashboard** — KPI strip · positions · working orders · realised P&L, polled every 15s, read-only by construction. Note the "Realised today" tile follows IBKR's accounting day, which **rolls in the late ET evening, not at midnight** — see [Live Dashboard](#live-dashboard--and-the-two-realised-figures)
 - **External candlestick chart pane** — a HoloViews/hvplot chart beside the chat (symbol/period/bar controls, SMA overlay, volume subplot), OHLCV from the Drive cache with fetch-on-miss from IBKR; fully independent of the conversation
 - **Screenshot analysis** — upload any TradingView chart for vision-based analysis (no Desktop required)
 - **Principle-guided responses** — your personal `docs/principles.md` is loaded as a system prompt; ClaudIA refuses proposals that violate your rules
@@ -146,14 +147,67 @@ ClaudIA calls propose_order (strict-schema tool — records, executes nothing)
 
 | `sec_type` | Conid resolution | Extra fields |
 |---|---|---|
-| `STK` (default) | `/iserver/secdef/search` | — |
+| `STK` (default) | **none — a `conid` must already be in the proposal** (from `get_market_snapshot` / `preview_order`, which route through the authoritative resolver) | — |
 | `FUT` | `/trsrv/futures` → front month | `manualIndicator: True` (CME Rule 536-B). `extOperator` is deliberately **not** sent — IBKR rejects it with error 8089 despite the docs marking it "Required*"; live-proven 2026-07-24 |
 | `FOP` | pre-resolved `conid` required in the proposal (via `get_option_chain`) | same 536-B fields as FUT |
+
+**Placement resolves no symbols.** The order path used to fall back to
+`/iserver/secdef/search` → `contracts[0]`, which carries no country and no currency and
+has an undocumented result order — so `contracts[0]` for `IGV` was the **Mexican**
+listing, priced in MXN, in a USD account. FUT is the one exception, resolved by front
+month and unambiguous by construction. Do not restore symbol resolution here: it would
+put a second, drifting definition beside the authoritative one.
 
 The Gate 2 dialog shows correct futures notional: `price × qty × multiplier` (multiplier fetched from `/trsrv/futures`).
 
 Full field spec and immutability rule: [`docs/order-api-reference.md`](docs/order-api-reference.md),
 summarized in [`CLAUDE.md`](CLAUDE.md) § Order Staging.
+
+---
+
+## Live Dashboard — and the two realised figures
+
+A polling dashboard sits beside the chat: a KPI strip over tabs for Chart, Positions,
+working Orders and P&L, refreshed every 15s. Every table is read-only with no click
+handler bound — cancelling an order stays behind `propose_cancel` and both gates.
+
+The P&L tab shows **two realised numbers that will not reconcile, and are not meant to.**
+They are different quantities; never add them or "fix" one to match the other. The
+dashboard states all three reasons on the surface itself rather than leaving you to
+discover them by subtraction:
+
+| | **Realised today** (tile) | **Week / month / YTD** |
+|---|---|---|
+| Source | IBKR ledger `realizedpnl` — live | Flex statements — **T+1, never includes today** |
+| Cost basis | IBKR's real-time `avgCost` | the statement basis |
+| Day boundary | IBKR's **accounting** roll — see below | IBKR's **session** date (18:00 ET futures, 20:00 ET stock, 17:00 ET FX) |
+
+### The "today" on that tile ends in the late evening, not at midnight
+
+**Measured 2026-08-05: the ledger accumulator rolls late in the ET evening, at an hour
+that varies.** Not midnight ET, and not midnight UTC. So for the last hours of a calendar
+day the tile labelled "Realised today" can **already be showing tomorrow** — typically
+0.00, right after a day that realised something. That reset is correct behaviour, not a
+data fault, and it is worth knowing before you read the number at 22:30 and conclude the
+feed broke. This project documented it as a calendar day until that measurement.
+
+Three readings killed three candidates in turn — midnight ET, midnight UTC, then a fixed
+clock hour (a 37-read watch ending exactly on the surviving bracket's upper bound found
+the field unmoved). What actually triggers it is a broker-side accounting run, and this
+project does not know its schedule. **No specific time is quoted here on purpose:** a
+disclosure you can check against the clock is worth nothing if it is wrong.
+
+Two further conventions of the same field, both measured to the cent the same evening:
+
+- **It is futures-realised at the traded prices — entry → exit, not settlement-relative.**
+  A lot opened at 80.84 and closed the next trade date *across* a 75.77 settlement still
+  reports against 80.84. Daily variation margin moves cash; it does not re-base this
+  number.
+- **Realisation is booked at the closing fill, carrying both legs' commissions.**
+
+Mechanics, evidence and the negative controls: read the module docstring of
+[`claudia/dashboard_data.py`](claudia/dashboard_data.py) first — it carries the source
+table for every figure on the screen — then `REALISED_LEDGER_WINDOW` in the same file.
 
 ---
 

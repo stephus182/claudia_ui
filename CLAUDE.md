@@ -282,7 +282,17 @@ the fix that established this (75,480 → 2,910 tokens/session).
   **The two realised figures on that screen are different quantities — never add them or
   "fix" one to match the other.** Ledger `realizedpnl` is today only; the week/month/YTD
   windows are Flex, which is T+1 and never includes today. They also use different day
-  boundaries (calendar vs session). Those two differences are why they disagree on screen.
+  boundaries: Flex on IBKR's session date, the ledger on IBKR's **accounting** roll —
+  measured 2026-08-05 as late-ET-evening **at an hour that varies**, and **not midnight**
+  in ET or UTC, so late in the evening the "Realised today" tile can already be on
+  tomorrow. (It was documented as a calendar day until that measurement.) Midnight ET,
+  midnight UTC and a fixed clock hour were each killed by a reading, the last by a
+  37-read watch that ended exactly on the surviving bracket's bound with the field
+  unmoved. **Do not put a specific time in user-facing text** — a claim the user can
+  check against the clock is worse than a vague one if it is wrong. Those two differences
+  are why they disagree on screen. Futures realised there is **entry → exit at the traded prices, not
+  settlement-relative** — a lot opened at 80.84 and closed the next trade date across a
+  75.77 settlement still reports against 80.84.
   They are additionally defined on different cost bases — ledger on IBKR's real-time
   `avgCost`, Flex on the statement basis — but **that divergence was measured on 2026-08-05
   and did not appear**: the CRM close read −2,810.47 on both, to the cent, and the earlier

@@ -247,13 +247,30 @@ def test_coverage_line_names_the_session_day_boundary(view):
     """IBKR's "day" is a session, not a calendar day, and the two figures differ on it.
 
     Measured 2026-08-04 across this account's 1,101 executions: `trade_date` rolls
-    forward at 18:00 ET for futures, 20:00 ET for stock, 17:00 ET for FX. The ledger
-    figure follows the calendar day instead. A reader comparing them at 19:00 needs it.
+    forward at 18:00 ET for futures, 20:00 ET for stock, 17:00 ET for FX. A reader
+    comparing the two figures at 19:00 needs to be told that.
+
+    This asserted "the tile follows the calendar day" until 2026-08-05, when the ledger
+    accumulator was measured rolling in the late ET evening instead
+    (`dashboard_data.REALISED_LEDGER_WINDOW`, note 6). The line must NOT claim a
+    calendar boundary: for the last hours of a day the tile reads "Realised today"
+    while already showing tomorrow, and a user told otherwise would read that reset as
+    a fault.
+
+    It must NOT name a specific hour either. An intermediate version said "between
+    21:55 and 22:31 ET"; a 37-read watch ending on that upper bound then found the
+    field unmoved, killing the fixed-hour reading. A time the user can check against
+    the clock is falsifiable, so a wrong one is worse than none.
+
+    Both assertions are absences, which is the point — here the regression is a claim
+    reappearing, not a claim going missing.
     """
     line = view._pnl_coverage.object
     assert "session" in line
     assert "18:00 ET" in line and "20:00 ET" in line and "17:00 ET" in line
-    assert "the tile follows the calendar day" in line
+    assert "at an hour that varies" in line
+    assert "calendar day" not in line
+    assert "21:55" not in line and "22:31" not in line
 
 
 def test_coverage_line_discloses_the_cost_basis_difference_without_overstating_it(view):

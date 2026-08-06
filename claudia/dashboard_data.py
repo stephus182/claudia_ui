@@ -88,9 +88,13 @@ above already cost this project once.
 
 What the convention *does* change is what a reader should be told: after 18:00 ET a
 futures fill already belongs to tomorrow as far as these windows are concerned, while the
-ledger figure beside them is a **calendar** day and does not follow that roll. That is
-measured, not assumed — see `REALISED_LEDGER_WINDOW` below, where seven reads spanning
-both the 18:00 ET futures roll and the 20:00 ET stock roll never moved off -2,656.11.
+ledger figure beside them does not follow that roll: it rolls once on IBKR's own
+accounting boundary, late in the ET evening, at an hour that varies. That is measured,
+not assumed — see `REALISED_LEDGER_WINDOW` below, where seven reads spanning both the
+18:00 ET futures roll and the 20:00 ET stock roll never moved off -2,656.11, and where
+note (6) kills midnight ET, midnight UTC and a fixed clock hour in turn. Calling it a
+"calendar" day was wrong and is corrected there.
+
 So the two realised figures on the dashboard differ on the day boundary as well as on
 coverage, and `panel_dashboard.coverage_line` states both on the surface rather than
 leaving a reader to discover them by subtraction. They are *also* defined on different
@@ -222,8 +226,11 @@ class LedgerSnapshot:
     other_currencies: tuple[str, ...] = ()
 
 
-# SETTLED 2026-08-04: ledger `realizedpnl` is **today's** realised P&L — a calendar day,
-# not a trading session, and not a cumulative total.
+# SETTLED 2026-08-04, and CORRECTED 2026-08-05: ledger `realizedpnl` is **one day's**
+# realised P&L — not a trading session, and not a cumulative total. The 2026-08-04 work
+# below called that day a *calendar* day. It is not one, and the correction is at the
+# bottom of this block: the accumulator rolls in the late evening ET, hours before
+# midnight, so between the roll and midnight the tile already shows the next day.
 #
 # The ledger endpoint does not document the window (see LedgerSnapshot). The positions
 # endpoint does, and the two are the same number:
@@ -253,10 +260,48 @@ class LedgerSnapshot:
 #     moved freely. The futures roll would have cleared CL and ES at 18:00; the stock
 #     roll would have cleared GLD and CRM at 20:00. Neither happened.
 #
-# The one thing NOT observed is the reset instant itself — a cross-midnight read, which
-# no single session can produce. "day" therefore names the window IBKR documents and the
-# measurements confirm, and claims nothing about the exact moment it turns over. The
-# label reads "Realised today" either way, so that residue changes no user-visible text.
+# (6) THE RESET — the thing (5) could not observe, measured 2026-08-05 while reconciling
+#     a CL round trip. It is NOT midnight, and the "calendar day" wording above was
+#     wrong. Three observations, each a read of this field:
+#
+#       * 2026-08-04 20:02 ET  the figure still held the round turn closed at 20:56 ET
+#                              on 08-03 (CL +1,945.28), so no roll had happened yet.
+#       * 2026-08-05 21:55 ET  the figure held only fills from 22:31:53 ET on 08-04
+#                              onward — so that roll HAD happened by 22:31:53 ET on
+#                              08-04, while a fill at 22:31 ET on 08-04 is still 08-04
+#                              by the calendar. Midnight ET is dead.
+#       * 2026-08-05 21:55 ET  trade-date-08-05 fills were still present, and 01:55 UTC
+#                              on 08-06 had already passed. Midnight UTC is dead.
+#
+#     Which left one candidate: a fixed clock time in 21:55 ET < roll <= 22:31:53 ET.
+#     **It was tested and it is dead too.** A one-a-minute watch held the field under
+#     observation from 21:55:10 to 22:31:53 ET on 08-05 — 37 consecutive reads, ending
+#     exactly on the bound — and it never moved. The roll happened before 22:31:53 ET on
+#     08-04 and had not happened by 22:31:53 ET on 08-05; no single clock time satisfies
+#     both.
+#
+#     So the boundary is a broker-side accounting event in the late ET evening whose
+#     hour VARIES night to night. That is the honest end state: the window is one IBKR
+#     accounting day, its roll is not midnight in any timezone and not a fixed hour, and
+#     the exact trigger is unknown. Do not put a specific time in user-facing text —
+#     an earlier draft of `panel_dashboard.coverage_line` said "between 21:55 and 22:31
+#     ET" on the strength of the bracket above, one watch before that bracket died.
+#
+# (7) NEGATIVE CONTROL for a rival rule — "resets whenever the position goes flat".
+#     CL went flat at 22:32 ET on 08-04 and reopened at 12:08 ET on 08-05, yet the
+#     08-05 figure still carries the realisations from *before* that flat. Ruled out.
+#
+# What the accumulator measures, also 2026-08-05 and exact to the cent: realisation is
+# booked at the CLOSING fill, priced ENTRY -> EXIT at the traded prices, carrying BOTH
+# legs' commissions. It is not settlement-relative. CL's 2 lots opened at 80.84/81.02 on
+# trade date 08-04 and closed at 74.78/74.70 on 08-05 — across the 08-04 settlement of
+# 75.77 — and the reported figure uses 80.84/81.02, not 75.77. Daily variation margin
+# moves cash; it does not re-base this number. Full arithmetic: docs/project-status.md
+# § Live Test Log, 2026-08-05.
+#
+# "day" therefore still names the window, and the label reads "Realised today" either
+# way — but the roll is a broker accounting boundary in the late ET evening, not
+# midnight, and `panel_dashboard.coverage_line` now says so rather than saying "calendar".
 #
 # Deliberately a module constant rather than a string buried in the UI, so the tile,
 # the ledger table and the tests all relabel from one edit.

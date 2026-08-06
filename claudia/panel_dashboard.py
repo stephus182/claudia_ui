@@ -201,11 +201,27 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
 
     1. **Coverage** — Flex is T+1 and never includes today; the ledger is today only.
     2. **Day boundary** — Flex buckets on IBKR's session date (18:00 ET futures /
-       20:00 ET stock / 17:00 ET FX); the ledger figure is a calendar day.
+       20:00 ET stock / 17:00 ET FX); the ledger figure rolls once, late in the ET
+       evening, on IBKR's accounting boundary.
     3. **Cost basis** — Flex is the statement basis, the ledger is IBKR's real-time
        `avgCost`: different quantities by construction, with no guarantee they agree.
 
     Only the first two were disclosed before 2026-08-04.
+
+    **Bullet 2 said "a calendar day" until 2026-08-05, and that was wrong in the one
+    direction a trader would notice.** The ledger accumulator was measured that evening
+    rolling in the late ET evening (`dashboard_data.REALISED_LEDGER_WINDOW`, note 6), so
+    for the last hours of a calendar day the tile labelled "Realised today" can already
+    be showing *tomorrow* — typically 0.00, right after a day that realised something.
+    Telling the user it followed the calendar would have made that reset look like a
+    data fault, or worse, be believed.
+
+    **No specific hour appears below, and that is deliberate.** The first draft of this
+    line said "between 21:55 and 22:31 ET", from a bracket that held at the time. A
+    37-read watch ending exactly on the upper bound then showed the field unmoved, which
+    killed the fixed-hour reading the bracket assumed: the roll is a broker-side event
+    whose hour varies. A disclosure naming a time the user could check against the clock
+    would be worse than the vague one — it would be falsifiable and false.
 
     **Bullet 3 was softened on 2026-08-05, on evidence.** It used to tell the user the
     basis difference was "the largest of the three" and cite CRM as a close where the
@@ -233,9 +249,11 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
         f"cover different periods, and they use different day boundaries — Flex buckets "
         f"on IBKR's **session** date, which rolls at 18:00 ET for futures, 20:00 ET for "
         f"stock and 17:00 ET for FX, so an evening fill already belongs to tomorrow, "
-        f"while the tile follows the calendar day. The two cost bases are also defined "
-        f"differently, though where both have priced the same close they have agreed to "
-        f"the cent (measured 2026-08-04 and 2026-08-05)._"
+        f"while the tile rolls once on IBKR's own accounting boundary — **late in the "
+        f"ET evening, at an hour that varies, not at midnight** — so for the last hours "
+        f"of a day the tile can already be on tomorrow. The two cost bases are also "
+        f"defined differently, though where both have priced the same close they have "
+        f"agreed to the cent (measured 2026-08-04 and 2026-08-05)._"
     )
 
 
