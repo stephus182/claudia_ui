@@ -30,7 +30,9 @@ dead targets as healthy.
 | 6 | Superseded claims carry a forward pointer | **2 rows asserting overturned figures** | 2 |
 | 7 | Cross-doc contradiction on the realised-P&L rule | **0** | — |
 
-**Total: 17 defects found, 17 fixed. 1 accepted and documented (see §8).**
+**Total: 25 defects found, 25 fixed.** (17 from the checks above; §8's re-anchoring
+accounted for 8 more stale references once it stopped being "accepted".) One follow-up
+gate shipped — `tests/test_docs_claims.py`, §9.
 
 ---
 
@@ -165,25 +167,46 @@ no open/close filter, `flex_lot` never summed instead — is stated identically 
 `CLAUDE.md`, `docs/flex-query-setup.md`, `docs/trading-data-reference.md` and
 `docs/project-status.md`. No drift.
 
-## 8. Accepted, not fixed: `docs/startup-flow.md` is anchored to a deleted file
+## 8. `docs/startup-flow.md` was anchored to a deleted file — now re-anchored
 
 `CLAUDE.md` points at this doc to "diagnose startup failures". Six of its phase sections
-cite `claudia/app.py` with **line numbers** — a file removed in the Phase 11 cutover.
+cited `claudia/app.py` with **line numbers** — a file removed in the Phase 11 cutover.
 
 The doc already carried a mapping note for this, which promised that "the equivalent Panel
 code carries `# app.py:NNN parity` comments". **The audit checked. It does not.**
 `panel_app.py` carries ten parity comments, all of the form "parity with the removed
-app.py", none with a line number. So a reader following `app.py:463–480` has nothing to
-match against, and the note that was supposed to rescue them makes a promise the code
-never kept.
+app.py", none with a line number. So a reader following `app.py:463–480` had nothing to
+match against, and the note written to rescue them made a promise the code never kept.
 
-**Fixed:** the note now states plainly that the references point into git history only,
-that the parity comments carry no line numbers, and that navigation should go by phase and
-function name.
+**This section originally read "accepted, not fixed"** — the judgement being that
+re-anchoring was a rewrite rather than an audit correction. That judgement was reversed
+within the hour, and the reason is worth recording: **the moment the check became a gate
+(§9), "accepted" stopped being available.** A red test is not a documented exception, it
+is a broken build, and leaving one is how a gate gets weakened later to make it pass.
 
-**Not fixed, and deliberately:** re-anchoring six phases to `panel_app.py` line ranges is a
-documentation rewrite, not an audit correction, and line-number anchors rot on the next
-refactor anyway. Recorded here as an open item rather than quietly left.
+**Fixed.** All six now point at `claudia/panel_app.py` **by function name** —
+`_send_action_buttons()`, `_maybe_background_flex_sync()`, `_send_opening_status()`,
+`_init_session` — with the old app.py location kept as parenthetical history. Two further
+references (`claudia/app.py:440-448`, and the `on_chat_start` prose) were fixed with them.
+
+**By function, not by line range, deliberately.** A line number is a claim that rots on the
+next refactor with nothing to detect it — precisely how this doc broke. A function name
+breaks loudly, because §9's gate fails when the path stops existing.
+
+## 9. Follow-up shipped: `tests/test_docs_claims.py`
+
+The audit's own finding is that unenforced doc conventions decay silently, so the one
+mechanically checkable shape is now a gate: **a living doc may not backtick a repo path
+that does not exist.** Dated records and `docs/plans/**` are exempt by the same convention
+that makes them point-in-time; two path exemptions are listed explicitly with reasons, so
+a real defect cannot be parked there unremarked. It ships with a guard-the-guard test —
+if the corpus discovery ever returns a near-empty list the assertions become vacuous, and
+that is the `feedback-mocks-weaker-than-dependencies` failure one layer down.
+
+**It catches one of the three shapes in the assessment below, and no more.** A promise
+about comment *formatting*, and a projection labelled "measured", are not machine-
+detectable. Reading this gate as coverage of the class would be the exact error it exists
+to flag.
 
 ---
 
@@ -231,3 +254,19 @@ unchecked surface is unmeasured.**
 later evidence overturns it. Both retractions here were found by accident — I was chasing
 an unrelated residue. The ⚠️ markers help the next reader; they do nothing for the next
 writer.
+
+**On the gate in §9, and its limits.** Turning the one checkable shape into a test is the
+right response to "unenforced conventions decay", and it had an immediate effect: it made
+§8's "accepted, not fixed" untenable within the hour, which is what a gate is for. But it
+covers **one of three shapes**. The other two — a promise about how code comments are
+*formatted*, and a projection wearing the word "measured" — cannot be detected by any test,
+because both are well-formed sentences that happen to be false. The only control on those
+is the writer running the check before writing the claim, and the discipline of never
+using "measured", "verified" or "confirmed" for something derived. That is now recorded as
+a standing rule rather than left to memory.
+
+**The sharpest single lesson.** Claim #2 was not merely wrong — it asserted its own
+unverifiability ("the reset instant… no single session can produce"). That sentence closed
+the question. It was written without attempting the observation, and a 37-read watch
+settled it the same evening. **A claim that something cannot be checked is itself a claim,
+and it needs the same evidence as any other.**

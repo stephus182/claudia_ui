@@ -4,18 +4,21 @@ Documents every phase of startup in order: `start-claudia.sh` (pre-UI) then sess
 Use this to diagnose startup failures: each phase is labeled with where to look.
 
 > **Post-cutover mapping (2026-07-24, corrected 2026-08-05):** the UI moved from Chainlit to
-> Panel. What this doc calls `on_chat_start` in `claudia/app.py` is now `_init_session` inside
+> Panel. What this doc calls `on_chat_start` in the removed Chainlit app.py is now `_init_session` inside
 > `claudia/panel_app.py` (panel_app was built as a faithful port, so the phase sequence below
-> is preserved). **Every `claudia/app.py:NNN` line reference below is into a file that no
-> longer exists** — reachable only through git history, at the Phase 11 cutover commit.
+> is preserved).
 >
 > This note used to promise that "the equivalent Panel code carries `# app.py:NNN` parity
-> comments". **It does not, and the 2026-08-05 doc audit checked.** `panel_app.py` carries ten
-> parity comments, but they read "parity with the removed app.py" with **no line numbers** —
-> so a reader following an `app.py:463–480` reference here has nothing to match it against.
-> Navigate by the phase name and the function names given in each section instead; those are
-> current. Fixing this properly means re-anchoring each phase to `panel_app.py` line ranges,
-> which is a doc rewrite rather than an audit fix and is not done.
+> comments". **It does not, and the 2026-08-05 doc audit checked** — `panel_app.py` carries
+> ten parity comments, all reading "parity with the removed app.py" with **no line numbers**,
+> so every `app.py:NNN` reference this doc used to carry pointed at nothing a reader could
+> match. Every one has now been **re-anchored to `claudia/panel_app.py` by function name**,
+> with the old app.py location kept as parenthetical history.
+>
+> **By function, not by line, deliberately:** a line range is a claim that rots on the next
+> refactor with nothing to detect it — which is how this doc broke in the first place. A
+> function name breaks loudly (`tests/test_docs_claims.py` fails on a path that stops
+> existing) and survives edits above it.
 
 ---
 
@@ -82,8 +85,8 @@ These form the core of ClaudIA's system prompt.
 - A `watchdog` file observer is started to detect live edits mid-session
 - If a file is missing, `ContextLoader._read_required()` raises `FileNotFoundError` and
   `on_chat_start` aborts the session with a "Setup required" chat message — there is no
-  template or empty-string fallback (`claudia/context_loader.py:142-149`,
-  `claudia/app.py:440-448`)
+  template or empty-string fallback (`claudia/context_loader.py:142-149`, and `claudia/panel_app.py`'s
+  `FileNotFoundError` handler in `_build_chat_app`)
 
 ---
 
@@ -161,7 +164,7 @@ live-verified).
 **File:** `claudia/execution_listener.py` → `ExecutionListener`
 
 Like `ConnectivityChecker`, this is a **process-level singleton** — constructed and started
-right after the connectivity checker (`claudia/app.py`, `on_chat_start` step 8), before the
+right after the connectivity checker (`claudia/panel_app.py`, `_init_session` step 8), before the
 IBKR ping check in Phase 5.
 
 - Subscribes to IBKR's execution WebSocket feed (any order origin, not just ClaudIA's own)
@@ -177,7 +180,7 @@ IBKR ping check in Phase 5.
 
 ## Phase 5 — IBKR gateway check
 
-**File:** `claudia/app.py` lines ~463–480
+**File:** `claudia/panel_app.py` → `_send_action_buttons()` (was app.py ~463–480, pre-cutover)
 
 `toolkit.client.ping()` checks `iserver/auth/status`:
 - Returns `True` only when `authenticated=true`
@@ -212,7 +215,7 @@ the same numbers. On the healthy path the whole phase is now one `ping()`. See
 
 ## Phase 6 — Flex trade sync
 
-**File:** `claudia/app.py` → `_background_flex_sync()`
+**File:** `claudia/panel_app.py` → `_maybe_background_flex_sync()` (was app.py's `_background_flex_sync`)
 
 Runs as a background asyncio task (non-blocking) after the welcome message is sent.
 
@@ -243,7 +246,7 @@ Injects trading-day awareness into ClaudIA's system prompt:
 
 ## Phase 8 — Welcome message
 
-**File:** `claudia/app.py` lines ~573–620
+**File:** `claudia/panel_app.py` → `_send_opening_status()` (was app.py ~573–620, pre-cutover)
 
 The welcome message includes:
 - Account summary (positions, unrealized P&L, cash balance) — if IBKR online
@@ -304,7 +307,7 @@ No container restart. No login. Session uninterrupted.
 
 1. ConnectivityChecker detects `authenticated=false` → "IBKR Gateway disconnected" alert in chat
 2. "Start IBKR Gateway" button appears (or was already in the welcome message)
-3. User clicks → the `start_gateway` action callback (`claudia/app.py`'s `on_start_gateway`) runs
+3. User clicks → the `start_gateway` action callback (`claudia/panel_app.py` → `_send_action_buttons()`, was app.py's `on_start_gateway`) runs
    directly — **not** `GatewayManager.startup()`, and there is no "skip if already connected"
    check on this path. It calls `ensure_docker_running()` then `start()`, which
    **unconditionally** removes and recreates the gateway container every time, then

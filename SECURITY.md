@@ -360,7 +360,7 @@ in cross-origin fetches.
 
 ClaudIA adds **no HTTP endpoints of its own.** The Chainlit-era routes this section used to
 describe (`/api/status`, `/cl/custom.css`, `/cl/custom.js`, `/cl/claudia-logo.png`) were
-removed with `claudia/app.py` in the Phase 11 cutover; `claudia/assets/` now holds only an
+removed with the Chainlit entry point (app.py, deleted at the Phase 11 cutover); `claudia/assets/` now holds only an
 orphan logo that no route serves. Everything the browser receives arrives over the
 Bokeh/Tornado session websocket, and the only routes are Panel's own (`/`, `/ws`,
 `/autoload.js`, `/metadata`, `/static/*`, `/components/*`). Connectivity lights are

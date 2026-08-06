@@ -16,7 +16,7 @@ When referencing a past live test, link here with an anchor, e.g.
 | Field | Value |
 |---|---|
 | Date | 2026-07-03 |
-| Purpose | Verify the 3-breakpoint prompt-cache implementation (plan: `docs/superpowers/plans/2026-07-03-prompt-caching-upgrade.md`, Task 6) |
+| Purpose | Verify the 3-breakpoint prompt-cache implementation (plan: `docs/plans/2026-07-03-prompt-caching-upgrade.md`, Task 6) |
 | Method | Scripted `messages.create` calls using the **exact request shape ClaudIA sends**: `_with_cache_marker(TOOL_DEFINITIONS + _LOCAL_TOOLS)` (42+4 tools), `_system_blocks(_build_system_prompt(...))` with the real `docs/context.md`/`principles.md`, `_with_history_cache_marker(messages)` |
 | Model | `claude-opus-4-8` |
 | Result | **PASS** — all three checks |
