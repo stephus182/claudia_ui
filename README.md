@@ -269,7 +269,7 @@ Any contribution touching API behavior, error codes, endpoint paths, or field na
 
 | API | Used in | Official reference |
 |---|---|---|
-| IBKR Client Portal API | `ibkr_core_mcp` | https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/ |
+| IBKR Client Portal API | `ibkr_core_mcp` | https://ibkrcampus.com/docs/web-api/ |
 | IBKR Flex Web Service | `ibkr_core_mcp/flex_query.py` | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3.htm |
 | IBKR Flex error codes | `ibkr_core_mcp/flex_query.py` | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm |
 | Anthropic Messages API | `claudia/agent.py` | https://docs.anthropic.com/en/api/messages |
@@ -341,7 +341,7 @@ ClaudIA is designed to run on any machine — all persistent state lives in a si
 ## Testing
 
 ```bash
-pytest                                        # full suite — 757 unit tests, no IBKR gateway needed
+pytest                                        # full suite — 1,154 unit tests, no IBKR gateway needed
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates
 
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api   # opt-in; bills real Anthropic API calls

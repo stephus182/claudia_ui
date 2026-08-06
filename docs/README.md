@@ -48,6 +48,8 @@ at [`panel/README.md`](panel/README.md), which indexes:
 | --- | --- |
 | [`panel/panel-reference.md`](panel/panel-reference.md) | How ClaudIA uses Panel — serving model, session lifecycle, layout tree, `MessageSink` seam, widget gotchas, status dots, chart pane, headless button testing, dependency state |
 | [`panel/ui-design-reference.md`](panel/ui-design-reference.md) | UI design & styling — the no-styling baseline, the shadow-DOM constraint, Panel's scraped styling surface (designs/themes/tokens/templates), open design questions, a proposed Track D direction, official-source index |
+| [`panel/component-model-reference.md`](panel/component-model-reference.md) | How a Panel component is built, parameterised and composed — the model behind the two references above |
+| [`panel/data-surfaces-reference.md`](panel/data-surfaces-reference.md) | Tabulator / Number / ECharts, the `pn.extension()` gate, side windows, stream/patch + connectivity, and 27 measured gotchas (16 onwards found live against the account) — the reference the live dashboard was built from |
 
 Plus two dated research docs (candlestick chart pane, PineScript/actionable buttons) and the
 migration's smoke screenshots. The post-migration restyle project draws from here.

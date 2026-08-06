@@ -74,7 +74,7 @@ prevents automatic session expiry while ClaudIA is running.
 
 ### Session lifecycle (verified against official docs, 2026-07-17)
 
-Source: [IBKR Client Portal API — session lifecycle FAQ](https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#tickle)
+Source: [IBKR Client Portal API — session lifecycle FAQ](https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md)
 (scraped via Firecrawl — `interactivebrokers.com` 403s a direct `WebFetch`).
 
 Two independent, non-overlapping timeout mechanisms:

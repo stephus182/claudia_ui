@@ -3,11 +3,19 @@
 Documents every phase of startup in order: `start-claudia.sh` (pre-UI) then session init.
 Use this to diagnose startup failures: each phase is labeled with where to look.
 
-> **Post-cutover mapping (2026-07-24):** the UI moved from Chainlit to Panel. What this doc
-> calls `on_chat_start` in `claudia/app.py` is now `_init_session` inside
+> **Post-cutover mapping (2026-07-24, corrected 2026-08-05):** the UI moved from Chainlit to
+> Panel. What this doc calls `on_chat_start` in `claudia/app.py` is now `_init_session` inside
 > `claudia/panel_app.py` (panel_app was built as a faithful port, so the phase sequence below
-> is preserved). Any `app.py:NNN` line references point at the removed Chainlit file via git
-> history; the equivalent Panel code carries `# app.py:NNN parity` comments.
+> is preserved). **Every `claudia/app.py:NNN` line reference below is into a file that no
+> longer exists** — reachable only through git history, at the Phase 11 cutover commit.
+>
+> This note used to promise that "the equivalent Panel code carries `# app.py:NNN` parity
+> comments". **It does not, and the 2026-08-05 doc audit checked.** `panel_app.py` carries ten
+> parity comments, but they read "parity with the removed app.py" with **no line numbers** —
+> so a reader following an `app.py:463–480` reference here has nothing to match it against.
+> Navigate by the phase name and the function names given in each section instead; those are
+> current. Fixing this properly means re-anchoring each phase to `panel_app.py` line ranges,
+> which is a doc rewrite rather than an audit fix and is not done.
 
 ---
 

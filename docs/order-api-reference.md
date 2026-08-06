@@ -67,7 +67,7 @@ it skips `search_contract()`/`get_futures()` resolution entirely.
 
 ## Order body field spec (from IBKR CP API docs, verified 2026-07-02)
 
-Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#place-order
+Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md
 
 | Field | Type | Required? | Notes |
 |---|---|---|---|
@@ -157,7 +157,7 @@ check. STK cancellation works end to end.
 **query params** for FUT/FOP (CME Rule 536-B), but `ibkr_core_mcp.IBKRClient.cancel_order()`'s
 signature (`account_id, order_id`) has no way to pass them — FUT/FOP cancellation may be
 rejected by IBKR until that's added upstream in `ibkr_core_mcp`. STK cancellation is unaffected.
-Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#cancel-order
+Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/cancel-order.md
 
 **Gate 2 shows full order detail on cancel (fixed 2026-07-10):** `confirm_cancel_dialog(order_id,
 account_id, order=None)` in `ibkr_core_mcp/order_confirm.py` takes an optional `order` param —
@@ -175,7 +175,7 @@ full original order, not a partial diff** — verified directly against the prim
 (fetched live 2026-07-08, matches an existing 2026-07-02 scrape word-for-word): the body
 content of the modify order endpoint follows the same structure as the standard
 `/iserver/account/{accountId}/orders` endpoint, mirroring the original order's content.
-Source: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#modify-order
+Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/modify-order.md
 
 ```json
 {
@@ -238,8 +238,8 @@ therefore builds a **fresh** order body from the proposal's typed fields (mirror
 whitelist — `conid`, `orderType`, `side`, `tif`, `quantity`, `ticker`, plus `price`/`auxPrice` by
 order type and `manualIndicator` for FUT/FOP. The display-only proposal fields (`changes`,
 `reason`) are never copied in, so they cannot reach the request body.
-Sources: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#order-status ,
-https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#live-orders
+Sources: https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md ,
+https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/live-orders.md
 
 `get_order_status` also returns `order_not_editable`/`cannot_cancel_order` booleans — ClaudIA's
 system prompt requires checking these before proposing a modify/cancel and explaining to the
@@ -286,7 +286,7 @@ Each core now emits two separate things:
    retry state machine is complexity that can itself fail.
 
 Confirmation sets, from IBKR's documented `order_status` values
-(<https://ibkrcampus.com/docs/web-api/web-api-v-1-0-documentation/endpoints/order-monitoring/order-status-value.md>):
+(<https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status-value.md>):
 
 | Action | Confirms on | Notably excluded |
 |---|---|---|
@@ -303,7 +303,7 @@ Absence from `get_live_orders` is not usable as evidence either: `_TERMINAL_STAT
 **A failed read is an absence of evidence, never a confirmation.** `get_order_status` returns
 **503 by design** for orders cancelled or filled before the active session, and for FA/linked
 accounts without an account switch
-(<https://ibkrcampus.com/docs/web-api/web-api-v-1-0-documentation/endpoints/order-monitoring/order-status.md>).
+(<https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md>).
 That path reports "could not be verified … do not assume this order is working", and so does a
 placement whose response carries no order id.
 

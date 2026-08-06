@@ -168,7 +168,9 @@ finding. `ibkr_core_mcp/SECURITY.md` had said since its first version that the d
 enforced it. The live file had been `0644` the whole time. That section now describes an
 enforced control and names the three properties that must not be simplified away (WAL
 sidecars in scope; self-healing rather than create-time-only; never raises). Guarded by
-four tests in `tests/test_store.py`, two of which assert against a path deliberately reset
+four tests in `ibkr_core_mcp/tests/test_store.py` (the fix is in that repo; a bare
+`tests/` path read from here resolves to claudia_ui's suite, which has no such file),
+two of which assert against a path deliberately reset
 to `0644`/`0755` first — the create path is exercised for free by a temp-dir fixture, so a
 test covering only creation would have passed against the unfixed code. One did, and was
 rewritten.
