@@ -71,3 +71,9 @@ docs/panel/screenshots/
 tests/fixtures/live_fills_*.json
 tests/fixtures/account_state_*.json
 docs/audits/*-order-fill-evidence.md
+
+# Project status / live test log — kept LOCAL (and on Drive) by decision 2026-08-06.
+# It accumulates real P&L figures, balances and order ids from every live session, and
+# this repo is public. Untracking stops future additions; the existing history is not
+# rewritten (same decision as the 2026-07-24 screenshots).
+docs/project-status.md
