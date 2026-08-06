@@ -125,3 +125,58 @@ def test_living_doc_repo_paths_exist(doc: Path):
         f"{missing}. Either fix the path, or — if the file was deliberately removed and "
         f"the sentence is about its removal — reword so it does not read as a pointer."
     )
+
+
+# ── The catalog: every living reference must be findable from the index ─────
+
+
+def test_every_living_reference_is_listed_in_the_docs_index():
+    """`docs/README.md` claims to be "the full catalog". Hold it to that.
+
+    A document nobody can find is worse than one that does not exist: the reader concludes
+    the answer is not written down and writes it a second time, somewhere else, and now
+    there are two. That is the same drift this file exists to catch, one level up.
+
+    Only the flat `docs/*.md` layer is checked. The subdirectories are indexed by their
+    own README or explicitly declared browse-directly in the catalog — `plans/` is
+    git-ignored, `audits/` and `probes/` are dated point-in-time records, `panel/` has
+    `panel/README.md`, and `versions/` holds snapshots of the two personal files.
+
+    `context.md` and `principles.md` are excluded by name: they are git-ignored personal
+    documents that the catalog deliberately describes rather than links.
+    """
+    docs = Path(__file__).resolve().parent.parent / "docs"
+    index = (docs / "README.md").read_text()
+    personal = {"context.md", "principles.md", "README.md"}
+
+    unlisted = sorted(
+        p.name
+        for p in docs.glob("*.md")
+        if p.name not in personal and f"]({p.name})" not in index
+    )
+    assert not unlisted, (
+        "These documents exist but are not linked from docs/README.md, which calls itself "
+        f"the full catalog:\n  {chr(10).join('  ' + u for u in unlisted)}\n\n"
+        "Add each to the right group in the Reference section, with a description of what "
+        "question it answers."
+    )
+
+
+def test_the_docs_index_does_not_link_a_document_that_was_deleted():
+    """The mirror of the test above: an entry pointing at nothing.
+
+    Both directions matter. An unlisted file is invisible; a dangling entry sends a reader
+    looking for a document that no longer exists, which is how they conclude the catalog
+    is unreliable and stop using it.
+    """
+    docs = Path(__file__).resolve().parent.parent / "docs"
+    index = (docs / "README.md").read_text()
+
+    dangling = sorted(
+        target
+        for target in re.findall(r"\]\(([^)#:]+\.md)\)", index)
+        if not (docs / target).exists()
+    )
+    assert not dangling, (
+        "docs/README.md links documents that do not exist:\n  " + "\n  ".join(dangling)
+    )

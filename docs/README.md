@@ -8,24 +8,50 @@ most commonly needed links; this file is the full catalog.
 Living documentation describing current behavior — read on demand, updated in place as the
 code changes.
 
+Grouped by domain — a flat list of seventeen entries made it hard to see which document
+owns a question. Within each group, the file that answers "where do I start" is listed first.
+
+**IBKR — the broker connection, orders and trade data**
+
 | File | Description |
 | --- | --- |
-| [`api-reference.md`](api-reference.md) | Anthropic/IBKR/Drive/Panel source-of-truth URLs; scraped-evidence convention |
-| [`connectivity.md`](connectivity.md) | IBKR / GDrive / TradingView check logic, reconnection flows |
+| [`ibkr-gateway.md`](ibkr-gateway.md) | **The gateway session, start here for anything IBKR-connection.** Phases, who may touch the session and from which runtime, the login runbook, borrowed-session and IB Key failures, the container image trap, and the incident record |
+| [`order-api-reference.md`](order-api-reference.md) | Full order-staging spec — Gate 1/2, the parameter-immutability rule, the `conid` requirement |
+| [`trading-data-reference.md`](trading-data-reference.md) | Trade data architecture, Flex vs live API, P&L and the execution listener |
+| [`flex-query-setup.md`](flex-query-setup.md) | IBKR Flex Query setup: token, query config, backfill, ongoing sync |
+| [`market-calendar-reference.md`](market-calendar-reference.md) | 20-exchange market calendar and futures schedules |
+
+**Running ClaudIA — startup, connectivity, configuration**
+
+| File | Description |
+| --- | --- |
+| [`startup-flow.md`](startup-flow.md) | Every phase of ClaudIA startup in order — the first place to look at a failed launch |
+| [`connectivity.md`](connectivity.md) | Status dots, **Google Drive and TradingView** check logic and reconnection. IBKR moved to `ibkr-gateway.md` on 2026-08-06 |
+| [`env-vars-reference.md`](env-vars-reference.md) | Full environment variable reference |
+| [`gdrive-sync-reference.md`](gdrive-sync-reference.md) | GDrive sync — folder layout, credential flow, error handling |
+| [`windows-compatibility.md`](windows-compatibility.md) | Windows-specific platform issues found during macOS development |
+
+**The agent — context, memory, prompt construction**
+
+| File | Description |
+| --- | --- |
 | [`context-loading-reference.md`](context-loading-reference.md) | `context.md`/`principles.md` loading, hot-reload, versioning, prompt-cache mechanics |
 | [`conversation-memory-reference.md`](conversation-memory-reference.md) | `claudia.db` schema — sessions, messages, decisions, doc_versions, FTS5 |
-| [`env-vars-reference.md`](env-vars-reference.md) | Full environment variable reference |
-| [`flex-query-setup.md`](flex-query-setup.md) | IBKR Flex Query setup: token, query config, backfill, ongoing sync |
-| [`gdrive-sync-reference.md`](gdrive-sync-reference.md) | GDrive sync — folder layout, credential flow, error handling |
-| [`market-calendar-reference.md`](market-calendar-reference.md) | 20-exchange market calendar, futures schedules |
-| [`order-api-reference.md`](order-api-reference.md) | Full order-staging spec (Gate 1/2, immutability rule, FUT/FOP conid) |
-| [`project-status.md`](project-status.md) | Living status doc — milestone history, test coverage, live testing (index/outstanding/log), work plan, known gaps |
 | [`prompt-caching-upgrade.md`](prompt-caching-upgrade.md) | Prompt-caching implementation note — status, verified numbers, findings |
-| [`startup-flow.md`](startup-flow.md) | Every phase of ClaudIA startup in order |
-| [`trading-data-reference.md`](trading-data-reference.md) | Trade data architecture, Flex vs live API, P&L/execution listener |
-| [`tradingview-mcp-recovery.md`](tradingview-mcp-recovery.md) | TradingView sidecar break patterns and recovery steps |
-| [`tradingview-reference.md`](tradingview-reference.md) | TradingView integration — curated tools, screenshot mode |
-| [`windows-compatibility.md`](windows-compatibility.md) | Windows-specific platform issues found during macOS development |
+
+**TradingView**
+
+| File | Description |
+| --- | --- |
+| [`tradingview-reference.md`](tradingview-reference.md) | TradingView integration — sidecar, curated tools, screenshot mode |
+| [`tradingview-mcp-recovery.md`](tradingview-mcp-recovery.md) | Sidecar break patterns and recovery steps |
+
+**Project-wide**
+
+| File | Description |
+| --- | --- |
+| [`project-status.md`](project-status.md) | Living status — milestone history, test coverage, live testing (index/outstanding/log), work plan, known gaps |
+| [`api-reference.md`](api-reference.md) | Anthropic / IBKR / Drive / Panel source-of-truth URLs; the scraped-evidence convention |
 
 `context.md`, `principles.md`, and `versions/` are personal, git-ignored, hot-reloaded files —
 not part of this catalog. See `context-loading-reference.md` for how they're loaded.

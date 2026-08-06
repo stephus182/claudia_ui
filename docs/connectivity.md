@@ -1,7 +1,9 @@
 # ClaudIA — Connectivity Guide
 
 Three external services are monitored continuously. Each has a status light in the UI
-header (green / red / gray), polled every 60 seconds by `ConnectivityChecker`.
+header (green / red / gray), polled every 60 seconds by `ConnectivityChecker` — except
+IBKR, whose reading comes from `GatewaySession`, the session owner, and is only *displayed*
+by the checker (see below).
 
 ---
 
@@ -9,260 +11,34 @@ header (green / red / gray), polled every 60 seconds by `ConnectivityChecker`.
 
 | Service | Light | Check method | What "green" means |
 |---|---|---|---|
-| IBKR Gateway | 🟢/🔴 | `GET /tickle` → parse `iserver.authStatus` | Session authenticated **and** connected to IBKR servers |
+| IBKR Gateway | 🟢/🔴 | `GatewaySession` phase — `/tickle` + `/sso/validate` + a `/portfolio/accounts` confirmation | Phase is `LIVE`: authenticated, connected **and** confirmed serving data |
 | Google Drive | 🟢/🔴 | `GDriveSync.ping()` → `files().list` API round-trip | OAuth token valid, Drive API reachable |
 | TradingView | 🟢/🔴/⚫ | TCP connect to `localhost:9222` | Desktop app running with `--remote-debugging-port=9222` |
 
 Gray (⚫) means the service is not configured for this session (TradingView sidecar not
 started). Gray never sends a disconnect alert.
 
-### ⚠ The IBKR light is about the **brokerage session**, not about account data
+### ⚠ IBKR lives in its own document now
 
-`/portfolio/*` and `/iserver/*` are not one switch, and the red light only speaks for the
-second. Measured live 2026-08-04, all three at the same moment:
+The IBKR brokerage session — its eight phases, the suspend protocol, the login runbook, the
+borrowed-session and IB Key failures, and the container image trap — **moved to
+`docs/ibkr-gateway.md` on 2026-08-06.** It is not duplicated here.
 
-```
-client.ping()                 -> False        # brokerage session
-/portfolio/{id}/ledger        -> live         # netliq 59,118.00, unrealised -10,101.02
-/iserver/account/orders       -> HTTP 400 {"error": "Bad Request: no bridge"}
-```
+It was split out because it is a different kind of thing from the other two: Google Drive
+and TradingView answer *is it up?*, while IBKR is a state machine with a shared brokerage
+session and a login that can fail in ways no retry fixes. The drift record makes the case —
+of the fourteen stale claims found in this file on 2026-08-06, **every one was an IBKR
+claim.**
 
-"no bridge" is IBKR naming exactly what is missing. Account data is served from the SSO
-session and keeps working without a brokerage session, which is why the live dashboard
-went on updating while the chat announced *"IBKR gateway not connected"* — a contradiction
-on one screen, and the reason `opening_status.account_readable` now asks the second
-question separately. Three states, not two:
+What stays here: the status-dot mechanics above, and the two services below.
 
-| `ping()` | account reads | what the user is told |
-|---|---|---|
-| up | up | nothing — no caveat to give, and every figure lives in the dashboard |
-| down | **up** | account figures, plus what is unavailable and why (`BROKERAGE_SESSION_DOWN`) |
-| down | down | `OFFLINE_STATUS` — and the dashboard blanks to match |
-
-The dashboard follows the same rule: past `STALE_AFTER` the account figures are **not
-drawn at all** rather than left on screen under a warning, because a number that is
-minutes old looks exactly like one that is current. The Flex-derived realised windows
-keep rendering throughout — they are read from local SQLite and never depended on the
-gateway.
-
----
-
-## IBKR Gateway
-
-### Check process
-
-`ConnectivityChecker.check_ibkr()` calls `GET /v1/api/tickle` (3s timeout, SSL verify
-disabled for localhost self-signed cert). The IBKR gateway returns HTTP 200 regardless
-of auth state, so the JSON body is parsed:
-
-```json
-{
-  "iserver": {
-    "authStatus": {
-      "authenticated": true,
-      "connected": true
-    }
-  }
-}
-```
-
-Both `authenticated` and `connected` must be `true` for the check to pass. A gateway
-that is running but not logged in returns `authenticated: false` and triggers a red light.
-
-**Side effect:** `/tickle` resets the IBKR session inactivity timer. Polling every 60s
-prevents automatic session expiry while ClaudIA is running.
-
-### Session lifecycle (verified against official docs, 2026-07-17)
-
-Source: [IBKR Client Portal API — session lifecycle FAQ](https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md)
-(scraped via Firecrawl — `interactivebrokers.com` 403s a direct `WebFetch`).
-
-Two independent, non-overlapping timeout mechanisms:
-
-| Mechanism | Threshold | Prevented by |
-|---|---|---|
-| Inactivity timeout | ~5–6 min without a request / `/tickle` | `ConnectivityChecker`'s 60s poll (well inside the window) |
-| **Absolute session cap** | **24h, resets at midnight NY/Zug/HK** (whichever region the gateway connects to) | **Nothing — unavoidable.** A fresh browser + 2FA login is required at least once every 24h no matter how well the inactivity timer is serviced. Accepted as a known, permanent constraint — not a bug to chase. |
-
-Daily IBKR server maintenance can also force a disconnect earlier than the 24h mark; IBKR's own
-guidance is to restart the gateway after the maintenance window rather than expect continuity
-through it.
-
-**Soft-timeout recovery (implemented 2026-07-17, unit-tested — not yet live-verified):** when the
-inactivity timer lapses, `/iserver/auth/status` returns `connected:true, authenticated:false` — a
-state distinct from a hard disconnect. `ConnectivityChecker._run_checks()` detects this exact
-signature, but only on a transition from a previously-confirmed `OK` state (never from `UNKNOWN`,
-which covers the fragile first-seconds-after-login window, and never from `ERROR`) — and calls
-`_attempt_soft_recovery()`, which POSTs `POST /iserver/auth/ssodh/init` (`publish:true,
-compete:false`) to silently re-establish the session. If recovery succeeds, the disconnect is
-invisible to the user — no alert fires, since the service never visibly left `OK` (the
-transition-detection loop re-checks `check_ibkr()` before comparing states). If it fails,
-behavior falls back exactly to the pre-existing manual browser+2FA flow — one normal disconnect
-alert, identical to today. `compete` is hardcoded `false` and must never be changed — `true`
-would force-evict a concurrent IBKR Mobile/TWS session. This is the current, non-deprecated
-endpoint — `POST /iserver/reauthenticate` is explicitly marked **Deprecated** by IBKR and remains
-banned from proactive use (it disrupts fresh logins — see `ibkr_core_mcp/client.py`'s
-`reauthenticate()` docstring), unaffected by this change since it's a different endpoint.
-Implementation: `claudia/status.py` — `_last_ibkr_auth_status` (auth-detail capture),
-`_attempt_soft_recovery()` (the recovery call), wired into `_run_checks()`. 15 dedicated unit
-tests cover every safety-relevant branch: never fires from `UNKNOWN`/`ERROR`/hard-disconnect,
-successful recovery suppresses the alert, failed recovery (including a recovery that "succeeds"
-but the re-check still fails differently) produces exactly one normal disconnect alert. **Not yet
-live-verified** — needs a live-test protocol that deliberately lets an authenticated session idle
-past ~6 minutes; see `docs/plans/2026-07-17-ibkr-soft-timeout-recovery.md` Task 5 for the
-safety-scoped protocol (framed so the worst case is identical to today's status quo, since the
-soft-timeout has already occurred naturally by the time recovery is tested).
-
-**Competing sessions:** IBKR's own gateway walkthrough states you *"cannot be logged into the
-account you are authenticating with anywhere else before you authenticate"* and that merely
-closing another IBKR window/app (instead of using its "Log Out") *"may cause a stale login
-session"* — confirming `check_ibkr()`'s `authStatus.competing` warning
-(`claudia/status.py:105-106`) reflects a real, IBKR-documented failure mode: opening IBKR
-Mobile/TWS/another browser tab during a live ClaudIA session can force-kick the gateway session.
-Source: [Launching and Authenticating the Gateway](https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/).
-
-### A borrowed session — the login that could not succeed (diagnosed 2026-08-05)
-
-For days, the gateway login failed with a correctly-formatted 8-digit IB Key response and
-the right username, while IBKR Mobile logged in on demand. The cause was not 2FA at all.
-
-**`/tickle` alone could not see it, and every field it does expose pointed the wrong way:**
-
-| Signal | Reading | What it suggested | Why it was wrong |
-|---|---|---|---|
-| `userId` | populated | a good session | SSO was valid — but not *ours* |
-| `ssoExpires` | renewing | session alive | kept alive by our own ticklers |
-| `competing` | **false** | uncontested | the gateway never got far enough to register a claim; the flag describes a fight, and there was no fight |
-| `authStatus` | `authenticated:false, connected:false` | just log in again | the retry was doomed before it started |
-
-**`GET /sso/validate` answered it in one field:**
-
-```text
-CLIENT_APP : IBKRMOBILE_000.a-000      ← the phone's session, held by the gateway
-USER_NAME  : ibkruser
-RESULT     : True
-```
-
-Only one brokerage session exists per username across Client Portal, TWS and IBKR Mobile
-([multiple sessions](https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md)).
-The gateway was holding a session **issued to the phone**, which it cannot authenticate as
-— so the login page rejected a correct code however often it was retried.
-
-Two follow-ons, both measured rather than reasoned about:
-
-- **`POST /iserver/auth/ssodh/init` cannot rescue this.** Twice, it moved `connected`
-  False→True and left `authenticated` False. It raises the bridge; it cannot supply an
-  authentication that never happened.
-- **`POST /logout` returned `{"status": true}` and the session came straight back**, with a
-  full 10-minute window. Three independent ticklers renew it every ~60s — the container's
-  own `tickler.sh`, the host launchd keepalive, and `ConnectivityChecker`. **The keepalive
-  built to protect a good session cannot tell a good session from a borrowed one**, and had
-  been preserving an unusable one all day.
-
-**What resolved it: `docker restart`.** The session is held in the gateway's local process
-memory, not re-served from IBKR, so a restart drops it with nothing to race. Login then
-succeeded first time, and `/sso/validate` came back `CLIENT_APP: None` — the session
-belonged to the gateway itself. Four theories died before this one: a stale gateway build
-(SHA-256 identical to a fresh download), a wrong `ip2loc` (IBKR's own shipped default), an
-IB Key registered to another username (same username, user-confirmed), and 2FA itself.
-
-### Runbook: a login that will not take
-
-```bash
-python -m claudia.gateway_preflight     # ALWAYS first — read-only, two GETs, no writes
-```
-
-| Verdict | Exit | What it means | Do this |
-|---|---|---|---|
-| `[OK] Session is LIVE` | 0 | already authenticated | **Nothing.** A needless re-login is what escalates into the IB Key challenge |
-| `[DOWN] Gateway is NOT answering` | 1 | no usable HTTP response | start the container |
-| `[FREE] …` | 2 | nothing holds the slot | log in now, through to *"Client login succeeds"* |
-| `[BUSY] Another IBKR client holds the session` | 3 | `competing`/`collision` set | fully close the other client, re-check |
-| `[BORROWED] SSO session belongs to X` | 4 | the gateway holds another app's session | log out of X **from its Log Out menu item**, then `./scripts/gateway-reset.sh` |
-
-Closing or swiping an app away is **not** logging out — IBKR's own gateway walkthrough
-warns it *"may cause a stale login session"*, which is precisely the state above.
-
-`./scripts/gateway-reset.sh` restarts the container and re-checks. It **refuses to run
-against a healthy session** (`--force` overrides) — a tool built to fix a login must not be
-able to break one.
-
-**HTTP 401 is not a failure.** It is the gateway answering that it holds no session — a
-freshly started or freshly logged-out gateway, and the best possible moment to log in.
-`read_state` treats it as `reachable=True`; folding it into `reachable=False` once produced
-*"Gateway is NOT answering. Start it first"* about a gateway that was running perfectly and
-waiting (fixed 2026-08-05, pinned by `test_a_401_means_alive_and_ready_not_down`, with a
-sibling test proving the carve-out still reports a genuine outage as DOWN).
-
-### Where the check runs by itself
-
-- **Startup** — `warn_if_session_borrowed()` in `panel_app.main()`, beside
-  `install_check.warn_if_stale()` and `agent.warn_if_model_lacks_operator_channel()`. It
-  fires only on positive proof: valid SSO **and** a named `CLIENT_APP` **and** an
-  unauthenticated gateway. Never on absence — a warning that fires when it need not is one
-  that gets ignored when it must not.
-- **The "Start IBKR Gateway" button** — `_on_start_gateway` pre-flights before
-  `open_login_page()` and refuses to open it on `EXIT_READY` (nothing to do) or
-  `EXIT_BORROWED` (the login cannot succeed until the other app logs out). The button used
-  to open the page unconditionally, which is how an unwinnable login got retried for days.
-
-### ibkr_core_mcp ping
-
-`IBKRClient.ping()` (used by tools, not the UI) uses a different endpoint:
-`GET /iserver/auth/status`. It checks only `authenticated` (not `connected`) and
-has a one-retry logic for the first-request IBKR quirk — the gateway returns
-`authenticated: false` on the very first request of a new session even when fully
-logged in. It calls `tickle()` and retries once after a 1-second pause.
-
-The two pings serve different purposes:
-- `ConnectivityChecker.check_ibkr()` — UI light, runs every 60s, keepalive side effect
-- `IBKRClient.ping()` — pre-tool guard, runs on demand, handles startup quirk
-
-### Reconnection process
-
-**Automatic (session timeout):**
-1. Status light turns red; in-chat alert: *"⚠️ IBKR Gateway disconnected"*
-2. Open `https://localhost:5055` in your browser
-3. Complete IBKR login + 2FA
-4. `ConnectivityChecker` polls within 60s → detects `authenticated: true` → light turns green → in-chat alert: *"✅ IBKR Gateway reconnected"*
-
-**Gateway container stopped:**
-1. Status light turns red (connection refused, not HTTP 200)
-2. Click **"Start IBKR Gateway"** button in the ClaudIA welcome message
-   — or run `./start-claudia.sh` in a new terminal
-3. Container starts; gateway Java process comes up (~30s)
-4. Browser opens `https://localhost:5055` automatically
-5. Complete login + 2FA; `ConnectivityChecker` detects reconnect
-
-**Docker Desktop not running:**
-Same as above but step 2 also launches Docker Desktop automatically (macOS only).
-
-### Always-on keepalive daemon (shipped 2026-07-17)
-
-`ConnectivityChecker`'s 60s tickle and `start-claudia.sh`'s `caffeinate` only protect the
-session while ClaudIA's own process is running — the gap between stopping ClaudIA (e.g. a dev
-restart) and starting it again was previously unprotected unless someone remembered to run
-`scripts/ibkr-keepalive.sh` manually in a separate terminal.
-
-`scripts/install-ibkr-keepalive-daemon.sh` installs `scripts/ibkr-keepalive.sh` as a macOS
-LaunchAgent (`~/Library/LaunchAgents/com.claudia-ui.ibkr-keepalive.plist`, `RunAtLoad` +
-`KeepAlive`), so the gateway is tickled every 55s and the Mac is kept awake **independent of
-ClaudIA, terminals, or dev restarts** — install once, it survives logouts/crashes/reboots.
-It only holds the `caffeinate -i` sleep-prevention assertion while the gateway actually responds
-to `/tickle`, and releases it the moment the container goes unreachable, so it doesn't keep the
-Mac permanently awake when nothing needs protecting.
-
-```bash
-./scripts/install-ibkr-keepalive-daemon.sh              # install + load
-./scripts/install-ibkr-keepalive-daemon.sh --uninstall   # unload + remove
-```
-
-Logs: `~/Library/Logs/claudia-ui/ibkr-keepalive.log` (+ `.err.log`). Only logs on OK/WARN state
-transitions, not every tick, to keep the log bounded over a long-running install.
-
-Redundant with `ConnectivityChecker`'s own tickle when ClaudIA is running (both are idempotent
-`GET /tickle` calls, well inside IBKR's `1 req/sec` pacing limit for that endpoint) — that's
-intentional defense in depth, not a conflict.
+One IBKR fact belongs on this page because it is about the **dot**, not the session:
+the light is green only when `GatewaySession`'s phase is `LIVE` — authenticated, connected
+**and** confirmed against a real data endpoint. `check_ibkr()` performs no HTTP; it reads
+the owner's cached state. `/portfolio/*` and `/iserver/*` are separate subsystems that have
+been observed diverging, so a red dot does **not** mean account data is unavailable —
+`docs/ibkr-gateway.md` § "The IBKR light is about the brokerage session" has the measured
+three-state table.
 
 ---
 
@@ -373,10 +149,15 @@ their new hashes.
 ## Implementation Reference
 
 ```
-claudia/status.py          — ConnectivityChecker, check_ibkr(), check_gdrive(), check_tradingview()
+claudia/status.py          — ConnectivityChecker: check_gdrive(), check_tradingview(), and
+                             the alert-on-transition loop. check_ibkr() is a cached lookup
+                             of GatewaySession, not a probe — it issues no HTTP
 claudia/gdrive_sync.py     — GDriveSync.ping(), upload_db(), download_db()
-ibkr_core_mcp/client.py   — IBKRClient.ping(), tickle(), get_auth_status()
-claudia/panel_app.py       — ConnectivityChecker construction (passes gdrive_sync=); pn.indicators.BooleanStatus dots updated in-session via a periodic callback
+claudia/tradingview.py     — CDP health probe behind check_tradingview()
+claudia/panel_app.py       — ConnectivityChecker construction (passes gdrive_sync=);
+                             pn.indicators.BooleanStatus dots updated in-session via a
+                             periodic callback
+# IBKR gateway modules are listed in docs/ibkr-gateway.md, not here.
 # Post Phase-11 cutover: status is shown by in-session Panel BooleanStatus indicators.
 # The Chainlit custom.js status bar polling GET /api/status was removed (no such HTTP route
 # in panel_app — the dots are pushed over Panel's own websocket).
