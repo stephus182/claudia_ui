@@ -111,6 +111,7 @@ class DashboardPoller:
         db_path: str | Path,
         interval: float = POLL_INTERVAL,
         today_provider: Any = None,
+        session: Any = None,
     ) -> None:
         """Configure the poller. Nothing is polled until `start()`.
 
@@ -121,7 +122,13 @@ class DashboardPoller:
             today_provider: Zero-arg callable returning today's `date`. Defaults to
                 `date.today`, i.e. the local trading day, which is the basis the
                 Monday→Friday week requirement is written against.
+            session: The `GatewaySession` that owns IBKR connectivity, defaulting to the
+                process-wide one. The account half of each poll runs only when it reports
+                `LIVE` — see `_poll_once`.
         """
+        from claudia.gateway_session import get_session
+
+        self._session = session if session is not None else get_session()
         self._client = client
         self._db_path = Path(db_path)
         self._interval = interval
@@ -129,6 +136,11 @@ class DashboardPoller:
         self._account_id: str | None = None
         self._base_currency: str | None = None
         self._snapshot = empty_snapshot(error="Dashboard has not polled yet.")
+        # Cached reconstruction plus the (realised P&L, trade day) it was built for. See
+        # `_reconstruct`: refetching fills on every poll would defy IBKR's "once per
+        # session" advice for the trades endpoint.
+        self._fill_cache: Any = None
+        self._fill_cache_key: tuple[Any, Any] = (object(), None)
         self._task: asyncio.Task[None] | None = None
 
     # ── Public, synchronous ─────────────────────────────────────────────────
@@ -192,18 +204,49 @@ class DashboardPoller:
     async def _poll_once(self) -> None:
         """Run one full poll: Flex windows first, then the IBKR account data.
 
-        Flex first, deliberately. It is a local SQLite read that does not depend on the
-        gateway, so doing it first means a logged-out session still gets its realised
-        week/month/YTD rather than an empty dashboard — the numbers that are available
-        are shown, and the ones that are not are marked stale with a reason.
+        The session state is read FIRST, because it decides how much of the poll can
+        run — but the Flex half still executes on every path. It is a local SQLite read
+        that does not depend on the gateway, so a logged-out session keeps its realised
+        week/month/YTD rather than showing an empty dashboard.
+
+        What the session state additionally decides is whether the **reconstruction** can
+        run. Bridging Flex's gap needs live fills and live positions, so a logged-out
+        session gets Flex-only breakdowns — correct, and visibly missing today rather
+        than wrong about it.
         """
-        flex = self._flex_sections(await asyncio.to_thread(self._read_flex))
+        # The account half runs ONLY against a session the owner has confirmed.
+        #
+        # This closes the defect that started the 2026-08-06 lifecycle work. The portfolio
+        # endpoints have no documented brokerage-session prerequisite — IBKR states only
+        # that "/portfolio/accounts or /portfolio/subaccounts must be called prior to this
+        # endpoint" — so they keep answering HTTP 200 with figures after the brokerage
+        # session drops, while `mktPrice`, `mktValue` and `unrealizedPnl` are market-data
+        # derived and IBKR says plainly that "Market Data and Trading is not possible if
+        # not authenticated". The old code asked only "did the call raise?", so it printed
+        # those figures under a freshly-stamped `as_of` and the strip read
+        # "Account data live — updated 3s ago".
+        #
+        # Asking the owner instead of probing is also what makes the status dot and these
+        # tiles incapable of disagreeing: they now read the same `SessionState`.
+        state = self._session.state()
+        if not state.is_live:
+            flex = self._flex_sections(await asyncio.to_thread(self._read_flex, None))
+            self._publish_stale(flex, f"IBKR not usable: {state.detail}")
+            return
+
         try:
             ledger, positions = await asyncio.to_thread(self._read_account)
         except Exception as exc:
             log.warning("Dashboard account poll failed: %s", exc)
+            flex = self._flex_sections(await asyncio.to_thread(self._read_flex, None))
             self._publish_stale(flex, f"IBKR unavailable: {exc}")
             return
+
+        # Positions in hand, so the reconstruction can be trust-checked against them.
+        reconstruction = await asyncio.to_thread(self._reconstruct, positions, ledger)
+        flex = self._flex_sections(
+            await asyncio.to_thread(self._read_flex, reconstruction)
+        )
         positions = await asyncio.to_thread(self._read_entries, positions)
         # Deliberately NOT inside `_read_account`: orders come from `/iserver/*` and the
         # account half from `/portfolio/*`, and those fail independently (measured
@@ -271,9 +314,52 @@ class DashboardPoller:
             "stats": previous.stats,
             "series": previous.series,
             "coverage": previous.coverage,
+            "breakdowns": previous.breakdowns,
         }
 
-    def _read_flex(self) -> dict[str, Any] | None:
+    def _reconstruct(self, positions: tuple[Position, ...], ledger: Any) -> Any:
+        """FIFO the recent fills into realised P&L, refetching only when something closed.
+
+        ## Why this is not fetched every poll
+
+        IBKR advises calling `/iserver/account/trades` **"once per session"**
+        (https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/trades.md, read
+        2026-08-06), and the endpoint is separately rate-limited to 1 request per 5
+        seconds. A 15-second poll fetching it unconditionally would issue roughly 240
+        calls an hour against explicit advice to issue one — which an earlier version of
+        this method did.
+
+        The trigger is the ledger's `realizedpnl`, and it is exact rather than a
+        heuristic: that figure moves **if and only if** a position closed, which is the
+        only event that can change a reconstruction's output. An *opening* fill changes no
+        realised P&L, so not refetching for it costs nothing. The trade day is also
+        watched, because the day boundary re-buckets the same fills into a new window.
+
+        Never raises: this only *extends* the dashboard past Flex's coverage, so losing it
+        must cost the bridged days and nothing else. On failure the previous
+        reconstruction is kept if there is one — it is still the best available answer —
+        and the breakdowns fall back to Flex-only when there is not.
+
+        The trust check is given IBKR's own position quantities; a reconstruction
+        validated against numbers it produced itself would validate nothing.
+        """
+        realised = getattr(ledger, "realised_pnl", None)
+        today = self._today()
+        if self._fill_cache is not None and (realised, today) == self._fill_cache_key:
+            return self._fill_cache
+        try:
+            from claudia.live_realised import fetch_fills, reconstruct
+
+            fills = fetch_fills(self._client)
+            result = reconstruct(fills, {p.conid: p.quantity for p in positions})
+        except Exception as exc:
+            log.warning("Dashboard fill reconstruction failed: %s", exc)
+            return self._fill_cache
+        self._fill_cache = result
+        self._fill_cache_key = (realised, today)
+        return result
+
+    def _read_flex(self, reconstruction: Any = None) -> dict[str, Any] | None:
         """Read every Flex-derived section, or None if the read failed.
 
         Blocking SQLite — runs on a worker thread. Opens its own read-only connection
@@ -288,7 +374,7 @@ class DashboardPoller:
         """
         try:
             with closing(connect(self._db_path)) as conn:
-                return build_flex_sections(conn, self._today())
+                return build_flex_sections(conn, self._today(), reconstruction)
         except Exception as exc:
             log.warning("Dashboard Flex read failed: %s", exc)
             return None

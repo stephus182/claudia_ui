@@ -17,11 +17,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import requests
-
 from claudia.tradingview import _TV_DEBUG_PORT
 
 if TYPE_CHECKING:
+    from claudia.gateway_session import GatewaySession
     from claudia.gdrive_sync import GDriveSync
     from claudia.tradingview import TradingViewBridge
 
@@ -73,16 +72,27 @@ class ConnectivityChecker:
         gdrive_token_file: Path,
         tv_bridge: TradingViewBridge | None = None,
         gdrive_sync: GDriveSync | None = None,
+        session: GatewaySession | None = None,
     ) -> None:
         """Initialise the checker. Call start() to begin polling.
 
         gdrive_sync is optional — if None, check_gdrive() falls back to a token-file
         existence check (no live API round-trip).
+
+        `session` is the `GatewaySession` that owns IBKR connectivity, defaulting to the
+        process-wide one. This checker no longer polls IBKR itself — see `check_ibkr`.
         """
         self._gateway_url = gateway_url.rstrip("/")
         self._gdrive_token_file = Path(gdrive_token_file)
         self._tv_bridge = tv_bridge
         self._gdrive_sync = gdrive_sync
+        # The session owner. Defaulted rather than required so existing call sites and
+        # tests keep working; `panel_app` passes the process-wide one explicitly.
+        if session is None:
+            from claudia.gateway_session import get_session
+
+            session = get_session()
+        self._session = session
         self._status: dict[str, ServiceStatus] = {
             "ibkr":   ServiceStatus.UNKNOWN,
             "gdrive": ServiceStatus.UNKNOWN,
@@ -99,28 +109,27 @@ class ConnectivityChecker:
     # ── Individual checks (synchronous, cheap) ──────────────────────────────
 
     def check_ibkr(self) -> bool:
-        """Return True if the IBKR gateway is reachable and the session is authenticated.
+        """Whether IBKR is usable, according to the session owner.
 
-        Side effect: calling /tickle resets the IBKR session keepalive timer, so
-        the 60-second poll interval also prevents auto-logout during idle sessions.
+        **This performs no HTTP of its own since 2026-08-06.** It used to `GET /tickle` on
+        its own 60-second timer and, on a soft timeout, `POST /iserver/auth/ssodh/init`.
+        Both moved to `claudia.gateway_session`, for two distinct reasons:
+
+        1. *One owner writes* (plan invariant §3.1). A monitor that can silently
+           re-establish a session is a second authority over that session's lifecycle,
+           and competing authorities are what made every earlier fix uncover another gap.
+        2. **The dot and the dashboard were reading different subsystems.** This checked
+           `iserver.authStatus`; the KPI tiles read `/portfolio/*`, which IBKR documents
+           with no brokerage-session prerequisite at all. So the dot could go red while
+           the tiles kept printing figures from a subsystem that was still answering —
+           plan F6/F8, and the defect that started this whole track. Both now read one
+           `SessionState` and cannot disagree.
+
+        `is_live()` rather than "reachable": it means authenticated, connected **and**
+        confirmed against a real data endpoint, which is the only condition under which a
+        green dot is honest.
         """
-        try:
-            resp = requests.get(
-                f"{self._gateway_url}/tickle",
-                timeout=3,
-                verify=False,  # IBKR gateway uses a self-signed cert on localhost
-            )
-            if resp.status_code != 200:
-                self._last_ibkr_auth_status = {}
-                return False
-            auth = resp.json().get("iserver", {}).get("authStatus", {})
-            self._last_ibkr_auth_status = auth
-            if auth.get("competing"):
-                log.warning("IBKR: competing session detected — another TWS/gateway session is active")
-            return bool(auth.get("authenticated") and auth.get("connected"))
-        except Exception:
-            self._last_ibkr_auth_status = {}
-            return False
+        return bool(self._session.is_live())
 
     def check_gdrive(self) -> bool:
         """Return True if GDrive is reachable.
@@ -146,35 +155,6 @@ class ConnectivityChecker:
             with socket.create_connection(("localhost", _TV_DEBUG_PORT), timeout=1.0):
                 return True
         except OSError:
-            return False
-
-    def _attempt_soft_recovery(self) -> bool:
-        """Silently re-establish a soft-timed-out brokerage session.
-
-        Only ever called from _run_checks() when the previous poll was OK and the
-        current poll shows IBKR's documented soft-timeout signature
-        (connected=true, authenticated=false) — never on a fresh/settling login
-        (that transition starts from UNKNOWN) and never on a hard disconnect
-        (connected=false). `compete` is hardcoded False: it must never force-evict
-        a concurrent IBKR Mobile/TWS session — if a real competing session is the
-        actual cause, IBKR returns HTTP 200 with authenticated:false in the body
-        (same response shape as /tickle) rather than an error status, so this
-        method checks the body, not just the status code, before reporting success.
-
-        Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/session/initialize-brokerage-session.md
-        Endpoint: POST /iserver/auth/ssodh/init
-        """
-        try:
-            resp = requests.post(
-                f"{self._gateway_url}/iserver/auth/ssodh/init",
-                json={"publish": True, "compete": False},
-                timeout=5,
-                verify=False,
-            )
-            if resp.status_code != 200:
-                return False
-            return bool(resp.json().get("authenticated"))
-        except Exception:
             return False
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
@@ -236,22 +216,14 @@ class ConnectivityChecker:
     async def _run_checks(self) -> None:
         """Poll all three services, map results to ServiceStatus, and alert on transitions.
 
-        IBKR gets one extra step: if it was `OK` and now looks down with the exact
-        soft-timeout signature (connected but no longer authenticated), a narrowly-scoped
-        recovery is attempted and the state re-checked before any alert fires — see §11 of
-        SECURITY.md for why that call is safe. TradingView maps a closed CDP port to
-        `UNKNOWN` (not launched) rather than `ERROR`. Alerts fire only on a state change.
+        IBKR needs no extra step here any more: the soft-timeout recovery it used to run
+        (`ssodh/init` when a previously-OK session shows connected-but-unauthenticated)
+        moved to `gateway_session.GatewaySession._poll_once` on 2026-08-06, along with the
+        read itself. `check_ibkr` is now a cached lookup, so this poll makes two network
+        calls rather than three. TradingView maps a closed CDP port to `UNKNOWN` (not
+        launched) rather than `ERROR`. Alerts fire only on a state change.
         """
         ibkr_ok = await asyncio.to_thread(self.check_ibkr)
-        if not ibkr_ok and self._status["ibkr"] == ServiceStatus.OK:
-            auth = self._last_ibkr_auth_status
-            if (
-                auth.get("connected")
-                and not auth.get("authenticated")
-                and await asyncio.to_thread(self._attempt_soft_recovery)
-            ):
-                log.info("IBKR: soft-timeout recovered silently via ssodh/init")
-                ibkr_ok = await asyncio.to_thread(self.check_ibkr)
         gdrive_ok = await asyncio.to_thread(self.check_gdrive)
         tv_ok = await asyncio.to_thread(self.check_tradingview)
         new = {

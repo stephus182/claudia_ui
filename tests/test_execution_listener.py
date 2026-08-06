@@ -1,18 +1,41 @@
-"""Tests for claudia/execution_listener.py — execution-triggered P&L checks."""
+"""Tests for claudia/execution_listener.py — execution-triggered P&L checks.
+
+Since 2026-08-06 the listener only connects against a session the owner reports as
+`LIVE` (plan S4). `_make_listener` therefore injects a live session by default, and the
+gate itself is tested explicitly at the bottom of this file rather than left implicit —
+an injected default that nothing asserts would be a mock quietly weaker than the real
+thing.
+"""
 
 import asyncio
+import contextlib
 import logging
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from claudia.execution_listener import ExecutionListener
+from claudia.execution_listener import _IDLE_POLL, _RETRY_DELAYS, ExecutionListener
 
 
-def _make_listener():
-    """An ExecutionListener wired to a mock store, returned alongside that store."""
+def _live_session(live: bool = True):
+    """A stand-in session owner. `is_live()` is the only thing the listener asks it."""
+    owner = MagicMock()
+    owner.is_live.return_value = live
+    return owner
+
+
+def _make_listener(live: bool = True):
+    """An ExecutionListener wired to a mock store, returned alongside that store.
+
+    Defaults to a LIVE session: most tests here exercise what the listener does once
+    connected, and without an injected owner they would spin in the idle loop waiting for
+    a session that never comes up.
+    """
     store = MagicMock()
-    return ExecutionListener("https://localhost:5055/v1/api", store), store
+    listener = ExecutionListener(
+        "https://localhost:5055/v1/api", store, session=_live_session(live)
+    )
+    return listener, store
 
 
 def _fake_ws(listen_items):
@@ -509,3 +532,68 @@ def test_get_live_pnl_text_falls_back_to_ledger_when_cache_empty():
     assert "Realized P&L" in result
     assert "+461.56" in result
     toolkit.execute.assert_called_once_with("get_ledger", {})
+
+
+# ── The S4 gate: no traffic against a session the owner has not confirmed ────
+
+
+@pytest.mark.asyncio
+async def test_does_not_connect_while_the_session_is_not_live():
+    """The WebSocket is not exempt from the suspension rule.
+
+    Any request renews the session, and this loop was measured reconnecting every few
+    seconds during a real login on 2026-08-06 — the gateway's own log shows it receiving
+    `{"message": "waiting for session"}` while the user was still at the 2FA prompt.
+    """
+    listener, _ = _make_listener(live=False)
+    with patch.object(listener, "_run_once", new=AsyncMock()) as run_once:
+        task = asyncio.create_task(listener._run_with_retry())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    run_once.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connects_once_the_session_is_live():
+    """The gate must open again — a listener that never reconnects is worse than one
+    that reconnects too eagerly."""
+    listener, _ = _make_listener(live=True)
+    with patch.object(listener, "_run_once", new=AsyncMock()) as run_once:
+        task = asyncio.create_task(listener._run_with_retry())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    run_once.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_a_session_does_not_consume_the_backoff_budget():
+    """"Not up yet" is the ordinary startup state, not an error.
+
+    Letting it advance the retry counter would push a genuine reconnect out to a minute on
+    a gateway that had merely not finished logging in. The stub stops the loop on its first
+    wait so exactly one value is observed — patching `asyncio.sleep` and then sleeping in
+    the test itself records the test's own calls, which is how the first version of this
+    test "failed" against correct code.
+    """
+    listener, _ = _make_listener(live=False)
+    waits: list[float] = []
+
+    async def record_then_stop(delay):
+        """Record the wait the listener asked for, then end the loop."""
+        waits.append(delay)
+        raise asyncio.CancelledError
+
+    with (
+        patch("claudia.execution_listener.asyncio.sleep", new=record_then_stop),
+        contextlib.suppress(asyncio.CancelledError),
+    ):
+        await listener._run_with_retry()
+
+    assert waits == [_IDLE_POLL], (
+        f"idle waits must use _IDLE_POLL ({_IDLE_POLL}s), not the error backoff "
+        f"{_RETRY_DELAYS}: got {waits}"
+    )

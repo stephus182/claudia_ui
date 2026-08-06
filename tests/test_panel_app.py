@@ -45,13 +45,14 @@ import os
 import signal
 import threading
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
 import panel as pn
 import pytest
 
-from claudia.gateway_preflight import GatewayState
+from claudia.gateway_session import SessionPhase, SessionState
 from claudia.panel_app import (
     _DOCS_PATH,
     _build_chat_app,
@@ -975,13 +976,26 @@ async def test_destroy_hook_cleanup_failure_is_logged_not_raised(caplog):
 
 @pytest.mark.asyncio
 async def test_start_gateway_click_success_path_streams_and_refreshes_status(monkeypatch):
-    """5.6b quality review (I3a): clicking the REAL gateway button drives the
-    full app.py:838-874 core — ensure_docker_running → start → wait_for_gateway
-    → open_login_page — renders the success message, and awaits the immediate
-    connectivity re-check (app.py:863-864 parity)."""
+    """Clicking the button delegates to the session owner and renders a LIVE result.
+
+    The button is presentation only since 2026-08-06: the sequencing, the pre-flight and
+    the login wait all live in `claudia.gateway_session`, and their ordering is pinned in
+    `tests/test_gateway_session.py` where the call sequence is observable.
+
+    `get_session` is patched rather than `GatewayManager`, and that boundary is not
+    cosmetic. A MagicMock manager reports a truthy `is_running()` and `wait_for_gateway()`,
+    so the real `establish()` proceeds to a live `read_state` and then sits in its
+    300-second login wait — measured 2026-08-06, it hung the whole suite. A double that is
+    easier to satisfy than the real thing keeps a broken path green; here it made a
+    working path hang.
+    """
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
+    session = MagicMock()
+    session.establish.return_value = SessionState(
+        phase=SessionPhase.LIVE, as_of=datetime.now(UTC), detail="account(s) <redacted>"
+    )
 
     with (
         patch.dict(os.environ, _NO_GDRIVE),
@@ -992,24 +1006,14 @@ async def test_start_gateway_click_success_path_streams_and_refreshes_status(mon
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch("claudia.panel_app._send_opening_status",
               new=AsyncMock(return_value=(None, True))),   # offline → button present
-        patch("claudia.panel_app.GatewayManager") as mock_gm_cls,
-        # The click path now pre-flights the session before opening the login page.
-        # Without this the unit test would make a real network call to a live gateway
-        # and its verdict would decide the outcome — mocked to the free state so this
-        # test keeps exercising the success path it was written for.
-        patch("claudia.panel_app.read_state",
-              return_value=GatewayState(reachable=True, user_id=1)),
+        patch("claudia.panel_app.GatewayManager"),
+        patch("claudia.panel_app.get_session", return_value=session),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
-        gm = mock_gm_cls.return_value
-        gm.wait_for_gateway.return_value = True
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-        # Stronger of the two review options: a checker mock with an AsyncMock
-        # _run_checks, asserted awaited — pins the immediate re-check trigger,
-        # not just its absence of crash.
         checker = MagicMock()
         checker._run_checks = AsyncMock()
         monkeypatch.setattr("claudia.panel_app._connectivity_checker", checker)
@@ -1017,23 +1021,24 @@ async def test_start_gateway_click_success_path_streams_and_refreshes_status(mon
         gw_btn = next(b for b in _find_buttons(chat) if b.name == "Start IBKR Gateway")
         await _get_click_callback(gw_btn)(None)
 
-    gm.ensure_docker_running.assert_called_once()
-    gm.start.assert_called_once()
-    gm.wait_for_gateway.assert_called_once()
-    gm.open_login_page.assert_called_once()
+    session.establish.assert_called_once()
     checker._run_checks.assert_awaited_once()
     assert gw_btn.disabled is True
     texts = _message_texts(chat)
-    assert any("✅ IBKR Gateway is reachable" in t for t in texts)
+    assert any("Session is live" in t for t in texts)
 
 
 @pytest.mark.asyncio
 async def test_start_gateway_click_timeout_reports_and_skips_login_page():
-    """5.6b quality review (I3b): wait_for_gateway returning False renders the
-    timeout message and never opens the login page."""
+    """A gateway that never answers is reported, and no success message is rendered."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
+    session = MagicMock()
+    session.establish.return_value = SessionState(
+        phase=SessionPhase.DOWN, as_of=datetime.now(UTC),
+        detail="The gateway did not answer within 120s.",
+    )
 
     with (
         patch.dict(os.environ, _NO_GDRIVE),
@@ -1044,22 +1049,20 @@ async def test_start_gateway_click_timeout_reports_and_skips_login_page():
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch("claudia.panel_app._send_opening_status",
               new=AsyncMock(return_value=(None, True))),   # offline → button present
-        patch("claudia.panel_app.GatewayManager") as mock_gm_cls,
+        patch("claudia.panel_app.GatewayManager"),
+        patch("claudia.panel_app.get_session", return_value=session),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
-        gm = mock_gm_cls.return_value
-        gm.wait_for_gateway.return_value = False
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
         gw_btn = next(b for b in _find_buttons(chat) if b.name == "Start IBKR Gateway")
         await _get_click_callback(gw_btn)(None)
 
-    gm.wait_for_gateway.assert_called_once()
-    gm.open_login_page.assert_not_called()
     texts = _message_texts(chat)
-    assert any("✕ Gateway did not start within timeout" in t for t in texts)
+    assert any("Gateway is not answering" in t for t in texts)
+    assert not any("Session is live" in t for t in texts)
 
 
 def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
@@ -1563,7 +1566,9 @@ async def test_session_root_composes_the_dashboard_tabs_and_table():
     assert isinstance(root, pn.Column)
     assert isinstance(root.objects[-1], pn.Row)
     tiles = [n for n in _iter_tree(root.objects[0]) if isinstance(n, pn.indicators.Number)]
-    assert len(tiles) == 6
+    assert len(tiles) == 5   # win rate became a block, not a sixth tile (2026-08-06)
+    assert any("Win rate" in str(getattr(n, "object", ""))
+               for n in _iter_tree(root.objects[0])), "the win-rate block must be in the strip"
 
 
 @pytest.mark.asyncio
@@ -2507,62 +2512,62 @@ def test_main_warns_when_another_ibkr_app_holds_the_session(_restore_root_loggin
 
 @pytest.mark.asyncio
 async def test_start_gateway_refuses_to_open_the_login_page_on_a_borrowed_session():
-    """A borrowed session must not send the user to the login page.
+    """A borrowed session must be named, not retried.
 
-    Reachable only means the process answers; it says nothing about whose session it
-    holds. Opening the page here fails and counts as another attempt, which is what
-    escalates into the IB Key challenge/response.
+    The decision belongs to the owner; what this pins is that the button surfaces it —
+    including which app holds the session, the field that actually explains a stuck login.
     """
     from claudia import panel_app
-    from claudia.gateway_preflight import EXIT_BORROWED, GatewayState
 
     chat = MagicMock()
-    session = {"closed": False, "unsubscribe": None, "store": None,
-               "loader": None, "agent": None}
-    borrowed = GatewayState(reachable=True, sso_valid=True, authenticated=False,
-                            client_app="IBKRMOBILE_000.a-000", sso_user="ibkruser")
-    gm = MagicMock()
-    gm.wait_for_gateway.return_value = True
+    session_state = {"closed": False, "unsubscribe": None, "store": None,
+                     "loader": None, "agent": None}
+    owner = MagicMock()
+    owner.establish.return_value = SessionState(
+        phase=SessionPhase.BORROWED, as_of=datetime.now(UTC),
+        detail="The gateway holds a session issued to IBKRMOBILE_000.a-000.",
+    )
 
     with (
-        patch("claudia.panel_app.GatewayManager", return_value=gm),
-        patch("claudia.panel_app.read_state", return_value=borrowed),
+        patch("claudia.panel_app.GatewayManager"),
+        patch("claudia.panel_app.get_session", return_value=owner),
     ):
-        panel_app._send_action_buttons(chat, session, "s1", ibkr_offline=True, tv_offline=True)
+        panel_app._send_action_buttons(chat, session_state, "s1", ibkr_offline=True,
+                                       tv_offline=True)
         row = chat.send.call_args.args[0]
         gw_btn = next(b for b in row if getattr(b, "label", "") == "Start IBKR Gateway")
         await _get_click_callback(gw_btn)(None)
 
-    gm.open_login_page.assert_not_called()
     texts = " ".join(str(c.args[0]) for c in chat.send.call_args_list if c.args)
-    assert "LOG OUT OF YOUR IBKR APP FIRST" in texts
     assert "IBKRMOBILE_000.a-000" in texts
-    assert EXIT_BORROWED == 4
+    assert "BORROWED" in texts
 
 
 @pytest.mark.asyncio
 async def test_start_gateway_does_not_relogin_a_session_that_already_works():
     """An authenticated session is left alone — re-authenticating it is the harm."""
     from claudia import panel_app
-    from claudia.gateway_preflight import GatewayState
 
     chat = MagicMock()
-    session = {"closed": False, "unsubscribe": None, "store": None,
-               "loader": None, "agent": None}
-    gm = MagicMock()
-    gm.wait_for_gateway.return_value = True
+    session_state = {"closed": False, "unsubscribe": None, "store": None,
+                     "loader": None, "agent": None}
+    owner = MagicMock()
+    owner.establish.return_value = SessionState(
+        phase=SessionPhase.LIVE, as_of=datetime.now(UTC), detail="account(s) <redacted>"
+    )
 
     with (
-        patch("claudia.panel_app.GatewayManager", return_value=gm),
-        patch("claudia.panel_app.read_state",
-              return_value=GatewayState(reachable=True, authenticated=True, connected=True)),
+        patch("claudia.panel_app.GatewayManager"),
+        patch("claudia.panel_app.get_session", return_value=owner),
     ):
-        panel_app._send_action_buttons(chat, session, "s1", ibkr_offline=True, tv_offline=True)
+        panel_app._send_action_buttons(chat, session_state, "s1", ibkr_offline=True,
+                                       tv_offline=True)
         row = chat.send.call_args.args[0]
         gw_btn = next(b for b in row if getattr(b, "label", "") == "Start IBKR Gateway")
         await _get_click_callback(gw_btn)(None)
 
-    gm.open_login_page.assert_not_called()
+    texts = " ".join(str(c.args[0]) for c in chat.send.call_args_list if c.args)
+    assert "Session is live" in texts
 
 
 def test_main_refuses_to_announce_a_server_it_cannot_start(_restore_root_logging, caplog):

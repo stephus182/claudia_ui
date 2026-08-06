@@ -9,6 +9,11 @@ follows is failure-path testing:
   * the account id must be resolved once, not once per poll (rate limit),
   * a failed resolution must not be cached,
   * the Flex half must survive the IBKR half failing, and vice versa.
+
+Since 2026-08-06 the account half also runs only when the session owner reports `LIVE`
+(plan S4). The helpers below inject a live owner by default — otherwise every test here
+would exercise the gate rather than the behaviour it was written for — and the gate itself
+is asserted explicitly at the bottom of this file.
 """
 
 from __future__ import annotations
@@ -16,11 +21,22 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 
 from claudia import dashboard_data as dd
 from claudia.dashboard_poller import POLL_INTERVAL, STALE_AFTER, DashboardPoller
+
+
+def _owner(live: bool = True):
+    """A stand-in session owner; `state().is_live` is all the poller consults."""
+    state = MagicMock()
+    state.is_live = live
+    state.detail = "live" if live else "the gateway holds no session"
+    owner = MagicMock()
+    owner.state.return_value = state
+    return owner
 
 _TODAY = date(2026, 8, 6)
 
@@ -34,7 +50,11 @@ def db(tmp_path):
             "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
             " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)"
         )
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, fifo_pnl_realized REAL)")
+        # `asset_category` is present on the REAL flex_lot (verified against the live
+        # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
+        # double weaker than its dependency, and kept the per-type breakdown untested.
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
+                  " fifo_pnl_realized REAL)")
         w.executemany(
             "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?)",
             [
@@ -43,7 +63,7 @@ def db(tmp_path):
                 (None, "live", "FUT", "USD", None),
             ],
         )
-        w.execute("INSERT INTO flex_lot VALUES ('20260803', -3516.98)")
+        w.execute("INSERT INTO flex_lot VALUES ('20260803', 'FUT', -3516.98)")
     return path
 
 
@@ -117,6 +137,7 @@ class FakeClient:
 
 def _poller(db, client, **kw):
     """A poller wired to the fixture store with a frozen trading day."""
+    kw.setdefault("session", _owner())
     return DashboardPoller(client, db, today_provider=lambda: _TODAY, **kw)
 
 
@@ -195,7 +216,8 @@ async def test_flex_sections_still_refresh_when_ibkr_is_down(db):
 
 async def test_a_missing_store_does_not_stop_the_account_half(tmp_path):
     """No store.db: the ledger still polls, the Flex sections are simply absent."""
-    p = DashboardPoller(FakeClient(), tmp_path / "nope.db", today_provider=lambda: _TODAY)
+    p = DashboardPoller(FakeClient(), tmp_path / "nope.db", today_provider=lambda: _TODAY,
+                        session=_owner())
     await p._poll_once()
     snap = p.snapshot()
     assert snap.ledger is not None
@@ -216,7 +238,7 @@ async def test_a_failed_flex_read_carries_the_previous_windows_forward(db):
     good = p.snapshot()
     assert good.week is not None
 
-    p._read_flex = lambda: None  # type: ignore[method-assign]
+    p._read_flex = lambda _rec=None: None  # type: ignore[method-assign]
     await p._poll_once()
     after = p.snapshot()
 
@@ -233,7 +255,7 @@ async def test_a_failed_flex_read_during_an_ibkr_failure_keeps_both_halves(db):
     await p._poll_once()
     good = p.snapshot()
 
-    p._read_flex = lambda: None  # type: ignore[method-assign]
+    p._read_flex = lambda _rec=None: None  # type: ignore[method-assign]
     await p._poll_once()
     after = p.snapshot()
 
@@ -246,7 +268,7 @@ async def test_a_failed_flex_read_during_an_ibkr_failure_keeps_both_halves(db):
 async def test_an_empty_store_is_not_treated_as_a_failed_read(tmp_path):
     """A successful read that finds nothing is a different claim from a failed one.
 
-    `_read_flex` returns all six keys on success and None on failure, so an empty store
+    `_read_flex` returns every section key on success and None on failure, so an empty store
     yields real (empty) windows rather than silently carrying stale ones forward.
     """
     path = tmp_path / "empty.db"
@@ -255,8 +277,12 @@ async def test_an_empty_store_is_not_treated_as_a_failed_read(tmp_path):
             "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
             " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)"
         )
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, fifo_pnl_realized REAL)")
-    p = DashboardPoller(FakeClient(), path, today_provider=lambda: _TODAY)
+        # `asset_category` is present on the REAL flex_lot (verified against the live
+        # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
+        # double weaker than its dependency, and kept the per-type breakdown untested.
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
+                  " fifo_pnl_realized REAL)")
+    p = DashboardPoller(FakeClient(), path, today_provider=lambda: _TODAY, session=_owner())
     await p._poll_once()
     snap = p.snapshot()
     assert snap.week is not None and snap.week.trade_count == 0
@@ -448,7 +474,11 @@ async def test_entries_are_attached_when_the_store_can_answer(tmp_path):
             " symbol TEXT, underlying_symbol TEXT, date_time TEXT, quantity REAL,"
             " trade_price REAL)"
         )
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, fifo_pnl_realized REAL)")
+        # `asset_category` is present on the REAL flex_lot (verified against the live
+        # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
+        # double weaker than its dependency, and kept the per-type breakdown untested.
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
+                  " fifo_pnl_realized REAL)")
         w.executemany(
             "INSERT INTO flex_trade (source, conid, symbol, trade_date, date_time,"
             " quantity, trade_price) VALUES ('flex', '1', 'TEST', ?, ?, ?, ?)",
@@ -521,3 +551,104 @@ async def test_an_unreadable_order_book_is_none_not_empty(db):
 
     assert snap.orders is None
     assert snap.ledger is not None, "an orders failure must not take the account half down"
+
+
+# ── The S4 gate: no account call against an unconfirmed session ──────────────
+
+
+@pytest.mark.asyncio
+async def test_the_account_half_is_skipped_when_the_session_is_not_live(db):
+    """The defect that started the lifecycle work, pinned.
+
+    `/portfolio/*` keeps answering HTTP 200 with figures after the brokerage session
+    drops — IBKR documents no brokerage prerequisite for it — while `mktPrice`,
+    `mktValue` and `unrealizedPnl` are market-data derived, and IBKR states that "Market
+    Data and Trading is not possible if not authenticated". Asking "did the call raise?"
+    therefore published stale figures under a fresh `as_of`.
+    """
+    client = FakeClient()
+    poller = DashboardPoller(client, db, today_provider=lambda: _TODAY, session=_owner(live=False))
+
+    await poller._poll_once()
+    snap = poller.snapshot()
+
+    assert client.ledger_calls == 0, "the account endpoints must not be called at all"
+    assert snap.ledger is None
+    assert snap.positions == ()
+    assert snap.error and "IBKR not usable" in snap.error
+
+
+@pytest.mark.asyncio
+async def test_the_flex_half_still_runs_when_the_session_is_not_live(db):
+    """Flex is local SQLite and has nothing to do with the gateway.
+
+    Blanking it because IBKR went away would invent an outage in the half of the
+    dashboard that is still perfectly good.
+    """
+    poller = DashboardPoller(FakeClient(), db, today_provider=lambda: _TODAY,
+                             session=_owner(live=False))
+
+    await poller._poll_once()
+    snap = poller.snapshot()
+
+    assert snap.week is not None
+    assert snap.ytd is not None
+
+
+# -- Fills are fetched on a trigger, not on every poll ------------------------
+
+
+class _CountingClient(FakeClient):
+    """A FakeClient that counts `get_trades` calls and can move its realised P&L."""
+
+    def __init__(self, **kw):
+        """Start with no trade calls recorded and a flat realised figure."""
+        super().__init__(**kw)
+        self.trade_calls = 0
+        self.realised = 0.0
+
+    def get_trades(self):
+        """Record the call and return nothing — the count is what matters here."""
+        self.trade_calls += 1
+        return []
+
+    def get_account_ledger(self, account_id):
+        """The canned ledger with `realizedpnl` overridden by `self.realised`."""
+        led = {k: dict(v) for k, v in super().get_account_ledger(account_id).items()}
+        for row in led.values():
+            row["realizedpnl"] = self.realised
+        return led
+
+
+@pytest.mark.asyncio
+async def test_fills_are_not_refetched_while_nothing_closes(db):
+    """IBKR advises calling /iserver/account/trades "once per session".
+
+    An earlier version fetched it on every 15s poll — roughly 240 calls an hour against
+    explicit advice to make one, and against a documented 1-request-per-5-seconds limit.
+    The trigger is the ledger's `realizedpnl`, which moves if and only if a position
+    closed, so nothing is missed by not refetching.
+    """
+    client = _CountingClient()
+    poller = DashboardPoller(client, db, today_provider=lambda: _TODAY, session=_owner())
+
+    for _ in range(5):
+        await poller._poll_once()
+
+    assert client.trade_calls == 1, "fills must be fetched once while realised P&L is flat"
+
+
+@pytest.mark.asyncio
+async def test_a_closed_position_triggers_a_refetch(db, monkeypatch):
+    """`realizedpnl` moving is the only event that can change a reconstruction."""
+    client = _CountingClient()
+    poller = DashboardPoller(client, db, today_provider=lambda: _TODAY, session=_owner())
+
+    await poller._poll_once()
+    assert client.trade_calls == 1
+
+    # A round trip closes: the ledger's realised figure moves.
+    client.realised = 945.52
+    await poller._poll_once()
+
+    assert client.trade_calls == 2, "a new realised figure must refetch the fills"

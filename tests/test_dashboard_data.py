@@ -49,13 +49,18 @@ _TRADES = [
 ]
 
 # (trade_date YYYYMMDD, fifo_pnl_realized)
+# `asset_category` is on the REAL flex_lot — verified against the live store 2026-08-06
+# (FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a double weaker than its
+# dependency: it let `realised_by_type` and `bridged_by_type` pass here while failing
+# against the real schema, which is exactly the class of gap this project has been bitten
+# by before.
 _LOTS = [
-    ("20260803", -3516.98),
-    ("20260804", 1071.75),
-    ("20260805", -812.40),  # the pre-wash-sale detail behind the 0.00 trade above
-    ("20260806", 250.25),
-    ("20260801", -100.00),
-    ("20251231", 9999.99),
+    ("20260803", "FUT", -3516.98),
+    ("20260804", "FUT", 1071.75),
+    ("20260805", "STK", -812.40),  # the pre-wash-sale detail behind the 0.00 trade above
+    ("20260806", "FUT", 250.25),
+    ("20260801", "STK", -100.00),
+    ("20251231", "FUT", 9999.99),
 ]
 
 
@@ -75,7 +80,8 @@ def store(tmp_path):
             " asset_category TEXT, currency TEXT, open_close_indicator TEXT,"
             " fifo_pnl_realized REAL)"
         )
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, fifo_pnl_realized REAL)")
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
+                  " fifo_pnl_realized REAL)")
         w.executemany(
             "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
@@ -83,7 +89,7 @@ def store(tmp_path):
                 for iso, src, cat, ccy, oc, pnl in _TRADES
             ],
         )
-        w.executemany("INSERT INTO flex_lot VALUES (?, ?)", _LOTS)
+        w.executemany("INSERT INTO flex_lot VALUES (?, ?, ?)", _LOTS)
     conn = dd.connect(path)
     yield conn
     conn.close()
@@ -304,9 +310,9 @@ def test_connect_is_read_only(store):
 
 
 def test_build_flex_sections_wires_every_window(store):
-    """One threaded hop produces week/month/ytd/stats/series/coverage, all consistent."""
+    """One threaded hop produces every section, all consistent."""
     s = dd.build_flex_sections(store, _TODAY)
-    assert set(s) == {"week", "month", "ytd", "stats", "series", "coverage"}
+    assert set(s) == {"week", "month", "ytd", "stats", "breakdowns", "series", "coverage"}
     assert s["week"].start == date(2026, 8, 3)
     assert s["month"].start == date(2026, 8, 1)
     assert s["ytd"].start == date(2026, 1, 1)
@@ -315,6 +321,26 @@ def test_build_flex_sections_wires_every_window(store):
     assert set(s["stats"]) == {"week", "month", "ytd"}
     assert s["stats"]["week"].start == date(2026, 8, 3)
     assert s["stats"]["ytd"].start == date(2026, 1, 1)
+
+
+def test_breakdowns_carry_a_day_window_that_the_flex_windows_cannot(store):
+    """`day` exists only among the breakdowns, and that asymmetry is the point.
+
+    `realised_window` and `round_trip_stats` are Flex-only, and Flex never has today — it
+    was two days behind on 2026-08-06. A Flex-derived "today" would therefore be
+    permanently empty, so the daily win rate the KPI strip needs can only come from a
+    bridged breakdown.
+    """
+    s = dd.build_flex_sections(store, _TODAY)
+    assert set(s["breakdowns"]) == {"day", "week", "month", "ytd"}
+    assert set(s["stats"]) == {"week", "month", "ytd"}   # no "day" here, deliberately
+
+
+def test_breakdowns_are_flex_only_without_a_reconstruction(store):
+    """A logged-out session keeps its settled history instead of showing nothing."""
+    s = dd.build_flex_sections(store, _TODAY)
+    assert s["breakdowns"]["week"].bridged_days == ()
+    assert s["breakdowns"]["week"].incomplete is False
 
 
 def test_round_trip_stats_are_computed_per_window_not_reused(store):
@@ -972,3 +998,286 @@ def test_fetch_orders_returns_none_when_the_lookup_fails(monkeypatch):
             raise RuntimeError("no bridge")
 
     assert dd.fetch_orders(_Boom()) is None
+
+
+# ── Contract multiplier: obtained from IBKR, never assumed ───────────────────
+
+
+def test_equities_report_multiplier_zero_and_must_normalise_to_one():
+    """IBKR sends `multiplier: 0.0` on equities — measured live 2026-08-06.
+
+    GLD and IGV both reported 0.0 while ES SEP2026 reported 50.0. `parse_positions`
+    relies on 0.0 being falsy to fall through to the `avgCost / avgPrice` ratio. This
+    pins that behaviour, because the obvious tidy-up — `if raw_multiplier is not None` —
+    would take every equity position to a zero multiplier and silence its money figures.
+    """
+    rows = [{
+        "conid": 1, "ticker": "GLD", "contractDesc": "GLD", "assetClass": "STK",
+        "position": 50.0, "multiplier": 0.0,
+        "avgPrice": 383.215004, "avgCost": 383.215004,
+        "mktPrice": 391.4, "mktValue": 19570.0, "unrealizedPnl": 0.0, "realizedPnl": 0.0,
+        "currency": "USD",
+    }]
+    assert dd.parse_positions(rows)[0].multiplier == 1.0
+
+
+def test_a_futures_multiplier_is_taken_from_ibkrs_own_field():
+    """ES SEP2026 reported 50.0 live. The value is obtained, never looked up in a table.
+
+    A hardcoded multiplier table would be a second, drifting definition of a contract
+    property IBKR already publishes.
+    """
+    rows = [{
+        "conid": 2, "ticker": "ES", "contractDesc": "ES  SEP2026", "assetClass": "FUT",
+        "position": -1.0, "multiplier": 50.0,
+        "avgPrice": 7754.9552, "avgCost": 387747.76,
+        "mktPrice": 7755.0, "mktValue": -387750.0, "unrealizedPnl": -20.23,
+        "realizedPnl": 945.52, "currency": "USD",
+    }]
+    assert dd.parse_positions(rows)[0].multiplier == 50.0
+
+
+def test_the_multiplier_falls_back_to_the_cost_price_ratio():
+    """`avgCost / avgPrice` is the second independent route, and it agreed on all three
+    live positions on 2026-08-06 (ES 50, GLD 1, IGV 1)."""
+    rows = [{
+        "conid": 3, "ticker": "CL", "contractDesc": "CL  SEP2026", "assetClass": "FUT",
+        "position": 1.0,  # multiplier field absent entirely
+        "avgPrice": 80.84, "avgCost": 80840.0,
+        "mktPrice": 75.0, "mktValue": 75000.0, "unrealizedPnl": 0.0, "realizedPnl": 0.0,
+        "currency": "USD",
+    }]
+    assert dd.parse_positions(rows)[0].multiplier == 1000.0
+
+
+# -- realised_by_type: the FUT/STK breakdown ----------------------------------
+
+
+def _breakdown_db(tmp_path):
+    """A store with FUT and STK activity, plus an OPT lot that realised nothing."""
+    path = tmp_path / "bd.db"
+    with sqlite3.connect(path) as w:
+        w.execute("CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
+                  " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)")
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
+                  " fifo_pnl_realized REAL)")
+        w.executemany("INSERT INTO flex_trade VALUES (?,?,?,?,?)", [
+            ("2026-08-03", "flex", "FUT", "USD", -3516.98),
+            ("2026-08-04", "flex", "FUT", "USD", 590.80),
+            ("2026-08-04", "flex", "STK", "USD", -3249.70),
+            ("2026-08-04", "live", "FUT", "USD", 999999.0),   # live rows are excluded
+            ("2026-07-01", "flex", "FUT", "USD", 111.0),      # outside the window
+        ])
+        w.executemany("INSERT INTO flex_lot VALUES (?,?,?)", [
+            ("20260803", "FUT", -3516.98),
+            ("20260804", "FUT", 1945.28),
+            ("20260804", "FUT", -1354.48),
+            ("20260804", "STK", -3249.70),
+            ("20260804", "OPT", 0.0),        # a scratch: neither won nor lost
+        ])
+    return dd.connect(path)
+
+
+def test_breakdown_splits_by_asset_class(tmp_path):
+    """The FUT/STK split the requirement asks for, from one window."""
+    rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
+    by = {r.asset_class: r for r in rows}
+    assert by["FUT"].net == pytest.approx(-2926.18, abs=0.005)
+    assert by["STK"].net == pytest.approx(-3249.70, abs=0.005)
+
+
+def test_breakdown_takes_money_from_trades_and_counts_from_lots(tmp_path):
+    """The two-source rule, pinned.
+
+    `flex_lot` is pre-wash-sale detail (`Trade == Lot + WashSale`); summing it as the
+    money figure overstates losses. So `net` must come from `flex_trade` even when the
+    lot subtotals are available and look usable.
+    """
+    fut = next(r for r in dd.realised_by_type(
+        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6)) if r.asset_class == "FUT")
+    assert fut.net == pytest.approx(-2926.18, abs=0.005)          # flex_trade
+    assert fut.gross_win == pytest.approx(1945.28, abs=0.005)     # flex_lot
+    assert fut.gross_loss == pytest.approx(-4871.46, abs=0.005)   # flex_lot
+    assert fut.winners == 1 and fut.losers == 2
+
+
+def test_breakdown_excludes_live_rows_and_other_windows(tmp_path):
+    """`source='live'` carries no realised P&L, and a 999,999 row must not leak in."""
+    rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
+    assert all(abs(r.net) < 10000 for r in rows)
+
+
+def test_only_asset_classes_that_traded_appear(tmp_path):
+    """No zero rows for classes never traded — "do not over-engineer, keep it clean"."""
+    rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 3))
+    assert [r.asset_class for r in rows] == ["FUT"]
+
+
+def test_a_class_that_only_scratched_still_appears(tmp_path):
+    """OPT closed a lot at exactly 0.00 — activity with no money is still activity."""
+    rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 4), date(2026, 8, 4))
+    opt = next(r for r in rows if r.asset_class == "OPT")
+    assert opt.closed_lots == 1 and opt.scratches == 1 and opt.net == 0.0
+
+
+def test_scratches_are_excluded_from_the_win_rate(tmp_path):
+    """A lot realising exactly 0.00 is neither won nor lost.
+
+    Counting it as a loss would understate the rate; `win_rate` is None when nothing was
+    decided, so the UI renders an em dash rather than a 0% that reads like a disaster.
+    """
+    rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 4), date(2026, 8, 4))
+    assert next(r for r in rows if r.asset_class == "OPT").win_rate is None
+    assert next(r for r in rows if r.asset_class == "FUT").win_rate == pytest.approx(50.0)
+
+
+def test_win_loss_ratio_is_none_rather_than_infinite(tmp_path):
+    """A window with no losing lot has no ratio; rendering one invites a false comparison."""
+    path = tmp_path / "w.db"
+    with sqlite3.connect(path) as w:
+        w.execute("CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
+                  " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)")
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
+                  " fifo_pnl_realized REAL)")
+        w.execute("INSERT INTO flex_trade VALUES ('2026-08-04','flex','FUT','USD',100.0)")
+        w.execute("INSERT INTO flex_lot VALUES ('20260804','FUT',100.0)")
+    row = dd.realised_by_type(dd.connect(path), date(2026, 8, 4), date(2026, 8, 4))[0]
+    assert row.win_loss_ratio is None
+    assert row.win_rate == pytest.approx(100.0)
+
+
+def test_rows_are_ordered_by_how_much_money_moved(tmp_path):
+    """The class that moved the account most is read first, sign-independent."""
+    rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
+    assert [r.asset_class for r in rows][:2] == ["STK", "FUT"]
+
+
+def test_an_empty_window_returns_nothing(tmp_path):
+    """A quiet day must render "nothing realised", never a row of zeros."""
+    assert dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 5), date(2026, 8, 5)) == ()
+
+
+def test_average_win_and_loss_expose_what_the_win_rate_hides(tmp_path):
+    """Count and money can tell opposite stories; the UI needs both.
+
+    Modelled on the case the requirement names: one large win against several small
+    losses is a poor win RATE and a good result. A surface showing only the rate would
+    report it as a bad week.
+    """
+    path = tmp_path / "avg.db"
+    with sqlite3.connect(path) as w:
+        w.execute("CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
+                  " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)")
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
+                  " fifo_pnl_realized REAL)")
+        w.execute("INSERT INTO flex_trade VALUES ('2026-08-04','flex','FUT','USD',2400.0)")
+        w.executemany("INSERT INTO flex_lot VALUES ('20260804','FUT',?)",
+                      [(3000.0,), (-120.0,), (-120.0,), (-120.0,), (-120.0,), (-120.0,)])
+    row = dd.realised_by_type(dd.connect(path), date(2026, 8, 4), date(2026, 8, 4))[0]
+
+    assert row.win_rate == pytest.approx(16.67, abs=0.01)   # reads as a disaster
+    assert row.net == pytest.approx(2400.0)                 # was in fact a good day
+    assert row.average_win == pytest.approx(3000.0)
+    assert row.average_loss == pytest.approx(-120.0)
+    assert row.win_loss_ratio == pytest.approx(5.0)
+
+
+def test_averages_are_none_rather_than_zero_when_absent(tmp_path):
+    """A window with no losses has no average loss; 0.0 would read as break-even trades."""
+    rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 4), date(2026, 8, 4))
+    opt = next(r for r in rows if r.asset_class == "OPT")
+    assert opt.average_win is None and opt.average_loss is None
+
+
+# -- bridged_by_type: Flex plus the days it has not delivered -----------------
+
+
+def _bridge_rec(**kw):
+    """A stand-in Reconstruction with just the surface `bridged_by_type` consumes."""
+    from types import SimpleNamespace
+    base = {"realised": {}, "declined_days": frozenset(), "by_type": {}, "stats": {}}
+    base.update(kw)
+
+    return SimpleNamespace(
+        realised=base["realised"],
+        declined_days=base["declined_days"],
+        by_type_for_day=lambda d: base["by_type"].get(d, {}),
+        stats_for=lambda d, a: base["stats"].get((d, a), (0, 0, 0, 0.0, 0.0)),
+    )
+
+
+def test_the_bridge_adds_days_flex_has_not_delivered(tmp_path):
+    """Flex was two days behind on 2026-08-06; the week was wrong by 10k without this."""
+    rec = _bridge_rec(
+        realised={("20260806", "FUT"): 1841.04},
+        by_type={"20260806": {"FUT": 1841.04}},
+        stats={("20260806", "FUT"): (2, 0, 0, 1841.04, 0.0)},
+    )
+    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6),
+                           rec, date(2026, 8, 4))
+    fut = w.for_type("FUT")
+    assert w.bridged_days == ("20260806",)
+    assert fut.net == pytest.approx(-2926.18 + 1841.04, abs=0.005)
+    assert (fut.winners, fut.losers) == (1 + 2, 2 + 0)
+
+
+def test_a_day_flex_already_covers_is_never_double_counted(tmp_path):
+    """The failure a naive "add today's live P&L" hits the morning Flex catches up.
+
+    `coverage_through` is the cutoff: days up to it come from Flex, days after it from
+    the reconstruction, and nothing is taken from both.
+    """
+    rec = _bridge_rec(
+        realised={("20260804", "FUT"): 590.80},
+        by_type={"20260804": {"FUT": 590.80}},
+        stats={("20260804", "FUT"): (1, 1, 0, 1945.28, -1354.48)},
+    )
+    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6),
+                           rec, date(2026, 8, 4))
+    assert w.bridged_days == ()
+    assert w.for_type("FUT").net == pytest.approx(-2926.18, abs=0.005)
+
+
+def test_a_declined_contract_marks_the_window_incomplete(tmp_path):
+    """A short total on a P&L surface must announce itself.
+
+    The reconstruction excludes contracts it could not match, so the bridged figure is a
+    floor rather than a total, and the UI has to say so.
+    """
+    rec = _bridge_rec(
+        realised={("20260806", "FUT"): 100.0},
+        by_type={"20260806": {"FUT": 100.0}},
+        stats={("20260806", "FUT"): (1, 0, 0, 100.0, 0.0)},
+        declined_days=frozenset({"20260806"}),
+    )
+    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6),
+                           rec, date(2026, 8, 4))
+    assert w.incomplete is True
+
+
+def test_a_decline_outside_the_window_does_not_flag_it(tmp_path):
+    """Otherwise every window inherits every problem the fill history ever had."""
+    rec = _bridge_rec(declined_days=frozenset({"20260701"}))
+    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6),
+                           rec, date(2026, 8, 4))
+    assert w.incomplete is False
+
+
+def test_without_a_reconstruction_the_window_is_flex_alone(tmp_path):
+    """A gateway-down session still shows its settled history rather than nothing."""
+    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
+    assert w.bridged_days == () and w.incomplete is False
+    assert w.for_type("FUT").net == pytest.approx(-2926.18, abs=0.005)
+
+
+def test_a_type_traded_only_live_still_gets_a_row(tmp_path):
+    """Today's first-ever trade in a class must appear, not wait for the statement."""
+    rec = _bridge_rec(
+        realised={("20260806", "OPT"): 42.0},
+        by_type={"20260806": {"OPT": 42.0}},
+        stats={("20260806", "OPT"): (1, 0, 0, 42.0, 0.0)},
+    )
+    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 6), date(2026, 8, 6),
+                           rec, date(2026, 8, 4))
+    assert w.for_type("OPT").net == pytest.approx(42.0)
+    assert w.for_type("OPT").win_rate == pytest.approx(100.0)

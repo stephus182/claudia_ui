@@ -54,14 +54,8 @@ from claudia.conversation_store import ConversationStore
 from claudia.dashboard_poller import DashboardPoller
 from claudia.execution_listener import ExecutionListener
 from claudia.flex_sync import dataset_fingerprint, validate_dataset
-from claudia.gateway_preflight import (
-    EXIT_BORROWED,
-    EXIT_READY,
-    gateway_url,
-    read_state,
-    verdict,
-    warn_if_session_borrowed,
-)
+from claudia.gateway_preflight import warn_if_session_borrowed
+from claudia.gateway_session import SessionPhase, get_session
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
 from claudia.opening_status import build_trade_lines, gather_session_state
@@ -453,58 +447,42 @@ def _send_action_buttons(
         buttons.append(gw_btn)
 
         async def _on_start_gateway(event: Any) -> None:
-            """Start the IBKR gateway from chat: Docker → container → wait → login page.
+            """Start the IBKR gateway from chat, via the one shared session owner.
 
-            Runs the blocking GatewayManager calls on worker threads, waits up to 120s for
-            reachability, opens the browser login page, then forces a connectivity re-check
-            so the status dot reflects reality without waiting for the next 60s poll.
-            Every branch, including each failure, reports honestly into the chat feed.
+            Presentation only. Every decision — whether to start a container, whether the
+            session may be logged into, whether it is usable — belongs to
+            `claudia.gateway_session`, which `start-claudia.sh` and the CLI also call.
+            This handler runs the blocking work on a worker thread, streams the owner's
+            progress lines into the chat feed, and renders the final phase.
+
+            Until 2026-08-06 it inlined its own sequence and called
+            `GatewayManager.start()` — which removes any existing container — *before* the
+            pre-flight, so the two verdicts the pre-flight existed for were computed
+            against a session that had already been destroyed.
             """
             gw_btn.disabled = True
-            gm = GatewayManager()
-            try:
-                chat.send("▶ Ensuring Docker is running…", user="System", respond=False)
-                await asyncio.to_thread(gm.ensure_docker_running)
-                chat.send("▶ Starting IBKR gateway container…", user="System", respond=False)
-                await asyncio.to_thread(gm.start)
-                chat.send("▶ Waiting for gateway to be reachable (up to 120s)…",
-                          user="System", respond=False)
-                reachable = await asyncio.to_thread(gm.wait_for_gateway)
-                if not reachable:
-                    chat.send("✕ Gateway did not start within timeout. Check Docker logs.",
-                              user="System", respond=False)
-                    return
 
-                # Pre-flight BEFORE sending anyone to the login page. Reachable only means
-                # the process answers; it says nothing about whose session it holds. Two
-                # states must not lead to a login: one that already works (re-authenticating
-                # it for nothing is what escalates into the IB Key challenge/response) and
-                # one held by another IBKR app (which cannot be authenticated here at all,
-                # so every retry is wasted and makes the next attempt worse).
-                state = await asyncio.to_thread(read_state, gateway_url())
-                code, headline, guidance = verdict(state)
-                if code == EXIT_READY:
-                    chat.send(f"✅ **{headline}** — {guidance}", user="System", respond=False)
-                    return
-                if code == EXIT_BORROWED:
+            def _say(line: str) -> None:
+                """Progress sink. Returns None; `chat.send` returns a ChatMessage."""
+                chat.send(line, user="System", respond=False)
+
+            try:
+                result = await asyncio.to_thread(
+                    get_session().establish, GatewayManager(), emit=_say
+                )
+                if result.phase is SessionPhase.LIVE:
+                    if _connectivity_checker is not None:
+                        await _connectivity_checker._run_checks()
+                    chat.send(f"✅ **Session is live** — {result.detail}",
+                              user="System", respond=False)
+                elif result.phase is SessionPhase.DOWN:
+                    chat.send(f"✕ **Gateway is not answering** — {result.detail}",
+                              user="System", respond=False)
+                else:
                     chat.send(
-                        f"⚠️ **LOG OUT OF YOUR IBKR APP FIRST — {headline}**\n\n{guidance}\n\n"
-                        "The login page has **not** been opened: doing so now would fail and "
-                        "count as another attempt. Log out, then click **Start IBKR Gateway** "
-                        "again.",
+                        f"⚠️ **{result.phase.value.upper()}** — {result.detail}",
                         user="System", respond=False,
                     )
-                    return
-
-                await asyncio.to_thread(gm.open_login_page)
-                if _connectivity_checker is not None:
-                    await _connectivity_checker._run_checks()
-                chat.send(
-                    "✅ IBKR Gateway is reachable. **https://localhost:5055** opened in "
-                    "your browser.\n\nComplete the IBKR login and 2FA. ClaudIA will "
-                    "notify you here once the session is authenticated.",
-                    user="System", respond=False,
-                )
             except Exception as exc:
                 log.error("Gateway startup failed: %s", exc)
                 chat.send(f"✕ Gateway startup failed: {exc}", user="System", respond=False)
@@ -1049,12 +1027,19 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             # threaded loop), so no lock is needed — same reasoning as
             # Parity with the removed app.py. tv_bridge stays None until Phase 9 (D5).
             cfg = toolkit._config
+            # The session owner starts FIRST and is the only thing that reads IBKR
+            # connectivity. Everything downstream — the status dot, the dashboard poller,
+            # the execution listener — asks it rather than probing independently, which is
+            # what makes them incapable of disagreeing about whether IBKR is up.
+            _gateway_session = get_session()
+            _gateway_session.start(url=cfg.gateway_url)
             if _connectivity_checker is None:
                 _connectivity_checker = ConnectivityChecker(
                     gateway_url=cfg.gateway_url,
                     gdrive_token_file=cfg.gdrive_token_file,
                     tv_bridge=None,
                     gdrive_sync=_gdrive_sync,
+                    session=_gateway_session,
                 )
             _connectivity_checker.start()
             _session["unsubscribe"] = _connectivity_checker.subscribe(

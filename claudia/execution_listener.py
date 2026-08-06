@@ -50,6 +50,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _RETRY_DELAYS = [5, 10, 30, 60]  # seconds between reconnect attempts
+
+# How long to wait before re-checking whether the session has come up. Deliberately NOT
+# part of _RETRY_DELAYS: "the session is not up yet" is the ordinary state at startup and
+# throughout every login, not an error, so it must not consume the backoff budget and push
+# a genuine reconnect out to a minute.
+_IDLE_POLL = 5
 _PNL_CAPTURE_TIMEOUT = 10.0  # seconds to wait for a P&L tick after an execution
 
 _CLOSED = object()  # sentinel: the pump task signals a clean WebSocket close
@@ -129,16 +135,28 @@ class ExecutionListener:
       await listener.stop()  — cancel the task cleanly
     """
 
-    def __init__(self, gateway_url: str, store: SQLiteStore) -> None:
+    def __init__(
+        self, gateway_url: str, store: SQLiteStore, session: Any = None
+    ) -> None:
         """Configure the listener. No connection is opened until `start()`.
 
         Args:
             gateway_url: Base URL of the IBKR Client Portal gateway.
             store: Store that executions and P&L snapshots are written to.
+            session: The `GatewaySession` that owns IBKR connectivity. Defaults to the
+                process-wide one; injected in tests.
         """
         self._gateway_url = gateway_url
         self._store = store
         self._task: asyncio.Task | None = None
+        self._session_override = session
+
+    @property
+    def _session(self) -> Any:
+        """The session owner. Resolved lazily so import order stays unconstrained."""
+        from claudia.gateway_session import get_session
+
+        return self._session_override or get_session()
 
     def start(self) -> None:
         """Start the background subscription loop as an asyncio Task.
@@ -160,10 +178,24 @@ class ExecutionListener:
 
     async def _run_with_retry(self) -> None:
         """Retry forever with backoff on error. CancelledError propagates
-        immediately — no retry, clean shutdown."""
+        immediately — no retry, clean shutdown.
+
+        **Connects only against a session the owner reports as LIVE.** The WebSocket is
+        not exempt from the rule that any request renews the session: measured in the
+        gateway's own log during a real login on 2026-08-06, this loop was reconnecting
+        every few seconds and getting `{"message": "waiting for session"}` back while the
+        user was still at the 2FA prompt. Waiting here costs one poll interval and removes
+        that traffic entirely.
+        """
         attempt = 0
         while True:
             try:
+                if not self._session.is_live():
+                    # Not an error, so it must not consume the backoff budget — a session
+                    # that is simply not up yet is the ordinary state at startup and
+                    # during every login.
+                    await asyncio.sleep(_IDLE_POLL)
+                    continue
                 await self._run_once()
                 log.info("ExecutionListener: WebSocket closed cleanly; reconnecting in 5s")
                 await asyncio.sleep(5)

@@ -38,6 +38,27 @@ Two follow-ons, both measured rather than reasoned about:
   60 seconds. The keepalive built to protect a good session cannot tell a good one from a
   borrowed one, and had been preserving an unusable session all day.
 
+## What this CANNOT see — measured 2026-08-06
+
+**A session held by another IBKR app is invisible here until the gateway itself holds
+one.** With a live IBKR Mobile login in progress on the same username, `/tickle` and
+`/sso/validate` both answered **401** and this check reported **FREE**.
+
+That is not the same condition as `EXIT_BORROWED`, and conflating them would be a
+serious misreading:
+
+| Condition | What holds the session | Visible before a login? |
+|---|---|---|
+| `EXIT_BORROWED` | the **gateway**, holding an SSO session stamped `CLIENT_APP: IBKRMOBILE…` | yes, in `/sso/validate` |
+| Another app logged in | **that app**, independently; the gateway holds nothing | **no** |
+
+So `EXIT_FREE` means "the gateway holds nothing", never "a login will succeed" — the
+wording of its guidance says exactly that, and must keep saying it. Only one brokerage
+session exists per username across Client Portal, TWS and IBKR Mobile
+(https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md), and IBKR's own
+advice for the collision is to log out of the other app first — which is a step this
+check can recommend but can never verify in advance.
+
 ## Read-only by default, and where it is not
 
 `read_state` issues **two GETs and nothing else** — `/tickle` for whether *a* session is
@@ -261,9 +282,12 @@ def verdict(state: GatewayState) -> tuple[int, str, str]:
 
     return (
         EXIT_FREE,
-        "No session — free to log in",
-        "Nothing holds the brokerage session. Log in once, through to "
-        "'Client login succeeds'.",
+        "The gateway holds no session",
+        "Nothing here holds a session, so a login can proceed. Note that a session held "
+        "by another IBKR app is NOT visible from here — measured 2026-08-06, a live IBKR "
+        "Mobile login left /tickle and /sso/validate both answering 401 and this check "
+        "reading FREE. Only one brokerage session exists per username, so if the login "
+        "is rejected, close TWS / IBKR Mobile / any Client Portal tab and try once more.",
     )
 
 
@@ -295,10 +319,23 @@ def release_session(gateway_url_: str, timeout: float = 10.0) -> tuple[bool, str
     one call in the module that writes, it is reached only via `--release`, and it is never
     run automatically.
 
-    Scope, per IBKR: *"Logs the user out of the gateway session. Any further activity
-    requires re-authentication."* It ends the **gateway's local** session, not the SSO
+    ⚠ **Scope is NOT documented, and an earlier version of this docstring said it was.**
+    IBKR's page says exactly one thing about it — *"Logs the user out of the gateway
+    session. Any further activity requires re-authentication."*
+    (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/logout-of-the-current-session.md).
+    It says nothing about whether that cascades to a session held by TWS or IBKR Mobile.
+    This docstring used to assert "it ends the gateway's local session, not the SSO
     session globally — so releasing a borrowed IBKR Mobile session does not log the phone
-    out (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/logout-of-the-current-session.md).
+    out", attributed to IBKR. **IBKR does not say that**; it was our inference wearing the
+    documentation's authority, and it is the reassuring half of the claim, which is the
+    worst half to get wrong.
+
+    Only one brokerage session exists per username across Client Portal, TWS and IBKR
+    Mobile (https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md), so
+    the *a priori* case for a cascade is real rather than paranoid. Until someone
+    deliberately tests it — with nothing at risk on the phone — treat `--release` as
+    **potentially ending an IBKR Mobile session too**, and never run it while another app
+    is being used to manage a live position.
 
     This is not `reauthenticate`, which `feedback-ibkr-session-safety` forbids calling
     speculatively — that one re-establishes a session and kills fresh logins. This one only

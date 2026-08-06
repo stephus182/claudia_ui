@@ -21,13 +21,14 @@ from datetime import UTC, date, datetime, timedelta
 import panel as pn
 import pytest
 
+import claudia.panel_dashboard as pdash
+
 # Tabulator needs its extension loaded before the widget can render. Importing the module
 # under test does not do it — panel_app owns the single pn.extension call — so the suite
 # loads it here, matching what a served session provides.
 pn.extension("tabulator")
 
 from claudia import dashboard_data as dd  # noqa: E402
-from claudia import panel_dashboard as pdash  # noqa: E402
 from claudia.dashboard_poller import POLL_INTERVAL, STALE_AFTER  # noqa: E402
 
 _NOW = datetime(2026, 8, 6, 15, 30, tzinfo=UTC)
@@ -310,9 +311,24 @@ def test_stats_block_labels_the_two_bases_apart(view):
     """Execution-basis P&L and lot-basis counts must never be readable as one figure."""
     view._window.value = "Week"
     text = view._pnl_stats.object
-    assert "Realised P&L (executions)" in text
+    assert "Settled realised P&L" in text
     assert "Closed round trips (lots)" in text
-    assert "pre-wash-sale and must never be read as realised P&L" in text
+    assert "pre-wash-sale" in text and "must never be read as realised P&L" in text
+
+
+def test_the_settled_block_never_claims_to_be_the_windows_realised_pnl(view):
+    """Flex is T+1, so this block is structurally incapable of being the week's P&L.
+
+    On 2026-08-06 it read -6,175.88 for a week whose realised was -16,480.46, and until
+    that date it was titled "realised & round trips" directly beneath the bridged total —
+    two figures for one window, differing by ten thousand, with nothing to explain why.
+    The heading and the footnote now both say it is the settled statement view.
+    """
+    view._window.value = "Week"
+    text = view._pnl_stats.object
+    assert "settled by IBKR statement" in text
+    assert "Settled only" in text
+    assert "NOT the window's realised P&L" in text
 
 
 def test_each_window_shows_its_own_round_trip_counts(view):
@@ -369,7 +385,8 @@ def test_a_mixed_currency_window_is_labelled_mixed_not_usd(view):
     """The YTD fixture spans EUR and USD; its total must not be stamped USD."""
     view._window.value = "YTD"
     assert "mixed" in view._pnl_stats.object
-    assert "mixed" in str(view._pnl_chart.object.keys()) or True  # title checked below
+    # The chart's title is the assertion that matters; an earlier `... or True` line here
+    # asserted nothing at all, which is worse than no line.
     assert "mixed" in view._pnl_chart.object.Overlay.I.opts.get("plot").kwargs["title"]
 
 
@@ -432,14 +449,20 @@ def test_tabs_are_named_chart_positions_pnl():
     assert isinstance(v.tabs, pn.Tabs)
 
 
-def test_kpi_strip_holds_six_number_tiles(view):
-    """The strip holds exactly the six KPI tiles."""
+def test_kpi_strip_holds_five_number_tiles_and_the_win_rate_block(view):
+    """Five money tiles, plus win rate as a BLOCK rather than a sixth tile.
+
+    Win rate stopped being a tile on 2026-08-06: a single "win rate this week" figure
+    could not say which asset class it described, and on this account the classes differ
+    enormously (FUT 50% on losses averaging 3,619 against STK 0% on losses averaging 141).
+    Four numbers that only mean anything compared with each other belong in one block.
+    """
     tiles = [o for o in view.kpi_strip[0] if isinstance(o, pn.indicators.Number)]
-    assert len(tiles) == 6
     assert [t.label for t in tiles] == [
         "Net liquidation", "Cash", "Unrealised P&L", dd.realised_ledger_label(),
-        "Realised this week", "Win rate this week",
+        "Realised this week",
     ]
+    assert "Win rate" in view._win_rate.object
 
 
 def test_tiles_carry_the_live_currency_in_their_format(view):
@@ -480,11 +503,14 @@ def test_a_blank_tile_shows_no_currency_code_and_no_sign():
     assert v._tiles["realised_week"].format == "{value:+,.2f} USD"
 
 
-def test_win_rate_tile_is_blank_when_nothing_closed():
-    """No closed lots leaves the win rate blank rather than showing 0%."""
+def test_the_win_rate_block_reports_no_closed_trades_rather_than_zero():
+    """No closed lots must not render 0%, which reads as "everything lost"."""
     v = pdash.build_dashboard()
     v.refresh(_snapshot(stats={"week": _stats(lots=0, wins=0, losses=0)}), now=_NOW)
-    assert v._tiles["win_rate"].value is None
+    assert "0%" not in v._win_rate.object
+    # A snapshot with no `breakdowns` at all is "waiting for data", which is a DIFFERENT
+    # claim from "you closed nothing" — pinned exactly rather than accepting either.
+    assert "waiting for data" in v._win_rate.object
 
 
 def test_pnl_colors_are_neutral_at_exactly_zero():
@@ -623,7 +649,7 @@ def test_blanking_keeps_the_flex_windows_which_never_needed_the_gateway(view):
     later = _NOW + timedelta(seconds=STALE_AFTER + 1)
     view.refresh(_snapshot(), now=later)
     assert view._tiles["realised_week"].value == pytest.approx(-2194.98)
-    assert "Realised P&L (executions)" in view._pnl_stats.object
+    assert "Settled realised P&L" in view._pnl_stats.object
     assert "never includes today" in view._pnl_coverage.object
 
 
@@ -921,7 +947,7 @@ def test_a_single_point_window_explains_itself_instead_of_drawing_a_broken_axis(
     assert v._pnl_chart.object is None
     assert "Only one trading day" in v._pnl_chart_note.object
     # The stats table must still render — only the curve is suppressed.
-    assert "Realised P&L (executions)" in v._pnl_stats.object
+    assert "Settled realised P&L" in v._pnl_stats.object
 
 
 def test_the_chart_note_is_empty_when_a_chart_was_drawn(view):
@@ -1087,3 +1113,168 @@ def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
     assert set(view._orders.formatters) == {"Qty", "Filled", "Limit"}
     assert view._orders.text_align == {"Qty": "right", "Filled": "right", "Limit": "right"}
     assert set(view._orders.header_tooltips) <= set(pdash._ORDER_COLUMNS)
+
+
+# -- The KPI strip's win-rate block -------------------------------------------
+
+
+def _bd(asset, winners, losers, net=0.0):
+    """One TypeBreakdown with just the fields the block reads."""
+    return dd.TypeBreakdown(asset_class=asset, net=net, gross_win=0.0, gross_loss=0.0,
+                            winners=winners, losers=losers, scratches=0)
+
+
+def _snap_with(day_rows=(), week_rows=(), incomplete=False):
+    """A snapshot carrying only the bridged breakdowns the block consumes."""
+    return dd.DashboardSnapshot(
+        as_of=datetime.now(UTC),
+        breakdowns={
+            "day": dd.BridgedWindow(rows=tuple(day_rows), incomplete=incomplete),
+            "week": dd.BridgedWindow(rows=tuple(week_rows)),
+        },
+    )
+
+
+def test_the_block_shows_fut_and_stk_for_day_and_week():
+    """The requirement: win rate per type, daily and weekly, on the top strip."""
+    out = pdash.win_rate_table(_snap_with(
+        day_rows=[_bd("FUT", 2, 0)],
+        week_rows=[_bd("FUT", 5, 5), _bd("STK", 0, 23)],
+    ))
+    assert "| **FUT** | 100% (2W/0L) | 50% (5W/5L) |" in out
+    assert "0% (0W/23L)" in out
+
+
+def test_a_type_with_nothing_in_either_window_is_hidden():
+    """A strip listing every class the account ever touched stops being glanceable."""
+    out = pdash.win_rate_table(_snap_with(week_rows=[_bd("FUT", 1, 1), _bd("OPT", 0, 0)]))
+    assert "FUT" in out
+    assert "OPT" not in out
+
+
+def test_a_type_active_in_only_one_window_keeps_its_row():
+    """STK closed nothing today but 23 lots this week — the week figure must survive.
+
+    Hiding the whole row would lose real information; half a row cannot be hidden, so the
+    empty window renders a dash.
+    """
+    out = pdash.win_rate_table(_snap_with(day_rows=[_bd("FUT", 2, 0)],
+                                          week_rows=[_bd("FUT", 5, 5), _bd("STK", 0, 23)]))
+    assert "| **STK** | - |" in out
+
+
+def test_an_empty_window_never_renders_zero_percent():
+    """0% reads as "everything lost"; the truth is "nothing closed"."""
+    out = pdash.win_rate_table(_snap_with(week_rows=[_bd("FUT", 1, 0)]))
+    assert "| **FUT** | - |" in out
+
+
+def test_scratches_alone_do_not_earn_a_row():
+    """A lot realising exactly 0.00 decided nothing, so there is no rate to show."""
+    rows = [dd.TypeBreakdown("OPT", 0.0, 0.0, 0.0, winners=0, losers=0, scratches=3)]
+    assert "OPT" not in pdash.win_rate_table(_snap_with(week_rows=rows))
+
+
+def test_fut_and_stk_lead_but_others_still_appear():
+    """"FUT and STK are predominant, show others when they realise" — not FUT/STK only."""
+    out = pdash.win_rate_table(_snap_with(
+        week_rows=[_bd("CASH", 1, 1), _bd("STK", 1, 1), _bd("FUT", 1, 1)]))
+    order = [out.index(f"**{a}**") for a in ("FUT", "STK", "CASH")]
+    assert order == sorted(order)
+
+
+def test_an_incomplete_window_is_marked_not_silently_short():
+    """A floor presented as a total is the failure this whole track exists to prevent."""
+    out = pdash.win_rate_table(_snap_with(day_rows=[_bd("FUT", 1, 0)], incomplete=True))
+    assert "⚠" in out and "incomplete" in out
+
+
+def test_no_snapshot_and_no_trades_read_differently():
+    """"Waiting for data" and "you closed nothing" are opposite claims."""
+    assert "waiting" in pdash.win_rate_table(None)
+    assert "no closed trades" in pdash.win_rate_table(_snap_with())
+
+
+# -- The P&L pane's per-type detail -------------------------------------------
+
+
+def _full_bd(asset, net, gw, gl, wins, losses):
+    """A TypeBreakdown with every column the pane renders."""
+    return dd.TypeBreakdown(asset_class=asset, net=net, gross_win=gw, gross_loss=gl,
+                            winners=wins, losers=losses, scratches=0)
+
+
+def test_the_pane_shows_money_counts_and_averages_together():
+    """Rate alone and net alone each report the opposite of what happened.
+
+    Measured on this account's own year: FUT won 55% of trades and still lost money,
+    while STK won 14% and lost less. Either figure in isolation misleads.
+    """
+    win = dd.BridgedWindow(rows=(
+        _full_bd("FUT", -17015.98, 161517.42, -178533.40, 159, 132),
+        _full_bd("STK", -3203.71, 11794.38, -27604.68, 14, 83),
+    ))
+    out = pdash.breakdown_table(win, "USD")
+    assert "55%" in out and "1,015.83" in out and "-1,352.53" in out   # FUT
+    assert "14%" in out and "842.46" in out and "-332.59" in out       # STK
+    assert "**-20,219.69**" in out, "the total must be the sum of the rows"
+
+
+def test_the_pane_states_that_net_and_lots_come_from_different_tables():
+    """`flex_trade` and `flex_lot` are different quantities and need not tie.
+
+    Leaving a reader to discover that by subtraction is how a correct pair of numbers
+    gets reported as a bug.
+    """
+    out = pdash.breakdown_table(dd.BridgedWindow(rows=(_full_bd("FUT", 1.0, 1.0, 0.0, 1, 0),)))
+    assert "flex_trade" in out and "flex_lot" in out and "wash-sale" in out
+
+
+def test_the_pane_marks_an_incomplete_window():
+    """Over-communicate rather than fail silently."""
+    win = dd.BridgedWindow(rows=(_full_bd("FUT", 1.0, 1.0, 0.0, 1, 0),), incomplete=True)
+    assert "incomplete" in pdash.breakdown_table(win)
+
+
+def test_an_absent_average_renders_a_dash_not_a_zero():
+    """No winning lot means there is no average win; 0.00 would claim a break-even trade."""
+    out = pdash.breakdown_table(dd.BridgedWindow(rows=(_full_bd("STK", -10.0, 0.0, -10.0, 0, 3),)))
+    assert "—" in out
+
+
+def test_an_empty_window_says_so():
+    """A month with no closes must not render an empty table shell."""
+    assert "No closed trades" in pdash.breakdown_table(dd.BridgedWindow())
+    assert "No closed trades" in pdash.breakdown_table(None)
+
+
+def test_the_win_rate_block_emits_no_html_tags():
+    """`safe_markdown` escapes HTML, so a tag reaches the screen as literal text.
+
+    Caught in a browser 2026-08-06: `<sub>` markup rendered as "100% <sub>2W/0L</sub>".
+    No unit test could see it, because the string itself was correct — only the rendered
+    page was wrong.
+    """
+    out = pdash.win_rate_table(_snap_with(day_rows=[_bd("FUT", 2, 0)],
+                                          week_rows=[_bd("FUT", 5, 5)]))
+    assert "<" not in out and ">" not in out
+    assert "(2W/0L)" in out
+
+
+def test_the_week_tile_and_the_pnl_pane_report_the_same_week():
+    """Two totals for one window on one screen is the worst failure available here.
+
+    Until 2026-08-06 the KPI tile read Flex-only (-6,175.88) while the P&L pane read the
+    bridged figure (-16,480.46) — a ten-thousand difference, visible side by side. Both
+    must now come from the same bridged window.
+    """
+    week = dd.BridgedWindow(rows=(
+        dd.TypeBreakdown("FUT", -13230.76, 4864.86, -18095.62, 5, 5, 0),
+        dd.TypeBreakdown("STK", -3249.70, 0.0, -3249.70, 0, 23, 0),
+    ))
+    v = pdash.build_dashboard()
+    snap = dd.DashboardSnapshot(as_of=_NOW, breakdowns={"week": week})
+    v.refresh(snap, now=_NOW)
+
+    assert v._tiles["realised_week"].value == pytest.approx(week.net, abs=0.005)
+    assert f"{week.net:,.2f}" in pdash.breakdown_table(week)

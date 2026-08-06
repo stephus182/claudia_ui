@@ -799,6 +799,45 @@ _LOCAL_TOOLS: list[dict] = [
 
 _LOCAL_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in _LOCAL_TOOLS)
 
+
+def _ibkr_unavailable() -> str | None:
+    """A `tool_result` explaining why IBKR is off limits, or None when it is not.
+
+    Stage 5 of `docs/plans/2026-08-06-gateway-session-lifecycle-owner.md`. Suspension is
+    **total** by decision: while a login or a recovery is in progress, nothing touches the
+    gateway — the pollers, the WebSocket, both ticklers, and the model's tools.
+
+    The reason is not tidiness. IBKR documents that *"if the gateway has not received any
+    requests for several minutes an open session will automatically timeout"*
+    (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md), so every
+    request renews the session — which means an exception carved out for "just the agent"
+    reintroduces exactly the traffic that made `POST /logout` unable to clear a borrowed
+    session on 2026-08-05. One rule with no exceptions is the mechanism.
+
+    Returning an honest `tool_result` rather than raising is deliberate, and matches how
+    `_proposal_defect` already handles a rejected proposal: the model is told plainly what
+    did not happen and why, so it can say so instead of inventing a plausible answer or
+    retrying into a session that is still being established.
+
+    Only `AUTHENTICATING` and `RECOVERING` block. A `FREE` or `DOWN` gateway is *not*
+    blocked here — the call simply fails with a 401 or a connection error, and that error
+    is more informative to the model than a refusal would be.
+    """
+    from claudia.gateway_session import get_session
+
+    state = get_session().state()
+    if state.may_call_ibkr:
+        return None
+    return (
+        "IBKR is temporarily unavailable: "
+        f"{state.detail} No request was sent to the gateway, so this tool returned no "
+        "data — nothing was read and nothing was changed. Tell the user the IBKR session "
+        "is being established and that they should retry once it is live. Do not guess "
+        "the answer and do not retry this tool in the same turn."
+    )
+
+
+
 _LOCALLY_HANDLED: frozenset[str] = _LOCAL_TOOL_NAMES | PROPOSAL_TOOL_NAMES
 """Every tool the agent executes itself rather than routing to the toolkit or TradingView.
 
@@ -1262,6 +1301,12 @@ class ClaudIAAgent:
                         result_text = self._handle_local_tool(tc["name"], tc["input"])
                     elif tc["name"] in self._tv_tool_names and self._tv_bridge is not None:
                         result_text = await self._tv_bridge.execute(tc["name"], tc["input"])
+                    elif (blocked := _ibkr_unavailable()) is not None:
+                        # Only this branch reaches IBKR. Local tools and TradingView tools
+                        # are deliberately NOT gated — they touch nothing the gateway owns,
+                        # and refusing them during a login would be a restriction with no
+                        # safety argument behind it.
+                        result_text = blocked
                     else:
                         result_text, _ = await asyncio.to_thread(
                             self._toolkit.execute, tc["name"], tc["input"]

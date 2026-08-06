@@ -169,6 +169,121 @@ def short_reason(error: str | None) -> str:
     return text
 
 
+# Asset classes the win-rate block orders first. Everything else follows alphabetically,
+# so an OPT or CASH round trip still appears without needing a code change — the
+# requirement was "FUT and STK are predominant, show others when they realise", not
+# "FUT and STK only".
+_WIN_RATE_LEAD = ("FUT", "STK")
+
+
+def breakdown_table(window: Any, currency: str = "") -> str:
+    """Per-asset-class detail for the P&L pane: money, counts and averages together.
+
+    Lives in the pane rather than the KPI strip because it answers a different question.
+    The strip answers "how am I doing right now" in four glanceable percentages; this
+    answers "what actually happened", and needs nine columns to do it honestly.
+
+    **The count and the money must be read together, and this is why both are here.** One
+    win of 3,000 against five losses of 120 is a 17% win rate and a good day; this
+    account's own week showed STK at 0 wins from 23 lots, which reads as a catastrophe
+    until the average loss turns out to be about 141 while FUT's 33% sat on losses an
+    order of magnitude larger. A surface showing only the rate, or only the net, reports
+    the opposite of what happened in both cases.
+
+    `Net` and the lot-derived columns come from **different tables** and will not always
+    reconcile: `net` is `flex_trade` (the figure that ties to IBKR's annual statements),
+    while gross win/loss and the counts are `flex_lot`, which is pre-wash-sale detail.
+    The header says so rather than leaving a reader to discover it by subtraction.
+    """
+    if window is None or not window.rows:
+        return "_No closed trades in this window._"
+    ccy = f" ({currency})" if currency else ""
+    flag = "  ⚠ **incomplete** — a contract could not be reconstructed\n\n" if getattr(
+        window, "incomplete", False) else ""
+    lines = [
+        flag,
+        f"| Type | Net{ccy} | Gross win | Gross loss | W | L | Win % | Avg win | Avg loss |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    def num(v: float | None) -> str:
+        """A money cell, or an em dash when the figure does not exist.
+
+        None and 0.00 are different claims: "there were no winning lots" versus "the
+        winning lots averaged nothing". Only the second is a number.
+        """
+        return "—" if v is None else f"{v:,.2f}"
+
+    for r in window.rows:
+        rate = "—" if r.win_rate is None else f"{r.win_rate:.0f}%"
+        lines.append(
+            f"| **{r.asset_class}** | {r.net:,.2f} | {r.gross_win:,.2f} | "
+            f"{r.gross_loss:,.2f} | {r.winners} | {r.losers} | {rate} | "
+            f"{num(r.average_win)} | {num(r.average_loss)} |"
+        )
+    lines.append(f"| **Total** | **{window.net:,.2f}** | | | | | | | |")
+    lines.append("")
+    lines.append(
+        "_Net is `flex_trade` (statement basis); gross and counts are `flex_lot` "
+        "(pre-wash-sale lot detail). They are different quantities and need not tie._"
+    )
+    return "\n".join(lines)
+
+
+def win_rate_table(snapshot: DashboardSnapshot | None) -> str:
+    """The KPI strip's win-rate block: asset class down the side, day and week across.
+
+    **A row appears only when that class decided at least one trade in one of the two
+    windows.** A class that did nothing in both is hidden entirely rather than shown as a
+    row of dashes — a strip that lists every asset class the account has ever touched
+    stops being glanceable. Within a shown row an empty window renders `-`, because half a
+    row cannot be hidden and 0% would read as "everything lost" rather than "nothing
+    closed".
+
+    Both figures come from the **bridged** breakdowns, which is what makes the daily
+    number possible at all: Flex never has today (it was two days behind on 2026-08-06),
+    so a Flex-derived daily win rate would be permanently blank.
+
+    `incomplete` is surfaced with a marker rather than silently: when a contract could not
+    be reconstructed the counts are a floor, and a floor presented as a total is the
+    failure this whole track exists to prevent.
+    """
+    if snapshot is None or not snapshot.breakdowns:
+        return "**Win rate**\n\n_waiting for data…_"
+
+    day = snapshot.breakdowns.get("day")
+    week = snapshot.breakdowns.get("week")
+
+    def decided(window: Any, asset: str) -> int:
+        """Trades that resolved either way — scratches are neither won nor lost."""
+        row = window.for_type(asset) if window else None
+        return (row.winners + row.losers) if row else 0
+
+    classes = {r.asset_class for w in (day, week) if w for r in w.rows}
+    shown = [a for a in classes if decided(day, a) or decided(week, a)]
+    if not shown:
+        return "**Win rate**\n\n_no closed trades yet_"
+
+    shown.sort(key=lambda a: (_WIN_RATE_LEAD.index(a) if a in _WIN_RATE_LEAD else 99, a))
+
+    def cell(window: Any, asset: str) -> str:
+        """One win-rate cell, with the trade counts that give it meaning."""
+        row = window.for_type(asset) if window else None
+        if row is None or row.win_rate is None:
+            return "-"
+        # Plain text, NOT `<sub>`: `safe_markdown` escapes HTML (it is the app's only
+        # rendering route, hardened after the 2026-07-25 XSS audit), so any tag reaches
+        # the screen as literal characters. Verified in a browser 2026-08-06, where an
+        # earlier version rendered "100% <sub>2W/0L</sub>".
+        return f"{row.win_rate:.0f}% ({row.winners}W/{row.losers}L)"
+
+    flag = " ⚠" if any(w and w.incomplete for w in (day, week)) else ""
+    lines = [f"**Win rate**{flag}", "", "| | Day | Week |", "|---|---|---|"]
+    lines += [f"| **{a}** | {cell(day, a)} | {cell(week, a)} |" for a in shown]
+    if flag:
+        lines += ["", "_⚠ incomplete: a contract could not be reconstructed._"]
+    return "\n".join(lines)
+
+
 def freshness_line(snapshot: DashboardSnapshot, now: datetime | None = None) -> str:
     """The account-data freshness sentence, including the stale warning.
 
@@ -621,7 +736,18 @@ def stats_markdown(
     label: str,
     currency: str | None = None,
 ) -> str:
-    """The trading-stats block: trade count, winners vs losers in % **and** absolute money.
+    """The **settled** statement view: what Flex has confirmed, and nothing newer.
+
+    ⚠ **This is not the window's realised P&L**, and must never be labelled as if it
+    were. Flex is T+1 and structurally cannot contain the most recent day(s) — on
+    2026-08-06 it was two days behind, so this block read -6,175.88 for a week whose
+    actual realised was -16,480.46. Until that date it was titled "realised & round
+    trips" and sat directly beneath the bridged total, presenting two figures for one
+    window that differed by ten thousand. Caught by rendering the page in a browser.
+
+    It is retained, relabelled, because "what has IBKR confirmed in a statement" is a
+    genuinely different and useful question from "what did I make this week" — the
+    bridged `breakdown_table` above answers the second.
 
     Two different bases appear here on purpose, and are labelled as such:
 
@@ -646,7 +772,7 @@ def stats_markdown(
         "",
         "| | |",
         "|---|---|",
-        f"| Realised P&L (executions) | **{fmt_signed(window.total, ccy)}** |",
+        f"| Settled realised P&L | **{fmt_signed(window.total, ccy)}** |",
         f"| Futures | {fmt_signed(window.asset_total('FUT'), ccy)} |",
         f"| Equities & options | {fmt_signed(window.asset_total(*_NON_FUTURES), ccy)} |",
         f"| Executions | {window.trade_count} |",
@@ -663,9 +789,14 @@ def stats_markdown(
         ]
     lines += [
         "",
-        "_Totals are execution-basis (`flex_trade`, the authoritative net figure). "
-        "Win/loss counts and the gross figures are lot-basis (`flex_lot`), which is "
-        "pre-wash-sale and must never be read as realised P&L._",
+        "_**Settled only** — every figure here comes from the Flex statement dataset, "
+        "which is T+1 and never contains the most recent day(s). It is therefore NOT the "
+        "window's realised P&L; the bridged table above is. Shown because \"what IBKR has "
+        "confirmed in a statement\" is a genuinely different question from \"what did I "
+        "make this week\"._\n\n"
+        "_Totals are execution-basis (`flex_trade`, the authoritative settled figure). "
+        "Win/loss counts and gross figures are lot-basis (`flex_lot`), pre-wash-sale, "
+        "and must never be read as realised P&L._",
     ]
     return "\n".join(lines)
 
@@ -772,11 +903,21 @@ class DashboardView:
             "unrealised": self._tile("Unrealised P&L", signed=True),
             "realised_ledger": self._tile(realised_ledger_label(), signed=True),
             "realised_week": self._tile("Realised this week", signed=True),
-            "win_rate": self._tile("Win rate this week", fmt="{value:.0f}%"),
         }
+        # Win rate is a BLOCK, not a tile, because four numbers that only mean anything
+        # compared with each other should be read together: FUT/STK down the side, day
+        # and week across. A single "win rate this week" tile — what this replaced — could
+        # not say which asset class it described, and on this account the two differ
+        # enormously (measured 2026-08-06: FUT 50% on losses averaging 3,619 against STK
+        # 0% on losses averaging 141).
+        self._win_rate = safe_markdown(win_rate_table(None))
         self._freshness = safe_markdown("_Account data: waiting for the first poll…_")
         self.kpi_strip = pn.Column(
-            pn.Row(*self._tiles.values(), sizing_mode="stretch_width"),
+            pn.Row(
+                *self._tiles.values(),
+                pn.Column(self._win_rate, width=210, margin=(0, 10)),
+                sizing_mode="stretch_width",
+            ),
             self._freshness,
             sizing_mode="stretch_width",
         )
@@ -825,6 +966,10 @@ class DashboardView:
         self._reconciliation = safe_markdown("")
         self._basis_note = safe_markdown("")
 
+        # Per-type detail for the selected window. Month and year live here rather than
+        # on the KPI strip: the strip is for the two windows a trader checks constantly,
+        # this is for the ones they study.
+        self._pnl_breakdown = safe_markdown("_No closed trades in this window._")
         self._window = pn.widgets.RadioButtonGroup(
             # color=, not button_type=: `button_type` PendingDeprecationWarns on panel
             # 1.9 and the suite gates on warnings (same finding as Widget.name).
@@ -869,7 +1014,8 @@ class DashboardView:
                                     sizing_mode="stretch_both")),
             ("Orders", pn.Column(self._orders_status, self._orders,
                                  sizing_mode="stretch_both")),
-            ("P&L", pn.Column(self._window, self._pnl_chart, self._pnl_chart_note,
+            ("P&L", pn.Column(self._window, self._pnl_breakdown,
+                              self._pnl_chart, self._pnl_chart_note,
                               self._pnl_stats, self._pnl_coverage, self._ledger_detail,
                               sizing_mode="stretch_both")),
             dynamic=True,
@@ -1004,14 +1150,21 @@ class DashboardView:
 
         # An empty week has no currency of its own (`currency_label` returns ""), so the
         # account's own base currency stands in — known, not assumed.
+        #
+        # The figure is the **bridged** week, not `snapshot.week`. Both exist and they are
+        # different numbers: Flex alone read -6,175.88 for this week while the bridged
+        # total was -16,480.46, because Flex had not yet delivered 08-05's CL loss. Until
+        # 2026-08-06 this tile showed the Flex figure while the P&L pane below showed the
+        # bridged one — two totals for the same window, side by side, differing by ten
+        # thousand. Caught only by rendering the page in a browser; no unit test compares
+        # two surfaces against each other.
         week = snapshot.week
+        bridged = snapshot.breakdowns.get("week")
         week_ccy = (week.currency_label or ccy) if week else ccy
-        self._set(self._tiles["realised_week"], week.total if week else None,
+        week_total = bridged.net if bridged and bridged.rows else (week.total if week else None)
+        self._set(self._tiles["realised_week"], week_total,
                   f"{{value:+,.2f}} {week_ccy}".rstrip())
-        stats = snapshot.stats.get("week")
-        self._set(self._tiles["win_rate"],
-                  stats.win_rate if stats and stats.win_rate is not None else None,
-                  "{value:.0f}%")
+        self._win_rate.object = win_rate_table(snapshot)
         self._freshness.object = freshness_line(snapshot, now)
 
     @staticmethod
@@ -1087,8 +1240,12 @@ class DashboardView:
             self._pnl_chart.object = build_realised_chart(points, title)
             self._pnl_chart_note.object = realised_chart_note(points, ccy)
             self._pnl_stats.object = stats_markdown(
-                window, stats, f"{label} — realised & round trips", currency=ccy
+                window, stats, f"{label} — settled by IBKR statement", currency=ccy
             )
+        key = _WINDOW_KEYS.get(label)
+        self._pnl_breakdown.object = breakdown_table(
+            snapshot.breakdowns.get(key) if key else None, account_ccy
+        )
         self._pnl_coverage.object = coverage_line(snapshot)
         self._ledger_detail.object = ledger_markdown(snapshot)
 

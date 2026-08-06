@@ -3018,3 +3018,84 @@ def test_an_empty_result_is_reported_as_no_match_not_as_a_failure():
 
     assert "No past conversations found" in result
     assert "failed" not in result.lower()
+
+
+# ── S5: IBKR tools are silent while the session is being established ─────────
+
+
+def _suspended_state():
+    """A session mid-login: total suspension, per plan §8.1."""
+    from claudia.gateway_session import SessionPhase, declare
+    return declare(SessionPhase.AUTHENTICATING)
+
+
+def _live_state():
+    """A confirmed session — every tool may run."""
+    from datetime import UTC, datetime
+
+    from claudia.gateway_session import SessionPhase, SessionState
+    return SessionState(phase=SessionPhase.LIVE, as_of=datetime.now(UTC), detail="ok")
+
+
+def test_ibkr_tools_are_blocked_while_a_login_is_in_progress():
+    """Any request renews the session, so the model's tools are not exempt.
+
+    An exception for "just the agent" would reintroduce the traffic that made
+    `POST /logout` unable to clear a borrowed session on 2026-08-05.
+    """
+    from claudia.agent import _ibkr_unavailable
+
+    owner = MagicMock()
+    owner.state.return_value = _suspended_state()
+    with patch("claudia.gateway_session.get_session", return_value=owner):
+        blocked = _ibkr_unavailable()
+
+    assert blocked is not None
+    assert "No request was sent" in blocked
+
+
+def test_the_block_tells_the_model_not_to_guess():
+    """A refusal the model narrates around is worse than no refusal.
+
+    The proposal-block finding already showed the model will describe a tool call it never
+    made, so the text has to say explicitly that nothing was read and nothing changed.
+    """
+    from claudia.agent import _ibkr_unavailable
+
+    owner = MagicMock()
+    owner.state.return_value = _suspended_state()
+    with patch("claudia.gateway_session.get_session", return_value=owner):
+        blocked = _ibkr_unavailable()
+
+    assert "Do not guess" in blocked
+    assert "nothing was changed" in blocked
+
+
+def test_a_live_session_blocks_nothing():
+    """The gate must open again, or the assistant is permanently mute."""
+    from claudia.agent import _ibkr_unavailable
+
+    owner = MagicMock()
+    owner.state.return_value = _live_state()
+    with patch("claudia.gateway_session.get_session", return_value=owner):
+        assert _ibkr_unavailable() is None
+
+
+def test_a_free_or_down_gateway_is_not_blocked_here():
+    """A 401 or connection error is MORE informative to the model than a refusal.
+
+    Blocking those would replace a precise error ("not authenticated") with a vague one,
+    and would stop the model reporting a genuinely down gateway.
+    """
+    from datetime import UTC, datetime
+
+    from claudia.agent import _ibkr_unavailable
+    from claudia.gateway_session import SessionPhase, SessionState
+
+    for phase in (SessionPhase.FREE, SessionPhase.DOWN, SessionPhase.DEGRADED):
+        owner = MagicMock()
+        owner.state.return_value = SessionState(
+            phase=phase, as_of=datetime.now(UTC), detail="x"
+        )
+        with patch("claudia.gateway_session.get_session", return_value=owner):
+            assert _ibkr_unavailable() is None, f"{phase} must not be blocked"

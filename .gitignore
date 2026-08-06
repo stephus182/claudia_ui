@@ -64,3 +64,10 @@ docs/panel/screenshots/
 # or licensed material, so it never belongs in git. The CLI is dev tooling only; ClaudIA's
 # own web tools go through ibkr_core_mcp, not this cache (added 2026-08-01).
 .firecrawl/
+
+# Live account data captured for regression evidence — NEVER commit.
+# The repo is public; these hold real fills, balances and position quantities.
+# They are kept locally (and on Drive) so the tests that need them can run here.
+tests/fixtures/live_fills_*.json
+tests/fixtures/account_state_*.json
+docs/audits/*-order-fill-evidence.md

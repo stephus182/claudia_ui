@@ -520,10 +520,24 @@ def parse_positions(rows: Sequence[Any]) -> tuple[Position, ...]:
             continue
         desc = str(row.get("contractDesc") or "").strip()
         # `avgCost` is per contract, `avgPrice` per unit, and their ratio *is* the
-        # multiplier — which matters because IBKR does not always send the `multiplier`
-        # field (see `Position.basis_delta_value`). Deriving it from two fields on the
-        # same row keeps the three internally consistent; when neither route works the
-        # multiplier stays None and no money figure is computed from it.
+        # multiplier. Deriving it from two fields on the same row keeps the three
+        # internally consistent; when neither route works the multiplier stays None and no
+        # money figure is computed from it (see `Position.basis_delta_value`).
+        #
+        # ⚠ **IBKR sends `multiplier: 0.0` on equities — not a missing field.** Measured on
+        # the live account 2026-08-06: GLD and IGV both reported `multiplier=0.0` while ES
+        # SEP2026 reported `50.0`. The `or` below is therefore load-bearing rather than
+        # defensive: 0.0 is falsy, so equities fall through to the `avgCost / avgPrice`
+        # ratio and land on 1.0. Rewriting it as `if raw_multiplier is not None` — the
+        # obvious "tidy-up" — would take every equity to a zero multiplier.
+        #
+        # The multiplier is always OBTAINED, never assumed. Three independent routes agree
+        # on this account (measured 2026-08-06): IBKR's own field, `avgCost / avgPrice`,
+        # and `net_amount / price / size` off a fill. All three give ES 50, CL 1000,
+        # STK 1 — recorded here as observations that any future change must still
+        # reproduce, not as constants to look up. A hardcoded table would be a second,
+        # drifting definition of a contract property IBKR already publishes, and would be
+        # wrong the first time a contract's terms changed.
         avg_cost = _as_float(row.get("avgCost"))
         raw_multiplier = _as_float(row.get("multiplier"))
         avg_price = _as_float(row.get("avgPrice"))
@@ -1067,6 +1081,11 @@ class DashboardSnapshot:
     # under a YTD heading — caught in the Phase 3 smoke, and the reason these are keyed
     # rather than singular.
     stats: Mapping[str, RoundTripStats] = field(default_factory=dict)
+    # Per-asset-class breakdowns keyed "day"/"week"/"month"/"ytd". Unlike `stats` above
+    # these are BRIDGED: they include the days Flex has not delivered yet, so "day" is a
+    # real figure rather than a permanently empty one. The KPI strip reads day/week; the
+    # P&L pane reads month/ytd.
+    breakdowns: Mapping[str, BridgedWindow] = field(default_factory=dict)
     series: tuple[RealisedPoint, ...] = ()
     coverage: FlexCoverage | None = None
     error: str | None = None
@@ -1287,7 +1306,7 @@ def reconcile(snapshot: DashboardSnapshot) -> Reconciliation:
 
 
 def build_flex_sections(
-    conn: sqlite3.Connection, today: date
+    conn: sqlite3.Connection, today: date, reconstruction: Any = None
 ) -> dict[str, Any]:
     """The whole SQLite half of a poll: windows, round trips, curve, coverage.
 
@@ -1304,15 +1323,263 @@ def build_flex_sections(
     count cannot be sliced out of a wider one. Reusing the week's stats under a month or
     YTD heading puts a right number under a wrong label, which is the failure this
     project treats as worse than a missing number.
+
+    `reconstruction` is an optional `live_realised.Reconstruction`. When supplied, the
+    per-type breakdowns extend past Flex's coverage into the days it has not delivered —
+    which is what makes a *daily* win rate possible at all. Without it the breakdowns are
+    Flex-only, which is the correct behaviour for a session with no gateway.
     """
     bounds = {
         "week": (week_start(today), today),
         "month": (month_start(today), today),
         "ytd": (year_start(today), today),
     }
+    # "day" is deliberately not in `bounds`: `realised_window` and `round_trip_stats` are
+    # Flex-only, and Flex never has today (it was two days behind on 2026-08-06). A
+    # Flex-derived "today" would always be empty, so the day window exists only in the
+    # bridged breakdowns below, which is the only place it can be accurate.
+    breakdown_bounds = {"day": (today, today), **bounds}
+    coverage = flex_coverage(conn)
     return {
         **{name: realised_window(conn, lo, hi) for name, (lo, hi) in bounds.items()},
         "stats": {name: round_trip_stats(conn, lo, hi) for name, (lo, hi) in bounds.items()},
+        "breakdowns": {
+            name: bridged_by_type(conn, lo, hi, reconstruction, coverage.through)
+            for name, (lo, hi) in breakdown_bounds.items()
+        },
         "series": realised_series(conn, *bounds["ytd"]),
-        "coverage": flex_coverage(conn),
+        "coverage": coverage,
     }
+
+
+# -- Win/loss breakdown by asset class ----------------------------------------
+
+
+@dataclass(frozen=True)
+class TypeBreakdown:
+    """Realised performance for one asset class over one window.
+
+    **Two different sources, deliberately, and they must stay labelled apart.**
+
+    * `net` is the money figure, from `flex_trade.fifo_pnl_realized` — the rule settled
+      against IBKR's own annual statements 6/6 years exactly.
+    * `gross_win` / `gross_loss` / the counts come from `flex_lot`, which is
+      **pre-wash-sale** tax-lot detail (`Trade == Lot + WashSale`). Summing lots as the
+      money figure overstates losses by the disallowed amount.
+
+    So `gross_win + gross_loss` will not always equal `net`, and that is correct rather
+    than a bug. A UI showing both must say which is which — the same rule
+    `RoundTripStats` already carries.
+
+    A lot is the right unit for a *count*: it is a genuine round trip (open -> close),
+    whereas an execution list includes opening legs and wash-sale-zeroed closes that are
+    neither a win nor a loss.
+    """
+
+    asset_class: str
+    net: float
+    gross_win: float
+    gross_loss: float
+    winners: int
+    losers: int
+    scratches: int
+
+    @property
+    def closed_lots(self) -> int:
+        """Round trips that closed in this window, decided or not."""
+        return self.winners + self.losers + self.scratches
+
+    @property
+    def win_rate(self) -> float | None:
+        """Winners as a percentage of *decided* lots, or None when nothing decided.
+
+        Scratches are excluded from the denominator: a lot realising exactly 0.00 is
+        neither won nor lost, and counting it as a loss understates the rate. None rather
+        than 0.0 for an empty window, so the UI renders an em dash instead of a 0% that
+        reads like a catastrophic week.
+        """
+        decided = self.winners + self.losers
+        return 100.0 * self.winners / decided if decided else None
+
+    @property
+    def win_loss_ratio(self) -> float | None:
+        """Gross win over gross loss, or None when nothing was lost.
+
+        None rather than infinity: a window with no losing lot has no ratio, and
+        rendering one invites a comparison that does not exist.
+        """
+        return self.gross_win / abs(self.gross_loss) if self.gross_loss else None
+
+    @property
+    def average_win(self) -> float | None:
+        """Mean size of a winning lot, or None when there were none."""
+        return self.gross_win / self.winners if self.winners else None
+
+    @property
+    def average_loss(self) -> float | None:
+        """Mean size of a losing lot (negative), or None when there were none.
+
+        Reported beside `average_win` because **the count and the money can tell opposite
+        stories, and both are needed to read a window correctly.** One win of 3,000
+        against five losses of 600 is a 17% win rate — dreadful by count — and break-even
+        in money. The inverse happens too: this account's own week showed STK at 0 wins
+        from 23 lots, which reads as a catastrophe until the average loss turns out to be
+        about 141, while FUT's 33% win rate sat on losses an order of magnitude larger.
+
+        Splitting by asset class is not cosmetic for the same reason: a futures lot and an
+        equity lot differ by their contract multiplier alone, so pooling them makes the
+        averages describe nothing real.
+        """
+        return self.gross_loss / self.losers if self.losers else None
+
+
+def realised_by_type(
+    conn: sqlite3.Connection, start: date, end: date
+) -> tuple[TypeBreakdown, ...]:
+    """Per-asset-class realised performance between `start` and `end` inclusive.
+
+    Returns a row **only for asset classes that actually did something** in the window —
+    no zero rows for classes that were never traded. FUT and STK dominate this account;
+    OPT or CASH appear when, and only when, they realised. Ordered by absolute net so the
+    class that moved the money most is first.
+
+    The two halves are queried separately because the tables disagree on shape, not by
+    accident:
+
+    * `flex_trade` has `trade_date_iso` (ISO) and `source`; the sum is filtered to
+      `source='flex'` with **no open/close filter** — a buy that closes a short and opens
+      a long is flagged `O` and still realises.
+    * `flex_lot` has **neither** column. It carries only the compact `YYYYMMDD`
+      `trade_date`, and every lot is Flex-derived, so it needs its own bounds format and
+      no source predicate.
+    """
+    lo_iso, hi_iso = start.isoformat(), end.isoformat()
+    lo_c, hi_c = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+    nets = {
+        str(r["asset_category"] or "?"): float(r["net"] or 0.0)
+        for r in conn.execute(
+            "SELECT asset_category, SUM(fifo_pnl_realized) AS net FROM flex_trade "
+            "WHERE source = 'flex' AND trade_date_iso BETWEEN ? AND ? "
+            "GROUP BY asset_category",
+            (lo_iso, hi_iso),
+        )
+    }
+    lots = {
+        str(r["asset_category"] or "?"): r
+        for r in conn.execute(
+            """
+            SELECT asset_category,
+                   SUM(CASE WHEN fifo_pnl_realized > 0 THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN fifo_pnl_realized < 0 THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN COALESCE(fifo_pnl_realized, 0) = 0 THEN 1 ELSE 0 END) AS flat,
+                   SUM(CASE WHEN fifo_pnl_realized > 0 THEN fifo_pnl_realized ELSE 0 END) AS gw,
+                   SUM(CASE WHEN fifo_pnl_realized < 0 THEN fifo_pnl_realized ELSE 0 END) AS gl
+              FROM flex_lot
+             WHERE trade_date BETWEEN ? AND ?
+             GROUP BY asset_category
+            """,
+            (lo_c, hi_c),
+        )
+    }
+
+    out = [
+        TypeBreakdown(
+            asset_class=asset,
+            net=round(nets.get(asset, 0.0), 2),
+            gross_win=round(float(lot["gw"] or 0.0) if lot is not None else 0.0, 2),
+            gross_loss=round(float(lot["gl"] or 0.0) if lot is not None else 0.0, 2),
+            winners=int(lot["wins"] or 0) if lot is not None else 0,
+            losers=int(lot["losses"] or 0) if lot is not None else 0,
+            scratches=int(lot["flat"] or 0) if lot is not None else 0,
+        )
+        for asset in sorted(set(nets) | set(lots))
+        if (lot := lots.get(asset)) is not None or nets.get(asset)
+    ]
+    return tuple(sorted(out, key=lambda b: -abs(b.net)))
+
+
+@dataclass(frozen=True)
+class BridgedWindow:
+    """Per-type realised performance over a window, Flex **plus** the days it lacks.
+
+    The Flex dataset is authoritative and always behind — measured 2026-08-06 it was two
+    days behind, so "today's win rate" read from Flex alone was not merely stale, it was
+    *empty*, and an empty window renders as a dash rather than as the +1,841.04 the
+    account had actually made. That is the gap this type closes.
+
+    `incomplete` is the honesty flag. It is set when a contract in the window could not be
+    reconstructed (its opening leg was outside the fill window), meaning the reconstructed
+    part is missing some closes. The figures shown are then a floor, not a total, and the
+    UI must say so — a silently-short number on a P&L surface is the failure this whole
+    module is written against.
+    """
+
+    rows: tuple[TypeBreakdown, ...] = ()
+    bridged_days: tuple[str, ...] = ()
+    incomplete: bool = False
+
+    @property
+    def net(self) -> float:
+        """Realised across every asset class in the window."""
+        return round(sum(r.net for r in self.rows), 2)
+
+    def for_type(self, asset_class: str) -> TypeBreakdown | None:
+        """The row for one asset class, or None when it did nothing in this window."""
+        return next((r for r in self.rows if r.asset_class == asset_class), None)
+
+
+def bridged_by_type(
+    conn: sqlite3.Connection,
+    start: date,
+    end: date,
+    reconstruction: Any = None,
+    coverage_through: date | None = None,
+) -> BridgedWindow:
+    """`realised_by_type` for the window, extended with the days Flex has not delivered.
+
+    Args:
+        conn: Read-only store connection.
+        start: First day of the window, inclusive.
+        end: Last day of the window, inclusive.
+        reconstruction: A `live_realised.Reconstruction`, or None to return Flex alone.
+        coverage_through: The newest Flex `trade_date_iso`. Days after it are taken from
+            the reconstruction; days up to it are taken from Flex. **Nothing is taken from
+            both**, which is what stops a bridged window double-counting the moment Flex
+            catches up — the failure mode a naive "add today's live P&L" would hit the
+            following morning.
+
+    Returns:
+        A `BridgedWindow`. Rows are ordered by absolute net, largest first.
+    """
+    flex_rows = {r.asset_class: r for r in realised_by_type(conn, start, end)}
+    if reconstruction is None:
+        return BridgedWindow(rows=tuple(flex_rows.values()))
+
+    cutoff = coverage_through.strftime("%Y%m%d") if coverage_through else ""
+    lo, hi = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+    days = sorted({
+        d for (d, _) in reconstruction.realised if lo <= d <= hi and d > cutoff
+    })
+
+    merged: dict[str, TypeBreakdown] = dict(flex_rows)
+    for day in days:
+        for asset, net in reconstruction.by_type_for_day(day).items():
+            wins, losses, flat, gw, gl = reconstruction.stats_for(day, asset)
+            base = merged.get(asset)
+            merged[asset] = TypeBreakdown(
+                asset_class=asset,
+                net=round((base.net if base else 0.0) + net, 2),
+                gross_win=round((base.gross_win if base else 0.0) + gw, 2),
+                gross_loss=round((base.gross_loss if base else 0.0) + gl, 2),
+                winners=(base.winners if base else 0) + wins,
+                losers=(base.losers if base else 0) + losses,
+                scratches=(base.scratches if base else 0) + flat,
+            )
+
+    incomplete = any(lo <= d <= hi and d > cutoff for d in reconstruction.declined_days)
+    return BridgedWindow(
+        rows=tuple(sorted(merged.values(), key=lambda b: -abs(b.net))),
+        bridged_days=tuple(days),
+        incomplete=incomplete,
+    )
