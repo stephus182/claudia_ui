@@ -309,7 +309,7 @@ def test_coverage_line_with_no_flex_data():
 
 def test_stats_block_labels_the_two_bases_apart(view):
     """Execution-basis P&L and lot-basis counts must never be readable as one figure."""
-    view._window.value = "Week"
+    view._window.value = "Weekly"
     text = view._pnl_stats.object
     assert "Settled realised P&L" in text
     assert "Closed round trips (lots)" in text
@@ -324,7 +324,7 @@ def test_the_settled_block_never_claims_to_be_the_windows_realised_pnl(view):
     two figures for one window, differing by ten thousand, with nothing to explain why.
     The heading and the footnote now both say it is the settled statement view.
     """
-    view._window.value = "Week"
+    view._window.value = "Weekly"
     text = view._pnl_stats.object
     assert "settled by IBKR statement" in text
     assert "Settled only" in text
@@ -337,7 +337,7 @@ def test_each_window_shows_its_own_round_trip_counts(view):
     Selecting YTD once rendered the *week's* "1 closed round trip" under a YTD heading
     beside a 636-execution total. Every window now carries its own stats.
     """
-    view._window.value = "Week"
+    view._window.value = "Weekly"
     assert "| Closed round trips (lots) | 4 |" in view._pnl_stats.object
     view._window.value = "YTD"
     assert "| Closed round trips (lots) | 42 |" in view._pnl_stats.object
@@ -370,7 +370,7 @@ def test_realised_ledger_tile_follows_the_measured_window(view):
 
 def test_every_money_string_carries_an_iso_code_and_no_bare_dollar(view):
     """`$` is shared by USD/MXN/CAD/AUD/HKD/SGD — a wrong-currency price looks ordinary."""
-    view._window.value = "Week"
+    view._window.value = "Weekly"
     rendered = "\n".join([
         view._freshness.object, view._positions_status.object,
         view._pnl_stats.object, view._pnl_coverage.object, view._ledger_detail.object,
@@ -397,7 +397,7 @@ def test_an_empty_window_borrows_the_accounts_currency_rather_than_guessing():
 
     v = pdash.build_dashboard()
     v.refresh(_snapshot(week=empty, month=empty, ytd=empty, series=()), now=_NOW)
-    v._window.value = "Week"
+    v._window.value = "Weekly"
     assert v._tiles["realised_week"].format == "{value:+,.2f} USD"
     assert "+0.00 USD" in v._pnl_stats.object
 
@@ -407,7 +407,7 @@ def test_with_neither_a_window_currency_nor_a_ledger_no_code_is_stated():
     empty = _window(date(2026, 8, 3), _TODAY, 0.0, 0, by_asset={}, currencies=())
     v = pdash.build_dashboard()
     v.refresh(_snapshot(week=empty, month=empty, ytd=empty, series=(), ledger=None), now=_NOW)
-    v._window.value = "Week"
+    v._window.value = "Weekly"
     assert v._tiles["realised_week"].format == "{value:+,.2f}"
     assert "+0.00 |" in v._pnl_stats.object
     assert "USD" not in v._pnl_stats.object
@@ -442,11 +442,11 @@ def test_age_formatting(seconds, expected):
 # ── 3. Rendering mechanics ────────────────────────────────────────────────────
 
 
-def test_tabs_are_named_chart_positions_daily_pnl():
-    """The tab set is the one the layout specifies. Daily sits before P&L: today, then
-    the settled history behind it."""
+def test_tabs_are_named_chart_positions_orders_pnl():
+    """The tab set is the one the layout specifies. All P&L lives under ONE tab, chosen
+    by the window selector — Daily included (user, 2026-08-07)."""
     v = pdash.build_dashboard(chart_pane=pn.Column(pn.pane.Markdown("chart")))
-    assert list(v.tabs._names) == ["Chart", "Positions", "Orders", "Daily", "P&L"]
+    assert list(v.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
     assert isinstance(v.tabs, pn.Tabs)
 
 
@@ -878,7 +878,7 @@ def test_chart_is_built_for_the_selected_window(view):
     """The chart is drawn from the window the selector names."""
     import holoviews as hv
 
-    view._window.value = "Week"
+    view._window.value = "Weekly"
     week_obj = view._pnl_chart.object
     assert isinstance(week_obj, hv.Layout)
     view._window.value = "YTD"
@@ -887,8 +887,8 @@ def test_chart_is_built_for_the_selected_window(view):
 
 def test_switching_the_window_repaints_without_a_new_poll(view):
     """A radio click must feel immediate — the data is already in memory."""
-    view._window.value = "Month"
-    assert "Month" in view._pnl_stats.object
+    view._window.value = "Monthly"
+    assert "Monthly" in view._pnl_stats.object
     assert "| Closed round trips (lots) | 5 |" in view._pnl_stats.object
 
 
@@ -934,7 +934,7 @@ def test_a_single_point_window_explains_itself_instead_of_drawing_a_broken_axis(
         ),
         now=_NOW,
     )
-    v._window.value = "Week"
+    v._window.value = "Weekly"
     assert v._pnl_chart.object is None
     assert "Only one trading day" in v._pnl_chart_note.object
     # The stats table must still render — only the curve is suppressed.
@@ -943,7 +943,7 @@ def test_a_single_point_window_explains_itself_instead_of_drawing_a_broken_axis(
 
 def test_the_chart_note_is_empty_when_a_chart_was_drawn(view):
     """The explanatory note is empty when there is a chart to look at."""
-    view._window.value = "Week"
+    view._window.value = "Weekly"
     assert view._pnl_chart.object is not None
     assert view._pnl_chart_note.object == ""
 
@@ -1090,7 +1090,7 @@ def test_orders_blank_when_the_account_half_goes_stale(view):
 
 def test_the_dashboard_has_an_orders_tab(view):
     """The order book has its own tab."""
-    assert list(view.tabs._names) == ["Chart", "Positions", "Orders", "Daily", "P&L"]
+    assert list(view.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
 
 
 def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
@@ -1190,19 +1190,60 @@ def test_a_stale_daily_figure_is_labelled_a_floor_not_blanked():
     assert "Not current" not in pdash.daily_heading(_snap_with(), stale=False)
 
 
-def test_the_daily_tab_repaints_from_a_snapshot():
-    """The wiring: refresh must reach both panes on the tab."""
+def test_the_daily_table_never_claims_a_flex_provenance():
+    """The table was right and the sentence under it was a confident lie.
+
+    `breakdown_table`'s footnote names `flex_trade` and `flex_lot` as the sources. That
+    is true of the settled windows and FALSE of the day window: no statement covers
+    today, so every figure there is reconstructed from the account's own executions.
+    Shipped attached to the day window on 2026-08-07 and caught in the browser the same
+    hour — which is why the note is now a parameter and this test exists.
+    """
+    out = pdash.daily_table(_snap_with(day_rows=[_bd("FUT", 0, 2, net=-1629.44)]), "USD")
+    assert "statement basis" not in out
+    assert "pre-wash-sale" not in out
+    assert "Reconstructed FIFO from your own executions" in out
+    # The settled windows keep the note that is true of them.
+    assert "statement basis" in pdash.breakdown_table(
+        dd.BridgedWindow(rows=(_bd("FUT", 1, 0, net=100.0),)), "USD"
+    )
+
+
+def test_daily_is_the_first_window_option_not_a_separate_tab():
+    """All P&L under one tab, chosen by the selector, shortest window first (user)."""
+    v = pdash.build_dashboard()
+    assert list(v._window.options) == ["Daily", "Weekly", "Monthly", "YTD"]
+    assert v._window.value == "Weekly"
+
+
+def test_selecting_daily_repaints_the_pane_from_the_held_snapshot():
+    """A radio click must feel immediate — the data is already in memory."""
     v = pdash.build_dashboard()
     v.refresh(_snapshot(), now=_NOW)
-    assert "Today —" in v._daily_heading.object
-    assert isinstance(v._daily.object, str)
+    v._window.value = "Daily"
+    assert "Today —" in v._pnl_source_note.object
+    assert isinstance(v._pnl_breakdown.object, str)
 
 
-def test_the_daily_tab_binds_no_click_handler():
-    """Markdown only — no Tabulator, so no editable cell and no click surface (Rule 1)."""
+def test_daily_draws_no_curve_and_no_settled_block():
+    """One day is a point, not a shape — and no statement covers today, so the
+    settled block would put a week's confirmed figures under a "Daily" heading."""
     v = pdash.build_dashboard()
-    daily = v.tabs[3]
-    assert all(not isinstance(o, pn.widgets.Tabulator) for o in daily)
+    v.refresh(_snapshot(), now=_NOW)
+    v._window.value = "Daily"
+    assert v._pnl_chart.object is None
+    assert v._pnl_chart_note.object == ""
+    assert v._pnl_stats.object == ""
+
+
+def test_leaving_daily_clears_its_source_note():
+    """The note is about today only; it must not linger over a settled window."""
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(), now=_NOW)
+    v._window.value = "Daily"
+    v._window.value = "Weekly"
+    assert v._pnl_source_note.object == ""
+    assert "Today —" not in v._pnl_stats.object
 
 
 

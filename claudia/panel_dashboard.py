@@ -9,7 +9,7 @@ Layout, as decided in the plan:
 
 ```
 KPI strip  (always visible, across the top)
-Chat  |  Tabs( Chart · Positions · Orders · Daily · P&L )
+Chat  |  Tabs( Chart · Positions · Orders · P&L )
 ```
 
 The tabs are built here; the Chart tab's contents are passed in, because that pane is
@@ -105,7 +105,12 @@ _NON_FUTURES = ("STK", "OPT", "FUND", "CASH")
 # Radio-button label -> the snapshot attribute and `stats` key it selects. One mapping,
 # so a window's realised total and its round-trip counts can never be picked from
 # different windows.
-_WINDOW_KEYS = {"Week": "week", "Month": "month", "YTD": "ytd"}
+# Every realised window the P&L pane can show, shortest first. "Daily" is not like the
+# other three and the pane branches on it: no statement covers today (IBKR publishes a
+# day's trades T+1), so the day window has no Flex `RealisedWindow`, no curve and no
+# settled block — it is the fill reconstruction alone. See `_refresh_pnl`.
+_DAILY_LABEL = "Daily"
+_WINDOW_KEYS = {_DAILY_LABEL: "day", "Weekly": "week", "Monthly": "month", "YTD": "ytd"}
 _WINDOW_LABELS = tuple(_WINDOW_KEYS)
 
 
@@ -170,7 +175,25 @@ def short_reason(error: str | None) -> str:
     return text
 
 
-def breakdown_table(window: Any, currency: str = "") -> str:
+# Where the numbers in a breakdown table came from, stated under the table itself.
+#
+# `_FLEX_SOURCE_NOTE` is true of the settled windows and FALSE of the day window, which
+# is why it is a parameter rather than a constant baked into the renderer. Nothing in the
+# day window comes from either table: no statement covers today, so every figure there is
+# reconstructed from the account's own executions. Shipped with the wrong note attached
+# on 2026-08-07 and caught in the browser the same hour — the table was right and the
+# sentence under it was a confident lie about where the money came from.
+_FLEX_SOURCE_NOTE = (
+    "_Net is `flex_trade` (statement basis); gross and counts are `flex_lot` "
+    "(pre-wash-sale lot detail). They are different quantities and need not tie._"
+)
+_LIVE_SOURCE_NOTE = (
+    "_Reconstructed FIFO from your own executions — not `flex_trade`, not `flex_lot`, "
+    "not settled by IBKR. No statement covers today._"
+)
+
+
+def breakdown_table(window: Any, currency: str = "", note: str = _FLEX_SOURCE_NOTE) -> str:
     """Per-asset-class detail for the P&L pane: money, counts and averages together.
 
     Lives in the pane rather than the KPI strip because it answers a different question.
@@ -216,15 +239,12 @@ def breakdown_table(window: Any, currency: str = "") -> str:
         )
     lines.append(f"| **Total** | **{window.net:,.2f}** | | | | | | | |")
     lines.append("")
-    lines.append(
-        "_Net is `flex_trade` (statement basis); gross and counts are `flex_lot` "
-        "(pre-wash-sale lot detail). They are different quantities and need not tie._"
-    )
+    lines.append(note)
     return "\n".join(lines)
 
 
 def daily_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> str:
-    """The Daily tab's heading: which day it is, where the figures come from, and age.
+    """The Daily window's heading: which day it is, where the figures come from, and age.
 
     The date is taken from `as_of`, converted to local time — the same clock
     `dashboard_poller` reads with `date.today()` to build the day window, so the heading
@@ -253,7 +273,7 @@ def daily_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> st
 
 
 def daily_table(snapshot: DashboardSnapshot | None, currency: str = "") -> str:
-    """The Daily tab: today's realised P&L per asset class, from the account's own fills.
+    """The Daily window of the P&L pane: today's realised P&L per asset class.
 
     Renders the same nine-column template as the P&L tab's window breakdown, against the
     `"day"` bridged window. That window is **non-Flex by construction**: IBKR publishes a
@@ -284,7 +304,7 @@ def daily_table(snapshot: DashboardSnapshot | None, currency: str = "") -> str:
         )
     if not day.rows:
         return "_No closed round trips today._"
-    return breakdown_table(day, currency)
+    return breakdown_table(day, currency, note=_LIVE_SOURCE_NOTE)
 
 
 def freshness_line(snapshot: DashboardSnapshot, now: datetime | None = None) -> str:
@@ -909,7 +929,7 @@ class DashboardView:
         # Tiles only. A win-rate grid lived at the right end of this row until 2026-08-07
         # and was removed as clutter (user): a small table wedged beside five Number
         # indicators reads as an afterthought, and neither figure it carried is lost —
-        # the week is in the P&L tab's breakdown, the day now has the Daily tab.
+        # the week is in the P&L pane, and the day is now its Daily window.
         self._freshness = safe_markdown("_Account data: waiting for the first poll…_")
         self.kpi_strip = pn.Column(
             pn.Row(*self._tiles.values(), sizing_mode="stretch_width"),
@@ -968,7 +988,7 @@ class DashboardView:
         self._window = pn.widgets.RadioButtonGroup(
             # color=, not button_type=: `button_type` PendingDeprecationWarns on panel
             # 1.9 and the suite gates on warnings (same finding as Widget.name).
-            label="Window", options=list(_WINDOW_LABELS), value="Week", color="light"
+            label="Window", options=list(_WINDOW_LABELS), value="Weekly", color="light"
         )
         # Same Hard Rule 1 shape as the positions table: disabled=True and NO on_click /
         # on_edit handler bound anywhere. An order row is the one place in this app where
@@ -991,10 +1011,11 @@ class DashboardView:
         )
         self._orders_status = safe_markdown("_Orders: waiting for the first poll…_")
 
-        # The Daily tab. Markdown only — no Tabulator, so there is no editable cell and no
-        # click surface to guard here (Hard Rule 1); keep it that way.
-        self._daily_heading = safe_markdown("**Today**")
-        self._daily = safe_markdown("_Daily P&L: waiting for the first poll…_")
+        # Sits between the window selector and the breakdown, and carries text only for
+        # the Daily window: which day it is, that the figures are reconstructed from the
+        # account's own executions, and whether they are current. Empty for the other
+        # three, whose provenance is the settled block further down.
+        self._pnl_source_note = safe_markdown("")
 
         self._window.param.watch(self._on_window_change, "value")
         self._pnl_chart = pn.pane.HoloViews(None, sizing_mode="stretch_width")
@@ -1015,10 +1036,7 @@ class DashboardView:
                                     sizing_mode="stretch_both")),
             ("Orders", pn.Column(self._orders_status, self._orders,
                                  sizing_mode="stretch_both")),
-            # Daily sits before P&L: today, then the settled history behind it.
-            ("Daily", pn.Column(self._daily_heading, self._daily,
-                                sizing_mode="stretch_both")),
-            ("P&L", pn.Column(self._window, self._pnl_breakdown,
+            ("P&L", pn.Column(self._window, self._pnl_source_note, self._pnl_breakdown,
                               self._pnl_chart, self._pnl_chart_note,
                               self._pnl_stats, self._pnl_coverage, self._ledger_detail,
                               sizing_mode="stretch_both")),
@@ -1083,12 +1101,7 @@ class DashboardView:
             self._refresh_tiles(display, now)
             self._refresh_positions(display)
             self._refresh_orders(display)
-            # The ORIGINAL snapshot, not `display`: the day window is entirely
-            # reconstruction-derived, and `without_account` does not strip the bridged
-            # breakdowns. Blanking it would throw away the last figures actually earned;
-            # the heading says they are a floor instead. See `daily_heading`.
-            self._refresh_daily(snapshot, now)
-            self._refresh_pnl(display)
+            self._refresh_pnl(display, now)
             self._notify_staleness(snapshot, now)
         except Exception:
             log.exception("Dashboard repaint failed; leaving the previous frame up")
@@ -1225,13 +1238,35 @@ class DashboardView:
         self._positions_status.object = summary
 
     def _refresh_daily(self, snapshot: DashboardSnapshot, now: datetime | None) -> None:
-        """Daily tab: today's realised P&L per asset class, and where it came from."""
-        self._daily_heading.object = daily_heading(snapshot, self.is_stale(snapshot, now))
-        self._daily.object = daily_table(
-            snapshot, snapshot.ledger.currency if snapshot.ledger else ""
-        )
+        """The Daily selection: today's realised P&L per asset class, and nothing else.
 
-    def _refresh_pnl(self, snapshot: DashboardSnapshot) -> None:
+        Three of the pane's surfaces are deliberately blanked rather than filled:
+
+        * **the curve** — one day is a point, not a shape, and the YTD series it would be
+          sliced from is Flex, which does not contain today at all;
+        * **the settled block** — it reports what IBKR has confirmed in a statement, and
+          no statement covers today. Rendering it here would put a week's settled figures
+          under a heading saying "Daily";
+        * **the currency fallback** — unchanged, still the account's own base code.
+
+        The account-stale case reads from `self._snapshot`, the snapshot *before*
+        `without_account` stripped the ledger, purely so the money keeps its ISO code. The
+        figures themselves are not account-derived and are not stripped either way; the
+        heading is what says they may be a floor.
+        """
+        original = self._snapshot or snapshot
+        ccy = original.ledger.currency if original.ledger else ""
+        self._pnl_source_note.object = daily_heading(original, self.is_stale(original, now))
+        self._pnl_breakdown.object = daily_table(original, ccy)
+        self._pnl_chart.object = None
+        self._pnl_chart_note.object = ""
+        self._pnl_stats.object = ""
+        self._pnl_coverage.object = coverage_line(snapshot)
+        self._ledger_detail.object = ledger_markdown(snapshot)
+
+    def _refresh_pnl(
+        self, snapshot: DashboardSnapshot, now: datetime | None = None
+    ) -> None:
         """P&L tab: the realised chart for the selected window, stats, and disclosures.
 
         An empty window reports no currency of its own, so the account's base currency
@@ -1239,6 +1274,10 @@ class DashboardView:
         stated. Same rule as the KPI strip: substitute a *known* currency or none.
         """
         label = str(self._window.value)
+        if label == _DAILY_LABEL:
+            self._refresh_daily(snapshot, now)
+            return
+        self._pnl_source_note.object = ""
         window, points, stats = self._selected_window(snapshot)
         account_ccy = snapshot.ledger.currency if snapshot.ledger else ""
         if window is None:
