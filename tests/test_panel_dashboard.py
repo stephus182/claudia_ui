@@ -841,7 +841,8 @@ def test_position_columns_are_pinned_in_reading_order():
     """
     assert pdash._POSITION_COLUMNS == [
         "Symbol", "Name", "Qty", "Avg entry", "IBKR basis", "Basis Δ",
-        "Last", "Market value", "Unrealised", "% Unrealised", "Class", "Ccy",
+        "Last", "Change", "% Change", "Market value", "Unrealised", "% Unrealised",
+        "Class", "Ccy",
     ]
 
 
@@ -1445,3 +1446,68 @@ def test_the_week_tile_and_the_pnl_pane_report_the_same_week():
 
     assert v._tiles["realised_week"].value == pytest.approx(week.net, abs=0.005)
     assert f"{week.net:,.2f}" in pdash.breakdown_table(week)
+
+
+# -- Live quotes on the positions table ---------------------------------------
+
+
+def _quoted(**over):
+    """One position carrying a live quote, with the fields these tests read."""
+    base = {"conid": 1, "ticker": "GLD", "name": "SPDR GOLD SHARES",
+            "contractDesc": "GLD", "assetClass": "STK", "position": 50,
+            "avgCost": 383.215004, "avgPrice": 383.215004, "multiplier": 0.0,
+            "mktPrice": 398.7787, "mktValue": 19943.49, "unrealizedPnl": 782.74,
+            "realizedPnl": 0, "currency": "USD"}
+    p = dd.parse_positions([base])[0]
+    return replace(p, quote=dd.Quote(conid=1, **over)) if over else p
+
+
+def test_last_prefers_the_live_quote_over_ibkrs_cached_price():
+    """The gap is real money: measured 398.7787 cached against 399.00 live."""
+    p = _quoted(last=399.00, change=9.33, change_pct=2.39, status="RivB")
+    assert p.last_price == 399.00
+    assert p.market_price == 398.7787   # IBKR's own is kept, not overwritten
+
+
+def test_last_falls_back_to_ibkr_when_there_is_no_quote():
+    """A missing quote must not blank the column — IBKR's price is still a price."""
+    assert _quoted().last_price == pytest.approx(398.7787)
+
+
+def test_change_columns_are_blank_without_a_quote_never_zero():
+    """0.00 asserts the instrument did not move; blank says we do not know."""
+    frame = pdash.positions_frame(_snapshot(positions=(_quoted(),)))
+    assert frame["Change"].iloc[0] is None
+    assert frame["% Change"].iloc[0] is None
+
+
+def test_the_pane_states_that_ibkrs_figures_lag_the_live_price():
+    """A lag stated is fine; a lag concealed is the failure this pane is written against."""
+    note = pdash.quote_note(_snapshot(positions=(
+        _quoted(last=399.00, change=9.33, change_pct=2.39, status="RivB"),)))
+    assert "lag" in note
+    assert "Market value" in note and "Unrealised" in note
+    # No warning rows when everything is a live real-time feed.
+    assert "⚠" not in note
+
+
+def test_a_non_live_feed_is_named_on_screen():
+    """Delayed/frozen/unsubscribed rendered as live is a wrong number on a trade screen."""
+    note = pdash.quote_note(_snapshot(positions=(
+        _quoted(last=399.00, status="DZ"),)))
+    assert "⚠" in note and "real-time" in note and "GLD" in note
+
+
+def test_a_prior_close_and_a_halt_are_reported_separately():
+    """They mean different things: no trade today, versus no market right now."""
+    close = pdash.quote_note(_snapshot(positions=(
+        _quoted(last=399.00, status="RivB", last_is_close=True),)))
+    halt = pdash.quote_note(_snapshot(positions=(
+        _quoted(last=399.00, status="RivB", halted=True),)))
+    assert "previous close" in close and "halted" not in close
+    assert "halted" in halt and "previous close" not in halt
+
+
+def test_the_note_is_silent_with_no_positions():
+    """Nothing to disclose about a book that is empty."""
+    assert pdash.quote_note(_snapshot(positions=())) == ""

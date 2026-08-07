@@ -1302,3 +1302,79 @@ def test_a_type_traded_only_live_still_gets_a_row(tmp_path):
                            rec, date(2026, 8, 4))
     assert w.for_type("OPT").net == pytest.approx(42.0)
     assert w.for_type("OPT").win_rate == pytest.approx(100.0)
+
+
+# -- Live quotes: /iserver/marketdata/snapshot --------------------------------
+
+
+def test_a_quote_parses_the_three_fields_we_render():
+    """31 Last, 82 Change, 83 Change % — IBKR returns them as strings."""
+    q = dd.parse_quotes([{"conid": 8314, "31": "398.87", "82": "+9.33", "83": "2.39",
+                          "6509": "RivB"}])[8314]
+    assert (q.last, q.change, q.change_pct) == (398.87, 9.33, 2.39)
+    assert q.is_live is True
+
+
+def test_a_C_prefixed_last_is_the_prior_close_not_a_trade():
+    """IBKR documents 31 as possibly prefixed: C = previous day's closing price.
+
+    Rendering that as a live last would report yesterday's close as today's price on a
+    quiet or pre-open instrument, which is exactly the staleness this whole change is
+    fixing. The number is kept and flagged, never silently promoted.
+    """
+    q = dd.parse_quotes([{"conid": 1, "31": "C398.87", "6509": "RivB"}])[1]
+    assert q.last == 398.87
+    assert q.last_is_close is True
+
+
+def test_an_H_prefixed_last_records_the_halt():
+    """H = trading halted. A price during a halt is not a tradeable level."""
+    q = dd.parse_quotes([{"conid": 1, "31": "H12.50"}])[1]
+    assert q.last == 12.50 and q.halted is True
+
+
+def test_the_preflight_response_yields_no_prices_and_does_not_pretend_otherwise():
+    """The FIRST snapshot call for a conid returns only the conid — it opens the stream.
+
+    Documented at ibkrcampus web-api/trading/market-data/top-of-book-snapshots. The
+    poller does not sleep-and-retry inside a poll; the next 15s tick carries the data.
+    """
+    q = dd.parse_quotes([{"conid": 265598, "conidEx": "265598"}])[265598]
+    assert q.last is None and q.change is None and q.change_pct is None
+
+
+def test_a_delayed_or_unsubscribed_feed_is_not_reported_as_live():
+    """6509 first char: R=RealTime, D=Delayed, N=NotSubscribed, Z=Frozen.
+
+    A delayed price rendered as live is a wrong number on a trading surface; the flag is
+    what lets the UI say which it is instead of guessing.
+    """
+    assert dd.parse_quotes([{"conid": 1, "31": "5", "6509": "DZ"}])[1].is_live is False
+    assert dd.parse_quotes([{"conid": 1, "31": "5", "6509": "NB"}])[1].is_live is False
+    assert dd.parse_quotes([{"conid": 1, "31": "5"}])[1].is_live is False
+
+
+def test_an_unparseable_field_blanks_that_field_and_keeps_the_rest():
+    """One malformed value must not discard the whole quote."""
+    q = dd.parse_quotes([{"conid": 1, "31": "398.87", "82": "", "83": "n/a",
+                          "6509": "RivB"}])[1]
+    assert q.last == 398.87 and q.change is None and q.change_pct is None
+
+
+def test_with_quotes_attaches_by_conid_and_leaves_unquoted_rows_alone():
+    """A position with no quote keeps its IBKR fields — blank beats wrong."""
+    pos = dd.parse_positions([
+        {"conid": 1, "ticker": "A", "contractDesc": "A", "assetClass": "STK",
+         "position": 1, "avgCost": 10.0, "avgPrice": 10.0, "multiplier": 1,
+         "mktPrice": 11.0, "mktValue": 11.0, "unrealizedPnl": 1.0, "realizedPnl": 0,
+         "currency": "USD"},
+        {"conid": 2, "ticker": "B", "contractDesc": "B", "assetClass": "STK",
+         "position": 1, "avgCost": 20.0, "avgPrice": 20.0, "multiplier": 1,
+         "mktPrice": 21.0, "mktValue": 21.0, "unrealizedPnl": 1.0, "realizedPnl": 0,
+         "currency": "USD"},
+    ])
+    out = dd.with_quotes(pos, {1: dd.Quote(conid=1, last=11.5, change=0.5,
+                                           change_pct=4.5, status="RivB")})
+    assert out[0].quote is not None and out[0].quote.last == 11.5
+    assert out[1].quote is None
+    assert out[1].market_price == 21.0

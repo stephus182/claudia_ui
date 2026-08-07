@@ -458,6 +458,39 @@ class Position:
     # when absent — the lean futures row that omits `ticker` and `multiplier` can omit
     # this too, and a blank cell is the honest rendering of a field IBKR did not send.
     name: str = ""
+    # Live top-of-book, attached by `with_quotes` after the positions are fetched. None
+    # means no quote was obtained for this contract — a gateway failure, an unopened
+    # stream on the first poll, or a contract IBKR returned nothing for. It is NOT a
+    # price of zero and NOT a reason to blank the row: `market_price` is still IBKR's
+    # own figure and remains the fallback.
+    quote: Quote | None = None
+
+    @property
+    def last_price(self) -> float:
+        """The price to show as `Last`: the live quote when there is one, else IBKR's.
+
+        **These are two different numbers and the gap is real money.** Measured live
+        2026-08-07 during RTH, IBKR's `mktPrice` on the positions endpoint against the
+        same instant's top-of-book: GLD 398.7787 vs 399.00, CL 77.73 vs 77.56, IGV
+        102.9661 vs 102.89. The positions endpoint is cached — IBKR says so itself, in
+        the description of the endpoint built to replace it ("provides near-real time
+        updates and removes caching otherwise found in the
+        /portfolio/{accountId}/positions/{pageId} endpoint") — and it was measured flat
+        to the tick across seven samples over three minutes of an open session.
+
+        A `C`-prefixed last (prior close) or a non-live feed still populates this: it is
+        the best available price and blanking it would be worse. The distinction is
+        carried on the `Quote` and disclosed by the pane, not hidden by silently
+        preferring the other stale number.
+
+        ⚠ `market_value` and `unrealised_pnl` are IBKR's and computed on IBKR's cached
+        price, so they will NOT tie exactly to this column. That divergence is lag, it
+        is accepted deliberately (user, 2026-08-07: keep the IBKR figures reconcilable
+        and state the lag), and `quote_note` is what states it.
+        """
+        if self.quote is not None and self.quote.last is not None:
+            return self.quote.last
+        return self.market_price
 
     @property
     def cost_basis(self) -> float | None:
@@ -1244,6 +1277,123 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
             )
         )
     return tuple(out)
+
+
+# The three top-of-book fields the positions table renders, plus the availability flag.
+# Tag meanings are IBKR's, from the snapshot endpoint reference:
+#   31   Last Price — "may contain one of the following prefixes: C - Previous day's
+#        closing price. H - Trading has halted."
+#   82   Change     — difference between the last price and the previous trading day's close
+#   83   Change %   — the same difference as a percentage
+#   6509 Availability — first char R=RealTime, D=Delayed, N=NotSubscribed, Z=Frozen,
+#        Y=FrozenDelayed, O=API agreement incomplete
+# Source: https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-market-data/get-md-snapshot.md
+_QUOTE_FIELDS = ("31", "82", "83", "6509")
+
+# Prefixes IBKR may put on field 31. Stripped to recover the number, and each one is
+# recorded rather than discarded — a prior close and a halted print are both "not a
+# live trade", which is the distinction this whole quote layer exists to make.
+_LAST_PREFIXES = {"C": "last_is_close", "H": "halted"}
+
+
+@dataclass(frozen=True)
+class Quote:
+    """Live top-of-book for one contract, from `/iserver/marketdata/snapshot`.
+
+    Every field is optional because **the first snapshot request for a conid returns no
+    prices at all** — it only opens IServer's stream for that instrument ("This initial
+    request will not deliver any data, but rather makes the stream available for future
+    snapshot requests"). The poller does not sleep-and-retry inside a poll to paper over
+    that: it publishes a quote-less row and the next 15-second tick carries the prices.
+    Blocking the shared event loop for a second per new contract would be a worse trade
+    than one tick of blank cells.
+
+    `status` is the raw 6509 string; `is_live` is the only interpretation of it, so a
+    delayed or unsubscribed feed can never be rendered as a real-time price.
+    """
+
+    conid: int
+    last: float | None = None
+    change: float | None = None
+    change_pct: float | None = None
+    status: str = ""
+    last_is_close: bool = False
+    halted: bool = False
+
+    @property
+    def is_live(self) -> bool:
+        """True only for a real-time feed (6509 beginning `R`).
+
+        Absence is not liveness: no 6509 at all returns False. D (delayed), N (not
+        subscribed), Z/Y (frozen) are all explicitly not live, and a delayed price shown
+        as current is the failure this flag exists to prevent.
+        """
+        return self.status.startswith("R")
+
+
+def _quote_number(raw: Any) -> tuple[float | None, str]:
+    """A snapshot value as `(number, prefix)`. IBKR sends these as strings.
+
+    Returns `(None, "")` for anything unparseable — an empty string, `"n/a"`, or a field
+    IBKR simply omitted. One malformed value blanks that field only; it must never
+    discard the rest of the quote.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None, ""
+    prefix = text[0] if text[0] in _LAST_PREFIXES else ""
+    try:
+        return float(text[1:] if prefix else text), prefix
+    except ValueError:
+        return None, ""
+
+
+def parse_quotes(rows: Sequence[Any]) -> dict[int, Quote]:
+    """Snapshot rows into `{conid: Quote}`. Never raises on a malformed row."""
+    out: dict[int, Quote] = {}
+    for row in rows or []:
+        try:
+            conid = int(_as_float(row.get("conid")))
+        except (TypeError, ValueError):
+            continue
+        last, prefix = _quote_number(row.get("31"))
+        change, _ = _quote_number(row.get("82"))
+        change_pct, _ = _quote_number(row.get("83"))
+        out[conid] = Quote(
+            conid=conid,
+            last=last,
+            change=change,
+            change_pct=change_pct,
+            status=str(row.get("6509") or "").strip(),
+            last_is_close=prefix == "C",
+            halted=prefix == "H",
+        )
+    return out
+
+
+def fetch_quotes(client: IBKRClient, conids: Sequence[int]) -> dict[int, Quote]:
+    """Top-of-book for `conids`. Blocking HTTP — call via `asyncio.to_thread`.
+
+    One request. The endpoint caps at 100 conids and 50 fields; this asks for four
+    fields and a book larger than 100 open positions is not a case this dashboard has,
+    so the list is passed whole and the cap is documented rather than defended against.
+
+    Returns `{}` for an empty request rather than calling IBKR with no conids.
+    """
+    if not conids:
+        return {}
+    return parse_quotes(client.get_market_snapshot(list(conids), list(_QUOTE_FIELDS)))
+
+
+def with_quotes(
+    positions: Sequence[Position], quotes: Mapping[int, Quote]
+) -> tuple[Position, ...]:
+    """Attach each position's quote by conid. A position with no quote is left untouched.
+
+    Matched on `conid` and never on symbol: a ticker is not a unique key, and this repo
+    has already priced a US ETF in MXN by assuming it was.
+    """
+    return tuple(replace(p, quote=quotes.get(p.conid)) for p in positions)
 
 
 def fetch_orders(client: IBKRClient) -> tuple[LiveOrder, ...] | None:

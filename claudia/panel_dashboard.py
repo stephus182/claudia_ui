@@ -498,7 +498,8 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
 # ETF in MXN on exactly that assumption.
 _POSITION_COLUMNS = [
     "Symbol", "Name", "Qty", "Avg entry", "IBKR basis", "Basis Δ",
-    "Last", "Market value", "Unrealised", "% Unrealised", "Class", "Ccy",
+    "Last", "Change", "% Change", "Market value", "Unrealised", "% Unrealised",
+    "Class", "Ccy",
 ]
 # The columns `.style.map` colours by sign. Named once so the styler and the empty-frame
 # builder cannot disagree about which columns exist.
@@ -506,7 +507,7 @@ _POSITION_COLUMNS = [
 # "Basis Δ" is deliberately **not** here. Its sign says which way IBKR's basis leans, not
 # whether anything is good or bad, and the green/red map on this surface means profit and
 # loss. Colouring it would assert a judgement the number does not carry.
-_SIGNED_COLUMNS = ["Unrealised", "% Unrealised"]
+_SIGNED_COLUMNS = ["Unrealised", "% Unrealised", "Change", "% Change"]
 
 # Display precision. IBKR returns full float precision — the live account rendered
 # `383.270899` and `374.09762575` as an average cost and a last price (observed
@@ -524,6 +525,10 @@ _QTY_FORMAT = "0,0.[00000000]"  # fractional-share and futures quantities alike
 # only by a minus that is easy to miss in a dense numeric column — the same rule
 # `fmt_signed` applies to money.
 _PERCENT_FORMAT = "+0,0.00"
+# A price DIFFERENCE, not a price: same 4dp precision as `_PRICE_FORMAT` but with the
+# sign always shown. "Change" rendered 8.77 next to "% Change" +2.25 when this was
+# missing (seen in the browser 2026-08-07) — one signed, one not, for the same move.
+_SIGNED_PRICE_FORMAT = "+0,0.00[00]"
 
 # Rows per displayed page. Distinct from `dashboard_data._POSITIONS_PAGE_SIZE`, which is
 # IBKR's own 30-per-request paging — this is purely how many rows the table shows at once.
@@ -549,7 +554,14 @@ _POSITION_TOOLTIPS = {
                   "that was ever traded at.",
     "Basis Δ": "(IBKR basis - avg entry) * qty * multiplier: exactly how much of the "
                "Unrealised column comes from the basis rather than from the market.",
-    "Last": "IBKR mktPrice at the last poll, not a live tick.",
+    "Last": "Live top-of-book (snapshot field 31) when available, otherwise IBKR's "
+            "cached mktPrice. Market value and Unrealised beside it are IBKR's own, "
+            "computed on their cached price, so they lag this column slightly.",
+    "Change": "Snapshot field 82 — last price minus the previous trading day's close. "
+              "IBKR's figure, not computed here. Blank until the contract's stream has "
+              "opened, which takes one poll.",
+    "% Change": "Snapshot field 83 — the same difference as a percentage, IBKR's own. "
+                "This is the DAY's move; Unrealised is the move since you entered.",
     "Market value": "IBKR mktValue. For futures the ledger reports this as open P&L "
                     "rather than notional.",
     "Unrealised": "Open P&L on the position. Not the day's change, and not realised.",
@@ -678,7 +690,9 @@ def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
             "Avg entry": p.economic_entry,
             "IBKR basis": p.average_price,
             "Basis Δ": p.basis_delta_value,
-            "Last": p.market_price,
+            "Last": p.last_price,
+            "Change": p.quote.change if p.quote else None,
+            "% Change": p.quote.change_pct if p.quote else None,
             "Market value": p.market_value,
             "Unrealised": p.unrealised_pnl,
             "% Unrealised": p.pct_unrealised,
@@ -700,6 +714,55 @@ def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
 # fills. A per-position threshold, not a total: one distorted position matters even in a
 # book whose net is small.
 _BASIS_NOTE_THRESHOLD = 50.00
+
+
+def quote_note(snapshot: DashboardSnapshot) -> str:
+    """The two-price-sources disclosure, and the non-live-feed warnings.
+
+    `Last`/`Change`/`% Change` are a live top-of-book quote; `Market value` and
+    `Unrealised` are IBKR's own, computed on the cached price its positions endpoint
+    serves. **They will not tie**, and that is accepted rather than hidden: forcing
+    agreement would mean either recomputing IBKR's figures (losing the reconciliation
+    against their screen, which is the point of those columns) or showing a price
+    measured flat to the tick across three minutes of an open session. A lag stated is
+    fine; a lag concealed is the failure this pane is written against (user, 2026-08-07).
+
+    Three conditions get named individually because each means something different, and
+    none of them is "the price is fine":
+
+    * **not live** — a delayed, frozen or unsubscribed feed (6509 not starting `R`);
+    * **prior close** — field 31 came back `C`-prefixed, so it is yesterday's close and
+      not a trade that happened today;
+    * **halted** — `H`-prefixed; there is a price but no tradeable market behind it.
+
+    Silent when every position has a live quote, so the line appears only when it has
+    something to say.
+    """
+    quoted = [p for p in snapshot.positions if p.quote is not None]
+    if not snapshot.positions:
+        return ""
+    if not quoted:
+        return (
+            "_Last is IBKR's cached price — no live quote yet. Streams open on the "
+            "next poll._"
+        )
+    stale = [p.symbol for p in quoted if not p.quote.is_live]  # type: ignore[union-attr]
+    closes = [p.symbol for p in quoted if p.quote.last_is_close]  # type: ignore[union-attr]
+    halted = [p.symbol for p in quoted if p.quote.halted]  # type: ignore[union-attr]
+    parts = [
+        "_**Last / Change / % Change** are live top-of-book. **Market value** and "
+        "**Unrealised** are IBKR's own, on the cached price their positions endpoint "
+        "serves, so they lag Last slightly and will not tie to it exactly._"
+    ]
+    if stale:
+        parts.append(f"_⚠ Not a real-time feed: {', '.join(sorted(stale))}._")
+    if closes:
+        parts.append(
+            f"_⚠ Last is the previous close, not a trade today: {', '.join(sorted(closes))}._"
+        )
+    if halted:
+        parts.append(f"_⚠ Trading halted: {', '.join(sorted(halted))}._")
+    return "  \n".join(parts)
 
 
 def basis_note(snapshot: DashboardSnapshot) -> str:
@@ -993,10 +1056,12 @@ class DashboardView:
                 "Market value": NumberFormatter(format=_MONEY_FORMAT),
                 "Unrealised": NumberFormatter(format=_MONEY_FORMAT),
                 "% Unrealised": NumberFormatter(format=_PERCENT_FORMAT),
+                "Change": NumberFormatter(format=_SIGNED_PRICE_FORMAT),
+                "% Change": NumberFormatter(format=_PERCENT_FORMAT),
             },
             text_align=dict.fromkeys(
-                ["Qty", "Avg entry", "IBKR basis", "Basis Δ", "Last", "Market value",
-                 "Unrealised", "% Unrealised"],
+                ["Qty", "Avg entry", "IBKR basis", "Basis Δ", "Last", "Change",
+                 "% Change", "Market value", "Unrealised", "% Unrealised"],
                 "right",
             ),
             # Read-only affordances only. Filtering, sorting and paging change what is
@@ -1018,6 +1083,7 @@ class DashboardView:
         self._positions_status = safe_markdown("_Positions: waiting for the first poll…_")
         self._reconciliation = safe_markdown("")
         self._basis_note = safe_markdown("")
+        self._quote_note = safe_markdown("")
 
         # Per-type detail for the selected window. Month and year live here rather than
         # on the KPI strip: the strip is for the two windows a trader checks constantly,
@@ -1070,7 +1136,7 @@ class DashboardView:
         self.tabs = pn.Tabs(
             ("Chart", chart_pane if chart_pane is not None else pn.Column()),
             ("Positions", pn.Column(self._positions_status, self._reconciliation,
-                                    self._basis_note, self._positions,
+                                    self._basis_note, self._quote_note, self._positions,
                                     sizing_mode="stretch_both")),
             ("Orders", pn.Column(self._orders_status, self._orders,
                                  sizing_mode="stretch_both")),
@@ -1260,6 +1326,7 @@ class DashboardView:
         self._positions.value = positions_frame(snapshot)
         self._reconciliation.object = reconciliation_line(reconcile(snapshot))
         self._basis_note.object = basis_note(snapshot)
+        self._quote_note.object = quote_note(snapshot)
         count = len(snapshot.positions)
         if count == 0 and snapshot.ledger is None:
             self._positions_status.object = "_Positions unavailable — IBKR not connected._"

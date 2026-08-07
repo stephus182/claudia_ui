@@ -70,7 +70,9 @@ from claudia.dashboard_data import (
     fetch_ledger,
     fetch_orders,
     fetch_positions,
+    fetch_quotes,
     with_economic_entries,
+    with_quotes,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -248,6 +250,7 @@ class DashboardPoller:
             await asyncio.to_thread(self._read_flex, reconstruction)
         )
         positions = await asyncio.to_thread(self._read_entries, positions)
+        positions = await asyncio.to_thread(self._read_quotes, positions)
         # Deliberately NOT inside `_read_account`: orders come from `/iserver/*` and the
         # account half from `/portfolio/*`, and those fail independently (measured
         # 2026-08-04 — ledger live while orders returned "no bridge"). A raise here would
@@ -413,6 +416,35 @@ class DashboardPoller:
         except Exception as exc:
             log.warning("Dashboard economic-entry reconstruction failed: %s", exc)
             return positions
+
+    def _read_quotes(self, positions: tuple[Position, ...]) -> tuple[Position, ...]:
+        """Attach live top-of-book to each position; never raise.
+
+        Same contract as `_read_entries`: a failure here degrades three columns to
+        IBKR's cached price and two blanks, so it is logged and swallowed. Losing the
+        whole account panel because a quote request failed would be a far worse trade —
+        and the positions themselves came from a different endpoint that already
+        succeeded.
+
+        **No retry inside the poll.** IBKR's snapshot endpoint returns no prices on the
+        first request for a contract; that request only opens IServer's stream. The
+        documented remedy is to ask again, and the poller's own 15-second tick *is* the
+        asking again. Sleeping here to force a second attempt would block the shared
+        event loop for every newly-opened position, to save one tick of blank cells.
+
+        Runs after `_read_entries` because both enrich the same tuple and this one is
+        the failure-tolerant outer layer; ordering between them is otherwise free.
+        """
+        if not positions:
+            return positions
+        try:
+            quotes = fetch_quotes(self._client, [p.conid for p in positions])
+        except Exception as exc:
+            log.warning("Dashboard quote fetch failed: %s", exc)
+            return positions
+        if not quotes:
+            log.debug("Quote snapshot returned nothing — streams are opening")
+        return with_quotes(positions, quotes)
 
     def _resolve_account(self) -> tuple[str, str | None]:
         """Return the cached `(account_id, base_currency)`, resolving once on first use.
