@@ -102,13 +102,15 @@ _BAR_ROW_HEIGHT = 130
 # FUT is everything else. Named here rather than inline so the two call sites cannot drift.
 _NON_FUTURES = ("STK", "OPT", "FUND", "CASH")
 
-# Radio-button label -> the snapshot attribute and `stats` key it selects. One mapping,
-# so a window's realised total and its round-trip counts can never be picked from
-# different windows.
-# Every realised window the P&L pane can show, shortest first. "Daily" is not like the
-# other three and the pane branches on it: no statement covers today (IBKR publishes a
-# day's trades T+1), so the day window has no Flex `RealisedWindow`, no curve and no
-# settled block — it is the fill reconstruction alone. See `_refresh_pnl`.
+# Radio-button label -> the snapshot attribute and `breakdowns`/`stats` key it selects.
+# Every realised window the P&L pane can show, shortest first. One mapping, so a window's
+# realised total and its round-trip counts can never be picked from different windows.
+#
+# "Daily" is not like the other three and the pane branches on it: no statement covers
+# today (IBKR publishes a day's trades T+1), so the day window has no Flex
+# `RealisedWindow` behind it — `getattr(snapshot, "day")` does not exist and is never
+# reached — no curve and no settled block. It is the fill reconstruction alone, read from
+# `breakdowns["day"]`. See `_refresh_daily`.
 _DAILY_LABEL = "Daily"
 _WINDOW_KEYS = {_DAILY_LABEL: "day", "Weekly": "week", "Monthly": "month", "YTD": "ytd"}
 _WINDOW_LABELS = tuple(_WINDOW_KEYS)
@@ -246,9 +248,16 @@ def breakdown_table(window: Any, currency: str = "", note: str = _FLEX_SOURCE_NO
 def daily_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> str:
     """The Daily window's heading: which day it is, where the figures come from, and age.
 
-    The date is taken from `as_of`, converted to local time — the same clock
-    `dashboard_poller` reads with `date.today()` to build the day window, so the heading
-    and the window it labels can never name different days.
+    The date is the day window's **own** `day`, so the heading always names the window it
+    labels. It was derived from `as_of` until the review that followed this function's
+    first commit, on the reasoning that both come from the same local clock — which is
+    true and not sufficient, because they are read at different moments. `as_of` is
+    stamped when the poll *completes*, after `_read_flex` has already called
+    `date.today()`, so a poll straddling local midnight dates them a day apart; and a
+    failed poll republishes the *previous* `as_of` deliberately, so while polling is down
+    the heading would have kept naming an older day than the figures under it. `as_of`
+    remains the fallback for a snapshot carrying no day window at all, where there is no
+    better answer and no figures to mislabel.
 
     A stale line is prepended rather than the table being blanked, and this is the one
     place the module's usual "stale account data is not drawn at all" rule is traded for a
@@ -259,7 +268,9 @@ def daily_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> st
     """
     if snapshot is None:
         return "**Today**"
-    day = snapshot.as_of.astimezone().strftime("%a %Y-%m-%d")
+    window = snapshot.breakdowns.get("day")
+    stamp = window.day if window is not None and window.day else None
+    day = (stamp or snapshot.as_of.astimezone().date()).strftime("%a %Y-%m-%d")
     warn = (
         "**⚠ Not current — the gateway is unreachable or the last poll failed. Any fill "
         "since then is missing, so the figures below are a floor.**\n\n"
@@ -275,7 +286,7 @@ def daily_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> st
 def daily_table(snapshot: DashboardSnapshot | None, currency: str = "") -> str:
     """The Daily window of the P&L pane: today's realised P&L per asset class.
 
-    Renders the same nine-column template as the P&L tab's window breakdown, against the
+    Renders the same nine-column template as the pane's other three windows, against the
     `"day"` bridged window. That window is **non-Flex by construction**: IBKR publishes a
     day's trades T+1, so no statement covers today, and `build_flex_sections` builds the
     day window as `(today, today)`. Every figure here therefore comes from
@@ -1244,13 +1255,14 @@ class DashboardView:
 
         * **the curve** — one day is a point, not a shape, and the YTD series it would be
           sliced from is Flex, which does not contain today at all;
+        * **its note**, which exists only to explain a curve that is not drawn;
         * **the settled block** — it reports what IBKR has confirmed in a statement, and
           no statement covers today. Rendering it here would put a week's settled figures
-          under a heading saying "Daily";
-        * **the currency fallback** — unchanged, still the account's own base code.
+          under a heading saying "Daily".
 
-        The account-stale case reads from `self._snapshot`, the snapshot *before*
-        `without_account` stripped the ledger, purely so the money keeps its ISO code. The
+        The currency is *not* blanked, and is the reason this reads `self._snapshot` —
+        the snapshot **before** `without_account` stripped the ledger — so the money keeps
+        its ISO code once the account half goes stale. The
         figures themselves are not account-derived and are not stripped either way; the
         heading is what says they may be a floor.
         """

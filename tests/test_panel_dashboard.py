@@ -455,7 +455,7 @@ def test_kpi_strip_holds_five_number_tiles_and_nothing_else(view):
 
     A win-rate grid sat at the right end of this row until 2026-08-07 and was removed as
     clutter. Neither figure it carried is lost: the week is in the P&L tab's breakdown,
-    the day is the whole Daily tab.
+    the day is the P&L pane's Daily window.
     """
     row = list(view.kpi_strip[0])
     tiles = [o for o in row if isinstance(o, pn.indicators.Number)]
@@ -1106,7 +1106,7 @@ def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
     assert set(view._orders.header_tooltips) <= set(pdash._ORDER_COLUMNS)
 
 
-# -- The Daily tab -------------------------------------------------------------
+# -- The P&L pane's Daily window ----------------------------------------------
 
 
 def _bd(asset, winners, losers, net=0.0):
@@ -1170,6 +1170,31 @@ def test_an_incomplete_day_is_marked_not_silently_short():
     out = pdash.daily_table(_snap_with(day_rows=[_bd("FUT", 1, 0, net=100.0)],
                                        incomplete=True))
     assert "⚠" in out and "incomplete" in out
+
+
+def test_the_heading_names_the_window_it_labels_not_the_poll_time():
+    """`as_of` and the day window are read at different moments and can disagree.
+
+    `as_of` is stamped when the poll *completes*, after `_read_flex` has already called
+    `date.today()` — so a poll straddling local midnight dates them a day apart. And a
+    failed poll republishes the *previous* `as_of` on purpose, to keep staleness visible,
+    which would peg the heading to an older day than the figures beneath it for as long
+    as polling stays down. The heading follows the window.
+    """
+    snap = dd.DashboardSnapshot(
+        as_of=datetime(2026, 8, 6, 12, 0, tzinfo=UTC),
+        breakdowns={"day": dd.BridgedWindow(rows=(), reconstructed=True,
+                                            day=date(2026, 8, 7))},
+    )
+    assert "2026-08-07" in pdash.daily_heading(snap)
+    assert "2026-08-06" not in pdash.daily_heading(snap)
+
+
+def test_the_heading_falls_back_to_as_of_with_no_day_window():
+    """No day window means no figures to mislabel, and no better answer available."""
+    stamp = datetime(2026, 8, 7, 18, 30, tzinfo=UTC)
+    snap = dd.DashboardSnapshot(as_of=stamp, breakdowns={"week": dd.BridgedWindow()})
+    assert stamp.astimezone().strftime("%a %Y-%m-%d") in pdash.daily_heading(snap)
 
 
 def test_the_daily_heading_names_the_day_and_the_source():

@@ -1568,7 +1568,8 @@ async def test_session_root_composes_the_dashboard_tabs_and_table():
     tiles = [n for n in _iter_tree(root.objects[0]) if isinstance(n, pn.indicators.Number)]
     assert len(tiles) == 5
     # The win-rate grid was removed from the strip on 2026-08-07 as clutter; the daily
-    # figures it carried are the Daily tab now. Asserted at the composed-root level so a
+    # figures it carried are the P&L pane's Daily window now. Asserted at the composed-root
+    # level so a
     # re-add has to be deliberate.
     assert not any("Win rate" in str(getattr(n, "object", ""))
                    for n in _iter_tree(root.objects[0]))

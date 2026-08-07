@@ -1273,7 +1273,7 @@ def test_without_a_reconstruction_the_window_is_flex_alone(tmp_path):
 def test_a_window_records_whether_a_reconstruction_was_available(tmp_path):
     """"Nothing closed" and "we could not look" are opposite claims on a P&L surface.
 
-    Both arrive as a window with no rows, so without this flag the Daily tab would assert
+    Both arrive as a window with no rows, so without this flag the Daily window would assert
     "no round trips today" during a gateway outage — the one day it cannot know that.
     """
     conn = _breakdown_db(tmp_path)

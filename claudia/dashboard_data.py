@@ -1527,6 +1527,13 @@ class BridgedWindow:
     # `DashboardSnapshot.orders` being `tuple | None`: empty and unknown must not share a
     # representation on a surface a trader acts on.
     reconstructed: bool = False
+    # The window's last day — for the day window, the day it *is*. Carried so a heading
+    # can name the window it labels instead of deriving a date from `as_of`, which is a
+    # different clock reading: `as_of` is stamped when the poll COMPLETES, after
+    # `_read_flex` has already called `date.today()`, and a failed poll republishes the
+    # PREVIOUS `as_of` on purpose so staleness stays visible. Both make the two disagree —
+    # the first across a local midnight, the second for as long as polling is down.
+    day: date | None = None
 
     @property
     def net(self) -> float:
@@ -1563,7 +1570,7 @@ def bridged_by_type(
     """
     flex_rows = {r.asset_class: r for r in realised_by_type(conn, start, end)}
     if reconstruction is None:
-        return BridgedWindow(rows=tuple(flex_rows.values()))
+        return BridgedWindow(rows=tuple(flex_rows.values()), day=end)
 
     cutoff = coverage_through.strftime("%Y%m%d") if coverage_through else ""
     lo, hi = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
@@ -1592,4 +1599,5 @@ def bridged_by_type(
         bridged_days=tuple(days),
         incomplete=incomplete,
         reconstructed=True,
+        day=end,
     )
