@@ -239,7 +239,7 @@ def test_coverage_line_states_the_t_plus_one_gap(view):
     """The ledger figure includes today; the Flex windows cannot. Say so on the surface."""
     line = view._pnl_coverage.object
     assert "2026-08-05" in line
-    assert "never includes today" in line
+    assert "today is never in it" in line
     assert "9 fill(s) today not yet in a statement" in line
     assert "The tile above is today only" in line
 
@@ -328,7 +328,7 @@ def test_the_settled_block_never_claims_to_be_the_windows_realised_pnl(view):
     text = view._pnl_stats.object
     assert "settled by IBKR statement" in text
     assert "Settled only" in text
-    assert "NOT the window's realised P&L" in text
+    assert "Not the window's realised P&L" in text
 
 
 def test_each_window_shows_its_own_round_trip_counts(view):
@@ -650,7 +650,7 @@ def test_blanking_keeps_the_flex_windows_which_never_needed_the_gateway(view):
     view.refresh(_snapshot(), now=later)
     assert view._tiles["realised_week"].value == pytest.approx(-2194.98)
     assert "Settled realised P&L" in view._pnl_stats.object
-    assert "never includes today" in view._pnl_coverage.object
+    assert "today is never in it" in view._pnl_coverage.object
 
 
 def test_blanking_still_says_how_long_it_has_been(view):

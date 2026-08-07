@@ -358,7 +358,8 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
     )
     return (
         f"_Realised week/month/YTD come from the Flex dataset through "
-        f"**{cov.through.isoformat()}** (T+1 — never includes today){pending}, and are "
+        f"**{cov.through.isoformat()}** (IBKR publishes a day's trades T+1, so today is "
+        f"never in it){pending}, and are "
         f"IBKR's **statement** figures. The tile above is today only, on IBKR's "
         f"**real-time average cost**. The two do not add up and are not meant to: they "
         f"cover different periods, and they use different day boundaries — Flex buckets "
@@ -789,11 +790,9 @@ def stats_markdown(
         ]
     lines += [
         "",
-        "_**Settled only** — every figure here comes from the Flex statement dataset, "
-        "which is T+1 and never contains the most recent day(s). It is therefore NOT the "
-        "window's realised P&L; the bridged table above is. Shown because \"what IBKR has "
-        "confirmed in a statement\" is a genuinely different question from \"what did I "
-        "make this week\"._\n\n"
+        "_**Settled only** — every figure here comes from the Flex statement dataset "
+        "(IBKR publishes a day's trades T+1, so today is never in it). Not the window's "
+        "realised P&L — the bridged table above is._\n\n"
         "_Totals are execution-basis (`flex_trade`, the authoritative settled figure). "
         "Win/loss counts and gross figures are lot-basis (`flex_lot`), pre-wash-sale, "
         "and must never be read as realised P&L._",
