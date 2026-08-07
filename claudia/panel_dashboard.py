@@ -509,6 +509,33 @@ _POSITION_COLUMNS = [
 # loss. Colouring it would assert a judgement the number does not carry.
 _SIGNED_COLUMNS = ["Unrealised", "% Unrealised", "Change", "% Change"]
 
+# Per-column pixel widths. Needed because the table carries fourteen columns in a pane
+# that is about half the window: left to size themselves, `Name` alone took the room the
+# money columns needed and everything from `Basis Δ` rightwards was clipped away
+# unreachably (2026-08-07).
+#
+# `Name` is capped rather than given its natural width — IBKR's own values run to 28
+# characters ("ISHARES EXPANDED TECH-SOFTWA") and it is context, not a figure anyone
+# reads precisely; the full string is in the cell and the header tooltip explains the
+# truncation is IBKR's. Every numeric column is wide enough for its formatted value plus
+# a sign, since a money column that ellipsises is worse than one that scrolls.
+_POSITION_WIDTHS = {
+    "Symbol": 78,
+    "Name": 190,
+    "Qty": 70,
+    "Avg entry": 92,
+    "IBKR basis": 92,
+    "Basis Δ": 86,
+    "Last": 88,
+    "Change": 86,
+    "% Change": 86,
+    "Market value": 108,
+    "Unrealised": 96,
+    "% Unrealised": 100,
+    "Class": 62,
+    "Ccy": 58,
+}
+
 # Display precision. IBKR returns full float precision — the live account rendered
 # `383.270899` and `374.09762575` as an average cost and a last price (observed
 # 2026-08-04), which is noise on a trading surface and makes a column impossible to
@@ -524,11 +551,61 @@ _QTY_FORMAT = "0,0.[00000000]"  # fractional-share and futures quantities alike
 # Percentages to 2dp with an explicit sign, so a gain and a loss are never distinguished
 # only by a minus that is easy to miss in a dense numeric column — the same rule
 # `fmt_signed` applies to money.
-_PERCENT_FORMAT = "+0,0.00"
+# Numbro (which Bokeh's NumberFormatter uses) treats "%" as a PERCENTAGE format: it
+# multiplies the value by 100 before rendering. So the frame stores the fraction — 0.0412
+# — and this renders it as "+4.12%". Storing 4.12 and formatting with "%" would print
+# "+412.00%". Verified in a browser, not inferred from the format string.
+_PERCENT_FORMAT = "+0,0.00%"
 # A price DIFFERENCE, not a price: same 4dp precision as `_PRICE_FORMAT` but with the
 # sign always shown. "Change" rendered 8.77 next to "% Change" +2.25 when this was
 # missing (seen in the browser 2026-08-07) — one signed, one not, for the same move.
 _SIGNED_PRICE_FORMAT = "+0,0.00[00]"
+
+# Currency symbols the money columns may prefix. **USD only, deliberately.**
+#
+# The standing rule is never a bare `$` — it is shared by USD/MXN/CAD/AUD/HKD/SGD, and a
+# wrong-currency price reads as an ordinary one, which is how IGV once showed a US ETF
+# priced in MXN. The symbol is added here because the user weighed that against this
+# account specifically (2026-08-07): those currencies have never been traded, the Name
+# column now spells the instrument out, and the `Ccy` column carries the ISO code beside
+# every figure.
+#
+# What keeps it safe is that it is **conditional, not hardcoded** — which is what "when
+# applicable" asked for. A Bokeh formatter is per COLUMN, not per row, so a table holding
+# two currencies cannot symbol them differently; `_money_formats` therefore adds a symbol
+# only when the whole book agrees on one currency it knows, and renders bare numbers
+# otherwise. A currency absent from this map is not guessed at.
+_CURRENCY_SYMBOLS = {"USD": "$"}
+
+
+def book_currency(snapshot: DashboardSnapshot) -> str:
+    """The one currency every open position shares, or `""` when they differ.
+
+    `""` is the honest answer for a mixed book *and* for an empty one: in both cases
+    there is no single currency the money columns could be labelled with, and guessing
+    the account's base currency would put a symbol on figures denominated in another.
+    """
+    currencies = {p.currency for p in snapshot.positions if p.currency}
+    return currencies.pop() if len(currencies) == 1 else ""
+
+
+def _money_formats(currency: str) -> dict[str, str]:
+    """Number formats for the money columns, symbolled when the book allows it.
+
+    Returns the bare formats for a mixed book, an empty one, or any currency not in
+    `_CURRENCY_SYMBOLS` — never a symbol chosen by assumption.
+    """
+    sym = _CURRENCY_SYMBOLS.get(currency, "")
+    return {
+        "Avg entry": f"{sym}{_PRICE_FORMAT}",
+        "IBKR basis": f"{sym}{_PRICE_FORMAT}",
+        "Basis Δ": f"{sym}{_MONEY_FORMAT}",
+        "Last": f"{sym}{_PRICE_FORMAT}",
+        # The sign leads the symbol: "+$0.18", not "$+0.18".
+        "Change": f"+{sym}{_PRICE_FORMAT}" if sym else _SIGNED_PRICE_FORMAT,
+        "Market value": f"{sym}{_MONEY_FORMAT}",
+        "Unrealised": f"{sym}{_MONEY_FORMAT}",
+    }
 
 # Rows per displayed page. Distinct from `dashboard_data._POSITIONS_PAGE_SIZE`, which is
 # IBKR's own 30-per-request paging — this is purely how many rows the table shows at once.
@@ -661,6 +738,18 @@ def orders_status_line(snapshot: DashboardSnapshot) -> str:
     return f"_{len(snapshot.orders)} working order(s) — {staged} staged by ClaudIA._"
 
 
+def _as_fraction(percent: float | None) -> float | None:
+    """A percentage as the fraction numbro's `%` format expects. None stays None.
+
+    IBKR reports 83 (Change %) as 2.39 meaning 2.39%, and `pct_unrealised` is computed
+    the same way. Numbro multiplies by 100 when it sees `%` in a format string, so the
+    frame must hold 0.0239 for the cell to read "+2.39%". Dividing here rather than
+    changing what the properties mean: `Position.pct_unrealised` stays a percentage,
+    which is what every caller and test reads it as — only the display layer converts.
+    """
+    return None if percent is None else percent / 100.0
+
+
 def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     """Open positions as the DataFrame the `Tabulator` renders.
 
@@ -692,10 +781,10 @@ def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
             "Basis Δ": p.basis_delta_value,
             "Last": p.last_price,
             "Change": p.quote.change if p.quote else None,
-            "% Change": p.quote.change_pct if p.quote else None,
+            "% Change": _as_fraction(p.quote.change_pct if p.quote else None),
             "Market value": p.market_value,
             "Unrealised": p.unrealised_pnl,
-            "% Unrealised": p.pct_unrealised,
+            "% Unrealised": _as_fraction(p.pct_unrealised),
             "Class": p.asset_class,
             "Ccy": p.currency,
         }
@@ -1044,17 +1133,19 @@ class DashboardView:
             positions_frame(_EMPTY),
             disabled=True,
             show_index=False,
-            layout="fit_data_stretch",
+            # `fit_data` + explicit widths, NOT `fit_data_stretch`. The table went from
+            # ten columns to fourteen on 2026-08-07 and the pane holds roughly half the
+            # window, so stretching clipped everything from "Basis Δ" rightwards — the
+            # money columns, off screen, with no scrollbar to suggest they existed
+            # (seen in the browser, which is the only place it was visible). `fit_data`
+            # sizes to the widths below and scrolls horizontally instead of hiding.
+            layout="fit_data",
+            widths=_POSITION_WIDTHS,
             sizing_mode="stretch_width",
             height=380,
             formatters={
                 "Qty": NumberFormatter(format=_QTY_FORMAT),
-                "Avg entry": NumberFormatter(format=_PRICE_FORMAT),
-                "IBKR basis": NumberFormatter(format=_PRICE_FORMAT),
-                "Basis Δ": NumberFormatter(format=_MONEY_FORMAT),
-                "Last": NumberFormatter(format=_PRICE_FORMAT),
-                "Market value": NumberFormatter(format=_MONEY_FORMAT),
-                "Unrealised": NumberFormatter(format=_MONEY_FORMAT),
+                **{c: NumberFormatter(format=f) for c, f in _money_formats("").items()},
                 "% Unrealised": NumberFormatter(format=_PERCENT_FORMAT),
                 "Change": NumberFormatter(format=_SIGNED_PRICE_FORMAT),
                 "% Change": NumberFormatter(format=_PERCENT_FORMAT),
@@ -1084,6 +1175,9 @@ class DashboardView:
         self._reconciliation = safe_markdown("")
         self._basis_note = safe_markdown("")
         self._quote_note = safe_markdown("")
+        # Currency the money formatters currently carry. Reassigning
+        # `formatters` rebuilds the table, so it happens only on a change.
+        self._money_currency = ""
 
         # Per-type detail for the selected window. Month and year live here rather than
         # on the KPI strip: the strip is for the two windows a trader checks constantly,
@@ -1323,6 +1417,7 @@ class DashboardView:
 
     def _refresh_positions(self, snapshot: DashboardSnapshot) -> None:
         """Positions tab: the table, a count/currency summary, and the reconciliation line."""
+        self._apply_money_symbol(snapshot)
         self._positions.value = positions_frame(snapshot)
         self._reconciliation.object = reconciliation_line(reconcile(snapshot))
         self._basis_note.object = basis_note(snapshot)
@@ -1341,6 +1436,28 @@ class DashboardView:
             else "_No open positions._"
         )
         self._positions_status.object = summary
+
+    def _apply_money_symbol(self, snapshot: DashboardSnapshot) -> None:
+        """Re-symbol the money columns when the book's currency changes. Usually a no-op.
+
+        Guarded on the currency rather than run every poll because assigning
+        `formatters` rebuilds the whole `Tabulator`, and the answer is the same on all
+        but the rare poll where a position in a new currency appears or the last one in
+        an old currency closes. A book that is USD today stays USD across thousands of
+        repaints and this does nothing.
+
+        The `""` case matters as much as the symbol: a mixed book, an empty book, or a
+        currency this app has no symbol for all fall back to bare numbers, so a figure
+        is never rendered under a currency it does not belong to.
+        """
+        currency = book_currency(snapshot)
+        if currency == self._money_currency:
+            return
+        self._money_currency = currency
+        self._positions.formatters = {
+            **dict(self._positions.formatters),
+            **{c: NumberFormatter(format=f) for c, f in _money_formats(currency).items()},
+        }
 
     def _refresh_daily(self, snapshot: DashboardSnapshot, now: datetime | None) -> None:
         """The Daily selection: today's realised P&L per asset class, and nothing else.

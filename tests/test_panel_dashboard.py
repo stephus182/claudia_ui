@@ -520,11 +520,17 @@ def test_numeric_columns_are_formatted_and_right_aligned(view):
     stay real floats so the column sorts numerically and `.style` still sees a number.
     """
     fmts = view._positions.formatters
-    assert fmts["Market value"].format == pdash._MONEY_FORMAT
-    assert fmts["Unrealised"].format == pdash._MONEY_FORMAT
-    assert fmts["Avg entry"].format == pdash._PRICE_FORMAT
-    assert fmts["IBKR basis"].format == pdash._PRICE_FORMAT
-    assert fmts["Basis \u0394"].format == pdash._MONEY_FORMAT
+    # The fixture book is entirely USD, so every money column carries the symbol
+    # (2026-08-07). `_money_formats` is the single source of that decision, and the
+    # bare format is still the tail of each — the symbol is a prefix, not a rewrite.
+    usd = pdash._money_formats("USD")
+    for col, bare in (("Market value", pdash._MONEY_FORMAT),
+                      ("Unrealised", pdash._MONEY_FORMAT),
+                      ("Avg entry", pdash._PRICE_FORMAT),
+                      ("IBKR basis", pdash._PRICE_FORMAT),
+                      ("Basis Δ", pdash._MONEY_FORMAT)):
+        assert fmts[col].format == usd[col], col
+        assert fmts[col].format.endswith(bare), col
     assert view._positions.text_align["Unrealised"] == "right"
     # The underlying frame is untouched — display precision must not become data.
     assert view._positions.value["Unrealised"].dtype.kind == "f"
@@ -1511,3 +1517,85 @@ def test_a_prior_close_and_a_halt_are_reported_separately():
 def test_the_note_is_silent_with_no_positions():
     """Nothing to disclose about a book that is empty."""
     assert pdash.quote_note(_snapshot(positions=())) == ""
+
+
+def test_every_position_column_has_a_width():
+    """Fourteen columns in a half-window pane clip silently without explicit widths.
+
+    A column added without a width would be sized by Tabulator and can push the money
+    columns off-screen again — which is invisible to every other test, because the
+    string values are all correct and only the rendered page is wrong (seen in the
+    browser 2026-08-07).
+    """
+    assert set(pdash._POSITION_WIDTHS) == set(pdash._POSITION_COLUMNS)
+
+
+def test_the_positions_table_scrolls_rather_than_clipping():
+    """`fit_data_stretch` squeezed fourteen columns and hid six with no scrollbar."""
+    v = pdash.build_dashboard()
+    assert v._positions.layout == "fit_data"
+
+
+def test_percentages_are_stored_as_fractions_for_the_numbro_format():
+    """Numbro's "%" format multiplies by 100 — the frame must hold the fraction.
+
+    `Position.pct_unrealised` stays a percentage (4.12); only the display layer divides,
+    so every caller and test reads the property as the percentage it is named after.
+    Storing 4.12 here would render "+412.00%" — correct string, correct property, wrong
+    cell, and invisible to any assertion on the property itself.
+    """
+    p = _quoted(last=399.00, change=9.33, change_pct=2.39, status="RivB")
+    frame = pdash.positions_frame(_snapshot(positions=(p,)))
+    assert p.pct_unrealised == pytest.approx(4.085, abs=0.001)      # property: percent
+    assert frame["% Unrealised"].iloc[0] == pytest.approx(0.04085, abs=0.00001)  # cell: fraction
+    assert frame["% Change"].iloc[0] == pytest.approx(0.0239)
+    assert pdash._PERCENT_FORMAT.endswith("%")
+
+
+# -- Currency symbol on the money columns -------------------------------------
+
+
+def _pos_ccy(ccy, conid=1):
+    """One position in a given currency, for the book-currency tests."""
+    return dd.parse_positions([{
+        "conid": conid, "ticker": f"S{conid}", "contractDesc": f"S{conid}",
+        "assetClass": "STK", "position": 1, "avgCost": 10.0, "avgPrice": 10.0,
+        "multiplier": 1, "mktPrice": 11.0, "mktValue": 11.0, "unrealizedPnl": 1.0,
+        "realizedPnl": 0, "currency": ccy,
+    }])[0]
+
+
+def test_a_single_currency_book_gets_its_symbol():
+    """"When applicable" — the user's phrasing, and the safety property (2026-08-07)."""
+    assert pdash.book_currency(_snapshot(positions=(_pos_ccy("USD"),))) == "USD"
+    assert pdash._money_formats("USD")["Market value"].startswith("$")
+    assert pdash._money_formats("USD")["Change"].startswith("+$")
+
+
+def test_a_mixed_book_gets_no_symbol_at_all():
+    """A Bokeh formatter is per COLUMN, not per row: two currencies cannot be
+    symbolled differently, so neither is symbolled. `$` on a EUR figure is exactly the
+    failure the never-a-bare-$ rule exists for — IGV once showed a US ETF in MXN."""
+    mixed = _snapshot(positions=(_pos_ccy("USD", 1), _pos_ccy("EUR", 2)))
+    assert pdash.book_currency(mixed) == ""
+    assert pdash._money_formats("")["Market value"] == pdash._MONEY_FORMAT
+
+
+def test_an_unknown_currency_is_never_guessed_at():
+    """A currency with no entry in the symbol map renders bare, not as dollars."""
+    assert pdash._money_formats("SGD")["Market value"] == pdash._MONEY_FORMAT
+    assert pdash._money_formats("CAD")["Last"] == pdash._PRICE_FORMAT
+
+
+def test_an_empty_book_has_no_currency_to_label_with():
+    """Guessing the account's base currency would symbol figures that do not exist."""
+    assert pdash.book_currency(_snapshot(positions=())) == ""
+
+
+def test_the_symbol_follows_the_book_when_it_changes():
+    """The guard must not pin the first currency it ever saw."""
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(positions=(_pos_ccy("USD"),)), now=_NOW)
+    assert v._positions.formatters["Market value"].format.startswith("$")
+    v.refresh(_snapshot(positions=(_pos_ccy("USD", 1), _pos_ccy("EUR", 2))), now=_NOW)
+    assert not v._positions.formatters["Market value"].format.startswith("$")
