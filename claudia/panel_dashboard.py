@@ -486,9 +486,19 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
 
 # ── Positions table ───────────────────────────────────────────────────────────
 
+# Column order, and it encodes a reading order rather than a schema.
+#
+# Identity first (Symbol, Name), then size, then the two entry levels, then price, then
+# the money. **`Class` sits second-to-last, immediately before `Ccy`** — moved there
+# 2026-08-07 (user): it is factual metadata about the instrument, not a number a trader
+# acts on, and it was occupying the second column where the instrument's name belongs.
+#
+# `Name` is IBKR's own description, next to the ticker precisely so a row cannot be acted
+# on from an ambiguous symbol — a ticker is not a unique key, and IGV once priced a US
+# ETF in MXN on exactly that assumption.
 _POSITION_COLUMNS = [
-    "Symbol", "Class", "Qty", "Avg entry", "IBKR basis", "Basis Δ",
-    "Last", "Market value", "Unrealised", "Ccy",
+    "Symbol", "Name", "Qty", "Avg entry", "IBKR basis", "Basis Δ",
+    "Last", "Market value", "Unrealised", "% Unrealised", "Class", "Ccy",
 ]
 # The columns `.style.map` colours by sign. Named once so the styler and the empty-frame
 # builder cannot disagree about which columns exist.
@@ -496,7 +506,7 @@ _POSITION_COLUMNS = [
 # "Basis Δ" is deliberately **not** here. Its sign says which way IBKR's basis leans, not
 # whether anything is good or bad, and the green/red map on this surface means profit and
 # loss. Colouring it would assert a judgement the number does not carry.
-_SIGNED_COLUMNS = ["Unrealised"]
+_SIGNED_COLUMNS = ["Unrealised", "% Unrealised"]
 
 # Display precision. IBKR returns full float precision — the live account rendered
 # `383.270899` and `374.09762575` as an average cost and a last price (observed
@@ -510,6 +520,10 @@ _SIGNED_COLUMNS = ["Unrealised"]
 _MONEY_FORMAT = "0,0.00"
 _PRICE_FORMAT = "0,0.00[00]"
 _QTY_FORMAT = "0,0.[00000000]"  # fractional-share and futures quantities alike
+# Percentages to 2dp with an explicit sign, so a gain and a loss are never distinguished
+# only by a minus that is easy to miss in a dense numeric column — the same rule
+# `fmt_signed` applies to money.
+_PERCENT_FORMAT = "+0,0.00"
 
 # Rows per displayed page. Distinct from `dashboard_data._POSITIONS_PAGE_SIZE`, which is
 # IBKR's own 30-per-request paging — this is purely how many rows the table shows at once.
@@ -522,6 +536,10 @@ _POSITIONS_ROWS_PER_PAGE = 15
 # trading surface: "Avg cost" is IBKR's `avgCost`, which for a futures position is per
 # contract including the multiplier, and "Unrealised" is open P&L, not the day's move.
 _POSITION_TOOLTIPS = {
+    "Name": "IBKR's own instrument name, so a row is never acted on from an ambiguous "
+            "ticker alone. IBKR truncates this field itself (IGV arrives as 'ISHARES "
+            "EXPANDED TECH-SOFTWA'); a short name is theirs, not a display limit. Blank "
+            "when IBKR omits it, which happens on the same lean rows that omit ticker.",
     "Qty": "Signed position size. Negative is short.",
     "Avg entry": "Where the position was actually entered: average price of the open "
                  "lots, FIFO over this account's own fills, excluding commission. Blank "
@@ -535,6 +553,12 @@ _POSITION_TOOLTIPS = {
     "Market value": "IBKR mktValue. For futures the ledger reports this as open P&L "
                     "rather than notional.",
     "Unrealised": "Open P&L on the position. Not the day's change, and not realised.",
+    "% Unrealised": "Unrealised over IBKR's cost basis (avgCost x qty). BOTH halves are "
+                    "IBKR's, so this ties to their screen. A percentage against 'Avg "
+                    "entry' would be a different number — on IGV the two bases differ by "
+                    "669.62. Short positions divide by the absolute basis, so a "
+                    "profitable short reads positive.",
+    "Class": "IBKR assetClass — STK, FUT, OPT, CASH.",
     "Ccy": "The position's own currency — it need not be the account's base currency.",
 }
 
@@ -649,7 +673,7 @@ def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     rows = [
         {
             "Symbol": p.symbol,
-            "Class": p.asset_class,
+            "Name": p.name,
             "Qty": p.quantity,
             "Avg entry": p.economic_entry,
             "IBKR basis": p.average_price,
@@ -657,6 +681,8 @@ def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
             "Last": p.market_price,
             "Market value": p.market_value,
             "Unrealised": p.unrealised_pnl,
+            "% Unrealised": p.pct_unrealised,
+            "Class": p.asset_class,
             "Ccy": p.currency,
         }
         for p in snapshot.positions
@@ -966,10 +992,11 @@ class DashboardView:
                 "Last": NumberFormatter(format=_PRICE_FORMAT),
                 "Market value": NumberFormatter(format=_MONEY_FORMAT),
                 "Unrealised": NumberFormatter(format=_MONEY_FORMAT),
+                "% Unrealised": NumberFormatter(format=_PERCENT_FORMAT),
             },
             text_align=dict.fromkeys(
                 ["Qty", "Avg entry", "IBKR basis", "Basis Δ", "Last", "Market value",
-                 "Unrealised"],
+                 "Unrealised", "% Unrealised"],
                 "right",
             ),
             # Read-only affordances only. Filtering, sorting and paging change what is

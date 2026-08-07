@@ -828,6 +828,95 @@ def test_positions_frame_has_headers_even_with_no_rows():
     assert len(frame) == 0
 
 
+def test_position_columns_are_pinned_in_reading_order():
+    """The literal order, so a reorder is a deliberate act rather than a silent one.
+
+    The assertion above compares the frame against `_POSITION_COLUMNS` — the same
+    constant it is built from — so it passes for ANY ordering and cannot notice a
+    change. Adding Name and % Unrealised and moving Class ran green through it on
+    2026-08-07. This one spells the order out.
+
+    Identity first (Symbol, Name), then size, the two entry levels, price, then money.
+    `Class` sits by `Ccy` at the end: factual metadata, not a number acted on (user).
+    """
+    assert pdash._POSITION_COLUMNS == [
+        "Symbol", "Name", "Qty", "Avg entry", "IBKR basis", "Basis Δ",
+        "Last", "Market value", "Unrealised", "% Unrealised", "Class", "Ccy",
+    ]
+
+
+def test_pct_unrealised_is_ibkr_over_ibkr_and_ties_to_their_screen():
+    """Both halves IBKR's, so the column reconciles against IBKR (user, 2026-08-07).
+
+    Pinned to the live GLD row measured that day, at IBKR's **full precision**. The
+    identity `mktValue - avgCost*qty == unrealizedPnl` held to the cent on all three
+    live positions, which is what licenses this denominator — and confirms `avgCost` is
+    per CONTRACT, so the multiplier must not be reapplied.
+
+    ⚠ The first version of this test used `avgCost: 383.22` — the value as *displayed*
+    at 2dp — and the identity missed by 0.25. IBKR's actual figure is 383.215004. A
+    fixture built from rounded output tests the rounding, not the arithmetic.
+    """
+    p = dd.parse_positions([{
+        "conid": 1, "ticker": "GLD", "name": "SPDR GOLD SHARES", "contractDesc": "GLD",
+        "assetClass": "STK", "position": 50, "avgCost": 383.215004,
+        "avgPrice": 383.215004, "multiplier": 0.0, "mktPrice": 398.869812,
+        "mktValue": 19943.49, "unrealizedPnl": 782.74, "realizedPnl": 0,
+        "currency": "USD",
+    }])[0]
+    assert p.cost_basis == pytest.approx(19160.7502)
+    assert p.pct_unrealised == pytest.approx(4.085, abs=0.001)
+    # The identity that licenses the denominator.
+    assert p.market_value - p.cost_basis == pytest.approx(p.unrealised_pnl, abs=0.01)
+    # IBKR sends multiplier 0.0 on a stock row; `parse_positions` normalises it to 1.0,
+    # which is what keeps Basis Δ from blanking on every equity position.
+    assert p.multiplier == 1.0
+
+
+def test_a_profitable_short_reads_positive_not_inverted():
+    """Dividing by a negative basis would render a gain as a loss."""
+    p = dd.parse_positions([{
+        "conid": 2, "ticker": "SH", "name": "SHORT S&P500", "contractDesc": "SH",
+        "assetClass": "STK", "position": -10, "avgCost": -100.0, "avgPrice": 100.0,
+        "multiplier": 1, "mktPrice": 90.0, "mktValue": -900.0,
+        "unrealizedPnl": 100.0, "realizedPnl": 0, "currency": "USD",
+    }])[0]
+    assert p.pct_unrealised == pytest.approx(10.0)
+
+
+def test_a_zero_basis_yields_no_percentage_rather_than_a_division():
+    """A basis of zero is not a basis — and it is this column's denominator."""
+    p = dd.parse_positions([{
+        "conid": 3, "ticker": "X", "contractDesc": "X", "assetClass": "STK",
+        "position": 10, "avgCost": 0.0, "avgPrice": 0.0, "multiplier": 1,
+        "mktPrice": 5.0, "mktValue": 50.0, "unrealizedPnl": 50.0,
+        "realizedPnl": 0, "currency": "USD",
+    }])[0]
+    assert p.cost_basis is None
+    assert p.pct_unrealised is None
+
+
+def test_name_is_ibkrs_description_and_blank_when_absent():
+    """`name` is the description; `fullName` is the contract LABEL despite its name.
+
+    Measured live 2026-08-07: GLD name='SPDR GOLD SHARES' fullName='GLD'; CL
+    name='Light Sweet Crude Oil' fullName="CL Sep'26". The lean futures row that omits
+    `ticker` can omit `name` too, and a blank cell is the honest rendering of that.
+    """
+    full, lean = dd.parse_positions([
+        {"conid": 1, "ticker": "CL", "name": "Light Sweet Crude Oil",
+         "fullName": "CL Sep'26", "contractDesc": "CL SEP2026", "assetClass": "FUT",
+         "position": 2, "avgCost": 76697.36, "avgPrice": 76.69736, "multiplier": 1000,
+         "mktPrice": 77.73, "mktValue": 155460.01, "unrealizedPnl": 2065.29,
+         "realizedPnl": 0, "currency": "USD"},
+        {"conid": 2, "contractDesc": "CL SEP2026", "assetClass": "FUT", "position": 1,
+         "avgCost": 0.0, "avgPrice": 0.0, "mktPrice": 77.73, "mktValue": 77730.0,
+         "unrealizedPnl": 0.0, "realizedPnl": 0, "currency": "USD"},
+    ])
+    assert full.name == "Light Sweet Crude Oil"   # not "CL Sep'26"
+    assert lean.name == ""                        # absent, not guessed from contractDesc
+
+
 def test_positions_table_is_populated_and_summarised(view):
     """The table renders the positions and the summary line counts them."""
     assert list(view._positions.value["Symbol"]) == ["ESU6"]

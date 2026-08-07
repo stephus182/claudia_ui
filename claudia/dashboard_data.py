@@ -449,6 +449,62 @@ class Position:
     average_price: float = 0.0
     multiplier: float | None = None
     economic_entry: float | None = None
+    # IBKR's `name`: the instrument's descriptive name, so a row cannot be misread off a
+    # ticker alone. NOT `fullName`, which despite the name is the contract *label* —
+    # measured live 2026-08-07: GLD name='SPDR GOLD SHARES' fullName='GLD', and
+    # CL name='Light Sweet Crude Oil' fullName="CL Sep'26". **IBKR truncates this field
+    # itself** (IGV came back 'ISHARES EXPANDED TECH-SOFTWA', 28 chars, cut mid-word), so
+    # a short value here is IBKR's doing and must not be "completed" by us. Empty string
+    # when absent — the lean futures row that omits `ticker` and `multiplier` can omit
+    # this too, and a blank cell is the honest rendering of a field IBKR did not send.
+    name: str = ""
+
+    @property
+    def cost_basis(self) -> float | None:
+        """IBKR's own cost basis for the whole position: `average_cost * quantity`.
+
+        **`average_cost` is per contract, so the multiplier must NOT be applied again.**
+        That is not an inference — the identity `market_value - cost_basis ==
+        unrealised_pnl` was checked against the live account on 2026-08-07 and held to
+        the cent on all three open positions, including the futures row where a
+        wrongly-applied 1000x multiplier would have been unmissable:
+
+            GLD  50 x    383.22 ->  19,938.93 - 19,161.00 =   778.18 == IBKR's uPnL
+            CL    2 x 76,697.36 -> 155,460.01 -153,394.72 = 2,065.29 == IBKR's uPnL
+            IGV 100 x     97.63 ->  10,296.61 - 9,763.42  =   533.19 == IBKR's uPnL
+
+        None when `average_cost` or `quantity` is zero: a basis of zero is not a basis,
+        and it is the denominator of `pct_unrealised` below.
+        """
+        if not self.average_cost or not self.quantity:
+            return None
+        return self.average_cost * self.quantity
+
+    @property
+    def pct_unrealised(self) -> float | None:
+        """Unrealised P&L as a percentage of IBKR's cost basis.
+
+        **Both halves are IBKR's** — its `unrealizedPnl` over its own `average_cost` —
+        which is the whole point of the column and a deliberate choice (user,
+        2026-08-07). This surface also carries `economic_entry`, the FIFO average of the
+        open lots, and a percentage computed against *that* would be a different and
+        equally defensible number: on IGV the two bases differ by 669.62. Mixing them —
+        IBKR's P&L over our entry — would be neither, and would reconcile with nothing.
+        The rule chosen for this dashboard is that a figure presented as IBKR's must be
+        checkable against IBKR's own screen.
+
+        Absolute value in the denominator so a **short** position reports the sign of its
+        own P&L and never inverts it. This one is defensive, not measured: the live book
+        held no short on 2026-08-07, so which sign IBKR puts on `avgCost` for a short
+        position is **unverified here**. `abs()` makes the column correct either way —
+        with a negative `avgCost` the product is already positive, and with a positive
+        one the absolute value rescues it — which is precisely why it is written this way
+        rather than after checking. Verify against a real short before claiming more.
+        """
+        basis = self.cost_basis
+        if basis is None:
+            return None
+        return self.unrealised_pnl / abs(basis) * 100.0
 
     @property
     def basis_delta(self) -> float | None:
@@ -551,6 +607,7 @@ def parse_positions(rows: Sequence[Any]) -> tuple[Position, ...]:
                 conid=int(_as_float(row.get("conid"))),
                 symbol=str(row.get("ticker") or "").strip() or desc,
                 description=desc,
+                name=str(row.get("name") or "").strip(),
                 asset_class=str(row.get("assetClass") or "").strip(),
                 quantity=_as_float(row.get("position")),
                 average_cost=avg_cost,
