@@ -16,7 +16,7 @@ claudia/panel_pinescript.py — ```pine copy (real client-side clipboard) / inje
 claudia/panel_chart.py      — external HoloViews candlestick chart pane (STK, cache-backed)
 claudia/dashboard_data.py   — live dashboard: pure data (ledger, positions, realised windows), no panel import
 claudia/dashboard_poller.py — live dashboard: process-wide 15s poller caching one DashboardSnapshot
-claudia/panel_dashboard.py  — live dashboard: KPI strip + Tabs(Chart/Positions/Orders/P&L), no IBKR and no SQL
+claudia/panel_dashboard.py  — live dashboard: KPI strip + Tabs(Chart/Positions/Orders/Daily/P&L), no IBKR and no SQL
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching (UI-agnostic via MessageSink)
 claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)

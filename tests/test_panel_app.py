@@ -1540,7 +1540,7 @@ async def test_session_root_composes_the_dashboard_tabs_and_table():
 
     tabs = [n for n in _iter_tree(root) if isinstance(n, pn.Tabs)]
     assert len(tabs) == 1
-    assert list(tabs[0]._names) == ["Chart", "Positions", "Orders", "P&L"]
+    assert list(tabs[0]._names) == ["Chart", "Positions", "Orders", "Daily", "P&L"]
 
     tables = [n for n in _iter_tree(root) if isinstance(n, pn.widgets.Tabulator)]
     assert len(tables) == 2  # positions, and the orders book added 2026-08-05
@@ -1566,9 +1566,12 @@ async def test_session_root_composes_the_dashboard_tabs_and_table():
     assert isinstance(root, pn.Column)
     assert isinstance(root.objects[-1], pn.Row)
     tiles = [n for n in _iter_tree(root.objects[0]) if isinstance(n, pn.indicators.Number)]
-    assert len(tiles) == 5   # win rate became a block, not a sixth tile (2026-08-06)
-    assert any("Win rate" in str(getattr(n, "object", ""))
-               for n in _iter_tree(root.objects[0])), "the win-rate block must be in the strip"
+    assert len(tiles) == 5
+    # The win-rate grid was removed from the strip on 2026-08-07 as clutter; the daily
+    # figures it carried are the Daily tab now. Asserted at the composed-root level so a
+    # re-add has to be deliberate.
+    assert not any("Win rate" in str(getattr(n, "object", ""))
+                   for n in _iter_tree(root.objects[0]))
 
 
 @pytest.mark.asyncio

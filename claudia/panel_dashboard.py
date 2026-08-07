@@ -9,7 +9,7 @@ Layout, as decided in the plan:
 
 ```
 KPI strip  (always visible, across the top)
-Chat  |  Tabs( Chart · Positions · Orders · P&L )
+Chat  |  Tabs( Chart · Positions · Orders · Daily · P&L )
 ```
 
 The tabs are built here; the Chart tab's contents are passed in, because that pane is
@@ -32,11 +32,12 @@ changes wording and colour once the account data passes `STALE_AFTER`. A trading
 showing stale numbers with no indication is the worst failure available here.
 
 **The two realised figures are labelled apart.** The ledger figure includes today; the
-Flex-derived week/month/YTD figures cannot (Flex is T+1, and live Client Portal rows
-carry no trade date at all). They will therefore disagree, legitimately, and the
-freshness line says so. Similarly, round-trip win/loss counts come from `flex_lot` while
-the P&L total comes from `flex_trade` — the panel labels which is which, because
-lot-derived P&L would silently overstate losses by the wash-sale-disallowed amount.
+Flex-derived week/month/YTD figures cannot (IBKR publishes a day's trades T+1, so today
+is never in the dataset, and live Client Portal rows carry no trade date at all). They
+will therefore disagree, legitimately, and the freshness line says so. Similarly,
+round-trip win/loss counts come from `flex_lot` while the P&L total comes from
+`flex_trade` — the panel labels which is which, because lot-derived P&L would silently
+overstate losses by the wash-sale-disallowed amount.
 
 ## Currency
 
@@ -169,13 +170,6 @@ def short_reason(error: str | None) -> str:
     return text
 
 
-# Asset classes the win-rate block orders first. Everything else follows alphabetically,
-# so an OPT or CASH round trip still appears without needing a code change — the
-# requirement was "FUT and STK are predominant, show others when they realise", not
-# "FUT and STK only".
-_WIN_RATE_LEAD = ("FUT", "STK")
-
-
 def breakdown_table(window: Any, currency: str = "") -> str:
     """Per-asset-class detail for the P&L pane: money, counts and averages together.
 
@@ -229,59 +223,68 @@ def breakdown_table(window: Any, currency: str = "") -> str:
     return "\n".join(lines)
 
 
-def win_rate_table(snapshot: DashboardSnapshot | None) -> str:
-    """The KPI strip's win-rate block: asset class down the side, day and week across.
+def daily_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> str:
+    """The Daily tab's heading: which day it is, where the figures come from, and age.
 
-    **A row appears only when that class decided at least one trade in one of the two
-    windows.** A class that did nothing in both is hidden entirely rather than shown as a
-    row of dashes — a strip that lists every asset class the account has ever touched
-    stops being glanceable. Within a shown row an empty window renders `-`, because half a
-    row cannot be hidden and 0% would read as "everything lost" rather than "nothing
-    closed".
+    The date is taken from `as_of`, converted to local time — the same clock
+    `dashboard_poller` reads with `date.today()` to build the day window, so the heading
+    and the window it labels can never name different days.
 
-    Both figures come from the **bridged** breakdowns, which is what makes the daily
-    number possible at all: Flex never has today (it was two days behind on 2026-08-06),
-    so a Flex-derived daily win rate would be permanently blank.
+    A stale line is prepended rather than the table being blanked, and this is the one
+    place the module's usual "stale account data is not drawn at all" rule is traded for a
+    warning. A resting order can fill while our gateway is unreachable, so a stale daily
+    figure is a **floor**, not a wrong number — and a floor stated as a floor is worth
+    more than a blank. It must never be left to pass as current, which is what the line
+    says.
+    """
+    if snapshot is None:
+        return "**Today**"
+    day = snapshot.as_of.astimezone().strftime("%a %Y-%m-%d")
+    warn = (
+        "**⚠ Not current — the gateway is unreachable or the last poll failed. Any fill "
+        "since then is missing, so the figures below are a floor.**\n\n"
+        if stale
+        else ""
+    )
+    return (
+        f"{warn}**Today — {day}** · reconstructed from your own executions. "
+        "IBKR publishes a day's trades T+1, so no statement covers today."
+    )
 
-    `incomplete` is surfaced with a marker rather than silently: when a contract could not
-    be reconstructed the counts are a floor, and a floor presented as a total is the
-    failure this whole track exists to prevent.
+
+def daily_table(snapshot: DashboardSnapshot | None, currency: str = "") -> str:
+    """The Daily tab: today's realised P&L per asset class, from the account's own fills.
+
+    Renders the same nine-column template as the P&L tab's window breakdown, against the
+    `"day"` bridged window. That window is **non-Flex by construction**: IBKR publishes a
+    day's trades T+1, so no statement covers today, and `build_flex_sections` builds the
+    day window as `(today, today)`. Every figure here therefore comes from
+    `live_realised.Reconstruction` — reconstructed from the account's own executions and
+    not settled by anyone.
+
+    Three states, and the middle one is the reason this function exists rather than a bare
+    `breakdown_table` call:
+
+    * **never polled** — say so;
+    * **no reconstruction** — the gateway was unreachable, so today is not merely empty,
+      it is *unknowable*. Saying "no closed round trips today" here would be a fabricated
+      claim of a flat session, and it is the one day no statement can contradict. Gated on
+      `BridgedWindow.reconstructed`, which reports reachability, not activity;
+    * **reconstruction, nothing closed** — a genuine quiet day, stated as one.
     """
     if snapshot is None or not snapshot.breakdowns:
-        return "**Win rate**\n\n_waiting for data…_"
-
+        return "_Daily P&L: waiting for the first poll…_"
     day = snapshot.breakdowns.get("day")
-    week = snapshot.breakdowns.get("week")
-
-    def decided(window: Any, asset: str) -> int:
-        """Trades that resolved either way — scratches are neither won nor lost."""
-        row = window.for_type(asset) if window else None
-        return (row.winners + row.losers) if row else 0
-
-    classes = {r.asset_class for w in (day, week) if w for r in w.rows}
-    shown = [a for a in classes if decided(day, a) or decided(week, a)]
-    if not shown:
-        return "**Win rate**\n\n_no closed trades yet_"
-
-    shown.sort(key=lambda a: (_WIN_RATE_LEAD.index(a) if a in _WIN_RATE_LEAD else 99, a))
-
-    def cell(window: Any, asset: str) -> str:
-        """One win-rate cell, with the trade counts that give it meaning."""
-        row = window.for_type(asset) if window else None
-        if row is None or row.win_rate is None:
-            return "-"
-        # Plain text, NOT `<sub>`: `safe_markdown` escapes HTML (it is the app's only
-        # rendering route, hardened after the 2026-07-25 XSS audit), so any tag reaches
-        # the screen as literal characters. Verified in a browser 2026-08-06, where an
-        # earlier version rendered "100% <sub>2W/0L</sub>".
-        return f"{row.win_rate:.0f}% ({row.winners}W/{row.losers}L)"
-
-    flag = " ⚠" if any(w and w.incomplete for w in (day, week)) else ""
-    lines = [f"**Win rate**{flag}", "", "| | Day | Week |", "|---|---|---|"]
-    lines += [f"| **{a}** | {cell(day, a)} | {cell(week, a)} |" for a in shown]
-    if flag:
-        lines += ["", "_⚠ incomplete: a contract could not be reconstructed._"]
-    return "\n".join(lines)
+    if day is None or not day.reconstructed:
+        return (
+            "**Daily P&L cannot be computed — live fill data unavailable.**\n\n"
+            "_Today's realised P&L is reconstructed from your own executions, which come "
+            "from the IBKR gateway. IBKR publishes a day's trades T+1, so no statement "
+            "covers today either._"
+        )
+    if not day.rows:
+        return "_No closed round trips today._"
+    return breakdown_table(day, currency)
 
 
 def freshness_line(snapshot: DashboardSnapshot, now: datetime | None = None) -> str:
@@ -903,20 +906,13 @@ class DashboardView:
             "realised_ledger": self._tile(realised_ledger_label(), signed=True),
             "realised_week": self._tile("Realised this week", signed=True),
         }
-        # Win rate is a BLOCK, not a tile, because four numbers that only mean anything
-        # compared with each other should be read together: FUT/STK down the side, day
-        # and week across. A single "win rate this week" tile — what this replaced — could
-        # not say which asset class it described, and on this account the two differ
-        # enormously (measured 2026-08-06: FUT 50% on losses averaging 3,619 against STK
-        # 0% on losses averaging 141).
-        self._win_rate = safe_markdown(win_rate_table(None))
+        # Tiles only. A win-rate grid lived at the right end of this row until 2026-08-07
+        # and was removed as clutter (user): a small table wedged beside five Number
+        # indicators reads as an afterthought, and neither figure it carried is lost —
+        # the week is in the P&L tab's breakdown, the day now has the Daily tab.
         self._freshness = safe_markdown("_Account data: waiting for the first poll…_")
         self.kpi_strip = pn.Column(
-            pn.Row(
-                *self._tiles.values(),
-                pn.Column(self._win_rate, width=210, margin=(0, 10)),
-                sizing_mode="stretch_width",
-            ),
+            pn.Row(*self._tiles.values(), sizing_mode="stretch_width"),
             self._freshness,
             sizing_mode="stretch_width",
         )
@@ -994,6 +990,12 @@ class DashboardView:
             header_tooltips=dict(_ORDER_TOOLTIPS),
         )
         self._orders_status = safe_markdown("_Orders: waiting for the first poll…_")
+
+        # The Daily tab. Markdown only — no Tabulator, so there is no editable cell and no
+        # click surface to guard here (Hard Rule 1); keep it that way.
+        self._daily_heading = safe_markdown("**Today**")
+        self._daily = safe_markdown("_Daily P&L: waiting for the first poll…_")
+
         self._window.param.watch(self._on_window_change, "value")
         self._pnl_chart = pn.pane.HoloViews(None, sizing_mode="stretch_width")
         self._pnl_chart_note = safe_markdown("")
@@ -1013,6 +1015,9 @@ class DashboardView:
                                     sizing_mode="stretch_both")),
             ("Orders", pn.Column(self._orders_status, self._orders,
                                  sizing_mode="stretch_both")),
+            # Daily sits before P&L: today, then the settled history behind it.
+            ("Daily", pn.Column(self._daily_heading, self._daily,
+                                sizing_mode="stretch_both")),
             ("P&L", pn.Column(self._window, self._pnl_breakdown,
                               self._pnl_chart, self._pnl_chart_note,
                               self._pnl_stats, self._pnl_coverage, self._ledger_detail,
@@ -1078,6 +1083,11 @@ class DashboardView:
             self._refresh_tiles(display, now)
             self._refresh_positions(display)
             self._refresh_orders(display)
+            # The ORIGINAL snapshot, not `display`: the day window is entirely
+            # reconstruction-derived, and `without_account` does not strip the bridged
+            # breakdowns. Blanking it would throw away the last figures actually earned;
+            # the heading says they are a floor instead. See `daily_heading`.
+            self._refresh_daily(snapshot, now)
             self._refresh_pnl(display)
             self._notify_staleness(snapshot, now)
         except Exception:
@@ -1129,7 +1139,7 @@ class DashboardView:
             notifications.success("Account data is live again.", duration=4000)
 
     def _refresh_tiles(self, snapshot: DashboardSnapshot, now: datetime | None) -> None:
-        """KPI strip: ledger balances, live unrealised, the two realised figures, win rate.
+        """KPI strip: ledger balances, live unrealised, the two realised figures.
 
         `ccy` is the empty string when there is no ledger, never a guessed "USD". Every
         tile whose value comes from that missing ledger is set to None, and `_set` drops
@@ -1163,7 +1173,6 @@ class DashboardView:
         week_total = bridged.net if bridged and bridged.rows else (week.total if week else None)
         self._set(self._tiles["realised_week"], week_total,
                   f"{{value:+,.2f}} {week_ccy}".rstrip())
-        self._win_rate.object = win_rate_table(snapshot)
         self._freshness.object = freshness_line(snapshot, now)
 
     @staticmethod
@@ -1214,6 +1223,13 @@ class DashboardView:
             else "_No open positions._"
         )
         self._positions_status.object = summary
+
+    def _refresh_daily(self, snapshot: DashboardSnapshot, now: datetime | None) -> None:
+        """Daily tab: today's realised P&L per asset class, and where it came from."""
+        self._daily_heading.object = daily_heading(snapshot, self.is_stale(snapshot, now))
+        self._daily.object = daily_table(
+            snapshot, snapshot.ledger.currency if snapshot.ledger else ""
+        )
 
     def _refresh_pnl(self, snapshot: DashboardSnapshot) -> None:
         """P&L tab: the realised chart for the selected window, stats, and disclosures.

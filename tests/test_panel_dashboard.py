@@ -442,27 +442,28 @@ def test_age_formatting(seconds, expected):
 # ── 3. Rendering mechanics ────────────────────────────────────────────────────
 
 
-def test_tabs_are_named_chart_positions_pnl():
-    """The tab set is the one the layout specifies."""
+def test_tabs_are_named_chart_positions_daily_pnl():
+    """The tab set is the one the layout specifies. Daily sits before P&L: today, then
+    the settled history behind it."""
     v = pdash.build_dashboard(chart_pane=pn.Column(pn.pane.Markdown("chart")))
-    assert list(v.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
+    assert list(v.tabs._names) == ["Chart", "Positions", "Orders", "Daily", "P&L"]
     assert isinstance(v.tabs, pn.Tabs)
 
 
-def test_kpi_strip_holds_five_number_tiles_and_the_win_rate_block(view):
-    """Five money tiles, plus win rate as a BLOCK rather than a sixth tile.
+def test_kpi_strip_holds_five_number_tiles_and_nothing_else(view):
+    """Five money tiles, and no sixth object wedged in beside them.
 
-    Win rate stopped being a tile on 2026-08-06: a single "win rate this week" figure
-    could not say which asset class it described, and on this account the classes differ
-    enormously (FUT 50% on losses averaging 3,619 against STK 0% on losses averaging 141).
-    Four numbers that only mean anything compared with each other belong in one block.
+    A win-rate grid sat at the right end of this row until 2026-08-07 and was removed as
+    clutter. Neither figure it carried is lost: the week is in the P&L tab's breakdown,
+    the day is the whole Daily tab.
     """
-    tiles = [o for o in view.kpi_strip[0] if isinstance(o, pn.indicators.Number)]
+    row = list(view.kpi_strip[0])
+    tiles = [o for o in row if isinstance(o, pn.indicators.Number)]
     assert [t.label for t in tiles] == [
         "Net liquidation", "Cash", "Unrealised P&L", dd.realised_ledger_label(),
         "Realised this week",
     ]
-    assert "Win rate" in view._win_rate.object
+    assert len(row) == len(tiles)
 
 
 def test_tiles_carry_the_live_currency_in_their_format(view):
@@ -501,16 +502,6 @@ def test_a_blank_tile_shows_no_currency_code_and_no_sign():
         assert v._tiles[key].format == "{value}", key
     # A tile that does have a value keeps its currency code.
     assert v._tiles["realised_week"].format == "{value:+,.2f} USD"
-
-
-def test_the_win_rate_block_reports_no_closed_trades_rather_than_zero():
-    """No closed lots must not render 0%, which reads as "everything lost"."""
-    v = pdash.build_dashboard()
-    v.refresh(_snapshot(stats={"week": _stats(lots=0, wins=0, losses=0)}), now=_NOW)
-    assert "0%" not in v._win_rate.object
-    # A snapshot with no `breakdowns` at all is "waiting for data", which is a DIFFERENT
-    # claim from "you closed nothing" — pinned exactly rather than accepting either.
-    assert "waiting for data" in v._win_rate.object
 
 
 def test_pnl_colors_are_neutral_at_exactly_zero():
@@ -1099,7 +1090,7 @@ def test_orders_blank_when_the_account_half_goes_stale(view):
 
 def test_the_dashboard_has_an_orders_tab(view):
     """The order book has its own tab."""
-    assert list(view.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
+    assert list(view.tabs._names) == ["Chart", "Positions", "Orders", "Daily", "P&L"]
 
 
 def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
@@ -1115,84 +1106,104 @@ def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
     assert set(view._orders.header_tooltips) <= set(pdash._ORDER_COLUMNS)
 
 
-# -- The KPI strip's win-rate block -------------------------------------------
+# -- The Daily tab -------------------------------------------------------------
 
 
 def _bd(asset, winners, losers, net=0.0):
-    """One TypeBreakdown with just the fields the block reads."""
+    """One TypeBreakdown with just the fields these tables read."""
     return dd.TypeBreakdown(asset_class=asset, net=net, gross_win=0.0, gross_loss=0.0,
                             winners=winners, losers=losers, scratches=0)
 
 
-def _snap_with(day_rows=(), week_rows=(), incomplete=False):
-    """A snapshot carrying only the bridged breakdowns the block consumes."""
+def _snap_with(day_rows=(), week_rows=(), incomplete=False, reconstructed=True,
+               ledger=None, as_of=None):
+    """A snapshot carrying only the bridged breakdowns these surfaces consume."""
     return dd.DashboardSnapshot(
-        as_of=datetime.now(UTC),
+        as_of=as_of or datetime.now(UTC),
+        ledger=ledger,
         breakdowns={
-            "day": dd.BridgedWindow(rows=tuple(day_rows), incomplete=incomplete),
-            "week": dd.BridgedWindow(rows=tuple(week_rows)),
+            "day": dd.BridgedWindow(rows=tuple(day_rows), incomplete=incomplete,
+                                    reconstructed=reconstructed),
+            "week": dd.BridgedWindow(rows=tuple(week_rows), reconstructed=reconstructed),
         },
     )
 
 
-def test_the_block_shows_fut_and_stk_for_day_and_week():
-    """The requirement: win rate per type, daily and weekly, on the top strip."""
-    out = pdash.win_rate_table(_snap_with(
-        day_rows=[_bd("FUT", 2, 0)],
-        week_rows=[_bd("FUT", 5, 5), _bd("STK", 0, 23)],
-    ))
-    assert "| **FUT** | 100% (2W/0L) | 50% (5W/5L) |" in out
-    assert "0% (0W/23L)" in out
+def test_the_daily_tab_shows_todays_realised_by_asset_class():
+    """The requirement: today's realised P&L per type, non-Flex, on its own tab."""
+    out = pdash.daily_table(
+        _snap_with(day_rows=[_bd("FUT", 2, 0, net=1841.04), _bd("STK", 0, 1, net=-141.29)]),
+        "USD",
+    )
+    assert "| **FUT** | 1,841.04 |" in out
+    assert "| **STK** | -141.29 |" in out
+    assert "**Total** | **1,699.75**" in out
+    assert "Net (USD)" in out
 
 
-def test_a_type_with_nothing_in_either_window_is_hidden():
-    """A strip listing every class the account ever touched stops being glanceable."""
-    out = pdash.win_rate_table(_snap_with(week_rows=[_bd("FUT", 1, 1), _bd("OPT", 0, 0)]))
-    assert "FUT" in out
-    assert "OPT" not in out
+def test_a_gateway_outage_never_reads_as_a_flat_day():
+    """"Nothing closed" and "we could not look" are opposite claims.
 
-
-def test_a_type_active_in_only_one_window_keeps_its_row():
-    """STK closed nothing today but 23 lots this week — the week figure must survive.
-
-    Hiding the whole row would lose real information; half a row cannot be hidden, so the
-    empty window renders a dash.
+    No statement covers today, so an unreachable gateway leaves today genuinely
+    unknowable — and it is the one day no later data can contradict.
     """
-    out = pdash.win_rate_table(_snap_with(day_rows=[_bd("FUT", 2, 0)],
-                                          week_rows=[_bd("FUT", 5, 5), _bd("STK", 0, 23)]))
-    assert "| **STK** | - |" in out
+    out = pdash.daily_table(_snap_with(reconstructed=False))
+    assert "cannot be computed" in out
+    assert "round trip" not in out
 
 
-def test_an_empty_window_never_renders_zero_percent():
-    """0% reads as "everything lost"; the truth is "nothing closed"."""
-    out = pdash.win_rate_table(_snap_with(week_rows=[_bd("FUT", 1, 0)]))
-    assert "| **FUT** | - |" in out
+def test_a_quiet_day_is_stated_as_one():
+    """A reachable gateway that found no closes is an answer, not a failure."""
+    out = pdash.daily_table(_snap_with(reconstructed=True))
+    assert "No closed round trips today" in out
+    assert "cannot be computed" not in out
 
 
-def test_scratches_alone_do_not_earn_a_row():
-    """A lot realising exactly 0.00 decided nothing, so there is no rate to show."""
-    rows = [dd.TypeBreakdown("OPT", 0.0, 0.0, 0.0, winners=0, losers=0, scratches=3)]
-    assert "OPT" not in pdash.win_rate_table(_snap_with(week_rows=rows))
+def test_before_the_first_poll_the_daily_tab_claims_nothing():
+    """Waiting, no trades, and no gateway are three states and must read as three."""
+    assert "waiting" in pdash.daily_table(None)
+    assert "waiting" in pdash.daily_table(dd.empty_snapshot())
 
 
-def test_fut_and_stk_lead_but_others_still_appear():
-    """"FUT and STK are predominant, show others when they realise" — not FUT/STK only."""
-    out = pdash.win_rate_table(_snap_with(
-        week_rows=[_bd("CASH", 1, 1), _bd("STK", 1, 1), _bd("FUT", 1, 1)]))
-    order = [out.index(f"**{a}**") for a in ("FUT", "STK", "CASH")]
-    assert order == sorted(order)
-
-
-def test_an_incomplete_window_is_marked_not_silently_short():
+def test_an_incomplete_day_is_marked_not_silently_short():
     """A floor presented as a total is the failure this whole track exists to prevent."""
-    out = pdash.win_rate_table(_snap_with(day_rows=[_bd("FUT", 1, 0)], incomplete=True))
+    out = pdash.daily_table(_snap_with(day_rows=[_bd("FUT", 1, 0, net=100.0)],
+                                       incomplete=True))
     assert "⚠" in out and "incomplete" in out
 
 
-def test_no_snapshot_and_no_trades_read_differently():
-    """"Waiting for data" and "you closed nothing" are opposite claims."""
-    assert "waiting" in pdash.win_rate_table(None)
-    assert "no closed trades" in pdash.win_rate_table(_snap_with())
+def test_the_daily_heading_names_the_day_and_the_source():
+    """The date comes from `as_of` in local time — the clock the poller builds the day
+    window with, so heading and window can never name different days."""
+    stamp = datetime(2026, 8, 7, 18, 30, tzinfo=UTC)
+    out = pdash.daily_heading(_snap_with(as_of=stamp))
+    assert stamp.astimezone().strftime("%a %Y-%m-%d") in out
+    assert "your own executions" in out
+    assert "T+1" in out
+
+
+def test_a_stale_daily_figure_is_labelled_a_floor_not_blanked():
+    """A resting order can fill while the gateway is unreachable, so a stale figure is
+    short, not wrong — and must not pass as current."""
+    out = pdash.daily_heading(_snap_with(), stale=True)
+    assert "Not current" in out and "floor" in out
+    assert "Not current" not in pdash.daily_heading(_snap_with(), stale=False)
+
+
+def test_the_daily_tab_repaints_from_a_snapshot():
+    """The wiring: refresh must reach both panes on the tab."""
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(), now=_NOW)
+    assert "Today —" in v._daily_heading.object
+    assert isinstance(v._daily.object, str)
+
+
+def test_the_daily_tab_binds_no_click_handler():
+    """Markdown only — no Tabulator, so no editable cell and no click surface (Rule 1)."""
+    v = pdash.build_dashboard()
+    daily = v.tabs[3]
+    assert all(not isinstance(o, pn.widgets.Tabulator) for o in daily)
+
 
 
 # -- The P&L pane's per-type detail -------------------------------------------
@@ -1248,17 +1259,18 @@ def test_an_empty_window_says_so():
     assert "No closed trades" in pdash.breakdown_table(None)
 
 
-def test_the_win_rate_block_emits_no_html_tags():
+def test_the_daily_tab_emits_no_html_tags():
     """`safe_markdown` escapes HTML, so a tag reaches the screen as literal text.
 
-    Caught in a browser 2026-08-06: `<sub>` markup rendered as "100% <sub>2W/0L</sub>".
-    No unit test could see it, because the string itself was correct — only the rendered
-    page was wrong.
+    Caught in a browser 2026-08-06 on the block this tab replaced: `<sub>` markup
+    rendered as "100% <sub>2W/0L</sub>". No unit test could see it, because the string
+    itself was correct — only the rendered page was wrong. The guard moves with the
+    surface rather than being deleted with it.
     """
-    out = pdash.win_rate_table(_snap_with(day_rows=[_bd("FUT", 2, 0)],
-                                          week_rows=[_bd("FUT", 5, 5)]))
-    assert "<" not in out and ">" not in out
-    assert "(2W/0L)" in out
+    snap = _snap_with(day_rows=[_bd("FUT", 2, 0, net=1841.04)])
+    for out in (pdash.daily_table(snap, "USD"), pdash.daily_heading(snap),
+                pdash.daily_heading(snap, stale=True)):
+        assert "<" not in out and ">" not in out
 
 
 def test_the_week_tile_and_the_pnl_pane_report_the_same_week():

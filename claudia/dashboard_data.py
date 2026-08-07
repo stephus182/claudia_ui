@@ -1518,6 +1518,15 @@ class BridgedWindow:
     rows: tuple[TypeBreakdown, ...] = ()
     bridged_days: tuple[str, ...] = ()
     incomplete: bool = False
+    # Whether a reconstruction was available at all — NOT whether it found anything.
+    # `rows == ()` is otherwise two opposite claims wearing the same shape: "nothing
+    # closed" and "the gateway was shut, so the days Flex does not cover are unknowable".
+    # The day window is where that matters, because no statement ever covers today
+    # (IBKR publishes a day's trades T+1), so a gateway-down day window is *always* empty
+    # and would otherwise read as a flat, uneventful session. Same rule as
+    # `DashboardSnapshot.orders` being `tuple | None`: empty and unknown must not share a
+    # representation on a surface a trader acts on.
+    reconstructed: bool = False
 
     @property
     def net(self) -> float:
@@ -1582,4 +1591,5 @@ def bridged_by_type(
         rows=tuple(sorted(merged.values(), key=lambda b: -abs(b.net))),
         bridged_days=tuple(days),
         incomplete=incomplete,
+        reconstructed=True,
     )

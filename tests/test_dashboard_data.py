@@ -1270,6 +1270,27 @@ def test_without_a_reconstruction_the_window_is_flex_alone(tmp_path):
     assert w.for_type("FUT").net == pytest.approx(-2926.18, abs=0.005)
 
 
+def test_a_window_records_whether_a_reconstruction_was_available(tmp_path):
+    """"Nothing closed" and "we could not look" are opposite claims on a P&L surface.
+
+    Both arrive as a window with no rows, so without this flag the Daily tab would assert
+    "no round trips today" during a gateway outage — the one day it cannot know that.
+    """
+    conn = _breakdown_db(tmp_path)
+    assert dd.bridged_by_type(conn, date(2026, 8, 7),
+                              date(2026, 8, 7)).reconstructed is False
+    assert dd.bridged_by_type(conn, date(2026, 8, 7), date(2026, 8, 7),
+                              _bridge_rec(), date(2026, 8, 4)).reconstructed is True
+
+
+def test_a_reconstruction_that_found_nothing_is_still_a_reconstruction(tmp_path):
+    """A quiet day is an answer. The flag reports reachability, not activity."""
+    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 7), date(2026, 8, 7),
+                           _bridge_rec(), date(2026, 8, 4))
+    assert w.rows == () and w.bridged_days == ()
+    assert w.reconstructed is True
+
+
 def test_a_type_traded_only_live_still_gets_a_row(tmp_path):
     """Today's first-ever trade in a class must appear, not wait for the statement."""
     rec = _bridge_rec(
