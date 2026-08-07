@@ -492,6 +492,13 @@ _MUST_NEVER_BE_TRACKED = [
     "docs/plans",               # personal working documents — local + Drive only
     "docs/panel/screenshots",   # UI smokes carry live account data, balances, order IDs
     "data",                     # claudia.db, Flex archive, session reports
+    # Browser page dumps. `.playwright-mcp/` was already ignored, but a snapshot written
+    # to the repo ROOT under any name was not, and `git add -A` swept one into a commit
+    # on 2026-08-07 — 289 lines carrying net liquidation, cash, positions and P&L. Caught
+    # before the push and removed from the commit, so it never reached the public remote.
+    # These dumps are the screenshots class in text form and belong in the same list.
+    "page.yml",
+    "snapshot.yaml",
 ]
 
 

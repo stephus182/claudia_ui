@@ -77,3 +77,9 @@ docs/audits/*-order-fill-evidence.md
 # this repo is public. Untracking stops future additions; the existing history is not
 # rewritten (same decision as the 2026-07-24 screenshots).
 docs/project-status.md
+
+# Browser page dumps written into the working tree (2026-08-07): the tooling saves
+# snapshots under an arbitrary root-level name, and they carry live account figures.
+# Root-level only, so .github/workflows/*.yml is untouched.
+/*.yml
+/*.yaml
