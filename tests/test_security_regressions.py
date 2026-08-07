@@ -492,14 +492,52 @@ _MUST_NEVER_BE_TRACKED = [
     "docs/plans",               # personal working documents — local + Drive only
     "docs/panel/screenshots",   # UI smokes carry live account data, balances, order IDs
     "data",                     # claudia.db, Flex archive, session reports
-    # Browser page dumps. `.playwright-mcp/` was already ignored, but a snapshot written
-    # to the repo ROOT under any name was not, and `git add -A` swept one into a commit
-    # on 2026-08-07 — 289 lines carrying net liquidation, cash, positions and P&L. Caught
-    # before the push and removed from the commit, so it never reached the public remote.
-    # These dumps are the screenshots class in text form and belong in the same list.
+    # Browser artifacts. `.playwright-mcp/` was already ignored, but an artifact written
+    # to the repo ROOT under any name was not, and `git add -A` swept two into commits on
+    # 2026-08-07: a .yml dump carrying net liquidation, cash, positions and P&L, and a
+    # .png screenshot of the pane. Neither was pushed; both were removed. These are the
+    # `docs/panel/screenshots` class escaping that directory.
     "page.yml",
     "snapshot.yaml",
+    "screenshot.png",
 ]
+
+# Root-level file extensions a browser-driving session produces. Anything rendering the
+# dashboard puts live account data in all of them.
+_BROWSER_ARTIFACT_SUFFIXES = frozenset(
+    {".yml", ".yaml", ".json", ".png", ".jpg", ".jpeg", ".webp", ".har", ".log"}
+)
+
+
+def test_no_browser_artifact_is_tracked_at_the_repo_root():
+    """No file with an artifact extension may be tracked at the repo ROOT (H-2).
+
+    A structural check over the whole root, not a list of names, and that distinction is
+    the entire lesson of 2026-08-07. A .yml page dump was committed, so `/*.yml` and
+    `/*.yaml` were ignored and the fix declared done — while a .png screenshot of the
+    same pane sat tracked in the very same commit, invisible to a verification scoped to
+    the extension that had just been found. A control written around the instance is not
+    a control over the class.
+
+    Root-anchored on purpose: `claudia/assets/claudia-logo.png` is a real asset, and
+    `.github/workflows/*.yml` must stay trackable. Artifacts land at the root because
+    that is the browser tooling's default write location.
+    """
+    import subprocess
+
+    repo = Path(__file__).resolve().parent.parent
+    out = subprocess.run(
+        ["git", "ls-files", "--", ":(top)*"],
+        cwd=repo, capture_output=True, text=True, check=False,
+    )
+    offenders = [
+        line for line in out.stdout.splitlines()
+        if "/" not in line and Path(line).suffix.lower() in _BROWSER_ARTIFACT_SUFFIXES
+    ]
+    assert not offenders, (
+        f"Browser artifacts tracked at the repo root: {offenders}. These carry live "
+        "account data; write them to the scratchpad instead."
+    )
 
 
 @pytest.mark.parametrize("path", _MUST_NEVER_BE_TRACKED)

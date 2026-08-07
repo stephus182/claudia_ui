@@ -78,8 +78,24 @@ docs/audits/*-order-fill-evidence.md
 # rewritten (same decision as the 2026-07-24 screenshots).
 docs/project-status.md
 
-# Browser page dumps written into the working tree (2026-08-07): the tooling saves
-# snapshots under an arbitrary root-level name, and they carry live account figures.
-# Root-level only, so .github/workflows/*.yml is untouched.
+# Browser artifacts written into the working tree (2026-08-07). The tooling saves a
+# page dump or a screenshot to whatever root-level name it is handed, and a session
+# driving the dashboard renders live account data into every one of them. Two reached
+# commits the same day: a .yml dump carrying net liquidation, cash, positions and P&L,
+# and a .png screenshot of the pane. Neither was pushed; both were removed.
+#
+# **Extensions, not one extension.** The first version of this block listed only
+# /*.yml and /*.yaml, because that was the artifact in hand — and the screenshot went
+# straight through it. A control written around the instance you just found is not a
+# control over the class.
+#
+# Root-anchored, so .github/workflows/*.yml and claudia/assets/*.png stay trackable.
 /*.yml
 /*.yaml
+/*.json
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.har
+/*.log
