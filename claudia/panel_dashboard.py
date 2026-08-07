@@ -1135,10 +1135,14 @@ class DashboardView:
             show_index=False,
             # `fit_data` + explicit widths, NOT `fit_data_stretch`. The table went from
             # ten columns to fourteen on 2026-08-07 and the pane holds roughly half the
-            # window, so stretching clipped everything from "Basis Δ" rightwards — the
-            # money columns, off screen, with no scrollbar to suggest they existed
-            # (seen in the browser, which is the only place it was visible). `fit_data`
-            # sizes to the widths below and scrolls horizontally instead of hiding.
+            # window, so under stretch everything from "Basis Δ" rightwards — every money
+            # column — was cut off at the pane edge. Seen in the browser, which is the
+            # only place it was visible: every string was correct and no test could fail.
+            # `fit_data` sizes to the widths below and scrolls horizontally instead.
+            # Measured at a 1920px viewport: 1292px of table in a 940px pane, so the
+            # scroll is real rather than theoretical, and no width tuning closes a gap
+            # that size without ellipsising money (user: a 27" screen removes the
+            # constraint, so it is not pursued further).
             layout="fit_data",
             widths=_POSITION_WIDTHS,
             sizing_mode="stretch_width",
@@ -1440,11 +1444,15 @@ class DashboardView:
     def _apply_money_symbol(self, snapshot: DashboardSnapshot) -> None:
         """Re-symbol the money columns when the book's currency changes. Usually a no-op.
 
-        Guarded on the currency rather than run every poll because assigning
-        `formatters` rebuilds the whole `Tabulator`, and the answer is the same on all
-        but the rare poll where a position in a new currency appears or the last one in
-        an old currency closes. A book that is USD today stays USD across thousands of
-        repaints and this does nothing.
+        Guarded on the currency rather than run every poll. `formatters` is one of
+        `BaseTable._manual_params`, so assigning it pushes a column update to the model
+        on every assignment — read from panel 1.9's `Tabulator._update_columns`, which
+        also shows that the *configuration* rebuild is skipped when no formatter value is
+        a `str` or `dict`; these are `NumberFormatter` instances, so it takes that early
+        return. So the cost is a column update, not a full table rebuild — cheaper than
+        first assumed, and still pointless to repeat 5,760 times a day for an answer that
+        changes only when a position in a new currency opens or the last one in an old
+        currency closes.
 
         The `""` case matters as much as the symbol: a mixed book, an empty book, or a
         currency this app has no symbol for all fall back to bare numbers, so a figure

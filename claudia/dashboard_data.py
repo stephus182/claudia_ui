@@ -1308,8 +1308,13 @@ class Quote:
     Blocking the shared event loop for a second per new contract would be a worse trade
     than one tick of blank cells.
 
-    `status` is the raw 6509 string; `is_live` is the only interpretation of it, so a
-    delayed or unsubscribed feed can never be rendered as a real-time price.
+    `status` is the raw 6509 string and `is_live` is the only interpretation of it.
+
+    Note what that does and does not buy: a delayed or frozen price **is** still shown in
+    the `Last` column, because it is the best price available and a blank would be worse.
+    What `is_live` prevents is it passing *unremarked* — `panel_dashboard.quote_note`
+    names the symbols whose feed is not real-time, beside the table. The flag is a
+    disclosure mechanism, not a filter.
     """
 
     conid: int
