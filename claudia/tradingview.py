@@ -45,7 +45,9 @@ import platform
 import shutil
 import socket
 import subprocess
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +134,101 @@ _CURATED_TOOLS = {
     "tv_health_check",
     "capture_screenshot",
 }
+
+
+# ── result post-processing ────────────────────────────────────────────────────
+#
+# Every tradingview-mcp result crosses TradingViewBridge.execute(). These transforms
+# run there, on the parsed payload, before the model sees it. Added 2026-08-11 after
+# the live batch found the model inventing dates from bare epoch fields (it printed
+# 2026-08-11 as "May 12", every row wrong, while every price round-tripped exactly).
+
+# A parsed sidecar payload. Every transform takes one and returns one, so they compose
+# in _TRANSFORMS without any of them having to re-narrow the top-level type.
+Payload = dict[str, object]
+
+# Epoch seconds only, and only in fields that are actually timestamps. `time_index` in
+# data_get_trades is a BAR NUMBER (782, not a date) — annotating it would manufacture the
+# very defect this exists to remove, so the match is on exact key names, backed by a range
+# check. `from`/`to` are two generic words that earn their place: data_get_ohlcv's
+# summary=true mode returns `period: {from: first.time, to: last.time}` — real epoch seconds
+# in the same payload as an annotated `last_5_bars[].time`, so leaving them bare would
+# actively imply they are not dates. Source: ~/.tradingview-mcp/src/core/data.js:170.
+_EPOCH_KEYS = frozenset({"time", "timestamp", "from", "to"})
+
+# The floor separates an epoch from a small integer that happens to share one of those key
+# names. It is NOT what rejects a bar index — exact-key matching does that job — so it does
+# not need to sit above any bar count. The honest cost of any floor is a silent gap: below
+# it, a real timestamp gets no `time_utc`, and a missing sibling is indistinguishable from
+# "not a timestamp". This floor puts that gap before 1973, and data_get_ohlcv serves at most
+# 500 bars (MAX_OHLCV_BARS, data.js:7), which even monthly only reaches the mid-1980s.
+_EPOCH_MIN = 100_000_000  # 1973-03-03
+_EPOCH_MAX = 4_000_000_000  # 2096-10-02
+
+
+def _annotate_epochs(payload: Payload) -> Payload:
+    """Add a `<key>_utc` ISO-8601 sibling beside every epoch-seconds field.
+
+    UTC rather than exchange-local: the exchange is not knowable from the payload and
+    guessing it would be an instrument-specific rule. The original value is kept.
+    """
+    out: Payload = {}
+    for key, value in payload.items():
+        out[key] = _walk_epochs(value)
+        if (
+            key in _EPOCH_KEYS
+            and isinstance(value, (int, float))
+            # bool is a subclass of int, so True reaches this branch. The range check
+            # happens to reject it too while _EPOCH_MIN sits above 1, but that is where
+            # the floor is today, not a guarantee — this guard is what stops a lowered
+            # floor from stamping True as 1970-01-01T00:00:01Z.
+            and not isinstance(value, bool)
+            and _EPOCH_MIN <= value <= _EPOCH_MAX
+            # Never clobber a sibling the sidecar already sent, and never let key order
+            # decide whose value survives.
+            and f"{key}_utc" not in payload
+        ):
+            stamped = datetime.fromtimestamp(value, tz=UTC)
+            out[f"{key}_utc"] = stamped.isoformat().replace("+00:00", "Z")
+    return out
+
+
+def _walk_epochs(node: object) -> object:
+    """Recurse into containers; every dict reached is handed to _annotate_epochs."""
+    if isinstance(node, dict):
+        return _annotate_epochs(node)
+    if isinstance(node, list):
+        return [_walk_epochs(item) for item in node]
+    return node
+
+
+_TRANSFORMS: tuple[Callable[[Payload], Payload], ...] = (_annotate_epochs,)
+
+
+def _post_process(name: str, raw: str) -> str:
+    """Annotate a sidecar payload before the model sees it.
+
+    Fails open by design: anything that is not a JSON object is returned untouched, and so
+    is anything a transform raises on. A transform that could swallow a tool result — or
+    turn a succeeded call into a reported failure — would be worse than the defects it fixes.
+    """
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+    if not isinstance(payload, dict):
+        return raw
+    try:
+        for transform in _TRANSFORMS:
+            payload = transform(payload)
+    except Exception as exc:
+        log.warning("post-processing of tradingview-mcp '%s' failed, passing raw: %s", name, exc)
+        return raw
+    # ensure_ascii stays at its default True: JS JSON.stringify escapes a lone surrogate,
+    # so it arrives as ASCII `\ud800`, and re-emitting it raw produces a str that cannot be
+    # UTF-8 encoded — which crashes the conversation_store insert and the tool_result body.
+    # pine_get_source/pine_get_errors carry arbitrary user-authored text. Measured 2026-08-11.
+    return json.dumps(payload, indent=2)
 
 
 # ── CDP health check + launch helpers ────────────────────────────────────────
@@ -368,7 +465,8 @@ class TradingViewBridge:
                 # practice). See project-tradingview-robustness memory.
                 elif isinstance(item, dict) and "text" in item:  # type: ignore[unreachable]
                     parts.append(item["text"])  # type: ignore[unreachable]
-            return "\n".join(parts) if parts else json.dumps(result.content)
+            raw = "\n".join(parts) if parts else json.dumps(result.content)
+            return _post_process(name, raw)
         except Exception as exc:
             log.error("tradingview-mcp tool '%s' failed: %s", name, exc)
             return f"TradingView tool '{name}' failed."

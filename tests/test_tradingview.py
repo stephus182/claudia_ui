@@ -1,5 +1,6 @@
 """Unit tests for claudia/tradingview.py — binary discovery, env, tool filtering, CDP."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -312,3 +313,135 @@ async def test_start_sets_every_cdp_port_name(tmp_path, monkeypatch):
 
     for name in ("CHROME_REMOTE_DEBUG_PORT", "TV_CDP_PORT", "CDP_PORT"):
         assert captured_env.get(name) == "9333", f"{name} did not carry the configured port"
+
+
+# ── result post-processing at the execute() seam ──────────────────────────────
+
+def test_post_process_annotates_epoch_seconds_with_utc_iso():
+    """A bare epoch gets an unambiguous sibling; the original integer is untouched."""
+    raw = json.dumps({"bars": [{"time": 1786455000, "close": 196.6749}]})
+    out = json.loads(tv_module._post_process("data_get_ohlcv", raw))
+    assert out["bars"][0]["time_utc"] == "2026-08-11T13:30:00Z"
+    assert out["bars"][0]["time"] == 1786455000
+    assert out["bars"][0]["close"] == 196.6749
+
+
+def test_post_process_does_not_treat_a_bar_index_as_an_epoch():
+    """data_get_trades returns time_index (a bar number). Annotating it would invent a date.
+
+    Two cases, and only the second pins the exact-key match. The realistic 782 is rejected
+    by the range check, so a prefix match on "time" would pass it too. The in-range value
+    under the same `time`-prefixed key is what separates them: exact-key matching leaves it
+    alone, a prefix match stamps a bogus date on a bar number.
+    """
+    raw = json.dumps({"trades": [{"time_index": 782, "price": 303.8}]})
+    out = json.loads(tv_module._post_process("data_get_trades", raw))
+    assert "time_index_utc" not in out["trades"][0]
+    assert out["trades"][0]["time_index"] == 782
+
+    in_range = json.dumps({"trades": [{"time_index": 1786455000, "price": 303.8}]})
+    out = json.loads(tv_module._post_process("data_get_trades", in_range))
+    assert "time_index_utc" not in out["trades"][0]
+    assert out["trades"][0]["time_index"] == 1786455000
+
+
+def test_post_process_ignores_out_of_range_time_values():
+    """A `time` field that cannot be an epoch is left alone rather than guessed at."""
+    raw = json.dumps({"time": 782, "other": {"timestamp": 0}})
+    out = json.loads(tv_module._post_process("quote_get", raw))
+    assert "time_utc" not in out
+    assert "timestamp_utc" not in out["other"]
+
+
+def test_post_process_ignores_booleans_in_time_fields():
+    """A bool in a `time` field must not become 1970-01-01.
+
+    This pins the OUTCOME, not the mechanism, and the distinction is worth stating. bool is
+    a subclass of int, so `True` reaches the numeric branch — but `True == 1`, still far
+    below the (lowered) _EPOCH_MIN of 100_000_000, so it is the RANGE check that actually
+    rejects it. Re-verified after the floor was lowered: deleting the explicit
+    `not isinstance(value, bool)` guard leaves this test green. The guard is kept as
+    defense-in-depth for a floor at or below 1, and is commented as such at the guard
+    itself rather than only here.
+    """
+    raw = json.dumps({"time": True})
+    out = json.loads(tv_module._post_process("quote_get", raw))
+    assert "time_utc" not in out
+
+
+def test_post_process_annotates_the_ohlcv_summary_period():
+    """data_get_ohlcv summary=true puts real epochs under `from`/`to`, not `time`.
+
+    Shape is the sidecar's own (src/core/data.js:170): a `period` object beside
+    `last_5_bars`, whose `time` fields DO get annotated. Leaving period bare would imply
+    those two are not dates. Two generic key names are safe here only because both guards
+    apply — exact key match AND the range check.
+    """
+    raw = json.dumps({
+        "bar_count": 500,
+        "period": {"from": 1786368600, "to": 1786455000},
+        "last_5_bars": [{"time": 1786455000, "close": 196.6749}],
+    })
+    out = json.loads(tv_module._post_process("data_get_ohlcv", raw))
+    assert out["period"]["from_utc"] == "2026-08-10T13:30:00Z"
+    assert out["period"]["to_utc"] == "2026-08-11T13:30:00Z"
+    assert out["period"]["from"] == 1786368600
+    assert out["last_5_bars"][0]["time_utc"] == "2026-08-11T13:30:00Z"
+    assert "bar_count_utc" not in out
+
+
+def test_post_process_does_not_clobber_an_existing_utc_sibling():
+    """If the sidecar ever sends its own `<key>_utc`, ours must not overwrite it.
+
+    Order-independent by construction: the guard consults the INPUT dict, so the result
+    does not depend on whether the sidecar's sibling precedes or follows the epoch.
+    """
+    for payload in (
+        {"time": 1786455000, "time_utc": "sidecar value"},
+        {"time_utc": "sidecar value", "time": 1786455000},
+    ):
+        out = json.loads(tv_module._post_process("quote_get", json.dumps(payload)))
+        assert out["time_utc"] == "sidecar value"
+
+
+def test_post_process_returns_raw_when_a_transform_raises():
+    """A transform that blows up must not turn a succeeded tool call into a failure."""
+    raw = json.dumps({"time": 1786455000})
+
+    def boom(_payload):
+        """Stand-in for a transform that raises — RecursionError is the realistic one."""
+        raise RecursionError("too deep")
+
+    with patch("claudia.tradingview._TRANSFORMS", (boom,)):
+        assert tv_module._post_process("data_get_ohlcv", raw) == raw
+
+
+def test_post_process_passes_non_json_through_untouched():
+    """execute() also returns plain error strings. A transform must never eat one."""
+    msg = "TradingView is not connected."
+    assert tv_module._post_process("tv_health_check", msg) == msg
+
+
+def test_post_process_passes_a_top_level_array_through_untouched():
+    """Valid JSON that is not an object is returned verbatim, not re-serialised.
+
+    Not hypothetical: execute()'s `json.dumps(result.content)` fallback produces exactly a
+    top-level array. Byte-identical is the assertion — dropping the non-dict branch would
+    both reformat it and annotate the epoch inside.
+    """
+    raw = '[{"time": 1786455000}]'
+    assert tv_module._post_process("data_get_ohlcv", raw) == raw
+
+
+async def test_execute_routes_the_sidecar_result_through_post_process():
+    """The transform is only worth anything if execute() actually applies it."""
+    item = MagicMock()
+    item.text = json.dumps({"bars": [{"time": 1786455000}]})
+    fake_session = AsyncMock()
+    fake_session.call_tool = AsyncMock(return_value=MagicMock(content=[item]))
+
+    bridge = TradingViewBridge()
+    bridge._session = fake_session
+    out = json.loads(await bridge.execute("data_get_ohlcv", {}))
+
+    assert out["bars"][0]["time_utc"] == "2026-08-11T13:30:00Z"
