@@ -277,14 +277,105 @@ def _flag_empty_result(name: str, payload: Payload) -> Payload:
     return payload
 
 
-# Order is not arbitrary, but nothing today depends on it: these two touch disjoint keys,
-# and both orderings were run and produced byte-identical output. The invariant that WOULD
-# break: a transform that can empty or fill a field named in _EMPTY_RESULT_GUARDS is
-# order-coupled to _flag_empty_result, since it decides what that guard sees. There is no
-# such transform yet, so this is a note, not a test — write the test when one violates it.
+# Pine studies carry their obfuscated source in inputs.text. Measured 2026-08-11 on a live
+# data_get_study_values result: two base64 blobs under that key were 5,280 of the payload's
+# 8,641 chars (61%), roughly 1,320 tokens on a tool that fires on any "what are my
+# indicators" question, and they push the real values further from the model's attention.
+# The sidecar already applies this rule in getIndicator (~/.tradingview-mcp/src/core/data.js:202)
+# and omits it in getStudyValues. Applying it to both closes an upstream inconsistency; the rule
+# itself is the sidecar's, not one invented here.
+_BLOB_KEY = "text"
+
+# The threshold is the sidecar's own (data.js:202, read 2026-08-11). It is not a length
+# heuristic standing in for "looks encoded": the KEY selects the field, and this only separates
+# a blob from a genuine short value sent under that same key.
+#
+# Why the key and nothing else. The live payload carries RSI's in_3, whose value object
+# includes {"v": "SMA", "t": "text"} — an input whose TYPE is text and whose value is a real
+# one, so matching on the type would mangle it. Matching on length alone would reach any long
+# field whatever it holds, which is why the sidecar's SECOND getIndicator rule (drop any
+# string input over 500 chars, data.js:203) is deliberately NOT mirrored here.
+#
+# CHARACTERS, not bytes, while the cost being reduced is wire bytes. 150 astral-plane
+# characters are 600 UTF-8 bytes and ~1,800 chars once ensure_ascii escapes them into the
+# emitted JSON, yet they pass; 201 ASCII chars are trimmed. About a 12x spread in the very
+# quantity this exists to reduce. Left as is on purpose: base64 Pine source is ASCII by
+# construction so the spread is unreachable for the measured case, and String.length is what
+# the sidecar's own rule counts — matching it keeps one definition of "oversized", not two.
+_BLOB_MAX_CHARS = 200
+
+
+def _trim_blobs(_name: str, payload: Payload) -> Payload:
+    """Replace oversized `text` values with a marker naming how much was withheld.
+
+    The KEY selects the field, at any dict depth: a `text` key whose value is an oversized
+    string is replaced. An oversized string that is merely reachable from one — an element of
+    `{"text": [...]}` — is not, because nothing marks it as the same kind of content.
+
+    Applies to every tool, so the tool name is unused — it is in the signature because
+    every transform shares one shape, the same reason `_post_process` carries a `name`.
+    """
+    return _trim_dict(payload)
+
+
+def _trim_dict(payload: Payload) -> Payload:
+    """One dict's worth of the trim above, recursing through its values.
+
+    Replaced, never deleted: a study with no `text` field at all tells the model nothing,
+    while a marker tells it something was withheld and how big it was.
+
+    The marker states the size and NOTHING about what was withheld. The transform is
+    unscoped to any tool list and the key alone is no evidence of encoding, so a
+    plain-English `text` value over the threshold would be trimmed too — calling it
+    "encoded source" would be asserting a provenance nothing here checked.
+
+    Unlike _RESERVED_KEY, the marker is NOT defended against a sidecar payload containing
+    an identical string: within a <=200-char `text` value it passes through verbatim and is
+    indistinguishable from ours. Accepted, not overlooked. There is no honest way to
+    separate them — Pine sources are third-party content that may contain any text — and
+    the impact is bounded: the model is told something was withheld when nothing was,
+    which costs it a value, not a wrong action. A key can be reserved; a string cannot.
+    """
+    out: Payload = {}
+    for key, value in payload.items():
+        if key == _BLOB_KEY and isinstance(value, str) and len(value) > _BLOB_MAX_CHARS:
+            out[key] = f"<omitted: {len(value)} chars>"
+        else:
+            out[key] = _walk_blobs(value)
+    return out
+
+
+def _walk_blobs(node: object) -> object:
+    """Recurse into containers; every dict reached is handed to _trim_dict.
+
+    Preserves falsiness everywhere, which is what makes this transform order-independent
+    against _flag_empty_result — see the note on _TRANSFORMS. The marker branch fires only
+    on a string already over the threshold (necessarily truthy) and writes a non-empty
+    string; every other value is passed through, no key is removed, and no container's
+    length changes. So no value can cross between empty and non-empty in either direction.
+    """
+    if isinstance(node, dict):
+        return _trim_dict(node)
+    if isinstance(node, list):
+        return [_walk_blobs(item) for item in node]
+    return node
+
+
+# Order is not arbitrary, but nothing today depends on it: these three touch disjoint keys,
+# and all six orderings were run over the live 2026-08-11 tool-result batch and produced
+# byte-identical output. The invariant that WOULD break: a transform that can empty or fill a
+# field named in _EMPTY_RESULT_GUARDS is order-coupled to _flag_empty_result, since it decides
+# what that guard sees. _trim_blobs cannot, because it PRESERVES FALSINESS everywhere: it
+# writes a non-empty marker only over an already-truthy string, passes every other value
+# through, removes no key and changes no container's length. `{"payload": {}}` comes out
+# `{"payload": {}}`. The guard reads plain falsiness, so a transform that cannot move a value
+# across that line cannot change its verdict — whatever the guard table lists. That property,
+# not the marker, is what a future transform here would have to preserve.
+# So this stays a note, not a test — write the test when one violates it.
 _TRANSFORMS: tuple[Callable[[str, Payload], Payload], ...] = (
     _annotate_epochs,
     _flag_empty_result,
+    _trim_blobs,
 )
 
 

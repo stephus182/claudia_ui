@@ -492,6 +492,44 @@ def test_post_process_drops_a_sidecar_supplied_warning_on_an_unguarded_tool():
     assert out["bars"][0]["time_utc"] == "2026-08-11T13:30:00Z"  # the rest still post-processed
 
 
+def test_post_process_trims_obfuscated_pine_source():
+    """61% of a live data_get_study_values payload was base64 Pine source."""
+    blob = "A" * 2422
+    raw = json.dumps({"studies": [{"inputs": {"text": blob, "in_0": 200}}]})
+    out = json.loads(tv_module._post_process("data_get_study_values", raw))
+    assert out["studies"][0]["inputs"]["text"] == "<omitted: 2422 chars>"
+    assert out["studies"][0]["inputs"]["in_0"] == 200
+
+
+def test_post_process_keeps_short_text_values():
+    """'SMA' is a real input value. Only oversized blobs are trimmed."""
+    raw = json.dumps({"studies": [{"inputs": {"text": "SMA"}}]})
+    out = json.loads(tv_module._post_process("data_get_study_values", raw))
+    assert out["studies"][0]["inputs"]["text"] == "SMA"
+
+
+def test_post_process_trims_strictly_above_the_sidecar_threshold():
+    """The threshold is the sidecar's own (data.js:202) and it is exclusive: >200, not >=200.
+
+    Pins the boundary in both value and direction. The other tests use a 2,422-char blob and a
+    3-char value, so every threshold in roughly [3, 2421] and either comparison satisfies them.
+    """
+    at_limit = json.dumps({"inputs": {"text": "A" * 200}})
+    assert json.loads(tv_module._post_process("x", at_limit))["inputs"]["text"] == "A" * 200
+
+    over_limit = json.dumps({"inputs": {"text": "A" * 201}})
+    trimmed = json.loads(tv_module._post_process("x", over_limit))["inputs"]["text"]
+    assert trimmed == "<omitted: 201 chars>"
+
+
+def test_post_process_only_trims_the_text_key():
+    """A long value under any other key is content, not a blob."""
+    long_note = "B" * 900
+    raw = json.dumps({"note": long_note})
+    out = json.loads(tv_module._post_process("data_get_study_values", raw))
+    assert out["note"] == long_note
+
+
 async def test_execute_routes_the_sidecar_result_through_post_process():
     """The transform is only worth anything if execute() actually applies it."""
     item = MagicMock()
