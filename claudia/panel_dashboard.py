@@ -301,6 +301,12 @@ def daily_table(snapshot: DashboardSnapshot | None, currency: str = "") -> str:
       it is *unknowable*. Saying "no closed round trips today" here would be a fabricated
       claim of a flat session, and it is the one day no statement can contradict. Gated on
       `BridgedWindow.reconstructed`, which reports reachability, not activity;
+    * **declined** — the executions were read, but a contract's reconstructed position
+      disagreed with IBKR's, so every figure it touched was withdrawn. With no rows left
+      there is nothing for `breakdown_table`'s row-level ⚠ to mark, and an empty window
+      says "quiet day" to anyone reading it. On 2026-08-10 that is exactly what it said,
+      on a session that realised +8,441.12 — seven CL executions, all of them declined
+      because the fill window opens mid-position;
     * **reconstruction, nothing closed** — a genuine quiet day, stated as one.
     """
     if snapshot is None or not snapshot.breakdowns:
@@ -312,6 +318,14 @@ def daily_table(snapshot: DashboardSnapshot | None, currency: str = "") -> str:
             "_Today's realised P&L is reconstructed from your own executions, which come "
             "from the IBKR gateway. IBKR publishes a day's trades T+1, so no statement "
             "covers today either._"
+        )
+    if not day.rows and day.incomplete:
+        return (
+            "**Today's realised P&L could not be reconstructed.**\n\n"
+            "_At least one contract traded today could not be reproduced from the "
+            "executions in view — its position does not agree with IBKR's — so every "
+            "figure it touched was withdrawn rather than reported short. This is not a "
+            "flat day: the account ledger below carries IBKR's own realised figure._"
         )
     if not day.rows:
         return "_No closed round trips today._"

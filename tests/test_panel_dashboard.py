@@ -1268,6 +1268,21 @@ def test_an_incomplete_day_is_marked_not_silently_short():
     assert "⚠" in out and "incomplete" in out
 
 
+def test_a_day_that_could_not_be_reconstructed_is_not_reported_as_quiet():
+    """Declined and quiet are opposite claims, and 2026-08-10 published the wrong one.
+
+    Every one of that day's seven CL executions closed against a lot opened before the
+    fill window, so the reconstruction declined the whole contract and the window came
+    back with no rows — and `incomplete` set. The pane read the empty rows alone and
+    called it a session with no closed round trips, on a day that realised +8,441.12.
+
+    A window with no rows is only quiet if nothing in it was declined.
+    """
+    out = pdash.daily_table(_snap_with(incomplete=True), "USD")
+    assert "No closed round trips today" not in out
+    assert "could not be reconstructed" in out
+
+
 def test_the_heading_names_the_window_it_labels_not_the_poll_time():
     """`as_of` and the day window are read at different moments and can disagree.
 
