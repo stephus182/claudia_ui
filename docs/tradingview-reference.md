@@ -8,7 +8,10 @@ Claude vision content block and analyzes indicators, patterns, and price action.
 ## Live integration (requires TradingView Desktop)
 
 The sidecar is [`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontlie/tradingview-mcp)
-(78 MCP tools + `tv` CLI, 4.1k stars, last updated April 2026). ClaudIA exposes a curated
+(84 MCP tools + `tv` CLI, 4.1k stars) at upstream commit `55534aa` of 2026-07-06, which is
+what both `~/.tradingview-mcp` and `vendor/` hold. It was 78 tools at `4795784a` (2026-04-03),
+the commit vendored until 2026-07-31; `vendor/tradingview-mcp/ARCHIVE_INFO` is the record of
+what is actually vendored and outranks this line. ClaudIA exposes a curated
 17-tool subset by default to control token cost; the full set is available via `bridge.get_all_tools()`.
 
 ## Normal startup — no manual terminal commands needed

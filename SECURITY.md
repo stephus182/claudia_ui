@@ -203,7 +203,7 @@ via Chrome DevTools Protocol on `localhost:9222`.
   state. This is intentional (required for its full tool set) and accepted for a personal local
   tool with no remote access.
 - **Tool surface area reduced.** `_CURATED_TOOLS` in `tradingview.py` limits what Claude can call
-  to 16 high-value tools, of the **84** the sidecar registers at `55534aa` (counted 2026-08-05;
+  to 17 high-value tools, of the **84** the sidecar registers at `55534aa` (counted 2026-08-05;
   this figure grows with every upgrade and was stale at 78 for three of them). The sidecar
   process itself has full access regardless of this filter.
 - **PineScript injection** modifies the Pine Editor only. It does not execute strategies or trades.

@@ -258,13 +258,26 @@ def test_empty_result_guards_only_name_curated_tools():
     naming a tool that is not in the request's tools= list, with nothing to say so.
     The names are read out of the messages, not hardcoded, so a second guard is covered
     the day it is written.
+
+    The guard KEYS are checked too, which is a wider claim than the name: it requires every
+    guarded tool to be curated. That is stricter than strictly necessary — _post_process runs
+    on every bridge.execute(), including the UI-only path in panel_pinescript.py, so a guard
+    on an uncurated tool would be legitimate. It is vacuous today (every guarded tool is
+    curated) and the strictness is deliberate: a guard on a tool the model cannot call is far
+    more likely to be dead code than intent. Relax it when a UI-only guard actually exists.
     """
+    # A guard's own `field` is the word a future message is most likely to add ("its
+    # updated_inputs came back empty"), and it is a payload key, never a tool. Excluding
+    # it here rather than in _GUARD_MESSAGE_NON_TOOL_TOKENS keeps that automatic for a
+    # second guard, and stops the failure from reading "guards reference non-curated
+    # tools: ['updated_inputs']" — a wrong diagnosis that would teach nothing.
+    non_tool = set(_GUARD_MESSAGE_NON_TOOL_TOKENS)
+    non_tool.update(field for field, _message in tv_module._EMPTY_RESULT_GUARDS.values())
+
     mentioned: set[str] = set()
     for _field, message in tv_module._EMPTY_RESULT_GUARDS.values():
         mentioned.update(
-            token
-            for token in _SNAKE_TOKEN.findall(message)
-            if token not in _GUARD_MESSAGE_NON_TOOL_TOKENS
+            token for token in _SNAKE_TOKEN.findall(message) if token not in non_tool
         )
 
     # Non-vacuity: the extraction itself must still be finding something.

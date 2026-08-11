@@ -29,7 +29,10 @@ Prerequisites (user must install once):
         /Applications/TradingView.app/Contents/MacOS/TradingView --remote-debugging-port=9222
 
 tradingview-mcp repo: https://github.com/tradesdontlie/tradingview-mcp
-  78 MCP tools + tv CLI, 4.1k stars, last updated April 2026.
+  84 MCP tools + tv CLI, at upstream commit 55534aa (2026-07-06), which is what both
+  ~/.tradingview-mcp and vendor/ hold. The count was 78 at 4795784a (2026-04-03), the
+  commit vendored until 2026-07-31 — vendor/tradingview-mcp/ARCHIVE_INFO is the record
+  of what is actually vendored, and is the thing to read rather than this line.
   CDP injection sanitization added April 3, 2026 (safeString + requireFinite guards).
   Source: https://github.com/tradesdontlie/tradingview-mcp/blob/main/README.md
   Setup guide: https://github.com/tradesdontlie/tradingview-mcp/blob/main/SETUP_GUIDE.md
@@ -107,7 +110,7 @@ _TV_MCP_BIN = _find_tv_mcp_bin()
 
 # 17-tool curated subset exposed to Claude by default.
 # Covers chart reading, control, Pine Script IDE, strategy results, and utility.
-# Full 78-tool set is available but kept out of the Anthropic context window to
+# Full 84-tool set is available but kept out of the Anthropic context window to
 # reduce token cost and avoid tool-choice noise.
 # Verified against live sidecar 2026-06-30 — data_get_equity_curve renamed to
 # data_get_equity; data_get_trades added (Strategy Tester trade list).
@@ -124,7 +127,9 @@ _CURATED_TOOLS = {
     # …and the getter it depends on: input ids are not guessable (a built-in RSI uses
     # in_0..in_7, an EMA on the same chart uses "length"), and an unmatched key is a
     # silent no-op reported as success. Curating the setter alone made that a false
-    # success on 2026-08-11. Added with the guard in _EMPTY_RESULT_GUARDS.
+    # success on 2026-08-11. Pairs with the guard added in a75e9ec, whose message names
+    # this tool as the remedy — test_empty_result_guards_only_name_curated_tools keeps
+    # the two from drifting apart.
     "data_get_indicator",
     # Pine Script IDE
     "pine_set_source",
