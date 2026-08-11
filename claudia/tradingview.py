@@ -143,8 +143,10 @@ _CURATED_TOOLS = {
 # the live batch found the model inventing dates from bare epoch fields (it printed
 # 2026-08-11 as "May 12", every row wrong, while every price round-tripped exactly).
 
-# A parsed sidecar payload. Every transform takes one and returns one, so they compose
-# in _TRANSFORMS without any of them having to re-narrow the top-level type.
+# A parsed sidecar payload. Every transform takes the tool name and one of these, and
+# returns one, so they compose in _TRANSFORMS in a single line without any of them having
+# to re-narrow the top-level type. Transforms that ignore the name still declare it: one
+# shape for all of them is what keeps the loop a loop instead of a set of special cases.
 Payload = dict[str, object]
 
 # Epoch seconds only, and only in fields that are actually timestamps. `time_index` in
@@ -166,8 +168,17 @@ _EPOCH_MIN = 100_000_000  # 1973-03-03
 _EPOCH_MAX = 4_000_000_000  # 2096-10-02
 
 
-def _annotate_epochs(payload: Payload) -> Payload:
-    """Add a `<key>_utc` ISO-8601 sibling beside every epoch-seconds field.
+def _annotate_epochs(_name: str, payload: Payload) -> Payload:
+    """Add a `<key>_utc` ISO-8601 sibling beside every epoch-seconds field, at any depth.
+
+    Applies to every tool, so the tool name is unused — it is in the signature because
+    every transform shares one shape, the same reason `_post_process` carries a `name`.
+    """
+    return _annotate_dict(payload)
+
+
+def _annotate_dict(payload: Payload) -> Payload:
+    """One dict's worth of the annotation above, recursing through its values.
 
     UTC rather than exchange-local: the exchange is not knowable from the payload and
     guessing it would be an instrument-specific rule. The original value is kept.
@@ -194,19 +205,91 @@ def _annotate_epochs(payload: Payload) -> Payload:
 
 
 def _walk_epochs(node: object) -> object:
-    """Recurse into containers; every dict reached is handed to _annotate_epochs."""
+    """Recurse into containers; every dict reached is handed to _annotate_dict."""
     if isinstance(node, dict):
-        return _annotate_epochs(node)
+        return _annotate_dict(node)
     if isinstance(node, list):
         return [_walk_epochs(item) for item in node]
     return node
 
 
-_TRANSFORMS: tuple[Callable[[Payload], Payload], ...] = (_annotate_epochs,)
+# Our channel for telling the model to distrust the payload the key sits in — so it is ours
+# alone. A sidecar-supplied one is dropped in _post_process before any transform runs: never
+# relayed, never deferred to. That is the OPPOSITE resolution from the `_utc` siblings above,
+# and deliberately so — a sidecar `time_utc` is data ABOUT the payload and legitimately wins,
+# while this is a statement about the payload's TRUSTWORTHINESS and cannot be sourced from
+# the thing being judged. Reserved once, for every present and future transform, rather than
+# defended inside any one of them.
+#
+# Latent rather than live: the sidecar builds its responses from fixed keys and none of them
+# is this one. It is reserved because it is an injection surface into a trusted channel.
+_RESERVED_KEY = "claudia_warning"
+
+
+# A tool whose success flag is meaningless unless a named field came back non-empty.
+# Keyed by tool name -> (field that must be non-empty, what to tell the model).
+#
+# indicator_set_inputs is the measured case (2026-08-11): asked to set the RSI length to 21
+# it returned success:true, updated_inputs:{} and changed nothing. The sidecar matches
+# override keys against the study's real input ids, drops the ones that miss, and reports
+# success either way (~/.tradingview-mcp/src/core/indicators.js:171-192). The tool is
+# unvalidated, not broken — retried with in_0 it worked.
+#
+# CHOOSING A FIELD: emptiness here is plain falsiness, so `0`, `False`, `""` and `[]` all
+# read as a no-op. Only list a field whose empty value is unambiguously "nothing happened".
+# A field where `0` or `""` is a legitimate result needs a predicate, not this table.
+# (updated_inputs is safe: indicators.js:178 initialises `var updatedKeys = {}` and returns
+# it unconditionally, so it is always an object.)
+#
+# Every message here is OUR constant, and on the transform path it is the only claudia_warning
+# that can reach the model: _post_process drops any the sidecar sent before the transforms run.
+# The reservation stops there, and the gap is worth naming rather than rounding off. On the three
+# fail-open paths — non-JSON, a non-object payload, or a transform raising — _post_process returns
+# the sidecar's bytes untouched, so a claudia_warning inside them survives. Measured, not assumed:
+# a top-level array carrying one comes through. That is what fail-open means and the trade is
+# deliberate; passing a tool result through unread beats swallowing it. Do not "fix" it by
+# re-serialising those paths.
+_EMPTY_RESULT_GUARDS: dict[str, tuple[str, str]] = {
+    "indicator_set_inputs": (
+        "updated_inputs",
+        "NOTHING WAS CHANGED. None of the requested keys matched this study's input "
+        "ids, and the sidecar reports success either way. Input ids are not guessable "
+        "-- the built-in RSI uses in_0..in_7 while an EMA on the same chart uses "
+        "'length'. Call data_get_indicator on this entity_id to read the real ids, "
+        "then retry. Do not report this change as done.",
+    ),
+}
+
+
+def _flag_empty_result(name: str, payload: Payload) -> Payload:
+    """Attach a warning when a tool claims success but its own payload shows a no-op.
+
+    The sidecar's own `success` field is left exactly as it sent it: this reports what the
+    tool said alongside what its payload shows, it does not rewrite the tool's answer.
+    """
+    guard = _EMPTY_RESULT_GUARDS.get(name)
+    if guard is None:
+        return payload
+    field, message = guard
+    if field in payload and not payload[field]:
+        payload = dict(payload)
+        payload[_RESERVED_KEY] = message
+    return payload
+
+
+# Order is not arbitrary, but nothing today depends on it: these two touch disjoint keys,
+# and both orderings were run and produced byte-identical output. The invariant that WOULD
+# break: a transform that can empty or fill a field named in _EMPTY_RESULT_GUARDS is
+# order-coupled to _flag_empty_result, since it decides what that guard sees. There is no
+# such transform yet, so this is a note, not a test — write the test when one violates it.
+_TRANSFORMS: tuple[Callable[[str, Payload], Payload], ...] = (
+    _annotate_epochs,
+    _flag_empty_result,
+)
 
 
 def _post_process(name: str, raw: str) -> str:
-    """Annotate a sidecar payload before the model sees it.
+    """Run every registered transform over a parsed sidecar payload before the model sees it.
 
     Fails open by design: anything that is not a JSON object is returned untouched, and so
     is anything a transform raises on. A transform that could swallow a tool result — or
@@ -218,9 +301,10 @@ def _post_process(name: str, raw: str) -> str:
         return raw
     if not isinstance(payload, dict):
         return raw
+    payload.pop(_RESERVED_KEY, None)
     try:
         for transform in _TRANSFORMS:
-            payload = transform(payload)
+            payload = transform(name, payload)
     except Exception as exc:
         log.warning("post-processing of tradingview-mcp '%s' failed, passing raw: %s", name, exc)
         return raw

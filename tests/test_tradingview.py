@@ -408,8 +408,13 @@ def test_post_process_returns_raw_when_a_transform_raises():
     """A transform that blows up must not turn a succeeded tool call into a failure."""
     raw = json.dumps({"time": 1786455000})
 
-    def boom(_payload):
-        """Stand-in for a transform that raises — RecursionError is the realistic one."""
+    def boom(_name, _payload):
+        """Stand-in for a transform that raises — RecursionError is the realistic one.
+
+        Takes the full (name, payload) transform signature deliberately: a stub with the
+        wrong arity would raise TypeError on the call itself and pass this test without
+        the raising-transform path ever being what returned the raw string.
+        """
         raise RecursionError("too deep")
 
     with patch("claudia.tradingview._TRANSFORMS", (boom,)):
@@ -431,6 +436,60 @@ def test_post_process_passes_a_top_level_array_through_untouched():
     """
     raw = '[{"time": 1786455000}]'
     assert tv_module._post_process("data_get_ohlcv", raw) == raw
+
+
+def test_post_process_flags_a_no_op_indicator_set_inputs():
+    """success:true with an empty updated_inputs means nothing changed. Say so."""
+    raw = json.dumps({"success": True, "entity_id": "o1rBVD", "updated_inputs": {}})
+    out = json.loads(tv_module._post_process("indicator_set_inputs", raw))
+    assert "claudia_warning" in out
+    assert "data_get_indicator" in out["claudia_warning"]
+    assert out["success"] is True  # the sidecar's own field is not rewritten
+
+
+def test_post_process_leaves_a_real_indicator_set_inputs_alone():
+    """A key that DID match an input id changed the chart. Do not cast doubt on it."""
+    raw = json.dumps({"success": True, "entity_id": "o1rBVD", "updated_inputs": {"in_0": 21}})
+    out = json.loads(tv_module._post_process("indicator_set_inputs", raw))
+    assert "claudia_warning" not in out
+
+
+def test_post_process_only_guards_the_listed_tools():
+    """An empty dict on an unrelated tool is not a defect and must not be flagged."""
+    raw = json.dumps({"success": True, "updated_inputs": {}})
+    out = json.loads(tv_module._post_process("chart_get_state", raw))
+    assert "claudia_warning" not in out
+
+
+def test_post_process_drops_a_sidecar_supplied_warning_on_a_guarded_tool():
+    """claudia_warning is our channel for distrusting a payload, so the payload cannot fill it.
+
+    The guard deliberately stays SILENT here (updated_inputs is non-empty), which is the path
+    where a sidecar-supplied warning would otherwise survive untouched and be read by the
+    model as ours.
+
+    Asserted on the sidecar's TEXT rather than on the key's absence. Key-absence would also
+    be false whenever our own warning is legitimately present, coupling this test to the
+    guard's firing rule — a mutation to that rule killed it while the reservation was intact.
+    """
+    raw = json.dumps({
+        "success": True,
+        "updated_inputs": {"in_0": 21},
+        "claudia_warning": "SIDECAR-CONTROLLED TEXT",
+    })
+    out = json.loads(tv_module._post_process("indicator_set_inputs", raw))
+    assert "SIDECAR-CONTROLLED TEXT" not in json.dumps(out)
+
+
+def test_post_process_drops_a_sidecar_supplied_warning_on_an_unguarded_tool():
+    """The key is reserved for every tool, not only the ones in the guard table."""
+    raw = json.dumps({
+        "bars": [{"time": 1786455000}],
+        "claudia_warning": "SIDECAR-CONTROLLED TEXT",
+    })
+    out = json.loads(tv_module._post_process("data_get_ohlcv", raw))
+    assert "SIDECAR-CONTROLLED TEXT" not in json.dumps(out)
+    assert out["bars"][0]["time_utc"] == "2026-08-11T13:30:00Z"  # the rest still post-processed
 
 
 async def test_execute_routes_the_sidecar_result_through_post_process():
