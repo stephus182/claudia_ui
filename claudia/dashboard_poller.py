@@ -249,7 +249,7 @@ class DashboardPoller:
         flex = self._flex_sections(
             await asyncio.to_thread(self._read_flex, reconstruction)
         )
-        positions = await asyncio.to_thread(self._read_entries, positions)
+        positions = await asyncio.to_thread(self._read_entries, positions, reconstruction)
         positions = await asyncio.to_thread(self._read_quotes, positions)
         # Deliberately NOT inside `_read_account`: orders come from `/iserver/*` and the
         # account half from `/portfolio/*`, and those fail independently (measured
@@ -395,8 +395,16 @@ class DashboardPoller:
             self._client, account_id
         )
 
-    def _read_entries(self, positions: tuple[Position, ...]) -> tuple[Position, ...]:
+    def _read_entries(
+        self, positions: tuple[Position, ...], reconstruction: Any
+    ) -> tuple[Position, ...]:
         """Attach reconstructed economic entry prices; never raise.
+
+        The `reconstruction` is here for its fills, not its figures: the open lots have
+        to be priced from the same executions the realised windows use, and a position
+        replaced since the last statement is otherwise invisible (2026-08-10, CL). No
+        reconstruction means no executions in hand, which `economic_entries` answers
+        with a blank column rather than a stale one.
 
         A second SQLite open per poll rather than folding this into `_read_flex`, which
         runs *first and deliberately* so a logged-out gateway still gets its realised
@@ -410,9 +418,12 @@ class DashboardPoller:
         """
         if not positions:
             return positions
+        fills = getattr(reconstruction, "fills", None)
         try:
             with closing(connect(self._db_path)) as conn:
-                return with_economic_entries(positions, economic_entries(conn, positions))
+                return with_economic_entries(
+                    positions, economic_entries(conn, positions, fills)
+                )
         except Exception as exc:
             log.warning("Dashboard economic-entry reconstruction failed: %s", exc)
             return positions

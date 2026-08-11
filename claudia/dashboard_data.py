@@ -133,6 +133,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ibkr_core_mcp import IBKRClient
 
+    from claudia.live_realised import LiveFill
+
 log = logging.getLogger(__name__)
 
 # IBKR returns positions 30 to a page and gives no total count, so "is there more?" is
@@ -739,25 +741,34 @@ def _fifo_open_average(fills: Sequence[tuple[float, float]]) -> tuple[float | No
 
 
 def economic_entries(
-    conn: sqlite3.Connection, positions: Sequence[Position]
+    conn: sqlite3.Connection,
+    positions: Sequence[Position],
+    live_fills: Sequence[LiveFill] | None,
 ) -> dict[int, float]:
     """Average entry price per conid, for the positions it can reconstruct *exactly*.
 
     A conid is in the result only when the reconstruction independently reproduces
-    IBKR's own reported quantity to `_QTY_EPSILON`. That check is the whole safety
-    argument: it is one line, it is not a heuristic, and it catches every way this can
-    go wrong at once — a position opened before the stored history begins, a transfer or
-    corporate action that never appeared as a fill, a split, a symbol mismatch on the
-    live rows. Absence from the dict means "not established", and the view shows nothing
-    rather than a plausible wrong entry. On a trading surface those are not close to
-    equivalent.
+    IBKR's own reported quantity to `_QTY_EPSILON`. Absence from the dict means "not
+    established", and the view shows nothing rather than a plausible wrong entry. On a
+    trading surface those are not close to equivalent.
 
-    **Live rows are matched by symbol, because they carry no `conid`** (measured
-    2026-08-04: all nine of them). Flex states the conid on the same row T+1, so this
-    only ever affects today's fills — but a ticker is not a unique key, so any symbol
-    that could belong to more than one held contract disqualifies *every* position it
-    touches rather than being resolved by a guess. Futures are matched on
-    `underlying_symbol` too, since the live feed reports `CL` where Flex reports `CLU6`.
+    **The quantity check alone is not sufficient, and 2026-08-10 proved it.** CL closed
+    its two open lots and reopened two more inside one session: the position ended the
+    day the size it began it, so a book that stopped at the previous statement
+    reproduced IBKR's `2` exactly and certified an entry of 77.185 for lots bought at
+    82.00 and 82.10. Same quantity, different lots, and nothing in a quantity comparison
+    can see the difference. What closes it is the input, not the check — the fills have
+    to be current.
+
+    So the book is assembled from two sources with one boundary between them: Flex owns
+    every day through `flex_coverage().through`, and `live_fills` — executions from
+    `/iserver/account/trades`, which carry their own conid — own every day after it. A
+    fill on a covered day is dropped as the duplicate it is. Nothing is matched on
+    symbol: a ticker is not a unique key, and the executions never make us guess.
+
+    `live_fills` of `None` means the executions could not be read, which is a different
+    claim from `()` ("there were none") and is answered with silence: stored history
+    that reproduces a quantity is exactly what the CL case looked like.
 
     Prices are fill prices, deliberately excluding commission: the question this answers
     is "where did I get in", which is a level on a chart, not a cost. IBKR's basis
@@ -769,39 +780,21 @@ def economic_entries(
     wanted = {p.conid: p for p in positions if p.conid and abs(p.quantity) > _QTY_EPSILON}
     if not wanted:
         return {}
+    if live_fills is None:
+        log.debug("Economic entries declined: live executions unavailable")
+        return {}
 
-    # Symbols each candidate conid has traded under, for matching the conid-less live
-    # rows. Built for all candidates at once so ambiguity is visible across the account.
-    aliases: dict[int, set[str]] = {}
-    placeholders = ",".join("?" * len(wanted))
-    for row in conn.execute(
-        f"SELECT conid, symbol, underlying_symbol FROM flex_trade "
-        f"WHERE conid IN ({placeholders})",
-        [str(c) for c in wanted],
-    ):
-        names = aliases.setdefault(int(row["conid"]), set())
-        names.update(str(n).strip().upper() for n in (row["symbol"], row["underlying_symbol"]) if n)
-
-    ambiguous = {
-        conid
-        for conid, names in aliases.items()
-        for other, other_names in aliases.items()
-        if other != conid and names & other_names
-    }
-
-    live_rows = [
-        (str(r["symbol"] or "").strip().upper(), _as_float(r["quantity"]), _as_float(r["trade_price"]))
-        for r in conn.execute(
-            "SELECT symbol, quantity, trade_price FROM flex_trade "
-            "WHERE source != 'flex' ORDER BY date_time"
-        )
-    ]
+    # The Flex/live boundary. Flex states a day's trades T+1, so its newest trade date is
+    # the last day whose fills are already rows here; anything after it is the live feed's.
+    through = flex_coverage(conn).through
+    cutoff = through.strftime("%Y%m%d") if through else ""
+    unsettled = sorted(
+        (f for f in live_fills if f.trade_day > cutoff),
+        key=lambda f: (f.trade_day, f.execution_id),
+    )
 
     entries: dict[int, float] = {}
     for conid, position in wanted.items():
-        if conid in ambiguous:
-            log.debug("Economic entry declined for conid %s: symbol shared with another position", conid)
-            continue
         fills = [
             (_as_float(r["quantity"]), _as_float(r["trade_price"]))
             for r in conn.execute(
@@ -810,8 +803,7 @@ def economic_entries(
                 (str(conid),),
             )
         ]
-        names = aliases.get(conid, set())
-        fills += [(q, price) for symbol, q, price in live_rows if symbol in names]
+        fills += [(f.signed_quantity, f.price) for f in unsettled if f.conid == conid]
         average, held = _fifo_open_average(fills)
         if average is None or abs(held - position.quantity) > _QTY_EPSILON:
             log.debug(

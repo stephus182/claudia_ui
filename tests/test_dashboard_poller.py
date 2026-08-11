@@ -88,6 +88,19 @@ _POSITION = {"conid": 1, "ticker": "ESU6", "contractDesc": "ESU6", "assetClass":
              "position": 1.0, "mktValue": 324000.0, "unrealizedPnl": -1234.5,
              "currency": "USD"}
 
+# Sentinel for FakeClient(trades=...): "this endpoint raises", which is a different
+# state from "it answered, with nothing" and the two must not share a value.
+_RAISE = object()
+
+
+def _trade(conid, side, size, price, day="20260806", seq="01", multiplier=1.0):
+    """One `/iserver/account/trades` row, in IBKR's own shape."""
+    return {
+        "execution_id": f"{day}.{seq}", "conid": conid, "symbol": "TEST",
+        "sec_type": "STK", "side": side, "size": size, "price": price,
+        "net_amount": price * size * multiplier, "trade_time": f"{day}-12:00:00",
+    }
+
 
 class FakeClient:
     """An IBKRClient stand-in with per-method call counters and injectable failures.
@@ -96,13 +109,16 @@ class FakeClient:
     the "loop survives, age grows" property is exercised without any real network.
     """
 
-    def __init__(self, fail_from: int | None = None, accounts=None):
+    def __init__(self, fail_from: int | None = None, accounts=None, trades=(), positions=None):
         """Configure the fake. `accounts` defaults to a single valid account."""
         self.fail_from = fail_from
         self.accounts_calls = 0
         self.ledger_calls = 0
         self.position_pages: list[int] = []
         self.order_calls = 0
+        self.trade_calls = 0
+        self.trades = trades
+        self._positions = [_POSITION] if positions is None else positions
         self._accounts = (
             [{"accountId": "U1234567", "currency": "USD"}] if accounts is None else accounts
         )
@@ -120,9 +136,9 @@ class FakeClient:
         return _LEDGER
 
     def get_positions(self, account_id, page=0):
-        """Return one position on page 0 and nothing after it."""
+        """Return the configured positions on page 0 and nothing after it."""
         self.position_pages.append(page)
-        return [_POSITION] if page == 0 else []
+        return self._positions if page == 0 else []
 
     def get_live_orders(self):
         """Return one working order, counting the call.
@@ -133,6 +149,19 @@ class FakeClient:
         """
         self.order_calls += 1
         return [_ORDER]
+
+    def get_trades(self):
+        """Return the canned executions, or raise if configured to.
+
+        The fake had no such method until 2026-08-10, so `fetch_fills` caught the
+        AttributeError and every test ran against a poller that could never see a
+        current fill — a double weaker than its dependency, and the reason the entry
+        wiring could go stale without a red test.
+        """
+        self.trade_calls += 1
+        if self.trades is _RAISE:
+            raise ConnectionError("trades endpoint unreachable")
+        return self.trades
 
 
 def _poller(db, client, **kw):
@@ -486,11 +515,70 @@ async def test_entries_are_attached_when_the_store_can_answer(tmp_path):
              ("20260602", "20260602;100000", 1.0, 110.0),
              ("20260603", "20260603;100000", -1.0, 130.0)],
         )
-    p = _poller(path, FakeClient())
+    p = _poller(path, FakeClient(positions=[{**_POSITION, "position": 1.0}]))
     await p._poll_once()
     position = p.snapshot().positions[0]
     assert position.conid == 1
     assert position.economic_entry == pytest.approx(110.0)
+
+
+def _replaced_intraday_store(tmp_path):
+    """A store whose newest statement leaves 2 lots averaging 105.0, and stops there."""
+    path = tmp_path / "store.db"
+    with sqlite3.connect(path) as w:
+        w.execute(
+            "CREATE TABLE flex_trade (trade_date_iso TEXT, trade_date TEXT, source TEXT,"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, conid TEXT,"
+            " symbol TEXT, underlying_symbol TEXT, date_time TEXT, quantity REAL,"
+            " trade_price REAL)"
+        )
+        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
+                  " fifo_pnl_realized REAL)")
+        w.executemany(
+            "INSERT INTO flex_trade (source, conid, symbol, trade_date, trade_date_iso,"
+            " date_time, quantity, trade_price) VALUES ('flex', '1', 'TEST', ?, ?, ?, ?, ?)",
+            [("20260605", "2026-06-05", "20260605;100000", 1.0, 100.0),
+             ("20260605", "2026-06-05", "20260605;100100", 1.0, 110.0)],
+        )
+    return path
+
+
+async def test_a_position_replaced_since_the_statement_publishes_todays_lots(tmp_path):
+    """The 2026-08-10 CL defect, through the poller: today's fills must reach the entry.
+
+    The store's last word is 2 lots averaging 105.0. Today the account sold both and
+    bought two more at 200.0 — so IBKR still reports 2, the stored book still
+    reconstructs 2, and the quantity check cannot tell the two apart. Only the fills
+    can, and 105.0 published here is the live defect exactly.
+    """
+    p = _poller(
+        _replaced_intraday_store(tmp_path),
+        FakeClient(
+            positions=[{**_POSITION, "position": 2.0}],
+            trades=[_trade(1, "S", 2, 150.0, seq="01"),
+                    _trade(1, "B", 1, 200.0, seq="02"),
+                    _trade(1, "B", 1, 200.0, seq="03")],
+        ),
+    )
+    await p._poll_once()
+    assert p.snapshot().positions[0].economic_entry == pytest.approx(200.0)
+
+
+async def test_entries_decline_when_the_executions_cannot_be_read(tmp_path):
+    """A gateway that will not answer for fills buys silence, not the stored book.
+
+    Same store and the same 2-unit position, with the trades endpoint failing. The
+    stored history reproduces IBKR's quantity on its own, so this is precisely the state
+    in which a plausible wrong entry gets published — the column goes blank instead.
+    """
+    p = _poller(
+        _replaced_intraday_store(tmp_path),
+        FakeClient(positions=[{**_POSITION, "position": 2.0}], trades=_RAISE),
+    )
+    await p._poll_once()
+    snap = p.snapshot()
+    assert snap.error is None
+    assert snap.positions[0].economic_entry is None
 
 
 # ── The order book ────────────────────────────────────────────────────────────

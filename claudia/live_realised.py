@@ -203,6 +203,10 @@ class Reconstruction:
     round_trips: tuple[RoundTrip, ...] = ()
     declined: tuple[str, ...] = ()
     declined_days: frozenset[str] = frozenset()
+    # The executions this was built from, in order. Carried so a single fetch can serve
+    # every reader — `/iserver/account/trades` is documented as a once-a-session call,
+    # and the open-lot pricing in `dashboard_data.economic_entries` needs the same rows.
+    fills: tuple[LiveFill, ...] = ()
 
     def stats_for(self, day: str, asset_class: str) -> tuple[int, int, int, float, float]:
         """`(winners, losers, scratches, gross_win, gross_loss)` for one day and class.
@@ -333,6 +337,7 @@ def reconstruct(
         round_trips=tuple(round_trips),
         declined=tuple(sorted(declined)),
         declined_days=frozenset(declined_days),
+        fills=tuple(ordered),
     )
 
 

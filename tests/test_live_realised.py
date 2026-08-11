@@ -199,6 +199,18 @@ def test_the_check_is_skipped_only_when_positions_are_not_supplied(fills):
     assert reconstruct(fills, None).declined == ()
 
 
+def test_the_reconstruction_carries_the_fills_it_was_built_from(fills, positions):
+    """The executions travel with the result, so one fetch can serve every reader.
+
+    The dashboard needs the same fills twice — once for realised P&L, once to price the
+    open lots — and IBKR asks that `/iserver/account/trades` be called once a session.
+    Carrying them here is what keeps that one call, and keeps both surfaces reasoning
+    about the same executions rather than two fetches taken moments apart.
+    """
+    result = reconstruct(fills, positions)
+    assert result.fills == tuple(sorted(fills, key=lambda f: (f.trade_day, f.execution_id)))
+
+
 # ── The gap the bridge has to cover ──────────────────────────────────────────
 
 

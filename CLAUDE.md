@@ -302,8 +302,16 @@ the fix that established this (75,480 → 2,910 tokens/session).
   the open lots, FIFO over the account's own fills (`dashboard_data.economic_entries`) —
   and shows IBKR's basis beside it: a basis is a fiscal figure, and a trader sizing an exit
   needs the level actually traded at. The reconstruction publishes a number **only when it
-  independently reproduces IBKR's own position quantity**; that one check is the whole safety
-  argument, and a blank cell means it declined
+  independently reproduces IBKR's own position quantity**, and a blank cell means it declined.
+  That check was called the whole safety argument until **2026-08-10 disproved it**: CL closed
+  both open lots and reopened two more inside one session, so a book that stopped at the last
+  statement reproduced IBKR's `2` exactly and certified 77.185 for lots bought at 82.05 — and
+  the pane turned the gap into a **+9,734.72 USD** claim that the unrealised P&L was "basis
+  rather than market". Same quantity, different lots; no quantity comparison can see it. The
+  input is what closes it: the book is Flex through `flex_coverage().through` plus
+  `/iserver/account/trades` after it, keyed on **conid** (never symbol), and **fills that
+  could not be read (`None`, as against `()`) blank the column rather than certify the stored
+  history**
 - Panel folder hub (both references + dated research + smoke screenshots): `docs/panel/README.md`
 - Startup flow, phase by phase (diagnose startup failures): `docs/startup-flow.md`
 - Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and

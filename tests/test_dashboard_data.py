@@ -21,6 +21,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from claudia import dashboard_data as dd
+from claudia.live_realised import LiveFill
 
 # ── Fixture database ──────────────────────────────────────────────────────────
 
@@ -527,38 +528,45 @@ def test_realised_ledger_label_falls_back_rather_than_overclaiming():
 
 @pytest.fixture
 def fills(tmp_path):
-    """A store of raw fills, carrying every case `economic_entries` must decline on.
+    """The settled half of the book: Flex rows only, through 2026-08-07.
 
-    GLD  — built over two days, partly sold, and then sold again *today* through a
-           conid-less live row. The reconstruction must follow it to 50 shares.
+    Today's executions are never in here — they arrive as `live_fills`, which is the
+    whole point of the boundary.
+
+    GLD  — built over two days and partly sold today, so it reconstructs to 50 shares
+           only when the live sale is supplied.
     IGV  — untouched today; reconstructs from Flex alone.
     OLD  — a position whose opening fills are not in the store at all, which is what a
            history that predates the Flex coverage looks like.
-    DUPa/DUPb — two conids that have both traded under the ticker "DUP", so a live row
-           saying "DUP" could belong to either.
+    DUPa/DUPb — two conids that have both traded under the ticker "DUP", the case that
+           made symbol matching untenable.
+    CL   — two open lots averaging 77.185 as of the last statement, every one of which
+           was closed and replaced on 2026-08-10.
     """
     path = tmp_path / "store.db"
     with sqlite3.connect(path) as w:
         w.execute(
             "CREATE TABLE flex_trade (conid TEXT, symbol TEXT, underlying_symbol TEXT,"
-            " source TEXT, trade_date TEXT, date_time TEXT, quantity REAL,"
-            " trade_price REAL)"
+            " source TEXT, trade_date TEXT, trade_date_iso TEXT, date_time TEXT,"
+            " quantity REAL, trade_price REAL)"
         )
         w.executemany(
-            "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                # GLD: +60 @ 100, +40 @ 110, then -50 (FIFO eats the 100s)
-                ("1", "GLD", None, "flex", "20260601", "20260601;100000", 60.0, 100.0),
-                ("1", "GLD", None, "flex", "20260602", "20260602;100000", 40.0, 110.0),
-                # today's fill: live rows carry NO conid, only a symbol
-                (None, "GLD", None, "live", None, "20260804;140000", -50.0, 120.0),
+                # GLD: +60 @ 100, +40 @ 110. Today's -50 arrives as a live fill, not a row.
+                ("1", "GLD", None, "flex", "20260601", "2026-06-01", "20260601;100000", 60.0, 100.0),
+                ("1", "GLD", None, "flex", "20260602", "2026-06-02", "20260602;100000", 40.0, 110.0),
                 # IGV: +100 @ 90, nothing today
-                ("2", "IGV", None, "flex", "20260610", "20260610;100000", 100.0, 90.0),
+                ("2", "IGV", None, "flex", "20260610", "2026-06-10", "20260610;100000", 100.0, 90.0),
                 # OLD: only a partial sale is on record, never the opening buy
-                ("3", "OLD", None, "flex", "20260701", "20260701;100000", -5.0, 50.0),
-                # Two contracts sharing a ticker
-                ("4", "DUPa", "DUP", "flex", "20260601", "20260601;100000", 10.0, 10.0),
-                ("5", "DUPb", "DUP", "flex", "20260601", "20260601;110000", 10.0, 20.0),
+                ("3", "OLD", None, "flex", "20260701", "2026-07-01", "20260701;100000", -5.0, 50.0),
+                # Two contracts that have both traded under the ticker "DUP"
+                ("4", "DUPa", "DUP", "flex", "20260601", "2026-06-01", "20260601;100000", 10.0, 10.0),
+                ("5", "DUPb", "DUP", "flex", "20260601", "2026-06-01", "20260601;110000", 10.0, 20.0),
+                # CL: the 2026-08-10 case. Flex's last word is two open lots averaging
+                # 77.185 — and every one of them was closed and replaced *today*.
+                ("6", "CLU6", "CL", "flex", "20260807", "2026-08-07", "20260807;150000", 1.0, 77.47),
+                ("6", "CLU6", "CL", "flex", "20260807", "2026-08-07", "20260807;150100", 1.0, 76.90),
             ],
         )
     conn = dd.connect(path)
@@ -611,19 +619,87 @@ def test_fifo_open_average_handles_a_reversal_through_zero():
     assert average == pytest.approx(9.0)
 
 
-def test_economic_entry_follows_a_conid_less_live_fill(fills):
-    """Live rows carry no conid (measured 2026-08-04), so they match on symbol.
+def _live_fill(conid, symbol, signed_quantity, price, day="20260810", seq="01"):
+    """One execution as `/iserver/account/trades` reports it — conid and all."""
+    return LiveFill(
+        execution_id=f"{day}.{seq}",
+        conid=conid,
+        symbol=symbol,
+        asset_class="FUT" if symbol == "CL" else "STK",
+        signed_quantity=signed_quantity,
+        price=price,
+        commission=0.0,
+        multiplier=1000.0 if symbol == "CL" else 1.0,
+        trade_day=day,
+    )
 
-    Without the live row the reconstruction would hold 100 shares against IBKR's 50 and
+
+# The seven CL executions of 2026-08-10, in order, as IBKR reported them. The position
+# ends the day the same size it started it — 2 long — which is exactly why this is here.
+_CL_2026_08_10 = [
+    _live_fill(6, "CL", -2.0, 78.21, seq="01"),
+    _live_fill(6, "CL", +1.0, 78.70, seq="02"),
+    _live_fill(6, "CL", +1.0, 78.70, seq="03"),
+    _live_fill(6, "CL", -1.0, 81.99, seq="04"),
+    _live_fill(6, "CL", -1.0, 81.82, seq="05"),
+    _live_fill(6, "CL", +1.0, 82.00, seq="06"),
+    _live_fill(6, "CL", +1.0, 82.10, seq="07"),
+]
+
+
+def test_economic_entry_follows_a_live_fill(fills):
+    """A fill newer than the statement dataset is part of the book, not an extra.
+
+    Without today's sale the reconstruction would hold 100 shares against IBKR's 50 and
     be declined; with it, the FIFO average of the surviving lots is 108.0.
     """
-    entries = dd.economic_entries(fills, [_entry_pos(1, "GLD", 50.0)])
+    entries = dd.economic_entries(
+        fills, [_entry_pos(1, "GLD", 50.0)], [_live_fill(1, "GLD", -50.0, 120.0)]
+    )
     assert entries[1] == pytest.approx(108.0)
+
+
+def test_economic_entry_is_todays_lots_when_a_position_was_replaced_intraday(fills):
+    """The 2026-08-10 CL defect: same quantity, entirely different lots.
+
+    CL closed its two 77.185-average lots and reopened two at 82.00 and 82.10 within one
+    session, so the quantity check — the only safety check there is — passes against a
+    book that is four dollars a barrel out of date. The published entry was 77.185 while
+    IBKR's own basis said 82.0524, and the positions pane turned that gap into a
+    +9,734.72 USD claim that the unrealised P&L was "basis rather than market". It was
+    not: the fills and the basis agree to the commission.
+    """
+    entries = dd.economic_entries(fills, [_entry_pos(6, "CL", 2.0)], _CL_2026_08_10)
+    assert entries[6] == pytest.approx(82.05)
+
+
+def test_economic_entry_declines_when_the_live_fills_are_unknown(fills):
+    """No fills in hand means no claim — stored history alone can be a day stale.
+
+    `None` is "we could not read the executions", which is not the same claim as "there
+    were none" (`()`), and the CL case is what the difference costs: the stored history
+    reproduces IBKR's quantity all by itself and would certify the wrong lots.
+    """
+    assert dd.economic_entries(fills, [_entry_pos(6, "CL", 2.0)], None) == {}
+
+
+def test_economic_entry_ignores_fills_the_statement_already_covers(fills):
+    """Flex owns everything through its coverage date; a fill from there is a duplicate.
+
+    The CL lots of 2026-08-07 are in the fixture as Flex rows. Handing them back as live
+    fills must change nothing — counting both would double the position and decline it.
+    """
+    settled = [
+        _live_fill(6, "CL", 1.0, 77.47, day="20260807", seq="90"),
+        _live_fill(6, "CL", 1.0, 76.90, day="20260807", seq="91"),
+    ]
+    entries = dd.economic_entries(fills, [_entry_pos(6, "CL", 2.0)], settled)
+    assert entries[6] == pytest.approx(77.185)
 
 
 def test_economic_entry_from_flex_alone(fills):
     """FIFO over Flex fills alone reconstructs the open-lot average."""
-    entries = dd.economic_entries(fills, [_entry_pos(2, "IGV", 100.0)])
+    entries = dd.economic_entries(fills, [_entry_pos(2, "IGV", 100.0)], [])
     assert entries[2] == pytest.approx(90.0)
 
 
@@ -633,22 +709,28 @@ def test_economic_entry_declines_when_the_quantity_does_not_reconstruct(fills):
     A position whose opening fills predate the stored history reconstructs to the wrong
     size, and a wrong size means a wrong average. Absence is the honest answer.
     """
-    assert dd.economic_entries(fills, [_entry_pos(3, "OLD", 20.0)]) == {}
+    assert dd.economic_entries(fills, [_entry_pos(3, "OLD", 20.0)], []) == {}
 
 
-def test_economic_entry_declines_on_a_shared_ticker(fills):
-    """A ticker is not a unique key — the IGV/MXN lesson, applied to the live rows.
+def test_economic_entry_tells_two_contracts_sharing_a_ticker_apart(fills):
+    """A ticker is not a unique key — so the fills are keyed on conid, which is one.
 
-    Both conids have traded under "DUP", so a conid-less live row naming "DUP" could
-    belong to either. Every position the ambiguity touches is declined rather than one
-    of them being picked.
+    Both conids have traded under "DUP". Executions carry the conid IBKR settled them
+    against, so neither position has to be declined for the other's ambiguity, and no
+    symbol is ever matched.
     """
-    assert dd.economic_entries(fills, [_entry_pos(4, "DUPa", 10.0), _entry_pos(5, "DUPb", 10.0)]) == {}
+    entries = dd.economic_entries(
+        fills,
+        [_entry_pos(4, "DUPa", 11.0), _entry_pos(5, "DUPb", 10.0)],
+        [_live_fill(4, "DUP", 1.0, 30.0)],
+    )
+    assert entries[4] == pytest.approx((10 * 10.0 + 30.0) / 11)
+    assert entries[5] == pytest.approx(20.0)
 
 
 def test_economic_entry_ignores_positions_that_are_flat(fills):
     """A flat position has no entry price and is left out entirely."""
-    assert dd.economic_entries(fills, [_entry_pos(1, "GLD", 0.0)]) == {}
+    assert dd.economic_entries(fills, [_entry_pos(1, "GLD", 0.0)], []) == {}
 
 
 def test_with_economic_entries_leaves_unreconstructed_positions_at_none():
