@@ -1,6 +1,7 @@
 """Unit tests for claudia/tradingview.py — binary discovery, env, tool filtering, CDP."""
 
 import json
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -213,11 +214,64 @@ def test_get_all_tools_returns_everything():
     assert len(bridge.get_all_tools()) == 2
 
 
-def test_curated_tools_set_has_16_entries():
-    # 16 tools verified against live sidecar 2026-06-30:
-    # data_get_equity_curve renamed to data_get_equity; data_get_trades added.
+def test_curated_tools_set_has_17_entries():
     """The curated set is pinned at its size, so a sidecar upgrade cannot change it silently."""
-    assert len(tv_module._CURATED_TOOLS) == 16
+    # 16 verified against the live sidecar 2026-06-30 (data_get_equity_curve renamed to
+    # data_get_equity; data_get_trades added). 17th added 2026-08-11:
+    # data_get_indicator, see test_curated_set_pairs_the_setter_with_its_getter.
+    assert len(tv_module._CURATED_TOOLS) == 17
+
+
+def test_curated_set_pairs_the_setter_with_its_getter():
+    """indicator_set_inputs needs input ids it cannot guess; data_get_indicator returns them.
+
+    Curating the setter alone is what turned an upstream quirk into a false success on
+    2026-08-11: the model guessed 'length' for a built-in RSI (whose ids are in_0..in_7),
+    the sidecar reported success, and nothing changed.
+    """
+    assert "indicator_set_inputs" in tv_module._CURATED_TOOLS
+    assert "data_get_indicator" in tv_module._CURATED_TOOLS
+
+
+# Any snake_case token in a guard message is treated as a tool name unless it is listed
+# here as jargon. Deliberately fail-closed: a new guard that names a tool from a family
+# nobody anticipated must break this test rather than pass unnoticed, which is what a
+# prefix allowlist ("chart_*, data_*, …") would have done. Adding a token here is a
+# decision someone makes on purpose.
+_GUARD_MESSAGE_NON_TOOL_TOKENS = frozenset(
+    {
+        "in_0",  # a study input id, from the example the message gives
+        "in_7",
+        "entity_id",  # the argument the model is told to pass, not a tool
+    }
+)
+
+_SNAKE_TOKEN = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+
+
+def test_empty_result_guards_only_name_curated_tools():
+    """A guard may only point the model at tools it can actually call.
+
+    _EMPTY_RESULT_GUARDS tells the model what to do about a no-op — currently "call
+    data_get_indicator to read the real ids". That remedy is reachable only because
+    data_get_indicator is curated; drop it from _CURATED_TOOLS and the warning starts
+    naming a tool that is not in the request's tools= list, with nothing to say so.
+    The names are read out of the messages, not hardcoded, so a second guard is covered
+    the day it is written.
+    """
+    mentioned: set[str] = set()
+    for _field, message in tv_module._EMPTY_RESULT_GUARDS.values():
+        mentioned.update(
+            token
+            for token in _SNAKE_TOKEN.findall(message)
+            if token not in _GUARD_MESSAGE_NON_TOOL_TOKENS
+        )
+
+    # Non-vacuity: the extraction itself must still be finding something.
+    assert mentioned, "no tool name extracted from any guard message"
+
+    uncallable = (mentioned | set(tv_module._EMPTY_RESULT_GUARDS)) - tv_module._CURATED_TOOLS
+    assert not uncallable, f"guards reference non-curated tools: {sorted(uncallable)}"
 
 
 # ── TradingViewBridge — subprocess env allowlist ─────────────────────────────

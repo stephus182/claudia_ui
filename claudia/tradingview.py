@@ -105,7 +105,7 @@ def _find_tv_mcp_bin() -> str | None:
 
 _TV_MCP_BIN = _find_tv_mcp_bin()
 
-# 16-tool curated subset exposed to Claude by default.
+# 17-tool curated subset exposed to Claude by default.
 # Covers chart reading, control, Pine Script IDE, strategy results, and utility.
 # Full 78-tool set is available but kept out of the Anthropic context window to
 # reduce token cost and avoid tool-choice noise.
@@ -121,6 +121,11 @@ _CURATED_TOOLS = {
     "chart_set_symbol",
     "chart_set_timeframe",
     "indicator_set_inputs",
+    # …and the getter it depends on: input ids are not guessable (a built-in RSI uses
+    # in_0..in_7, an EMA on the same chart uses "length"), and an unmatched key is a
+    # silent no-op reported as success. Curating the setter alone made that a false
+    # success on 2026-08-11. Added with the guard in _EMPTY_RESULT_GUARDS.
+    "data_get_indicator",
     # Pine Script IDE
     "pine_set_source",
     "pine_smart_compile",

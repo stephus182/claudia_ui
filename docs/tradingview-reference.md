@@ -9,7 +9,7 @@ Claude vision content block and analyzes indicators, patterns, and price action.
 
 The sidecar is [`tradesdontlie/tradingview-mcp`](https://github.com/tradesdontlie/tradingview-mcp)
 (78 MCP tools + `tv` CLI, 4.1k stars, last updated April 2026). ClaudIA exposes a curated
-16-tool subset by default to control token cost; the full set is available via `bridge.get_all_tools()`.
+17-tool subset by default to control token cost; the full set is available via `bridge.get_all_tools()`.
 
 ## Normal startup — no manual terminal commands needed
 
@@ -46,10 +46,13 @@ chat).
 ClaudIA generates PineScript v5 directly. Use the **"Inject into TradingView"**
 button to paste it into the Pine Editor via the `pine_set_source` MCP tool.
 
-## Curated 16-tool subset (`_CURATED_TOOLS` in `claudia/tradingview.py`)
+## Curated 17-tool subset (`_CURATED_TOOLS` in `claudia/tradingview.py`)
 
 All 16 names re-verified present against sidecar `55534aa` on 2026-07-31 (via `list_tools()`,
-which needs no CDP); last verified against a *live* TradingView Desktop 2026-06-30. Tool
+which needs no CDP); last verified against a *live* TradingView Desktop 2026-06-30. The 17th,
+`data_get_indicator`, was curated on 2026-08-11 and is **confirmed registered in the sidecar
+source** (`~/.tradingview-mcp/src/tools/data.js:14`) — it has **not** been exercised against a
+live TradingView Desktop, nor checked via `list_tools()`. Tool
 descriptions are provided by the sidecar
 at runtime via MCP `list_tools()` — they appear in the Anthropic `tools=` parameter and
 are the only documentation ClaudIA receives about what each tool does.
@@ -57,7 +60,7 @@ are the only documentation ClaudIA receives about what each tool does.
 | Category | Tools |
 |---|---|
 | Chart reading | `chart_get_state`, `quote_get`, `data_get_ohlcv`, `data_get_study_values` |
-| Chart control | `chart_set_symbol`, `chart_set_timeframe`, `indicator_set_inputs` |
+| Chart control | `chart_set_symbol`, `chart_set_timeframe`, `indicator_set_inputs`, `data_get_indicator` (reads the input ids the setter needs) |
 | Pine Script IDE | `pine_set_source`, `pine_smart_compile`, `pine_get_errors`, `pine_get_source` |
 | Strategy results | `data_get_strategy_results`, `data_get_equity` (equity curve), `data_get_trades` |
 | Utility | `tv_health_check`, `capture_screenshot` |
@@ -102,6 +105,12 @@ The 68 non-curated tools now include `tv_update` (sidecar self-update), `alert_c
 `_delete`, the overhauled `watchlist_*` set and `tv_launch`. **Whether any of those should join
 the curated 16 is an open product question — not decided here.**
 
+**Partly answered 2026-08-11:** one of those 68, `data_get_indicator`, joined the set — because
+`indicator_set_inputs` takes input ids the model cannot guess and an unmatched key is a silent
+no-op reported as success. The rest of the question stands. The ceiling on the set is
+deliberate: every curated tool costs a schema in every request, so an addition needs evidence of
+a specific failure, not plausibility.
+
 ```bash
 git -C ~/.tradingview-mcp pull
 npm -C ~/.tradingview-mcp install
@@ -109,7 +118,7 @@ npm -C ~/.tradingview-mcp audit fix        # no --force; re-check with: npm audi
 npm -C ~/.tradingview-mcp run test:unit    # e2e needs TradingView Desktop running
 # Restart ClaudIA — startup log will show commit and warn of any renamed tools:
 #   INFO  tradingview-mcp sidecar: .../server.js (commit abc1234)
-#   INFO  tradingview-mcp connected: 84 total tools, 16 curated
+#   INFO  tradingview-mcp connected: 84 total tools, 17 curated
 #   WARNING  curated tools not found in sidecar: {data_get_equity_curve}  ← rename detected
 # If a WARNING appears, update _CURATED_TOOLS in claudia/tradingview.py, then:
 ./scripts/archive-tv-mcp.sh    # snapshot the new working version to vendor/

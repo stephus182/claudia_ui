@@ -228,7 +228,7 @@ changes. Full tool catalog (40 core + 4 optional web-scraper = 44 total, verifie
 before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.md`.
 
 `self._all_tools` in `claudia/agent.py` is **not** just that catalog: it is the toolkit's 44,
-plus the TradingView extras when the sidecar is up (16 curated), plus 5 local utility tools
+plus the TradingView extras when the sidecar is up (17 curated), plus 5 local utility tools
 (`_LOCAL_TOOLS`) and the 3 `PROPOSAL_TOOLS`, both declared in claudia_ui. The proposal tools
 are appended last so the tools cache breakpoint on the final entry stays stable.
 
