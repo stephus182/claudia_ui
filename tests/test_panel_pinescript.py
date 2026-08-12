@@ -73,11 +73,41 @@ def test_extract_pine_blocks_tolerates_info_string_after_pine():
     assert extract_pine_blocks(text) == ['indicator("RSI")']
 
 
-def test_extract_pine_blocks_does_not_match_longer_fence_tag():
-    # ```pinescript is a different (longer) tag — \b guards against a partial match.
-    """A longer tag beginning with "pine" is not treated as pine."""
+def test_extract_pine_blocks_matches_the_pinescript_tag():
+    """`pinescript` is Pine Script's canonical tag and MUST be detected.
+
+    This test replaces one that asserted the opposite. The original regex used `pine\\b`
+    to "avoid matching a longer fence tag", naming ```pinescript as the case to reject —
+    but that tag *is* Pine Script, so the guard was excluding the commonest true match.
+    Live on 2026-08-11 the model tagged a block `pinescript`, no block was detected, and
+    the Copy/Inject buttons silently never rendered. It used `pine` minutes later and they
+    did, which is why the defect reads as intermittent rather than broken.
+    """
     text = "```pinescript\nindicator(\"RSI\")\n```"
-    assert extract_pine_blocks(text) == []
+    assert extract_pine_blocks(text) == ['indicator("RSI")']
+
+
+def test_extract_pine_blocks_matches_the_hyphenated_tag():
+    """`pine-script` is the third spelling in the wild."""
+    text = "```pine-script\nindicator(\"RSI\")\n```"
+    assert extract_pine_blocks(text) == ['indicator("RSI")']
+
+
+def test_extract_pine_blocks_matches_regardless_of_tag_case():
+    """Fence tags are conventionally lowercase, but a model is free to capitalise."""
+    for tag in ("Pine", "PINE", "PineScript"):
+        text = f"```{tag}\nindicator(\"RSI\")\n```"
+        assert extract_pine_blocks(text) == ['indicator("RSI")'], tag
+
+
+def test_extract_pine_blocks_does_not_match_an_unrelated_tag_beginning_with_pine():
+    """The word-boundary guard still earns its place: only Pine spellings match.
+
+    Widening to the real Pine tags must not widen to any tag that merely starts with
+    "pine" — that is the one thing the original `\\b` got right.
+    """
+    assert extract_pine_blocks("```pineapple\nnot pine\n```") == []
+    assert extract_pine_blocks("```pinecone\nnot pine\n```") == []
 
 
 def test_extract_pine_blocks_multiple():

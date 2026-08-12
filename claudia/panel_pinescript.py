@@ -70,14 +70,27 @@ def _pine_error_detail(result: str) -> str:
     return result
 
 
-def extract_pine_blocks(text: str) -> list[str]:
-    """Return the code of every ```pine fenced block in text, each stripped.
+# The three spellings of the Pine Script fence tag, case-insensitive. The trailing `\b`
+# still matters — it is what keeps an unrelated tag that merely starts with "pine"
+# (```pineapple) out — but the tag list is now the thing doing the work.
+#
+# It used to be `pine\b` alone, which the Task 9.2 research doc justified as avoiding "a
+# longer fence tag", naming ```pinescript as the case to reject. That reasoning was
+# backwards: `pinescript` IS Pine Script, and it is the tag most highlighters use. Measured
+# live 2026-08-11 — the model tagged a block `pinescript`, extract_pine_blocks returned
+# nothing, and the Copy/Inject buttons silently did not render; minutes later it used `pine`
+# and they did. Failing only on some of the model's word choices is the worst version of
+# this bug, because the feature looks reliable.
+_PINE_FENCE = re.compile(r"```pine(?:script|-script)?\b[^\n]*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 
-    Regex verified in the Task 9.2 research doc: `\\b` avoids matching a longer
-    fence tag (e.g. ```pinescript), `[^\\n]*` tolerates an info string after
-    `pine`, and multiple blocks per message are all captured.
+
+def extract_pine_blocks(text: str) -> list[str]:
+    """Return the code of every Pine-fenced block in text, each stripped.
+
+    Matches ```pine, ```pinescript and ```pine-script in any case; `[^\\n]*` tolerates an
+    info string after the tag, and multiple blocks per message are all captured.
     """
-    return [block.strip() for block in re.findall(r"```pine\b[^\n]*\n(.*?)```", text, re.DOTALL)]
+    return [block.strip() for block in _PINE_FENCE.findall(text)]
 
 
 async def render_pinescript_blocks(
