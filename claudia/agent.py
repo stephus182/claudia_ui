@@ -588,12 +588,22 @@ emission records are the channel for those. Only claims about *this* turn belong
 """
 
 _GOVERNING_OPERATOR = re.compile(
-    r"\b(?:no|not|never|without|n't|cannot|if|whether|would|will|shall|"
+    r"(?:\b(?:no|not|never|without|cannot|if|whether|would|will|shall|"
     r"described|describing|claimed|claiming|pretend|pretending|wrote|writing|"
-    r"want me to|say the word|once you|when you)\b",
+    r"said|presented|showed|reported|told|"
+    r"want me to|say the word|once you|when you)\b"
+    r"|n['\u2019]t\b)",
     re.I,
 )
 """Negation, condition and meta-report — the three ways a staging phrase is not a claim.
+
+Two corrections from the 2026-08-12 review, both verified by executed reproductions:
+the original `n't` sat inside the `\\b(?:...)\\b` group, and `\\b` before the `n` cannot
+match after a word character — so "can't"/"didn't" never vetoed anything, ever. It now
+matches as its own suffix alternation. And `said|presented|showed|reported|told` join the
+meta-report family: "The warning said I presented a constructed block as a raw tool
+result" is a model honestly explaining its own correction, and the guardrail firing on
+that would teach the user to ignore the one signal that matters.
 
 Checked **only to the left of the match**, because in English an operator governs what
 follows it. That asymmetry is load-bearing in both directions: it vetoes "No button was
@@ -778,14 +788,18 @@ participle from this string and asserts `_REPORTED_COMPLETE` carries it.
 """
 
 _TOOL_ACTION_GERUND = (
-    "(?:check|fetch|pull|compil|captur|switch|inject|read|load|verify|retry|"
+    "(?:check|fetch|pull|compil|captur|inject|verify|retry|"
     "sync|query|grabb|scann)ing"
 )
 """The same verbs as segment-opening gerunds — "Checking cache first, then fetching."
 
-Measured shape (three instances, two sessions). Narrower than the verb list on purpose:
-`running` ("running through the logic") and `getting` read as discourse, not action, and
-neither appears in a measured fabrication.
+Measured shape (three instances, two sessions). Narrower than the verb list on purpose,
+and narrowed further by the 2026-08-12 review: `running`/`getting` read as discourse, and
+`switching`/`reading`/`loading` open English idioms that are not commitments — "Switching
+gears:", "Reading between the lines,", "Loading up on semis" — each verified to arm the
+detector on an innocent turn. Every measured gerund fabrication used checking/fetching/
+compiling; the dropped stems keep their base-verb coverage in `_INTENT_PREAMBLE`'s
+first-person branch, where "I'll switch"/"Let me read" carry no idiomatic reading.
 """
 
 _INTENT_PREAMBLE = re.compile(
@@ -832,7 +846,7 @@ _REPORTED_COMPLETE = re.compile(
     r"(?:^(?:Done|Checked|Pulled|Fetched|Read|Loaded|Retried|Verified|Ran|Compiled|"
     r"Captured|Switched|Grabbed|Queried|Injected|Synced|Scanned|Confirmed|"
     r"Cache\s+miss|Still\s+failing|Same\s+result|It\s+worked)\b"
-    r"(?=\s*(?:[—\u2013,.;:!-]|$)"
+    r"(?=\s*(?:[\u2014\u2013,.;:!-]|$)"
     r"|\s+(?:and|against|on|in|with|cleanly|successfully|clean)\b)"
     r"|\b(?:connection|gateway|feed|tools?|sidecar)(?:['\u2019]s|\s+is|\s+are)\s+live\b"
     r"|\bnow\s+cached\b"
@@ -875,6 +889,35 @@ Deliberately excludes bare `no`/`not`: "Loaded and compiled — no errors" is T6
 wording, and an honest-sounding negation inside a fabricated report must not clear it.
 Only phrases that negate the *performance* qualify ("I couldn't capture the screenshot"),
 plus the counterfactuals ("it would be here within a second").
+"""
+
+_REPORT_UNREALIZED = re.compile(
+    r"\b(?:if|unless|once|when|would|will|shall|expect(?:ed|ing)?|afterwards|"
+    r"next\s+time)\b",
+    re.I,
+)
+"""A report segment describing an unrealized outcome, checked sentence-wide.
+
+Added by the 2026-08-12 review after two executed false positives: "If the connection is
+live, the inject will go through" and "Here's the status I'd expect to see once the
+gateway is up" are honest announce-then-explain turns, and the conditional/future words
+are what mark them. Sentence-wide because the marker can sit on either side of the report
+match ("I'd expect" follows "Here's the status"). None of the measured fabrication
+reports carries any of these words — re-measured after adding, same fires.
+"""
+
+_OWN_COMPOSITION = re.compile(
+    r"\b(?:updated|revised|rewritten|modified|adjusted|tweaked|drafted|proposed|new)\s+"
+    + _RESULT_NOUN,
+    re.I,
+)
+"""The result noun names the model's own edit, not a tool's return.
+
+"Here's the updated indicator:" after "I'll switch the RSI length to 9 for you" is the
+model editing a script it wrote — an ordinary zero-tool flow the Copy/Inject buttons
+exist to serve, verified to fire before this veto existed. A modifier of authorship in
+front of the noun is what separates it from "Here's the ZZZ chart" (a claimed
+observation); no measured fabrication carries one.
 """
 
 
@@ -942,19 +985,39 @@ def _claims_completed_action(text: str) -> str | None:
         segment = segments[i][tail_offset:].strip() if i == start_index else segments[i]
         if not segment or segment.endswith("?"):
             continue
-        if _PAST_TURN.search(segment) or _NOT_PERFORMED.search(segment):
+        # Sentence-wide vetoes: non-performance, unrealized outcomes, user-supplied
+        # content, and the model's own compositions can sit on either side of the match.
+        if _NOT_PERFORMED.search(segment) or _REPORT_UNREALIZED.search(segment):
             continue
-        if _RESULT_IS_HERE.search(segment) or _REPORTED_COMPLETE.search(segment):
-            return segment
+        if _USER_SOURCE.search(segment) or _OWN_COMPOSITION.search(segment):
+            continue
+        match = _RESULT_IS_HERE.search(segment) or _REPORTED_COMPLETE.search(segment)
+        if match is None:
+            continue
+        # Left-of-match only, deliberately (2026-08-12 review): sentence-wide, `already`
+        # cleared "Done — the 6-month daily data is already cached", a one-adverb variant
+        # of a measured fabrication — the adverb modifies the state, not the turn. Left
+        # of the match it still reads as a recap ("Earlier I pulled the chart state —
+        # here's the chart as it stood then").
+        if _PAST_TURN.search(segment[: match.start()]):
+            continue
+        return segment
     return None
 
 
 _VERBATIM_RESULT_CLAIM = re.compile(
-    r"\b(?:raw|verbatim|actual|exact|explicit|unmodified|untouched)\s+"
+    r"\b(?:raw|verbatim|actual|exact|explicit)\s+"
     r"(?:tool\s+|API\s+)?(?:call|result|output|response|payload|return)\b",
     re.I,
 )
-"""A block is being vouched for as a tool's own words — "the raw tool result, verbatim"."""
+"""A block is being vouched for as a tool's own words — "the raw tool result, verbatim".
+
+`raw`/`explicit` are the measured instance's own words; `verbatim`/`actual`/`exact` are
+their nearest synonyms and each carries a must-fire fixture. `unmodified`/`untouched`
+were trimmed by the 2026-08-12 review: no measured instance, no fixture, and every
+alternate here widens the surface of an unhedged fabrication accusation — the same
+every-alternate-earned rule `_RESULT_NOUN` states.
+"""
 
 _RESULT_CLAIM_EXCUSE = re.compile(
     r"\b(?:example|sample|illustrat\w*|hypothetical|mock|template|format|schema|"
@@ -995,6 +1058,12 @@ def _claims_verbatim_tool_result(text: str) -> str | None:
             continue
         hit = _VERBATIM_RESULT_CLAIM.search(sentence)
         if hit is None or _RESULT_CLAIM_EXCUSE.search(sentence):
+            continue
+        # Same vetoes as the action sibling (2026-08-12 review): a vouching phrase about
+        # an earlier turn ("Earlier I showed you the raw tool result above") or inside a
+        # non-performance reading ("I can't show the actual output — no tool ran") is a
+        # recap or an honest refusal, not a claim about this turn's block.
+        if _PAST_TURN.search(sentence) or _NOT_PERFORMED.search(sentence):
             continue
         if not _GOVERNING_OPERATOR.search(sentence[: hit.start()]):
             return sentence
@@ -1687,9 +1756,12 @@ class ClaudIAAgent:
         # one exists per turn — the second call is refused there, not silently dropped.
         display_text = full_response_text.strip()
         kind, proposal = self._pending_proposal or (None, None)
-        # True once any detector below has corrected this turn — the general action
-        # detector stands down behind a more specific sibling (see its call site).
-        corrected = False
+        # The sibling detectors' claimed sentences, kept for the general action detector
+        # below: it stands down only when its own report overlaps one of them — the same
+        # sentence corrected twice is noise, a second distinct lie is not (2026-08-12
+        # review; the earlier turn-wide boolean let the second lie stand).
+        claim: str | None = None
+        stale: str | None = None
 
         # Persist final assistant message
         msg_id = self._store.add_message(
@@ -1748,7 +1820,6 @@ class ClaudIAAgent:
             # `_claims_completed_proposal` for the shapes and the corpus measurement.
             claim = _claims_completed_proposal(display_text)
             if claim is not None:
-                corrected = True
                 await self._emit_unbacked_claim_notice(msg_id, claim)
 
         # Outside the proposal branches on purpose: claiming a lookup and claiming a
@@ -1758,28 +1829,79 @@ class ClaudIAAgent:
         if display_text and not (called_tools & _BOOK_READING_TOOLS):
             stale = _claims_fresh_book_check(display_text)
             if stale is not None:
-                corrected = True
                 await self._emit_stale_book_claim_notice(msg_id, stale)
 
-        # The general case of the two above — an action reported with nothing behind it,
-        # T7's shape — runs last and stands down when a sibling has already corrected the
-        # turn: the 2026-07-28 message narrates a book check and a staging in one
-        # sentence, and a third notice restating either would devalue all three. The
-        # sibling rule holds for the *same* sentence; two distinct lies in two sentences
-        # still earn two corrections above. `not called_tools` is the verdict (any real
-        # call may ground the report); `not images` clears the turn outright, because a
-        # screenshot the user dragged in is DATA INTEGRITY's second guaranteed source and
-        # describing it needs no tool. The payload check runs first of the two: a
-        # constructed block vouched for as a tool return deserves its specific
-        # correction, not the generic one.
-        if display_text and not called_tools and not images and not corrected:
+        # The two general detectors — T7's shape — run last, gated on `not called_tools`:
+        # with any real call the turn's report may be grounded, and that give-up is
+        # documented on the detector. The payload check runs first and is deliberately
+        # NOT gated on images or on the siblings (2026-08-12 review): no uploaded image
+        # can ground the provenance of a fenced "raw tool result", and a book notice
+        # about sentence A does not correct a constructed payload in sentence B.
+        if display_text and not called_tools:
             shown = _claims_verbatim_tool_result(display_text)
             if shown is not None:
                 await self._emit_unbacked_result_notice(msg_id, shown)
-            else:
+            elif not images:
+                # `not images` clears the ACTION detector only: a screenshot the user
+                # dragged in is DATA INTEGRITY's second guaranteed source, and describing
+                # it needs no tool. The overlap test replaces a turn-wide stand-down
+                # (2026-08-12 review): the 2026-07-28 message narrates a book check and a
+                # staging in ONE sentence — correcting that sentence twice devalues both
+                # notices — but a second, distinct lie elsewhere in the message still
+                # earns its own correction.
                 narrated = _claims_completed_action(display_text)
-                if narrated is not None:
+                if narrated is not None and not any(
+                    s is not None and (narrated in s or s in narrated)
+                    for s in (claim, stale)
+                ):
                     await self._emit_unbacked_action_notice(msg_id, narrated)
+
+    async def _emit_correction(
+        self,
+        msg_id: int,
+        claim: str,
+        *,
+        log_message: str,
+        notice: str,
+        decision_type: str,
+        summary_text: str,
+        operator_note: str,
+    ) -> None:
+        """Contradict one unbacked claim on all four surfaces, in the one safe order.
+
+        The four claim detectors each need their own words, their own decision type and
+        their own operator note — that separateness is deliberate and is preserved in the
+        constants each caller passes. What is NOT worth repeating is the sequence, and
+        before 2026-08-12 it existed in four copies with no test pinning it.
+
+        **The order is the safety property: persist, record, queue, then display.** The
+        store has shown no fault; the sink is the surface that can fail. Display last means
+        a failing sink raises *after* the record exists, so a correction can never be lost
+        because the chat feed broke. A transposition here would silently reintroduce
+        exactly that, in exactly one shape — which is why the order now lives once and is
+        asserted by `test_every_correction_persists_before_it_displays`.
+
+        Args:
+            msg_id: The assistant message whose text carries the claim.
+            claim: The offending sentence or segment. **Logged only** — live conversation
+                text, kept out of the decision row and every surface that leaves this
+                machine.
+            log_message: Printf-style prefix taking `claim` as its single `%r` argument.
+            notice: The user-facing correction, persisted and displayed.
+            decision_type: The row type, distinct per shape so the log stays separable.
+            summary_text: The decision row's static summary. Never interpolates `claim`.
+            operator_note: The non-forgeable `role:"system"` body for the next turn.
+        """
+        log.warning(log_message, claim)
+        self._store.add_message(self._session_id, "assistant", notice)
+        self._store.add_decision(
+            session_id=self._session_id,
+            decision_type=decision_type,
+            summary_text=summary_text,
+            message_id=msg_id,
+        )
+        self._pending_operator_notes.append(operator_note)
+        await self._sink.send_message(notice)
 
     async def _emit_stale_book_claim_notice(self, msg_id: int, claim: str) -> None:
         """Contradict a claimed order-book check that no tool call backs.
@@ -1791,27 +1913,24 @@ class ClaudIAAgent:
         both narrate a staging and narrate the lookup that supposedly justified it, and
         each false claim gets its own correction rather than one covering for the other.
 
-        Same surface order and same reasoning as its siblings: persist, record, queue, then
-        display, so a failing sink cannot cost the record.
+        Surface order and its safety argument live once, in `_emit_correction`.
 
         Args:
             msg_id: The assistant message whose text carries the unverified claim.
             claim: The offending sentence. **Logged only** — live conversation text, kept
                 out of the decision row and every surface that leaves this machine.
         """
-        log.warning("Book-check claim with no order-book tool called: %r", claim)
-        self._store.add_message(self._session_id, "assistant", _STALE_BOOK_CLAIM_NOTICE)
-        self._store.add_decision(
-            session_id=self._session_id,
+        await self._emit_correction(
+            msg_id, claim,
+            log_message="Book-check claim with no order-book tool called: %r",
+            notice=_STALE_BOOK_CLAIM_NOTICE,
             decision_type="book_claim_unverified",
             summary_text=(
                 "assistant text claimed a live-order check but no order-book tool was "
                 "called — the stated order state is unverified"
             ),
-            message_id=msg_id,
+            operator_note=_STALE_BOOK_CLAIM_OPERATOR_NOTE,
         )
-        self._pending_operator_notes.append(_STALE_BOOK_CLAIM_OPERATOR_NOTE)
-        await self._sink.send_message(_STALE_BOOK_CLAIM_NOTICE)
 
     async def _emit_unbacked_action_notice(self, msg_id: int, claim: str) -> None:
         """Contradict a reported action that no tool call backs — T7's shape.
@@ -1822,27 +1941,24 @@ class ClaudIAAgent:
         site's `corrected` gate), because the measured overlap is a single sentence
         committing two lies — two corrections for two claims, never three.
 
-        Same surface order and same reasoning as its siblings: persist, record, queue,
-        then display, so a failing sink cannot cost the record.
+        Surface order and its safety argument live once, in `_emit_correction`.
 
         Args:
             msg_id: The assistant message whose text carries the unbacked report.
             claim: The offending segment. **Logged only** — live conversation text, kept
                 out of the decision row and every surface that leaves this machine.
         """
-        log.warning("Action reported with no tool call this turn: %r", claim)
-        self._store.add_message(self._session_id, "assistant", _UNBACKED_ACTION_NOTICE)
-        self._store.add_decision(
-            session_id=self._session_id,
+        await self._emit_correction(
+            msg_id, claim,
+            log_message="Action reported with no tool call this turn: %r",
+            notice=_UNBACKED_ACTION_NOTICE,
             decision_type="action_claim_unbacked",
             summary_text=(
                 "assistant text reported a completed action but no tool was called in "
                 "that turn — nothing it described was observed"
             ),
-            message_id=msg_id,
+            operator_note=_UNBACKED_ACTION_OPERATOR_NOTE,
         )
-        self._pending_operator_notes.append(_UNBACKED_ACTION_OPERATOR_NOTE)
-        await self._sink.send_message(_UNBACKED_ACTION_NOTICE)
 
     async def _emit_unbacked_result_notice(self, msg_id: int, claim: str) -> None:
         """Contradict a fenced block vouched for as a tool result that no tool produced.
@@ -1858,19 +1974,17 @@ class ClaudIAAgent:
             msg_id: The assistant message whose text vouches for the block.
             claim: The vouching sentence. **Logged only**, as with its siblings.
         """
-        log.warning("Constructed payload presented as a tool result: %r", claim)
-        self._store.add_message(self._session_id, "assistant", _UNBACKED_RESULT_NOTICE)
-        self._store.add_decision(
-            session_id=self._session_id,
+        await self._emit_correction(
+            msg_id, claim,
+            log_message="Constructed payload presented as a tool result: %r",
+            notice=_UNBACKED_RESULT_NOTICE,
             decision_type="result_claim_unbacked",
             summary_text=(
                 "assistant text presented a constructed block as a raw tool result — "
                 "no tool was called in that turn"
             ),
-            message_id=msg_id,
+            operator_note=_UNBACKED_RESULT_OPERATOR_NOTE,
         )
-        self._pending_operator_notes.append(_UNBACKED_RESULT_OPERATOR_NOTE)
-        await self._sink.send_message(_UNBACKED_RESULT_NOTICE)
 
     async def _emit_unbacked_claim_notice(self, msg_id: int, claim: str) -> None:
         """Contradict a staging claim that no tool call backs, on all three surfaces.
@@ -1881,9 +1995,7 @@ class ClaudIAAgent:
         operator note, and a turn can only ever be in one of the two states — a recorded
         proposal takes the render path, so this branch runs only when none exists.
 
-        Same surface order and same reasoning: persist, record, queue, then display. The
-        store has shown no fault; the sink is the surface that can fail, and if it does the
-        exception reaches the chat feed while the record survives.
+        Surface order and its safety argument live once, in `_emit_correction`.
 
         Args:
             msg_id: The assistant message whose text carries the unbacked claim.
@@ -1891,19 +2003,17 @@ class ClaudIAAgent:
                 it stays out of the decision row, out of the session report and out of any
                 surface that leaves this machine.
         """
-        log.warning("Unbacked staging claim, no proposal tool called: %r", claim)
-        self._store.add_message(self._session_id, "assistant", _UNBACKED_CLAIM_NOTICE)
-        self._store.add_decision(
-            session_id=self._session_id,
+        await self._emit_correction(
+            msg_id, claim,
+            log_message="Unbacked staging claim, no proposal tool called: %r",
+            notice=_UNBACKED_CLAIM_NOTICE,
             decision_type="proposal_claim_unbacked",
             summary_text=(
                 "assistant text claimed a completed order action but no proposal tool was "
                 "called — nothing staged"
             ),
-            message_id=msg_id,
+            operator_note=_UNBACKED_CLAIM_OPERATOR_NOTE,
         )
-        self._pending_operator_notes.append(_UNBACKED_CLAIM_OPERATOR_NOTE)
-        await self._sink.send_message(_UNBACKED_CLAIM_NOTICE)
 
     async def _emit_guardrail_notice(self, kind: str, msg_id: int) -> None:
         """Contradict a claim the transcript already carries, on every surface that matters.

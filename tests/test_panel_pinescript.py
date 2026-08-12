@@ -365,8 +365,11 @@ async def test_inject_persists_a_tool_row_on_success():
     )
     await _get_click_callback(_first_row(chat)[1])(None)
 
+    from claudia.panel_pinescript import UI_BUTTON_ORIGIN
+
     store.add_message.assert_called_once_with(
         "s-1", "tool",
+        content=UI_BUTTON_ORIGIN,
         tool_name="pine_set_source",
         tool_input={"source": 'study("A")'},
         tool_result='{"success": true}',
@@ -424,3 +427,24 @@ async def test_inject_still_reports_success_when_the_record_fails():
     await _get_click_callback(_first_row(chat)[1])(None)
 
     assert "✅" in chat.send.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_inject_row_is_stamped_as_a_button_click():
+    """A click writes a `tool` row the model never called. Unstamped, it is
+    byte-identical to a model call — and the forensic rule "a tool row between a user
+    row and an assistant row is the model's evidence" would then be false, letting a
+    future audit clear a genuine fabrication with a user's click."""
+    from claudia.panel_pinescript import UI_BUTTON_ORIGIN
+
+    chat = _make_chat()
+    bridge = MagicMock()
+    bridge.execute = AsyncMock(return_value='{"success": true}')
+    store = MagicMock()
+    await render_pinescript_blocks(
+        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
+        store=store, session_id="s-1",
+    )
+    await _get_click_callback(_first_row(chat)[1])(None)
+
+    assert store.add_message.call_args.kwargs["content"] == UI_BUTTON_ORIGIN

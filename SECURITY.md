@@ -238,8 +238,15 @@ is worse than refusing the model. See `docs/env-vars-reference.md`.
 
 **Known limits, stated rather than implied.** The 2026-08-11 open limit — a fabricated
 claim about a *new* action with nothing in context to recycle — is closed by the two
-2026-08-12 detectors for every zero-tool turn. What remains open, each deliberate and each
-measured rather than suspected:
+2026-08-12 detectors for zero-tool turns, **with the exemptions named below**. What remains
+open, each deliberate and each measured rather than suspected:
+
+- **A zero-tool turn carrying an uploaded image** is exempt from the *action* detector: a
+  screenshot the user dragged in is DATA INTEGRITY's second guaranteed source, and
+  describing it needs no tool, so the evidence that clears the claim is the image itself.
+  A fabricated report about something *else* in such a turn is therefore not corrected.
+  The payload detector is deliberately **not** exempted — no image can ground the
+  provenance of a fenced "raw tool result".
 
 - **A mixed turn**: some tool ran, and a *different* claimed action did not ("called
   `get_positions`, also said it captured a screenshot"). The verdict is the whole turn's

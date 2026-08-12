@@ -17,6 +17,7 @@ sessions extend the corpus without invalidating them.
 
 from __future__ import annotations
 
+import functools
 import sqlite3
 from pathlib import Path
 
@@ -29,8 +30,8 @@ _FROZEN_LAST_ID = 768
 # individually read and verified as a fabrication during the 2026-08-12 audit (each
 # reports tool-sourced data in a turn with no tool row, in a session that records tool
 # rows normally elsewhere). The two known misses, ids 345 and 475, are the detector's
-# documented give-ups and are asserted as misses below so a widening that "fixes" them
-# is forced to re-measure rather than land silently.
+# documented give-ups; the equality assertion below covers them by construction, since
+# a widening that "fixes" one changes the set and fails.
 _VERIFIED_ACTION_FIRES = frozenset({
     184, 192, 194, 196, 211, 258, 306, 308, 310, 349, 351, 368, 378, 387,
     562, 720, 722, 748, 750, 752,
@@ -38,12 +39,18 @@ _VERIFIED_ACTION_FIRES = frozenset({
 _DOCUMENTED_MISSES = frozenset({345, 475})
 _VERIFIED_RESULT_FIRES = frozenset({380})
 
+# Texts that MATCH the action trigger but ran real tools, so the call-site verdict
+# clears them. msg 746 is the controlled pair of a firing instance: near-identical
+# wording, tools called. Frozen exactly — this figure is published in SECURITY.md.
+_CLEARED_WITH_TOOLS = 22
+
 pytestmark = pytest.mark.skipif(
     not _DB.exists(), reason="local conversation corpus not present (fresh clone)"
 )
 
 
-def _frozen_turns() -> list[tuple[int, str, int]]:
+@functools.lru_cache(maxsize=1)
+def _frozen_turns() -> tuple[tuple[int, str, int], ...]:
     """(message_id, assistant_text, tools_run_that_turn) for the frozen window."""
     conn = sqlite3.connect(f"file:{_DB}?mode=ro", uri=True)
     try:
@@ -53,6 +60,8 @@ def _frozen_turns() -> list[tuple[int, str, int]]:
         ).fetchall()
     finally:
         conn.close()
+    # Cached: the window is frozen by definition (append-only store, fixed id bound),
+    # so one read serves every test in this module. Returns a tuple for hashability.
     turns, tools = [], 0
     for mid, role, content in rows:
         if role == "user":
@@ -62,7 +71,7 @@ def _frozen_turns() -> list[tuple[int, str, int]]:
         elif role == "assistant":
             turns.append((mid, content or "", tools))
             tools = 0
-    return turns
+    return tuple(turns)
 
 
 def test_action_detector_precision_is_frozen():
@@ -80,7 +89,6 @@ def test_action_detector_precision_is_frozen():
         if tools == 0 and _claims_completed_action(text) is not None
     }
     assert fired == _VERIFIED_ACTION_FIRES
-    assert not (fired & _DOCUMENTED_MISSES)
 
 
 def test_result_detector_precision_is_frozen():
@@ -106,6 +114,7 @@ def test_evidence_cleared_turns_stay_cleared():
         if tools > 0 and _claims_completed_action(text) is not None
     }
     assert 746 in matched_with_tools
-    # The call-site verdict clears every one of these; the assertion here is that the
-    # set is non-trivial — the discriminator is doing real work, not matching nothing.
-    assert len(matched_with_tools) >= 20
+    # Frozen exactly, not as a floor. SECURITY.md §5.1 publishes this figure as a
+    # measurement; a `>=` bound would let it drift two texts down with a green suite
+    # and turn a published number into a false claim.
+    assert len(matched_with_tools) == _CLEARED_WITH_TOOLS

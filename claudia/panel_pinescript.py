@@ -39,6 +39,20 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+UI_BUTTON_ORIGIN = "ui_button"
+"""`content` stamp marking a `tool` row the USER produced by clicking, not the model.
+
+A model-initiated call writes `content=""` (agent.py's tool loop), so this one field
+separates the two origins in the store. It is not decoration: the forensic rule of
+`reference-proving-a-tool-call-never-happened` — *a `tool` row between a user row and an
+assistant row is the model's evidence* — becomes false the moment a click can write one,
+and a click can land mid-turn because the Pine buttons stay live while a turn is in
+flight. Without the stamp a future corpus audit would credit a user's click to the model
+and clear a genuine fabrication in that very turn. Read by the audit, never by the model:
+the called-tool ledger is names-only, so this never reaches the prompt.
+"""
+
+
 def _pine_inject_succeeded(result: str) -> bool:
     """True only on an explicit success signal from pine_set_source. Fail-safe:
     a non-JSON result (e.g. "TradingView is not connected.", a "…failed." string)
@@ -121,8 +135,8 @@ def _render_pine_block(
     chat: pn.chat.ChatInterface,
     code: str,
     tv_bridge_getter: Callable[[], TradingViewBridge | None] | None,
-    store: ConversationStore | None = None,
-    session_id: str | None = None,
+    store: ConversationStore | None,
+    session_id: str | None,
 ) -> None:
     """Send one Copy/Inject row for a single pine code block.
 
@@ -178,6 +192,7 @@ def _render_pine_block(
                 try:
                     store.add_message(
                         session_id, "tool",
+                        content=UI_BUTTON_ORIGIN,
                         tool_name="pine_set_source",
                         tool_input={"source": code},
                         tool_result=result,

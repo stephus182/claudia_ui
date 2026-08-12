@@ -33,11 +33,14 @@ from tests.fixtures.failing_transcripts import (
     DEFENDED_CLAIM_588,
     FAILED_437,
     HONEST_ACTION_TALK,
+    HONEST_ACTION_TALK_REVIEW,
     HONEST_BOOK_TALK,
     HONEST_RESULT_TALK,
+    HONEST_RESULT_TALK_REVIEW,
     HONEST_STAGING_TALK,
     INNOCENT,
     NARRATED_ACTION,
+    NARRATED_ACTION_REVIEW,
     NARRATED_BOOK_CHECK,
     NARRATED_STAGING,
     NARRATED_TOOL_RESULT,
@@ -3356,8 +3359,8 @@ def test_a_free_or_down_gateway_is_not_blocked_here():
 #
 # T7's shape (2026-08-11), and the oldest failure in the store (2026-06-24): a lead-in
 # to act, then a completion report, in a turn with zero tool calls. Measured 2026-08-12
-# against all 225 assistant messages: at least 22 instances across ten sessions,
-# including a GLD position the user rebutted in his next message, an order-status table
+# against all 225 assistant messages: 22 instances across nine sessions,
+# including a held position the user rebutted in his next message, an order-status table
 # with an invented order id, and both TV fabrications. The trigger is textual, the
 # verdict is evidence: `called_tools` empty is what makes the same sentence a lie here
 # and honest in the turn that really ran its tools (msg 746's text is byte-similar to a
@@ -3597,3 +3600,128 @@ def test_action_verbs_and_report_participles_stay_in_step():
             participle = verb + "ed"
         # The dash context satisfies the predicate lookahead, as in "Compiled — clean".
         assert _REPORTED_COMPLETE.search(f"{participle.capitalize()} — done.") is not None, verb
+
+
+# ── 2026-08-12 review: the false-positive surface, each an executed repro ─────
+#
+# Every case below fired against the shipped detectors before its veto existed.
+# They are regression guards for the review's correctness findings, and they are
+# what the corpus measurement cannot see: the corpus is one user's history, so a
+# shape that never happened to occur in it is unconstrained by it.
+
+
+@pytest.mark.parametrize("text", HONEST_ACTION_TALK_REVIEW)
+def test_action_detector_is_silent_on_the_review_false_positives(text):
+    """Own compositions, conditionals/futures, gerund idioms, and user-supplied
+    content named in the report segment — all honest, all previously firing."""
+    from claudia.agent import _claims_completed_action
+
+    assert _claims_completed_action(text) is None
+
+
+@pytest.mark.parametrize("text", HONEST_RESULT_TALK_REVIEW)
+def test_result_detector_is_silent_on_the_review_false_positives(text):
+    """Honest refusal, past-turn recap, and the model explaining its own correction."""
+    from claudia.agent import _claims_verbatim_tool_result
+
+    assert _claims_verbatim_tool_result(text) is None
+
+
+@pytest.mark.parametrize("text", NARRATED_ACTION_REVIEW)
+def test_action_detector_catches_the_review_false_negatives(text):
+    """'already cached' is one adverb from a measured fabrication, and a second
+    distinct lie in a two-lie message must still be caught."""
+    from claudia.agent import _claims_completed_action
+
+    assert _claims_completed_action(text) is not None
+
+
+def test_contraction_negation_actually_vetoes():
+    """`\\bn't\\b` could never match inside "can't" — no word boundary before the n —
+    so the contraction branch of the oldest veto was dead from the day it shipped.
+    Pinned directly, because its failure is silent everywhere it is used."""
+    from claudia.agent import _GOVERNING_OPERATOR
+
+    for text in ("can't", "didn't", "couldn\u2019t", "wasn't"):
+        assert _GOVERNING_OPERATOR.search(text) is not None, text
+
+
+async def test_two_distinct_lies_in_one_message_earn_two_corrections():
+    """The turn-wide stand-down let the second lie stand. Suppression is now per
+    overlapping *sentence*: a book claim in sentence A does not excuse a fabricated
+    screenshot report in sentence C."""
+    agent, _sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_ACTION_REVIEW[1]))
+    )
+    await agent.handle_message("check the book, then screenshot the chart")
+
+    types = [d["decision_type"] for d in agent._store.get_decisions("test-session")]
+    assert "book_claim_unverified" in types
+    assert "action_claim_unbacked" in types
+
+
+async def test_an_image_does_not_clear_a_fabricated_payload():
+    """The image veto is calibrated to *describing* an upload. No uploaded image can
+    ground the provenance of a fenced 'raw tool result', so the payload detector is
+    deliberately not exempted."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_TOOL_RESULT[0]))
+    )
+    await agent.handle_message(
+        "show me the raw payload behind that number",
+        images=[{"type": "image", "source": {"type": "base64", "data": "zzz"}}],
+    )
+
+    assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
+        "result_claim_unbacked"
+    ]
+    assert any("constructed" in m.lower() for m in sink.messages)
+
+
+async def test_every_correction_persists_before_it_displays():
+    """The one safety property of the shared emitter: the record must exist before the
+    sink is touched, so a failing chat feed cannot cost a correction. Asserted by
+    breaking the sink and checking the row survives — for every correction shape."""
+    from claudia.agent import (
+        _STALE_BOOK_CLAIM_NOTICE,
+        _UNBACKED_ACTION_NOTICE,
+        _UNBACKED_CLAIM_NOTICE,
+        _UNBACKED_RESULT_NOTICE,
+    )
+
+    shapes = [
+        ("_emit_unbacked_claim_notice", _UNBACKED_CLAIM_NOTICE, "proposal_claim_unbacked"),
+        ("_emit_stale_book_claim_notice", _STALE_BOOK_CLAIM_NOTICE, "book_claim_unverified"),
+        ("_emit_unbacked_action_notice", _UNBACKED_ACTION_NOTICE, "action_claim_unbacked"),
+        ("_emit_unbacked_result_notice", _UNBACKED_RESULT_NOTICE, "result_claim_unbacked"),
+    ]
+    for method, notice, decision_type in shapes:
+        agent, sink = _make_agent_recording()
+        sink.send_message = AsyncMock(side_effect=RuntimeError("chat feed down"))
+        with pytest.raises(RuntimeError):
+            await getattr(agent, method)(1, "some claimed sentence")
+        decisions = agent._store.get_decisions("test-session")
+        assert [d["decision_type"] for d in decisions] == [decision_type], method
+        # The user-facing notice is persisted as an assistant row before the sink runs,
+        # so the correction survives in the transcript even though the display failed.
+        assert notice in agent._store.get_history("test-session")[-1]["content"], method
+        assert agent._pending_operator_notes, method
+        # The offending sentence is logged only — never persisted anywhere.
+        assert not any("some claimed sentence" in (d.get("summary_text") or "")
+                       for d in decisions), method
+
+
+def test_gerund_stems_stay_within_the_verb_allowlist():
+    """Drift guard for the list the participle test cannot see: every gerund stem must
+    correspond to a verb in the allowlist, so the two lists cannot diverge silently in
+    the direction that widens the trigger."""
+    from claudia.agent import _TOOL_ACTION_GERUND, _TOOL_ACTION_VERB
+
+    verbs = set(_TOOL_ACTION_VERB.strip("(?:)").split("|"))
+    stems = _TOOL_ACTION_GERUND.replace("ing", "").strip("(?:)").split("|")
+    for stem in stems:
+        # Stems are the verb, optionally minus a final 'e' or plus a doubled consonant.
+        candidates = {stem, stem + "e", stem[:-1]}
+        assert candidates & verbs, f"gerund stem {stem!r} has no verb in the allowlist"
