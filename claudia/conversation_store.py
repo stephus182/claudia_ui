@@ -616,6 +616,51 @@ class ConversationStore:
             session_id, COMPLETED_ORDER_ACTION_TYPES, require_message_id=False,
         )
 
+    def get_called_tool_names(self, session_id: str) -> list[str]:
+        """Return the distinct names of every tool called in a session, sorted alphabetically.
+
+        The source for the called-tool ledger `claudia/agent.py` replays on the operator
+        channel. `_history_to_messages` drops tool rows — it has to, since the DB stores no
+        Anthropic `tool_use_id`s and orphaned `tool_result` blocks are a 400 — so from turn
+        N+1 the model holds no tool payload at all, only its own earlier prose about them.
+        Its docstring assumed that prose was enough. Measured 2026-08-11: asked for chart
+        settings its own message had recorded only by study *name*, it invented colours,
+        line widths and precision — terms with zero occurrences anywhere in this database.
+        The ledger does not restore the payloads; it tells the model they are gone.
+
+        **Names only, and that is a safety boundary, not a simplification.** This method
+        must never grow to return `tool_input_json` or `tool_result_json`: a tool input can
+        carry an account number, an order id or a position, and everything returned here
+        goes into the model's context and the outgoing request body. A tool name is safe;
+        anything beside it is a new exposure.
+
+        Sorted and deduped for **byte-stability**, the same argument as
+        `get_rendered_proposals`': the ledger is rebuilt every turn and lands after the
+        cached prefix, so calling a tool a second time must not change a byte of it.
+        Chronological order or a call count would move the block for no new fact.
+
+        NULL and blank names are filtered defensively (`tool_name` is nullable): a blank
+        line would name no tool while still asserting that one was called.
+
+        Whole-session, deliberately unlike `get_history`'s `limit`: the claim being made is
+        "you called this earlier in this session", and a tool whose surrounding turns have
+        scrolled out of the replayed history is precisely the one the model has least
+        evidence about. Capping this to the history window would drop it first.
+
+        Returns:
+            Distinct non-blank `tool_name`s of this session's `role='tool'` rows, ascending.
+            Empty when the session has called none.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT tool_name FROM messages
+                   WHERE session_id=? AND role='tool'
+                     AND tool_name IS NOT NULL AND TRIM(tool_name) <> ''
+                   ORDER BY tool_name""",
+                (session_id,),
+            ).fetchall()
+        return [row["tool_name"] for row in rows]
+
     def _decisions_of_types(
         self, session_id: str, types: tuple[str, ...], *, require_message_id: bool,
     ) -> list[dict]:

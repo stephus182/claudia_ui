@@ -23,7 +23,11 @@ from claudia.agent import (
     _with_cache_marker,
     _with_history_cache_marker,
 )
-from claudia.conversation_store import COMPLETED_ORDER_ACTION_TYPES, RENDERED_PROPOSAL_TYPES
+from claudia.conversation_store import (
+    COMPLETED_ORDER_ACTION_TYPES,
+    RENDERED_PROPOSAL_TYPES,
+    ConversationStore,
+)
 from tests.fixtures.failing_transcripts import (
     DEFENDED_CLAIM_588,
     FAILED_437,
@@ -1480,8 +1484,15 @@ class _FakeStore:
         self.decisions: list[dict] = []
 
     def add_message(self, session_id: str, role: str, content: str = "", **kwargs) -> int:
-        """Append a message row and return its 1-based id, matching the real store's contract."""
-        self.messages.append({"session_id": session_id, "role": role, "content": content})
+        """Append a message row and return its 1-based id, matching the real store's contract.
+
+        `tool_name` is kept because the called-tool ledger is built from it; a double that
+        dropped it would keep an empty ledger green forever.
+        """
+        self.messages.append({
+            "session_id": session_id, "role": role, "content": content,
+            "tool_name": kwargs.get("tool_name"),
+        })
         return len(self.messages)
 
     def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
@@ -1521,13 +1532,29 @@ class _FakeStore:
             and d.get("decision_type") in COMPLETED_ORDER_ACTION_TYPES
         ]
 
+    def get_called_tool_names(self, session_id: str) -> list[str]:
+        """Mirrors the real query: `role='tool'` rows only, blank names dropped, distinct,
+        sorted alphabetically. The SQL itself is pinned in tests/test_conversation_store.py;
+        this double must not drift from it."""
+        return sorted({
+            m["tool_name"] for m in self.messages
+            if m["session_id"] == session_id
+            and m["role"] == "tool"
+            and (m.get("tool_name") or "").strip()
+        })
+
     def list_doc_versions(self) -> list[dict]:
         """No versions are registered — these tests never exercise the version note."""
         return []
 
 
-def _make_agent_recording(proposal_error: Exception | None = None):
-    """An agent wired to a recording sink and a recording store."""
+def _make_agent_recording(proposal_error: Exception | None = None, *, store: Any = None):
+    """An agent wired to a recording sink and, by default, a recording store.
+
+    `store` overrides the double — used by the tool-ledger leak test, whose claim is about
+    the real SQL and the real `tool_input_json` / `tool_result_json` columns rather than
+    about which fields a double happens to keep.
+    """
     sink = _RecordingSink(proposal_error)
     toolkit = MagicMock()
     toolkit.tools = []
@@ -1536,8 +1563,8 @@ def _make_agent_recording(proposal_error: Exception | None = None):
     loader.load_system_prompt.return_value = "# Role\nStub.\n\n# Principles\nStub."
     with patch("claudia.agent.AsyncAnthropic"):
         agent = ClaudIAAgent(
-            toolkit=toolkit, store=_FakeStore(), context_loader=loader,
-            session_id="test-session", sink=sink,
+            toolkit=toolkit, store=store if store is not None else _FakeStore(),
+            context_loader=loader, session_id="test-session", sink=sink,
         )
     return agent, sink
 
@@ -2243,6 +2270,161 @@ def test_completed_record_header_forbids_stating_current_state():
     assert "button click" in lowered
 
 
+# ── the called-tool ledger in the operator channel ───────────────────────────
+#
+# `_history_to_messages` drops tool rows, so from turn N+1 the model holds no tool payload
+# at all — only its own earlier prose about them. Its docstring assumed that prose was
+# enough; 2026-08-11 measured that it is not. Asked for chart settings its own earlier
+# message had recorded only by study *name*, it produced colours, line widths, precision
+# and "30/70 bands" — terms with zero occurrences anywhere in the database, across three
+# turns, each with no tool row and a single API round-trip. The same question in a fresh
+# session (empty history) produced five tool calls and ten of ten fields exact against the
+# live chart. Only variable: prose versus no prose.
+#
+# The ledger does not restore the payloads — it says they are gone. Names only: a tool
+# input can carry an account number, an order id or a position, and this block goes into
+# the model's context and the request body.
+
+
+def _seed_tool_call(agent, name: str) -> None:
+    """Record a tool call exactly as the tool loop does — a `role: "tool"` message row."""
+    agent._store.add_message("test-session", "tool", tool_name=name)
+
+
+def test_no_tool_calls_produces_no_ledger():
+    """The empty-header rule, same as its two siblings: a message asserting nothing
+    devalues a channel whose worth is that everything on it is load-bearing."""
+    agent, _sink = _make_agent_recording()
+    assert agent._called_tool_records() == ""
+    messages = [{"role": "user", "content": "hello"}]
+    agent._append_operator_message(messages)
+    assert messages == [{"role": "user", "content": "hello"}]
+
+
+def test_tool_ledger_names_each_tool_once_sorted():
+    """Identity only, one line per distinct tool, alphabetical. Not chronological and not
+    counted: both would move the block when a tool is merely called again."""
+    agent, _sink = _make_agent_recording()
+    _seed_tool_call(agent, "get_market_snapshot")
+    _seed_tool_call(agent, "chart_get_studies")
+    _seed_tool_call(agent, "get_market_snapshot")
+    body = agent._called_tool_records()
+
+    from claudia.agent import _TOOL_LEDGER_HEADER
+
+    assert body == "\n".join([
+        _TOOL_LEDGER_HEADER, "  - chart_get_studies", "  - get_market_snapshot",
+    ])
+
+
+def test_tool_ledger_comes_before_the_emission_records():
+    """Ordering rule of this channel: least urgent furthest from where generation resumes.
+    The ledger is standing background context; an emission record is about this session's
+    own output, and a note contradicts the turn just gone."""
+    agent, _sink = _make_agent_recording()
+    _seed_tool_call(agent, "get_live_orders")
+    _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
+    _seed_completed(agent, "trade_staged", confirmed=True, state="Submitted")
+    agent._pending_operator_notes.append("a note")
+    body = _operator_message(agent)
+
+    assert body.index("get_live_orders") < body.index("propose_order for")
+    assert body.index("propose_order for") < body.index("PLACED order")
+    assert body.index("PLACED order") < body.index("a note")
+
+
+def test_tool_ledger_is_one_system_message_after_the_user_turn():
+    """A ledger on its own still obeys the probed placement rule: one `role: "system"`
+    message, never messages[0], immediately after the user turn."""
+    agent, _sink = _make_agent_recording()
+    _seed_tool_call(agent, "get_live_orders")
+    messages = _history_to_messages([
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "and now?"},
+    ])
+    agent._append_operator_message(messages)
+
+    assert len(_system_texts(messages)) == 1
+    idx = next(i for i, m in enumerate(messages) if m["role"] == "system")
+    assert idx > 0
+    assert messages[idx - 1]["role"] == "user"
+    assert idx == len(messages) - 1
+
+
+def test_tool_ledger_is_byte_stable_when_a_tool_is_called_again():
+    """The block lands after the cached prefix and is rebuilt every turn. A second call to
+    a tool already named must not change a byte, or the request body is rewritten for
+    nothing turn after turn."""
+    agent, _sink = _make_agent_recording()
+    _seed_tool_call(agent, "get_market_snapshot")
+    _seed_tool_call(agent, "chart_get_studies")
+    first = agent._called_tool_records()
+    assert first != ""
+
+    _seed_tool_call(agent, "get_market_snapshot")
+    _seed_tool_call(agent, "chart_get_studies")
+    assert agent._called_tool_records() == first
+    assert [agent._called_tool_records() for _ in range(5)] == [first] * 5
+
+
+def test_tool_ledger_carries_no_tool_input_or_result(tmp_path):
+    """The safety claim, tested against the real store and the real columns rather than a
+    double's fields. A tool input can carry an account number, an order id or a position;
+    a result can carry the whole book. A name is safe, nothing else on this channel is."""
+    store = ConversationStore(tmp_path / "ledger.db")
+    store.create_session("test-session")
+    agent, _sink = _make_agent_recording(store=store)
+    store.add_message(
+        "test-session", "tool", tool_name="get_market_snapshot",
+        tool_input={"conid": "SENTINEL-INPUT-4242"},
+        tool_result={"last": "SENTINEL-RESULT-9999"},
+    )
+    body = _operator_message(agent)
+
+    assert "get_market_snapshot" in body
+    assert "SENTINEL-INPUT-4242" not in body
+    assert "SENTINEL-RESULT-9999" not in body
+    assert "conid" not in body
+    assert not any(ch.isdigit() for ch in body)
+
+
+def test_tool_ledger_never_names_a_proposal_tool():
+    """The one exclusion. The header's remedy is "call the tool again in this turn", which
+    for `propose_order` means emitting a second staging button — an order-flow action, not
+    a lookup. A proposal call is also already covered, more carefully, by the emission
+    records, whose worth rests on excluding a render that failed."""
+    agent, _sink = _make_agent_recording()
+    _seed_tool_call(agent, "propose_order")
+    _seed_tool_call(agent, "propose_cancel")
+    _seed_tool_call(agent, "propose_modify")
+    assert agent._called_tool_records() == ""
+
+    _seed_tool_call(agent, "get_live_orders")
+    body = agent._called_tool_records()
+    assert "  - get_live_orders" in body
+    assert "propose_" not in body
+
+
+def test_tool_ledger_exclusion_covers_exactly_the_proposal_tools():
+    """Drift guard: a fourth proposal tool must not land in the ledger by default, and one
+    removed from `proposal_tools` must not stay excluded here by a hardcoded name."""
+    from claudia.agent import _PROPOSAL_KINDS, PROPOSAL_TOOL_NAMES
+
+    assert frozenset(_PROPOSAL_KINDS) == PROPOSAL_TOOL_NAMES
+
+
+def test_tool_ledger_header_says_the_results_are_gone():
+    """The whole point of the block. It must not read as "here is what you learned" — it
+    says the payloads are absent and that a current value needs a fresh call."""
+    from claudia.agent import _TOOL_LEDGER_HEADER
+
+    lowered = _TOOL_LEDGER_HEADER.lower()
+    assert "not in your context" in lowered
+    assert "recollection, not evidence" in lowered
+    assert "call the tool again" in lowered
+
+
 def test_emission_record_tools_cover_exactly_the_store_allowlist():
     """Drift guard: a fourth rendered type added to the store must not be silently dropped
     from the records, and a type removed there must not linger here."""
@@ -2302,6 +2484,7 @@ def test_the_guardrails_own_texts_never_trip_the_detector():
         _OPERATOR_NOTE,
         _STALE_BOOK_CLAIM_NOTICE,
         _STALE_BOOK_CLAIM_OPERATOR_NOTE,
+        _TOOL_LEDGER_HEADER,
         _UNBACKED_CLAIM_NOTICE,
         _UNBACKED_CLAIM_OPERATOR_NOTE,
         _claims_completed_proposal,
@@ -2313,6 +2496,7 @@ def test_the_guardrails_own_texts_never_trip_the_detector():
         _OPERATOR_NOTE.format(kind="cancel"),
         _EMISSION_RECORD_HEADER,
         _COMPLETED_ORDER_HEADER,
+        _TOOL_LEDGER_HEADER,
         _UNBACKED_CLAIM_NOTICE,
         _UNBACKED_CLAIM_OPERATOR_NOTE,
         _STALE_BOOK_CLAIM_NOTICE,
@@ -2338,10 +2522,16 @@ def test_replayed_record_lines_never_trip_the_detector():
             metadata={"ibkr_order_id": "9000001", "readback_confirmed": True,
                       "readback_order_status": "Submitted"},
         )
+    # The ledger names order-book tools by name, which is the closest a line here gets to
+    # the book detector's own vocabulary.
+    for name in ("get_live_orders", "get_order_status", "get_market_snapshot"):
+        _seed_tool_call(agent, name)
     assert _claims_completed_proposal(agent._emission_records()) is None
     assert _claims_completed_proposal(agent._completed_order_records()) is None
+    assert _claims_completed_proposal(agent._called_tool_records()) is None
     assert _claims_fresh_book_check(agent._emission_records()) is None
     assert _claims_fresh_book_check(agent._completed_order_records()) is None
+    assert _claims_fresh_book_check(agent._called_tool_records()) is None
 
 
 async def test_narrated_staging_produces_an_honest_notice():

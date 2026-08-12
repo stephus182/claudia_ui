@@ -321,6 +321,15 @@ def warn_if_model_lacks_operator_channel(model: str) -> str | None:
     return model
 
 
+_TOOL_LEDGER_HEADER = (
+    "TOOLS YOU CALLED EARLIER IN THIS SESSION\n"
+    "Their results are NOT in your context — only your own earlier messages about them.\n"
+    "Anything you state about what one returned is recollection, not evidence. To report a\n"
+    "current value or state, call the tool again in this turn."
+)
+"""Header of the replayed called-tool ledger. See `ClaudIAAgent._called_tool_records`."""
+
+
 _PROPOSAL_DECISION_TOOLS: dict[str, str] = {
     "trade_proposed": "propose_order",
     "trade_cancel_proposed": "propose_cancel",
@@ -955,8 +964,13 @@ def _history_to_messages(history: list[dict]) -> list[MessageParam]:
         Only `user` and `assistant` messages, in order. **Tool rows are deliberately
         dropped** — the DB stores neither the Anthropic-assigned `tool_use_id`s nor the
         intermediate assistant messages carrying the matching `tool_use` blocks, so
-        replaying them would send orphaned `tool_result` blocks and the API would 400. The
-        assistant's text already summarises what each tool returned.
+        replaying them would send orphaned `tool_result` blocks and the API would 400.
+
+        This used to add "the assistant's text already summarises what each tool returned",
+        which was the justification for dropping them. It is false — measured 2026-08-11,
+        see `ClaudIAAgent._called_tool_records`. The drop itself stands (the 400 is real);
+        what compensates for it is the called-tool ledger on the operator channel, which
+        tells the model the payloads are gone rather than pretending its prose replaced them.
     """
     messages: list[MessageParam] = []
     for row in history:
@@ -969,8 +983,8 @@ def _history_to_messages(history: list[dict]) -> list[MessageParam]:
         # tool_use_id UUIDs assigned by Anthropic, and the intermediate
         # assistant messages containing the matching tool_use blocks are
         # not persisted either. Injecting orphaned tool_result blocks causes
-        # Anthropic API 400 errors. The assistant's text response already
-        # captures what each tool returned.
+        # Anthropic API 400 errors. What the model loses by this is restored as
+        # the called-tool ledger, not as a summary — see the docstring.
     return messages
 
 
@@ -1505,6 +1519,60 @@ class ClaudIAAgent:
         self._pending_operator_notes.append(_OPERATOR_NOTE.format(kind=kind))
         await self._sink.send_message(_GUARDRAIL_NOTICE)
 
+    def _called_tool_records(self) -> str:
+        """Return this session's called-tool ledger, or "" when no tool has been called.
+
+        `_history_to_messages` drops tool rows, and its docstring rests on "the assistant's
+        text already summarises what each tool returned". That assumption fails. From turn
+        N+1 the model holds no payload at all — only its own prose — so it answers
+        follow-ups from that prose and confabulates exactly where the prose is thinner than
+        the question. Measured 2026-08-11: its own message had recorded study *names* only;
+        asked for the settings it produced colours, line widths, precision and "30/70
+        bands", terms with zero occurrences in the entire database, all time. Three such
+        turns in one session, each with no tool row and a single API round-trip. The
+        identical question in a fresh session (empty history) produced 5 tool calls and 10
+        of 10 fields exact against the live chart — prose versus no prose was the only
+        variable.
+
+        This block does not restore the payloads; it states that they are gone. It covers
+        every tool that reads, not just the TradingView ones from that incident: the
+        blindness is generic, and an IBKR read is exactly as invisible as a chart read. The
+        proposal tools are the one exclusion, for the two reasons below.
+
+        **Identity only — names, nothing else, and that is a safety boundary.** Never a
+        `tool_input_json`, never a `tool_result_json`, never counts or timestamps. Same rule
+        `_emission_records` states as "the record answers 'what did you do', never 'what
+        were the values'": a tool input can carry an account number, an order id or a
+        position, and this text goes into the model's context and the outgoing request body.
+        A tool name is safe; anything else added here would be a new exposure.
+
+        `PROPOSAL_TOOL_NAMES` are excluded. Two independent reasons, either sufficient:
+
+        - The header's remedy is "call the tool again in this turn". That is right for a
+          read and wrong for a proposal: re-calling `propose_order` emits a second staging
+          button the user never asked for, which is an order-flow action, not a lookup.
+        - A proposal call already has its own, more careful section on this same channel
+          (`_emission_records`), whose value rests on excluding a render that *failed*. A
+          second section naming `propose_order` with no such filter would put that name back
+          on the non-forgeable channel for exactly the turns the exclusion exists to cover.
+
+        Byte-stable across calls: `get_called_tool_names` returns distinct names sorted
+        alphabetically, so calling a tool again changes nothing. An unstable block would
+        rewrite the request body every turn for no reason.
+
+        Returns:
+            The header plus one line per tool, or "" when the session has called none that
+            qualify — never an empty header, for the reason `_emission_records` gives.
+        """
+        lines = [
+            f"  - {name}"
+            for name in self._store.get_called_tool_names(self._session_id)
+            if name not in PROPOSAL_TOOL_NAMES
+        ]
+        if not lines:
+            return ""
+        return "\n".join([_TOOL_LEDGER_HEADER, *lines])
+
     def _emission_records(self) -> str:
         """Return this session's proposal-emission record block, or "" when there is none.
 
@@ -1635,15 +1703,16 @@ class ClaudIAAgent:
     def _append_operator_message(self, messages: list) -> None:
         """Deliver the operator channel as one `role: "system"` message after the user turn.
 
-        Three payloads share it: the proposal-emission records (`_emission_records`), the
-        completed-order-action records (`_completed_order_records`) — both derived from
-        persisted rows and rebuilt every turn — and any queued render-failure notes
-        (`_pending_operator_notes`, transient: queued once, delivered once, cleared). They
-        are separate *sources* on purpose, since re-deriving records is what makes them
-        cross-turn evidence while a note must not re-announce a failure already handled, and
-        separate *sections* because "a button was drawn" and "this write reached IBKR" are
-        different facts. They share one *message* because the API's placement rule allows
-        only one here.
+        Four payloads share it: the called-tool ledger (`_called_tool_records`), the
+        proposal-emission records (`_emission_records`), the completed-order-action records
+        (`_completed_order_records`) — all three derived from persisted rows and rebuilt
+        every turn — and any queued render-failure notes (`_pending_operator_notes`,
+        transient: queued once, delivered once, cleared). They are separate *sources* on
+        purpose, since re-deriving records is what makes them cross-turn evidence while a
+        note must not re-announce a failure already handled, and separate *sections* because
+        "you called this tool and its result is gone", "a button was drawn" and "this write
+        reached IBKR" are different facts. They share one *message* because the API's
+        placement rule allows only one here.
 
         Why the system role: anything the model can write, it can forge, so this content
         placed in a user or assistant turn would be indistinguishable from a model-emitted
@@ -1679,6 +1748,12 @@ class ClaudIAAgent:
                 in place.
         """
         parts: list[str] = []
+        # First, deliberately: the ledger is standing background context about the whole
+        # session rather than a claim about any one turn, so it is the least urgent of the
+        # four and sits furthest from where generation resumes.
+        ledger = self._called_tool_records()
+        if ledger:
+            parts.append(ledger)
         records = self._emission_records()
         if records:
             parts.append(records)
@@ -1689,7 +1764,7 @@ class ClaudIAAgent:
         if completed:
             parts.append(completed)
         # Notes last: a note contradicts the turn immediately preceding this one and is the
-        # most urgent of the three, so it sits closest to where generation resumes.
+        # most urgent of the four, so it sits closest to where generation resumes.
         parts.extend(self._pending_operator_notes)
         if not parts:
             return

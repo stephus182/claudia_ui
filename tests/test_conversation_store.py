@@ -528,6 +528,61 @@ def test_completed_and_rendered_allowlists_are_disjoint():
     assert not set(COMPLETED_ORDER_ACTION_TYPES) & set(RENDERED_PROPOSAL_TYPES)
 
 
+# ── called-tool ledger for the operator channel ──────────────────────────────
+#
+# `_history_to_messages` drops tool rows, so from turn N+1 the model holds no tool payload
+# at all — only its own earlier prose about them. Measured 2026-08-11: asked for chart
+# settings its own message had named only by study, it invented colours, line widths and
+# precision; the same question in a fresh session produced five tool calls and ten exact
+# fields. `get_called_tool_names` is the source of the ledger that tells it the payloads
+# are gone. Names only — a tool input can carry an account number, an order id or a
+# position, and this content goes into the request body.
+
+
+def test_get_called_tool_names_returns_distinct_names_sorted_alphabetically(store):
+    """Sorted and deduped, not chronological. The ledger is rebuilt every turn and lands
+    after the cached prefix, so calling a tool again must not change a byte of it."""
+    store.create_session("sess-ledger")
+    for name in ("get_quote", "get_chart", "get_quote", "add_study", "get_chart"):
+        store.add_message("sess-ledger", "tool", tool_name=name, tool_result={"ok": True})
+
+    assert store.get_called_tool_names("sess-ledger") == ["add_study", "get_chart", "get_quote"]
+
+
+def test_get_called_tool_names_is_scoped_to_one_session(store):
+    """One session's tools never appear in another's ledger — the block is a claim about
+    what *this* conversation called."""
+    store.create_session("sess-ledger-a")
+    store.create_session("sess-ledger-b")
+    store.add_message("sess-ledger-a", "tool", tool_name="get_quote")
+
+    assert store.get_called_tool_names("sess-ledger-a") == ["get_quote"]
+    assert store.get_called_tool_names("sess-ledger-b") == []
+
+
+def test_get_called_tool_names_ignores_rows_that_are_not_tool_calls(store):
+    """A session that only ever talked has an empty ledger. `role='tool'` is what makes a
+    row a call; a name parked on a user or assistant row is not one."""
+    store.create_session("sess-ledger-talk")
+    store.add_message("sess-ledger-talk", "user", "what are my studies?")
+    store.add_message("sess-ledger-talk", "assistant", "RSI and MACD.")
+    store.add_message("sess-ledger-talk", "user", "and their settings?", tool_name="get_chart")
+
+    assert store.get_called_tool_names("sess-ledger-talk") == []
+
+
+def test_get_called_tool_names_filters_null_and_blank_names(store):
+    """Defensive: `tool_name` is nullable. A blank line in the ledger would name no tool
+    while still asserting that one was called."""
+    store.create_session("sess-ledger-blank")
+    store.add_message("sess-ledger-blank", "tool", tool_name=None)
+    store.add_message("sess-ledger-blank", "tool", tool_name="")
+    store.add_message("sess-ledger-blank", "tool", tool_name="   ")
+    store.add_message("sess-ledger-blank", "tool", tool_name="get_quote")
+
+    assert store.get_called_tool_names("sess-ledger-blank") == ["get_quote"]
+
+
 # ── FTS5 query sanitisation ───────────────────────────────────────────────────
 
 
