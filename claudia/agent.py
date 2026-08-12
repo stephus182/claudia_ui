@@ -189,6 +189,25 @@ is a more serious violation than simply not knowing the answer.
 If you are about to respond to a retry/re-check/verify request without having made a tool call
 in the current turn, stop and make the tool call first.
 
+## NARRATED ACTIONS REQUIRE A TOOL CALL — NON-OVERRIDABLE
+
+An action you report performing must have been performed by a tool call in this turn.
+Announcing an action is not performing it, and describing a result is not observing one.
+
+- If you write that you will switch the chart, capture a screenshot, read the Pine editor,
+  compile a script, pull a quote, load data, or check anything at all, the matching tool call
+  MUST appear in this same turn before you report any outcome of it. There is no path from
+  intent to result that does not pass through the tool.
+- If you announce an action and then do not make the call, say exactly that and stop. "I said
+  I would capture it and did not" is a complete answer. A described chart, editor, connection
+  or result that no tool returned is a fabrication, and it is worse than saying nothing,
+  because it reads as an observation and fails verification.
+- Never describe what a chart, screen, editor, feed or account shows unless a tool result in
+  this turn put it in front of you, or the user did. What you remember of it from an earlier
+  turn is not what it shows now, and a value you can picture is not a value you read.
+- A button the user clicks is not a tool call you made, and you have no result from it. Say
+  what you know and what you do not, then read the state with a tool if you need it.
+
 ## ORDER EXISTENCE REQUIRES EVIDENCE — NON-OVERRIDABLE
 
 An order exists, or does not exist, only as the current turn's evidence shows. Three rules,
@@ -441,6 +460,54 @@ _STALE_BOOK_CLAIM_OPERATOR_NOTE = (
 """Operator-channel body for an unverified book check. See `_append_operator_message`."""
 
 
+_UNBACKED_ACTION_NOTICE = (
+    "⚠️ **That message reported an action that never ran.** No tool was called in that "
+    "turn, so nothing was switched, captured, compiled, fetched or checked, and anything "
+    "it described came from memory rather than from a live read. Ask again and it will "
+    "be done for real."
+)
+"""Shown, persisted and mirrored to the model when an action report has no tool call.
+
+Unhedged for the same reason as its three siblings: it exists to contradict a claim the
+transcript already carries, and "may not have run" would leave that claim standing. Its
+own wording must trip none of the four detectors — pinned by
+tests/test_agent.py::test_the_guardrails_own_texts_never_trip_the_detector.
+"""
+
+
+_UNBACKED_ACTION_OPERATOR_NOTE = (
+    "Your preceding message announced an action and then reported it as done, but no "
+    "tool ran in that turn: the action did not happen and nothing it described was "
+    "observed. The user has been told. Do not repeat or defend that claim, and do not "
+    "restate any value from it. Announcing an action is not performing it — call the "
+    "tool in this turn, or state plainly that you did not act."
+)
+"""Operator-channel body for a narrated action nothing ran. See `_append_operator_message`."""
+
+
+_UNBACKED_RESULT_NOTICE = (
+    "⚠️ **That message displayed a block presented as a raw tool result, but no tool "
+    "ran in that turn.** The block was constructed, not returned by any tool, and none "
+    "of its values were observed. Ask again and the tool will be called for real."
+)
+"""Shown, persisted and mirrored to the model when a vouched-for payload has no tool call.
+
+The most serious member of the family: the measured instance was an audit response — the
+user asked for the raw result specifically to verify an earlier number, and the model
+manufactured one. The wording names the block as constructed rather than wrong, because
+its values may even coincide with reality; what is false is the provenance.
+"""
+
+
+_UNBACKED_RESULT_OPERATOR_NOTE = (
+    "Your preceding message showed the user a fenced block presented as a raw tool "
+    "result, but no tool ran in that turn: you constructed that payload. The user has "
+    "been told. Never present constructed content as a tool return — call the tool and "
+    "show what it actually returned, or state plainly that you have no result to show."
+)
+"""Operator-channel body for a constructed payload. See `_append_operator_message`."""
+
+
 _BOOK_READING_TOOLS = frozenset({"get_live_orders", "get_order_status", "diagnose_orders"})
 """The tools whose results are evidence about the current order book.
 
@@ -668,6 +735,258 @@ def _claims_fresh_book_check(text: str) -> str | None:
             continue
         hit = _BOOK_CLAIM.search(sentence)
         if hit is None or _PAST_TURN.search(sentence):
+            continue
+        if not _GOVERNING_OPERATOR.search(sentence[: hit.start()]):
+            return sentence
+    return None
+
+
+_SEGMENT_SPLIT = re.compile(r"(?<=[.!?…:;])(?=\s|[A-Z])|\n+")
+"""`_SENTENCE_SPLIT` plus `:` and `;` boundaries.
+
+The action detector needs the finer split because the streamed fabrications join intent
+and report with a colon and no space — "the non-disruptive way:Here's TSLA", "Now
+compiling:Done — injected". The book and proposal detectors keep the coarser split their
+corpus measurements were made against.
+"""
+
+_TOOL_ACTION_VERB = (
+    "(?:check|pull|fetch|read|load|retry|verify|run|compile|capture|switch|grab|"
+    "query|inject|sync|scan)"
+)
+"""Verbs that commit to a tool action, and nothing else — a closed allowlist.
+
+The allowlist is the primary veto. "Let me be precise", "let me know", "I'll hold that
+as our reference point", "I'll accept the empirical result", "I'll take it at face
+value" are the corpus's most common innocent lead-ins, and none of them survives a verb
+gate — `be`, `know`, `hold`, `accept` and `take` are not tool actions. `get` and `look`
+are excluded the same way ("I'll get back to you", "let me look at this differently");
+no measured fabrication needed either. Deliberately absent: `stage`, `propose`, `place`,
+`cancel`, `modify` — order vocabulary belongs to `_claims_completed_proposal`, and a
+second detector matching it would double-correct a single lie.
+
+Plain literals only (no regex metacharacters): the drift-guard test derives each verb's
+participle from this string and asserts `_REPORTED_COMPLETE` carries it.
+"""
+
+_TOOL_ACTION_GERUND = (
+    "(?:check|fetch|pull|compil|captur|switch|inject|read|load|verify|retry|"
+    "sync|query|grabb|scann)ing"
+)
+"""The same verbs as segment-opening gerunds — "Checking cache first, then fetching."
+
+Measured shape (three instances, two sessions). Narrower than the verb list on purpose:
+`running` ("running through the logic") and `getting` read as discourse, not action, and
+neither appears in a measured fabrication.
+"""
+
+_INTENT_PREAMBLE = re.compile(
+    r"(?:^(?:Now\s+|Then\s+)?" + _TOOL_ACTION_GERUND + r"\b"
+    r"|\b(?:I(?:['\u2019]ll|\s+will|\s*['\u2019]?m\s+going\s+to)|Let\s+me)\s+"
+    r"(?:\w+\s+){0,2}?" + _TOOL_ACTION_VERB + r"\b)",
+    re.I,
+)
+"""The lead-in to act: first-person future, "let me", or a segment-opening gerund.
+
+Up to two filler words between the auxiliary and the verb ("I'll just quickly check"),
+bounded so "I'll ask you to check" stays out. The gerund branch is anchored to the
+segment start, which is what keeps mid-sentence participial phrases ("while checking the
+cache, I noticed…") from counting as commitments.
+"""
+
+_RESULT_NOUN = (
+    "(?:charts?|screenshots?|editor|source|stud(?:y|ies)|indicators?|values?|"
+    "bars?|quotes?|feed|status|results?|errors?|snapshots?)"
+)
+"""What a tool returns, by the names ClaudIA gives it — the gate on the "Here's" report.
+
+Every noun is earned by a measured fabrication (the chart, the Pine editor, the studies,
+the status call, the quote feed, the compile result). Deliberately excluded: `proposal`,
+`strategy`, `script`, `plan`, `picture`, `read`, `data`, `table`, `summary` — a message
+presenting the model's own composition ("Here's the proposal exactly as specified:",
+"Here's a clean 20/50 SMA crossover strategy") is the false-positive class the corpus
+actually contains, and the noun is what separates it from a tool result.
+"""
+
+_RESULT_IS_HERE = re.compile(
+    r"\bHere(?:['\u2019]s|\s+is|\s+are)\b[^.!?\n]{0,60}?\b" + _RESULT_NOUN + r"\b",
+    re.I,
+)
+"""Report shape 1: a tool result is presented *here*, in this message.
+
+The deictic "Here's" plus a result noun within short range — "Here's the AMD chart",
+"Here's exactly what's in the Pine editor right now", "Here's what the status call
+returns". The 60-char bound keeps the noun attached to the presentation rather than
+matching across an unrelated clause.
+"""
+
+_REPORTED_COMPLETE = re.compile(
+    r"(?:^(?:Done|Checked|Pulled|Fetched|Read|Loaded|Retried|Verified|Ran|Compiled|"
+    r"Captured|Switched|Grabbed|Queried|Injected|Synced|Scanned|Confirmed|"
+    r"Cache\s+miss|Still\s+failing|Same\s+result|It\s+worked)\b"
+    r"(?=\s*(?:[—\u2013,.;:!-]|$)"
+    r"|\s+(?:and|against|on|in|with|cleanly|successfully|clean)\b)"
+    r"|\b(?:connection|gateway|feed|tools?|sidecar)(?:['\u2019]s|\s+is|\s+are)\s+live\b"
+    r"|\bnow\s+cached\b"
+    r"|\bNow\s+I\s+have\b)",
+    re.I,
+)
+"""Report shape 2: the segment opens with a completed act, or asserts fetched state.
+
+Segment-initial participles only, with `_ACTION_DONE`'s lookahead trick: punctuation or a
+connective after the participle makes it a predicate ("Compiled.", "Loaded and compiled —
+no errors", "Confirmed against the live book"); anything else makes it attributive or
+imperative, which is why determiners are deliberately absent from the connective list —
+"Read the docs before trading" and "Checked boxes don't mean settled orders" must stay
+out. The unanchored tail shapes — "connection is live", "now cached", "Now I have" — are
+each earned by a measured fabrication and carry no innocent reading in the corpus.
+"""
+
+_USER_SOURCE = re.compile(
+    r"\byou(?:r)?\s+(?:sent|pasted|attached|uploaded|shared|screenshot|image|file)\b"
+    r"|\bthe\s+(?:image|screenshot|file|chart)\s+you\b",
+    re.I,
+)
+"""The intent names user-supplied content — "let me read the chart you sent".
+
+DATA INTEGRITY's second guaranteed source: describing what the user handed over needs no
+tool, so an intent aimed at it commits to nothing this detector should police. The call
+site also clears the whole turn when image blocks are attached; this veto is for the turn
+where the text names the source and the image arrived in an earlier message.
+"""
+
+_NOT_PERFORMED = re.compile(
+    r"\b(?:did\s*n[o\u2019']t|didn['\u2019]t|could\s*n[o\u2019']t|couldn['\u2019]t|"
+    r"could\s+not|was\s*n[o\u2019']t|wasn['\u2019]t|failed\s+to|unable\s+to|never|"
+    r"without|would\s+(?:have|be|look)|if\s+I\s+had|from\s+memory|hypothetical)\b",
+    re.I,
+)
+"""Non-performance readings of a report segment, checked sentence-wide.
+
+Deliberately excludes bare `no`/`not`: "Loaded and compiled — no errors" is T6's exact
+wording, and an honest-sounding negation inside a fabricated report must not clear it.
+Only phrases that negate the *performance* qualify ("I couldn't capture the screenshot"),
+plus the counterfactuals ("it would be here within a second").
+"""
+
+
+def _claims_completed_action(text: str) -> str | None:
+    """Return the segment reporting a completed tool action, or None if there is none.
+
+    T7's shape, and the third member of the detector family: `_claims_completed_proposal`
+    asserts *claimed a proposal ⇒ called a proposal tool*, `_claims_fresh_book_check`
+    asserts *claimed a lookup ⇒ called a lookup tool*, and this one asserts *reported an
+    action ⇒ some tool actually ran this turn*. Same architecture, deliberately — **the
+    trigger is textual, the verdict is evidence**: this function only decides that an
+    action was reported; whether anything ran is settled at the call site by
+    `called_tools`, and by nothing else.
+
+    The claim needs two halves in order: a lead-in to act (`_INTENT_PREAMBLE`) and a
+    completion report (`_RESULT_IS_HERE` / `_REPORTED_COMPLETE`) at or after it. The
+    report requirement is the largest veto there is: measured against the live store
+    (225 assistant messages), intent alone appears in dozens of honest turns — "say the
+    word and I'll pull your positions" — and every one stops before reporting an outcome.
+    Measured the same way as the siblings, before shipping: **20 fires on zero-tool
+    turns, every one an individually verified fabrication (2026-06-24 → 2026-08-12, nine
+    sessions, both TV instances and the 2026-07-28 book failure among them); 22 turns
+    matched textually and were cleared by their real tool calls; zero fires outside the
+    verified set.** See `docs/plans/2026-08-12-t7-fabrication-guardrail.md`.
+
+    What it gives up for that, knowingly:
+      - a turn where *some* tool ran and a *different* claimed action did not ("called
+        `get_positions`, also said it captured a screenshot"). The verdict is the whole
+        turn's tool set, so one real call clears every claim in the message. Closing it
+        needs a verb→tool map, and the TradingView surface has no closed declaration to
+        pin one against the way `_BOOK_READING_TOOLS` pins against the toolkit.
+      - a report with no announced intent before it, and a "Here's the ..." whose noun is
+        outside `_RESULT_NOUN` — the two measured misses ("Here's the picture:" into a
+        fabricated account table; "ZZZ close = 504.17" with no report verb at all). The
+        intent half and the noun gate are what keep the model's own compositions out;
+        widening either trades a measured 0-false-positive detector for a speculative one.
+      - order-domain vocabulary, deliberately: staging, proposing and book-checking
+        belong to the two siblings, and this detector standing down there is what keeps
+        one lie from earning three corrections.
+
+    Args:
+        text: The assistant text about to be, or already, shown to the user.
+
+    Returns:
+        The report segment — for the log line only, never for storage: it is live
+        conversation text and the decision row must stay free of it.
+    """
+    segments = [s.strip() for s in _SEGMENT_SPLIT.split(_MARKUP.sub(" ", text))]
+    start_index: int | None = None
+    tail_offset = 0
+    for i, segment in enumerate(segments):
+        if not segment or segment.endswith("?"):
+            continue
+        hit = _INTENT_PREAMBLE.search(segment)
+        if hit is None or _USER_SOURCE.search(segment):
+            continue
+        if _GOVERNING_OPERATOR.search(segment[: hit.start()]):
+            continue
+        start_index, tail_offset = i, hit.end()
+        break
+    if start_index is None:
+        return None
+    for i in range(start_index, len(segments)):
+        # Within the intent's own segment, only text after the preamble can report.
+        segment = segments[i][tail_offset:].strip() if i == start_index else segments[i]
+        if not segment or segment.endswith("?"):
+            continue
+        if _PAST_TURN.search(segment) or _NOT_PERFORMED.search(segment):
+            continue
+        if _RESULT_IS_HERE.search(segment) or _REPORTED_COMPLETE.search(segment):
+            return segment
+    return None
+
+
+_VERBATIM_RESULT_CLAIM = re.compile(
+    r"\b(?:raw|verbatim|actual|exact|explicit|unmodified|untouched)\s+"
+    r"(?:tool\s+|API\s+)?(?:call|result|output|response|payload|return)\b",
+    re.I,
+)
+"""A block is being vouched for as a tool's own words — "the raw tool result, verbatim"."""
+
+_RESULT_CLAIM_EXCUSE = re.compile(
+    r"\b(?:example|sample|illustrat\w*|hypothetical|mock|template|format|schema|"
+    r"would\s+look|looks\s+like|for\s+instance)\b",
+    re.I,
+)
+"""The honest readings: explaining a format or showing a hypothetical is not vouching."""
+
+
+def _claims_verbatim_tool_result(text: str) -> str | None:
+    """Return the sentence vouching for a fenced block as a raw tool result, or None.
+
+    The fourth detector, for the shape the other three cannot see because it has no
+    intent preamble and no order vocabulary: a fenced payload presented as a tool's own
+    return. The measured instance (2026-07-10) is the worst message in the store — asked
+    to call `quote_get` explicitly and show the raw result *as an audit*, the model
+    emitted a fenced JSON block with an invented `_source` field and asserted it
+    confirmed the numbers, in a turn with zero tool rows. A fabricated audit trail,
+    produced on demand, defeating exactly the verification move the user made.
+
+    Same split as the siblings: this function decides only that a block was vouched for;
+    whether any tool ran is settled at the call site. The fence requirement is structural
+    — the vouching phrase without a fence presents nothing ("Here's the raw tool result,
+    verbatim:" followed by silence claims no content), and no honest zero-tool message in
+    the corpus fences a payload while vouching for its provenance.
+
+    Args:
+        text: The assistant text about to be, or already, shown to the user.
+
+    Returns:
+        The vouching sentence — for the log line only, never for storage.
+    """
+    if "```" not in text:
+        return None
+    for sentence in _SENTENCE_SPLIT.split(_MARKUP.sub(" ", text)):
+        sentence = sentence.strip()
+        if not sentence or sentence.endswith("?"):
+            continue
+        hit = _VERBATIM_RESULT_CLAIM.search(sentence)
+        if hit is None or _RESULT_CLAIM_EXCUSE.search(sentence):
             continue
         if not _GOVERNING_OPERATOR.search(sentence[: hit.start()]):
             return sentence
@@ -1360,6 +1679,9 @@ class ClaudIAAgent:
         # one exists per turn — the second call is refused there, not silently dropped.
         display_text = full_response_text.strip()
         kind, proposal = self._pending_proposal or (None, None)
+        # True once any detector below has corrected this turn — the general action
+        # detector stands down behind a more specific sibling (see its call site).
+        corrected = False
 
         # Persist final assistant message
         msg_id = self._store.add_message(
@@ -1418,6 +1740,7 @@ class ClaudIAAgent:
             # `_claims_completed_proposal` for the shapes and the corpus measurement.
             claim = _claims_completed_proposal(display_text)
             if claim is not None:
+                corrected = True
                 await self._emit_unbacked_claim_notice(msg_id, claim)
 
         # Outside the proposal branches on purpose: claiming a lookup and claiming a
@@ -1427,7 +1750,28 @@ class ClaudIAAgent:
         if display_text and not (called_tools & _BOOK_READING_TOOLS):
             stale = _claims_fresh_book_check(display_text)
             if stale is not None:
+                corrected = True
                 await self._emit_stale_book_claim_notice(msg_id, stale)
+
+        # The general case of the two above — an action reported with nothing behind it,
+        # T7's shape — runs last and stands down when a sibling has already corrected the
+        # turn: the 2026-07-28 message narrates a book check and a staging in one
+        # sentence, and a third notice restating either would devalue all three. The
+        # sibling rule holds for the *same* sentence; two distinct lies in two sentences
+        # still earn two corrections above. `not called_tools` is the verdict (any real
+        # call may ground the report); `not images` clears the turn outright, because a
+        # screenshot the user dragged in is DATA INTEGRITY's second guaranteed source and
+        # describing it needs no tool. The payload check runs first of the two: a
+        # constructed block vouched for as a tool return deserves its specific
+        # correction, not the generic one.
+        if display_text and not called_tools and not images and not corrected:
+            shown = _claims_verbatim_tool_result(display_text)
+            if shown is not None:
+                await self._emit_unbacked_result_notice(msg_id, shown)
+            else:
+                narrated = _claims_completed_action(display_text)
+                if narrated is not None:
+                    await self._emit_unbacked_action_notice(msg_id, narrated)
 
     async def _emit_stale_book_claim_notice(self, msg_id: int, claim: str) -> None:
         """Contradict a claimed order-book check that no tool call backs.
@@ -1460,6 +1804,65 @@ class ClaudIAAgent:
         )
         self._pending_operator_notes.append(_STALE_BOOK_CLAIM_OPERATOR_NOTE)
         await self._sink.send_message(_STALE_BOOK_CLAIM_NOTICE)
+
+    async def _emit_unbacked_action_notice(self, msg_id: int, claim: str) -> None:
+        """Contradict a reported action that no tool call backs — T7's shape.
+
+        The fourth member of the family, and the general case: it means "the action never
+        ran", where its siblings mean "the proposal was never made" and "the lookup never
+        ran". It stands down when either sibling has already corrected the turn (the call
+        site's `corrected` gate), because the measured overlap is a single sentence
+        committing two lies — two corrections for two claims, never three.
+
+        Same surface order and same reasoning as its siblings: persist, record, queue,
+        then display, so a failing sink cannot cost the record.
+
+        Args:
+            msg_id: The assistant message whose text carries the unbacked report.
+            claim: The offending segment. **Logged only** — live conversation text, kept
+                out of the decision row and every surface that leaves this machine.
+        """
+        log.warning("Action reported with no tool call this turn: %r", claim)
+        self._store.add_message(self._session_id, "assistant", _UNBACKED_ACTION_NOTICE)
+        self._store.add_decision(
+            session_id=self._session_id,
+            decision_type="action_claim_unbacked",
+            summary_text=(
+                "assistant text reported a completed action but no tool was called in "
+                "that turn — nothing it described was observed"
+            ),
+            message_id=msg_id,
+        )
+        self._pending_operator_notes.append(_UNBACKED_ACTION_OPERATOR_NOTE)
+        await self._sink.send_message(_UNBACKED_ACTION_NOTICE)
+
+    async def _emit_unbacked_result_notice(self, msg_id: int, claim: str) -> None:
+        """Contradict a fenced block vouched for as a tool result that no tool produced.
+
+        Kept separate from `_emit_unbacked_action_notice` for the same reason the
+        siblings are separate from each other: "the payload is constructed" needs its own
+        words to the user, its own decision type and its own operator note. This is the
+        audit-defeating shape — the measured instance answered a user's explicit
+        verification request with a manufactured payload — so the specific correction
+        outranks the generic one at the call site.
+
+        Args:
+            msg_id: The assistant message whose text vouches for the block.
+            claim: The vouching sentence. **Logged only**, as with its siblings.
+        """
+        log.warning("Constructed payload presented as a tool result: %r", claim)
+        self._store.add_message(self._session_id, "assistant", _UNBACKED_RESULT_NOTICE)
+        self._store.add_decision(
+            session_id=self._session_id,
+            decision_type="result_claim_unbacked",
+            summary_text=(
+                "assistant text presented a constructed block as a raw tool result — "
+                "no tool was called in that turn"
+            ),
+            message_id=msg_id,
+        )
+        self._pending_operator_notes.append(_UNBACKED_RESULT_OPERATOR_NOTE)
+        await self._sink.send_message(_UNBACKED_RESULT_NOTICE)
 
     async def _emit_unbacked_claim_notice(self, msg_id: int, claim: str) -> None:
         """Contradict a staging claim that no tool call backs, on all three surfaces.

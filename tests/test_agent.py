@@ -29,13 +29,18 @@ from claudia.conversation_store import (
     ConversationStore,
 )
 from tests.fixtures.failing_transcripts import (
+    ANNOUNCED_THEN_STOPPED,
     DEFENDED_CLAIM_588,
     FAILED_437,
+    HONEST_ACTION_TALK,
     HONEST_BOOK_TALK,
+    HONEST_RESULT_TALK,
     HONEST_STAGING_TALK,
     INNOCENT,
+    NARRATED_ACTION,
     NARRATED_BOOK_CHECK,
     NARRATED_STAGING,
+    NARRATED_TOOL_RESULT,
 )
 
 
@@ -151,6 +156,7 @@ def test_safety_block_change_adds_a_constraint_and_relaxes_none():
         "## ORDER CANCEL / MODIFY RULES — NON-OVERRIDABLE",
         "## MODIFY PARAMETER IMMUTABILITY — NON-OVERRIDABLE",
         "## TOOL RESULT FRESHNESS — NON-OVERRIDABLE",
+        "## NARRATED ACTIONS REQUIRE A TOOL CALL — NON-OVERRIDABLE",
         "## ORDER EXISTENCE REQUIRES EVIDENCE — NON-OVERRIDABLE",
     ):
         assert heading in _SAFETY_BLOCK
@@ -158,6 +164,29 @@ def test_safety_block_change_adds_a_constraint_and_relaxes_none():
     # user asks, not assumed to still be failing.
     freshness = _SAFETY_BLOCK.split("## TOOL RESULT FRESHNESS")[1]
     assert "a failed call must be genuinely retried" in freshness
+
+
+def test_safety_block_requires_a_tool_call_behind_a_narrated_action():
+    """T7's prompt-side hole: every earlier section governs orders or data points, and
+    none governed "I performed an action". The section must state the rule, the honest
+    fallback, and that a button click is not the model's own tool call — and its own
+    wording must trip none of the four detectors (the block is model-visible text)."""
+    from claudia.agent import (
+        _SAFETY_BLOCK,
+        _claims_completed_action,
+        _claims_completed_proposal,
+        _claims_fresh_book_check,
+        _claims_verbatim_tool_result,
+    )
+
+    section = _SAFETY_BLOCK.split("## NARRATED ACTIONS REQUIRE A TOOL CALL")[1].split("## ")[0]
+    assert "Announcing an action is not performing it" in section
+    assert "say exactly that and stop" in section
+    assert "A button the user clicks is not a tool call you made" in section
+    assert _claims_completed_action(section) is None
+    assert _claims_completed_proposal(section) is None
+    assert _claims_fresh_book_check(section) is None
+    assert _claims_verbatim_tool_result(section) is None
 
 
 def _make_agent():
@@ -2493,10 +2522,16 @@ def test_the_guardrails_own_texts_never_trip_the_detector():
         _STALE_BOOK_CLAIM_NOTICE,
         _STALE_BOOK_CLAIM_OPERATOR_NOTE,
         _TOOL_LEDGER_HEADER,
+        _UNBACKED_ACTION_NOTICE,
+        _UNBACKED_ACTION_OPERATOR_NOTE,
         _UNBACKED_CLAIM_NOTICE,
         _UNBACKED_CLAIM_OPERATOR_NOTE,
+        _UNBACKED_RESULT_NOTICE,
+        _UNBACKED_RESULT_OPERATOR_NOTE,
+        _claims_completed_action,
         _claims_completed_proposal,
         _claims_fresh_book_check,
+        _claims_verbatim_tool_result,
     )
 
     for text in (
@@ -2509,14 +2544,24 @@ def test_the_guardrails_own_texts_never_trip_the_detector():
         _UNBACKED_CLAIM_OPERATOR_NOTE,
         _STALE_BOOK_CLAIM_NOTICE,
         _STALE_BOOK_CLAIM_OPERATOR_NOTE,
+        _UNBACKED_ACTION_NOTICE,
+        _UNBACKED_ACTION_OPERATOR_NOTE,
+        _UNBACKED_RESULT_NOTICE,
+        _UNBACKED_RESULT_OPERATOR_NOTE,
     ):
         assert _claims_completed_proposal(text) is None, text[:60]
         assert _claims_fresh_book_check(text) is None, text[:60]
+        assert _claims_completed_action(text) is None, text[:60]
+        assert _claims_verbatim_tool_result(text) is None, text[:60]
 
 
 def test_replayed_record_lines_never_trip_the_detector():
     """The operator channel's rendered lines, not just their headers."""
-    from claudia.agent import _claims_completed_proposal, _claims_fresh_book_check
+    from claudia.agent import (
+        _claims_completed_action,
+        _claims_completed_proposal,
+        _claims_fresh_book_check,
+    )
 
     agent, _sink = _make_agent_recording()
     for decision_type in RENDERED_PROPOSAL_TYPES:
@@ -2540,6 +2585,9 @@ def test_replayed_record_lines_never_trip_the_detector():
     assert _claims_fresh_book_check(agent._emission_records()) is None
     assert _claims_fresh_book_check(agent._completed_order_records()) is None
     assert _claims_fresh_book_check(agent._called_tool_records()) is None
+    assert _claims_completed_action(agent._emission_records()) is None
+    assert _claims_completed_action(agent._completed_order_records()) is None
+    assert _claims_completed_action(agent._called_tool_records()) is None
 
 
 async def test_narrated_staging_produces_an_honest_notice():
@@ -3302,3 +3350,250 @@ def test_a_free_or_down_gateway_is_not_blocked_here():
         )
         with patch("claudia.gateway_session.get_session", return_value=owner):
             assert _ibkr_unavailable() is None, f"{phase} must not be blocked"
+
+
+# ── The unbacked-action detector: a narrated action nothing backs ─────────────
+#
+# T7's shape (2026-08-11), and the oldest failure in the store (2026-06-24): a lead-in
+# to act, then a completion report, in a turn with zero tool calls. Measured 2026-08-12
+# against all 225 assistant messages: at least 22 instances across ten sessions,
+# including a GLD position the user rebutted in his next message, an order-status table
+# with an invented order id, and both TV fabrications. The trigger is textual, the
+# verdict is evidence: `called_tools` empty is what makes the same sentence a lie here
+# and honest in the turn that really ran its tools (msg 746's text is byte-similar to a
+# firing one and its tools ran — it must stay silent).
+
+
+@pytest.mark.parametrize("text", NARRATED_ACTION)
+def test_action_detector_fires_on_an_intent_then_report(text):
+    """Each measured fabrication grammar is detected at the pure-text level."""
+    from claudia.agent import _claims_completed_action
+
+    assert _claims_completed_action(text) is not None
+
+
+@pytest.mark.parametrize("text", ANNOUNCED_THEN_STOPPED)
+def test_action_detector_is_silent_on_an_announcement_with_no_report(text):
+    """Intent without a completion report is honest — announce-then-wait is ClaudIA's
+    normal speech, and 24 of the corpus's 33 zero-tool preamble matches are this shape."""
+    from claudia.agent import _claims_completed_action
+
+    assert _claims_completed_action(text) is None
+
+
+@pytest.mark.parametrize(
+    "text", HONEST_ACTION_TALK + HONEST_BOOK_TALK + HONEST_STAGING_TALK + INNOCENT
+)
+def test_action_detector_is_silent_on_everything_else(text):
+    """The verb allowlist, the result-noun gate, the user-source veto and the past-turn
+    veto, each earned by a real innocent look-alike in the corpus."""
+    from claudia.agent import _claims_completed_action
+
+    assert _claims_completed_action(text) is None
+
+
+def test_action_detector_ignores_the_models_own_composition():
+    """'Here's the proposal exactly as specified:' presents the model's own work, not a
+    tool result — the one false positive the corpus actually contains (msg 347)."""
+    from claudia.agent import _claims_completed_action
+
+    assert _claims_completed_action(
+        "I'll check the level first. You flagged this as a test, so here's the "
+        "proposal exactly as specified:"
+    ) is None
+
+
+def test_action_detector_requires_the_report_to_follow_the_intent():
+    """Report before intent is a recap plus a new announcement, not a claim."""
+    from claudia.agent import _claims_completed_action
+
+    assert _claims_completed_action(
+        "Here's the chart from our last session. Let me capture a fresh screenshot "
+        "once you confirm the symbol."
+    ) is None
+
+
+def test_a_report_of_no_errors_is_still_a_report():
+    """'Loaded and compiled — no errors' was T6's exact wording. A sentence-wide negation
+    veto on the report half would swallow it; the veto list must stay clear of bare
+    negation."""
+    from claudia.agent import _claims_completed_action
+
+    assert _claims_completed_action(
+        "I'll load it into the Pine editor and compile it.Loaded and compiled — no "
+        "errors. Clean compile, no warnings."
+    ) is not None
+
+
+@pytest.mark.parametrize("text", NARRATED_TOOL_RESULT)
+def test_result_detector_fires_on_a_shown_payload(text):
+    """A fenced block presented as a raw tool result, in a turn nothing ran — the
+    fabricated-audit-trail shape (msg 380: an invented `_source: quote_get` payload
+    produced on demand to authenticate an earlier invented quote)."""
+    from claudia.agent import _claims_verbatim_tool_result
+
+    assert _claims_verbatim_tool_result(text) is not None
+
+
+@pytest.mark.parametrize("text", HONEST_RESULT_TALK)
+def test_result_detector_is_silent_on_honest_fence_talk(text):
+    """Format explanations, hypotheticals, the model's own code, and the phrase without
+    a fence must all stay silent."""
+    from claudia.agent import _claims_verbatim_tool_result
+
+    assert _claims_verbatim_tool_result(text) is None
+
+
+async def test_narrated_action_produces_an_honest_notice():
+    """The user must be told, in the same feed carrying the false report."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_ACTION[0]))
+    )
+    await agent.handle_message("switch to ZZZ and show me a screenshot")
+
+    assert sink.messages[0] == NARRATED_ACTION[0]
+    notice = sink.messages[-1]
+    assert "never ran" in notice.lower()
+    assert "no tool was called" in notice.lower()
+
+
+async def test_narrated_action_writes_its_own_decision_type():
+    """`action_claim_unbacked`, distinct from both siblings, so the decision log keeps
+    the three failure modes separable."""
+    agent, _sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_ACTION[0]))
+    )
+    await agent.handle_message("switch and screenshot")
+
+    assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
+        "action_claim_unbacked"
+    ]
+
+
+async def test_narrated_action_uses_the_operator_channel():
+    """The correction must reach the model on the channel it cannot forge, before the
+    next turn — an uncorrected false claim becomes in-context precedent."""
+    agent, _sink = _make_agent_recording()
+    stream = MagicMock(side_effect=[
+        _FakeStream(_text_response_events(NARRATED_ACTION[0])),
+        _FakeStream(_text_response_events("Understood — I will call the tool for real.")),
+    ])
+    agent._client.messages.stream = stream
+
+    await agent.handle_message("switch to ZZZ and screenshot it")
+    await agent.handle_message("and now?")
+
+    notes = _system_texts(stream.call_args_list[-1].kwargs["messages"])
+    assert len(notes) == 1
+    assert "no tool ran" in notes[0].lower()
+    assert "announcing an action is not performing it" in notes[0].lower()
+
+
+@pytest.mark.parametrize(
+    "tool_name", ["get_market_snapshot", "chart_set_symbol", "get_doc_version"]
+)
+async def test_any_tool_call_clears_the_action_claim(tool_name):
+    """The verdict is the turn's tool set: an IBKR read, a TV action or a local tool all
+    clear it, because with any real call the turn's report may be grounded. The give-up —
+    a turn where SOME tool ran and a DIFFERENT claimed action did not — is documented in
+    the detector's docstring and deliberate."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        side_effect=_tool_then_text(tool_name, NARRATED_ACTION[0])
+    )
+    agent._toolkit.execute = MagicMock(return_value=("{}", None))
+    agent._handle_local_tool = MagicMock(return_value="{}")
+
+    await agent.handle_message("switch and screenshot")
+
+    assert not any("never ran" in m.lower() for m in sink.messages)
+    assert agent._store.get_decisions("test-session") == []
+
+
+async def test_an_uploaded_image_clears_the_action_claim():
+    """A screenshot the user dragged in is a guaranteed source under DATA INTEGRITY —
+    describing it needs no tool, so the evidence veto is the image itself."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(
+            "Let me read the chart image.Here's the chart — ZZZ 1H, RSI at 62, price "
+            "pressing the upper band."
+        ))
+    )
+    await agent.handle_message(
+        "analyse this chart",
+        images=[{"type": "image", "source": {"type": "base64", "data": "zzz"}}],
+    )
+
+    assert not any("never ran" in m.lower() for m in sink.messages)
+    assert agent._store.get_decisions("test-session") == []
+
+
+async def test_a_sibling_correction_suppresses_the_general_one():
+    """msg 562's single sentence is both a book claim and an action report. Two
+    corrections for two distinct lies is owed; a third that restates one of them is
+    noise — the general detector stands down when a sibling has already corrected the
+    turn."""
+    agent, _sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(
+            "I'll check the live book first, then stage the cancel.Confirmed against "
+            "the live book — both ZZZ orders are working:"
+        ))
+    )
+    await agent.handle_message("check the book and cancel one")
+
+    decisions = [d["decision_type"] for d in agent._store.get_decisions("test-session")]
+    assert "book_claim_unverified" in decisions
+    assert "action_claim_unbacked" not in decisions
+
+
+async def test_shown_payload_produces_its_own_notice():
+    """The fabricated-payload shape gets its specific correction, not the generic one."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_TOOL_RESULT[0]))
+    )
+    await agent.handle_message("show me the raw tool result")
+
+    notice = sink.messages[-1]
+    assert "no tool ran" in notice.lower()
+    assert "constructed" in notice.lower()
+    assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
+        "result_claim_unbacked"
+    ]
+
+
+def test_unbacked_action_notice_never_claims_an_order_state():
+    """The notice corrects an action claim; it must not read as a statement about
+    orders, staging or the book — those corrections belong to the siblings."""
+    from claudia.agent import _UNBACKED_ACTION_NOTICE
+
+    lowered = _UNBACKED_ACTION_NOTICE.lower()
+    for term in ("staged", "staging", "order", "book", "button"):
+        assert term not in lowered, term
+
+
+def test_action_verbs_and_report_participles_stay_in_step():
+    """Drift guard: every verb in the intent allowlist must have its participle in the
+    report set, so adding a verb to one list and not the other cannot pass silently —
+    the intent would then match and its own completion report would not."""
+    from claudia.agent import _REPORTED_COMPLETE, _TOOL_ACTION_VERB
+
+    irregular = {"run": "ran", "read": "read"}
+    doubling = {"grab", "scan"}
+    for verb in _TOOL_ACTION_VERB.strip("(?:)").split("|"):
+        if verb in irregular:
+            participle = irregular[verb]
+        elif verb in doubling:
+            participle = verb + verb[-1] + "ed"
+        elif verb.endswith("e"):
+            participle = verb + "d"
+        elif verb.endswith("y"):
+            participle = verb[:-1] + "ied"
+        else:
+            participle = verb + "ed"
+        # The dash context satisfies the predicate lookahead, as in "Compiled — clean".
+        assert _REPORTED_COMPLETE.search(f"{participle.capitalize()} — done.") is not None, verb

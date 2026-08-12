@@ -177,20 +177,40 @@ of this writing, the block's non-overridable subsections are:
 
 ### 5.1 Code-layer enforcement — the safety block is instruction, not enforcement
 
-Everything above is text in the system prompt. A model can ignore text, and has: the same
-failure class has now produced **five measured fabrications across two sessions**, where
-ClaudIA asserted an action it never took. So the rules above are backed in code, in
-`claudia/agent.py`. The split is deliberate — **the trigger is textual, the verdict is
-evidence**: a detector keys on what the model wrote, but the ruling comes from persisted
-rows, never from asking the model whether it was telling the truth.
+Everything above is text in the system prompt. A model can ignore text, and has — and at a
+scale the earlier version of this section understated. This section long read "five measured
+fabrications across two sessions"; an audit of the **full** conversation store (2026-08-12,
+all 225 assistant messages) found **23 verified instances across nine sessions,
+2026-06-24 → 2026-08-12** (22 of one shape, plus one fabricated payload), in which ClaudIA
+asserted an action or result nothing had produced: fabricated account summaries, a position the user rebutted in his next message, an
+order-status table with an invented order id, a quote table, bar counts, a Pine compile, a
+screenshot — and, worst, a **fabricated raw-JSON "tool result" manufactured on demand when
+the user explicitly asked for the raw payload as an audit**, on the same day the TOOL RESULT
+FRESHNESS rule forbidding exactly that was added to the prompt. Prompt text measurably does
+not stop this class. So the rules above are backed in code, in `claudia/agent.py`. The split
+is deliberate — **the trigger is textual, the verdict is evidence**: a detector keys on what
+the model wrote, but the ruling comes from persisted rows, never from asking the model
+whether it was telling the truth.
 
 | Mechanism | Asserts |
 | --- | --- |
 | `_claims_completed_proposal` → `_emit_unbacked_claim_notice` | claimed a staged proposal ⇒ one was actually recorded (else a `proposal_claim_unbacked` decision) |
 | `_claims_fresh_book_check` | claimed a live-book check ⇒ a book-reading tool really ran this turn (else `book_claim_unverified`) |
+| `_claims_completed_action` → `_emit_unbacked_action_notice` | reported any completed tool action ⇒ some tool really ran this turn (else `action_claim_unbacked`) — added 2026-08-12 |
+| `_claims_verbatim_tool_result` → `_emit_unbacked_result_notice` | vouched for a fenced block as a raw tool result ⇒ some tool really ran this turn (else `result_claim_unbacked`) — added 2026-08-12 |
 | `_emission_records` | replays which proposals genuinely rendered a button — excluding `proposal_render_failed`, so a failed render is never replayed as a success |
 | `_completed_order_records` | replays order actions that reached IBKR, which leave no transcript at all (button click, no tool call) |
-| `_called_tool_records` | names the tools called earlier and states their results are **gone** from context — added 2026-08-11 |
+| `_called_tool_records` | names the tools already run and states their results are **gone** from context — added 2026-08-11; since 2026-08-12 it also names button-driven runs (the Pine Inject button persists its `pine_set_source` call as a real tool row) |
+
+The two 2026-08-12 rows close the T7 shape — a fabricated claim about a *new* action with
+nothing in context to recycle. Their trigger is an intent-to-act lead-in followed by a
+completion report in the same message ("I'll switch the chart and capture a screenshot …
+Here's the AMD chart"); their verdict is `called_tools` being empty for the turn. Both were
+measured against the full store before shipping, the same standard as their siblings:
+**21 fires, every one an individually verified fabrication; 22 near-identical texts whose
+tools really ran, all cleared by evidence; zero false positives.** Precision is a
+measurement, not an argument — the measurement is frozen as a regression test
+(`tests/test_corpus_precision.py`, skipped where the local store is absent).
 
 All of them are delivered by `_append_operator_message` as a single mid-conversation
 `role: "system"` message. **That role is the security property**: anything the model can
@@ -216,8 +236,24 @@ logs a loud startup error; there is deliberately **no** fallback to a `<system-r
 the user turn, because that channel is forgeable and silently downgrading a non-spoofable one
 is worse than refusing the model. See `docs/env-vars-reference.md`.
 
-**Known limit, stated rather than implied:** none of this covers a fabricated claim about a
-*new* action with nothing in context to recycle — observed 2026-08-11 and still unguarded.
+**Known limits, stated rather than implied.** The 2026-08-11 open limit — a fabricated
+claim about a *new* action with nothing in context to recycle — is closed by the two
+2026-08-12 detectors for every zero-tool turn. What remains open, each deliberate and each
+measured rather than suspected:
+
+- **A mixed turn**: some tool ran, and a *different* claimed action did not ("called
+  `get_positions`, also said it captured a screenshot"). The verdict is the whole turn's
+  tool set, so one real call clears every claim in the message. Closing it needs a
+  verb→tool map, and the TradingView surface has no closed declaration to pin one against.
+- **A report with no intent lead-in whose noun evades the gate** — the two measured misses
+  ("Here's the picture:" straight into a fabricated account table; "SOXX close = 504.17"
+  with no report verb). Widening the trigger to catch them was tried and costs false
+  positives on the model's own honest compositions; they stay misses until a shape with
+  measured 0-FP precision exists.
+- **The mechanism is unexplained.** These detectors correct the shape after the fact; why
+  the model skips the call is not established (adaptive thinking was already on for T7, so
+  "reasoning was off" is ruled out). Prevention-side work — tool descriptions stating
+  *when* to call, Anthropic's documented lever — is a separate, cross-repo change.
 
 ---
 
