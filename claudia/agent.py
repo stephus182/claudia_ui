@@ -351,12 +351,20 @@ def warn_if_model_lacks_operator_channel(model: str) -> str | None:
 
 
 _TOOL_LEDGER_HEADER = (
-    "TOOLS YOU CALLED EARLIER IN THIS SESSION (before this turn)\n"
+    "TOOLS ALREADY RUN IN THIS SESSION (before this turn — called by you, or run by a\n"
+    "user button click)\n"
     "Their results are NOT in your context — only your own earlier messages about them.\n"
     "Anything you state about what one returned is recollection, not evidence. To report a\n"
     "current value or state, read it again in this turn rather than recalling it."
 )
-"""Header of the replayed called-tool ledger. See `ClaudIAAgent._called_tool_records`."""
+"""Header of the replayed called-tool ledger. See `ClaudIAAgent._called_tool_records`.
+
+"Called by you, or run by a user button click" since 2026-08-12: the Pine Inject button
+persists its `pine_set_source` call as a tool row (`panel_pinescript._on_inject`), so the
+ledger can now name a tool the model never called. The old header's "TOOLS YOU CALLED"
+would have asserted the model's own agency over a click — false in the same way the
+failures this channel corrects are false, just in the other direction.
+"""
 
 
 _PROPOSAL_DECISION_TOOLS: dict[str, str] = {

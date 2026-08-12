@@ -41,9 +41,12 @@ async def test_send_message_with_pine_block_triggers_pinescript_render():
     text = 'Here:\n```pine\n//@version=5\nstrategy("X")\n```'
     with patch("claudia.panel_pinescript.render_pinescript_blocks", new=AsyncMock()) as mock_render:
         await sink.send_message(text)
-    # The raw text is still sent first, then the buttons are rendered beneath it.
+    # The raw text is still sent first, then the buttons are rendered beneath it. The
+    # sink hands its own store/session down so a button-driven inject can persist a
+    # real tool row (2026-08-12); this sink has no store, and None must flow through
+    # rather than being invented.
     chat.send.assert_called_once_with(text, user="ClaudIA", respond=False)
-    mock_render.assert_awaited_once_with(chat, text, getter)
+    mock_render.assert_awaited_once_with(chat, text, getter, store=None, session_id="s1")
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,7 @@ import panel as pn
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from claudia.conversation_store import ConversationStore
     from claudia.tradingview import TradingViewBridge
 
 log = logging.getLogger(__name__)
@@ -103,16 +104,25 @@ async def render_pinescript_blocks(
     chat: pn.chat.ChatInterface,
     text: str,
     tv_bridge_getter: Callable[[], TradingViewBridge | None] | None,
+    store: ConversationStore | None = None,
+    session_id: str | None = None,
 ) -> None:
-    """Send a Copy/Inject button row beneath each ```pine block in text."""
+    """Send a Copy/Inject button row beneath each ```pine block in text.
+
+    `store`/`session_id` let the Inject handler persist a real `tool` row for the
+    button-driven `pine_set_source` call. Optional for the same reason the sink's own
+    `store` is: without them the button still works, it just leaves no record.
+    """
     for code in extract_pine_blocks(text):
-        _render_pine_block(chat, code, tv_bridge_getter)
+        _render_pine_block(chat, code, tv_bridge_getter, store, session_id)
 
 
 def _render_pine_block(
     chat: pn.chat.ChatInterface,
     code: str,
     tv_bridge_getter: Callable[[], TradingViewBridge | None] | None,
+    store: ConversationStore | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Send one Copy/Inject row for a single pine code block.
 
@@ -156,6 +166,24 @@ def _render_pine_block(
                 inject_btn.disabled = False  # recoverable: launch TV, then retry this button
                 return
             result = await bridge.execute("pine_set_source", {"source": code})
+            # Persist the call as a real `tool` row, exactly as the agent loop does for
+            # model-initiated calls — success and failure alike, the raw result is the
+            # record. Before classification and before any chat.send, for the emitters'
+            # reason: a failing sink must not cost the record. Without this row a
+            # button-driven inject is invisible to the called-tool ledger and to the
+            # store's forensics — the gap behind the 2026-07-10 mixed fabrication, where
+            # a REAL button inject and a FABRICATED compile shared one message and only
+            # the panel log could tell them apart.
+            if store is not None and session_id is not None:
+                try:
+                    store.add_message(
+                        session_id, "tool",
+                        tool_name="pine_set_source",
+                        tool_input={"source": code},
+                        tool_result=result,
+                    )
+                except Exception:
+                    log.exception("Could not persist the button-driven pine_set_source call")
             # Classify — execute() returns the sidecar's own {"success": ...} JSON (or a
             # literal status string). Reporting "Injected" on a {"success": false} result
             # would be a false-success (same class as the field-8089 order bug); the

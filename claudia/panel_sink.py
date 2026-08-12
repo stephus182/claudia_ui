@@ -158,7 +158,10 @@ class PanelMessageSink:
         # claudia/panel_pinescript.py.
         from claudia.panel_pinescript import extract_pine_blocks, render_pinescript_blocks
         if extract_pine_blocks(text):
-            await render_pinescript_blocks(self._chat, text, self._tv_bridge_getter)
+            await render_pinescript_blocks(
+                self._chat, text, self._tv_bridge_getter,
+                store=self._store, session_id=self._session_id,
+            )
 
     def tool_step(self, name: str) -> _PanelToolStepHandle:
         """Send a tool-call step into the feed and return a handle for its input/output.

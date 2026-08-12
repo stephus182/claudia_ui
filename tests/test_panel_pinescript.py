@@ -339,3 +339,88 @@ def test_extract_pine_blocks_drops_an_empty_fence():
     # A real block alongside an empty one still comes through.
     text = f + "pine\n\n" + f + "\n" + f + "pine\nindicator(\"X\")\n" + f
     assert extract_pine_blocks(text) == ['indicator("X")']
+
+
+# ── The button-driven call leaves a record ────────────────────────────────────
+#
+# panel_pinescript calls pine_set_source OUTSIDE the agent's tool loop, so until
+# 2026-08-12 a button inject wrote no tool row: invisible to the called-tool ledger,
+# invisible to the store's forensics. That gap is what made the 2026-07-10 mixed
+# message — a REAL button inject and a FABRICATED compile in one breath —
+# undiagnosable from the database alone, and it fed the fabrication itself: asked to
+# "compile it", the model had no record the inject ever happened.
+
+
+@pytest.mark.asyncio
+async def test_inject_persists_a_tool_row_on_success():
+    """The click is recorded exactly as the agent loop records a model call: a `tool`
+    row carrying the raw result, written before any chat.send."""
+    chat = _make_chat()
+    bridge = MagicMock()
+    bridge.execute = AsyncMock(return_value='{"success": true}')
+    store = MagicMock()
+    await render_pinescript_blocks(
+        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
+        store=store, session_id="s-1",
+    )
+    await _get_click_callback(_first_row(chat)[1])(None)
+
+    store.add_message.assert_called_once_with(
+        "s-1", "tool",
+        tool_name="pine_set_source",
+        tool_input={"source": 'study("A")'},
+        tool_result='{"success": true}',
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_persists_the_failure_result_too():
+    """A run that failed still ran — the raw result is the record, same polarity as the
+    agent loop, which persists error results rather than sniffing them out."""
+    chat = _make_chat()
+    bridge = MagicMock()
+    bridge.execute = AsyncMock(return_value='{"success": false, "error": "no editor"}')
+    store = MagicMock()
+    await render_pinescript_blocks(
+        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
+        store=store, session_id="s-1",
+    )
+    await _get_click_callback(_first_row(chat)[1])(None)
+
+    assert store.add_message.call_args.kwargs["tool_result"] == (
+        '{"success": false, "error": "no editor"}'
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_without_a_store_still_injects():
+    """The record is additive: no store wired (the pre-2026-08-12 construction) must
+    not break the button."""
+    chat = _make_chat()
+    bridge = MagicMock()
+    bridge.execute = AsyncMock(return_value='{"success": true}')
+    await render_pinescript_blocks(
+        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
+    )
+    await _get_click_callback(_first_row(chat)[1])(None)
+
+    bridge.execute.assert_awaited_once()
+    assert "✅" in chat.send.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_inject_still_reports_success_when_the_record_fails():
+    """Persist-first must not turn a store hiccup into a false failure report: the
+    inject really happened, so the user is still told it happened."""
+    chat = _make_chat()
+    bridge = MagicMock()
+    bridge.execute = AsyncMock(return_value='{"success": true}')
+    store = MagicMock()
+    store.add_message = MagicMock(side_effect=RuntimeError("db locked"))
+    await render_pinescript_blocks(
+        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
+        store=store, session_id="s-1",
+    )
+    await _get_click_callback(_first_row(chat)[1])(None)
+
+    assert "✅" in chat.send.call_args.args[0]
