@@ -2422,7 +2422,15 @@ def test_tool_ledger_header_says_the_results_are_gone():
     lowered = _TOOL_LEDGER_HEADER.lower()
     assert "not in your context" in lowered
     assert "recollection, not evidence" in lowered
-    assert "call the tool again" in lowered
+    assert "read it again" in lowered
+    # The remedy must be a READ. It used to say "call the tool again in this turn", and the
+    # ledger names writers too — create_price_alert, pine_set_source, chart_set_symbol — so
+    # that phrasing invited re-running a side effect the user never asked for. It is the same
+    # argument the proposal-tool exclusion below rests on, which had not been generalised.
+    assert "call the tool again" not in lowered
+    # Turn-relative: _append_operator_message runs once before the tool loop, so mid-turn the
+    # model reads this beside a live tool_result for a tool on the list. Say which turn.
+    assert "before this turn" in lowered
 
 
 def test_emission_record_tools_cover_exactly_the_store_allowlist():

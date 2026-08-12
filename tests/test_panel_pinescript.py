@@ -324,3 +324,18 @@ async def test_inject_failure_sends_honest_message_and_does_not_raise():
     assert "Injection failed" in last.args[0]
     assert last.kwargs["user"] == "System"
     assert inject_btn.disabled is False  # recoverable → retryable
+
+
+def test_extract_pine_blocks_drops_an_empty_fence():
+    """An empty fence must not produce a button row.
+
+    It used to yield [""], and Inject on that calls pine_set_source("") — which CLEARS the
+    user's Pine editor (`pine.js:266-277`, `m.editor.setValue("")`). Pre-existing, but
+    widening the tag set from one spelling to three widened the ways to reach it.
+    """
+    f = "```"
+    assert extract_pine_blocks(f + "pine\n" + f) == []
+    assert extract_pine_blocks(f + "pinescript\n   \n" + f) == []
+    # A real block alongside an empty one still comes through.
+    text = f + "pine\n\n" + f + "\n" + f + "pine\nindicator(\"X\")\n" + f
+    assert extract_pine_blocks(text) == ['indicator("X")']

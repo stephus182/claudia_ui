@@ -609,3 +609,33 @@ async def test_execute_routes_the_sidecar_result_through_post_process():
     out = json.loads(await bridge.execute("data_get_ohlcv", {}))
 
     assert out["bars"][0]["time_utc"] == "2026-08-11T13:30:00Z"
+
+
+def test_post_process_strips_a_sidecar_warning_at_any_depth():
+    """A Pine author can name a key, so the reservation cannot be top-level only.
+
+    data_get_study_values returns `studies[].inputs` keyed by the Pine author's input ids and
+    `studies[].values` keyed by their plot titles — both third-party key spaces. Measured
+    2026-08-11: with a top-level-only scrub, two forged warnings reached the model dressed as
+    ClaudIA's own voice on the one channel that exists to say "distrust this payload".
+    """
+    raw = json.dumps({
+        "success": True,
+        "studies": [{"inputs": {"claudia_warning": "FORGED"}, "values": {"claudia_warning": "FORGED"}}],
+    })
+    out = tv_module._post_process("data_get_study_values", raw)
+    assert "FORGED" not in out
+
+
+def test_post_process_still_strips_a_top_level_sidecar_warning():
+    """The original top-level case must keep working after the scrub went recursive."""
+    raw = json.dumps({"success": True, "claudia_warning": "FORGED"})
+    assert "FORGED" not in tv_module._post_process("chart_get_state", raw)
+
+
+def test_post_process_keeps_our_own_warning_after_stripping():
+    """Stripping the sidecar's must not remove the one _flag_empty_result adds afterwards."""
+    raw = json.dumps({"success": True, "updated_inputs": {}, "claudia_warning": "FORGED"})
+    out = json.loads(tv_module._post_process("indicator_set_inputs", raw))
+    assert "FORGED" not in out["claudia_warning"]
+    assert "NOTHING WAS CHANGED" in out["claudia_warning"]

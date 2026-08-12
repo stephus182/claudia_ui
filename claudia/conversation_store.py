@@ -640,7 +640,12 @@ class ConversationStore:
         Chronological order or a call count would move the block for no new fact.
 
         NULL and blank names are filtered defensively (`tool_name` is nullable): a blank
-        line would name no tool while still asserting that one was called.
+        line would name no tool while still asserting that one was called. `TRIM` is given an
+        explicit character set — SQLite's one-argument `TRIM` strips **spaces only**, so a
+        tab- or newline-only name would have survived, and an embedded newline would break
+        the ledger's one-line-per-tool shape. Unreachable today (names come from an Anthropic
+        `tool_use` block), which is exactly why it is worth the argument rather than a
+        defence that only looks like one.
 
         Whole-session, deliberately unlike `get_history`'s `limit`: the claim being made is
         "you called this earlier in this session", and a tool whose surrounding turns have
@@ -655,7 +660,8 @@ class ConversationStore:
             rows = conn.execute(
                 """SELECT DISTINCT tool_name FROM messages
                    WHERE session_id=? AND role='tool'
-                     AND tool_name IS NOT NULL AND TRIM(tool_name) <> ''
+                     AND tool_name IS NOT NULL
+                     AND TRIM(tool_name, ' ' || char(9) || char(10) || char(13)) <> ''
                    ORDER BY tool_name""",
                 (session_id,),
             ).fetchall()

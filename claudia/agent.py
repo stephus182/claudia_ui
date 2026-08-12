@@ -332,10 +332,10 @@ def warn_if_model_lacks_operator_channel(model: str) -> str | None:
 
 
 _TOOL_LEDGER_HEADER = (
-    "TOOLS YOU CALLED EARLIER IN THIS SESSION\n"
+    "TOOLS YOU CALLED EARLIER IN THIS SESSION (before this turn)\n"
     "Their results are NOT in your context — only your own earlier messages about them.\n"
     "Anything you state about what one returned is recollection, not evidence. To report a\n"
-    "current value or state, call the tool again in this turn."
+    "current value or state, read it again in this turn rather than recalling it."
 )
 """Header of the replayed called-tool ledger. See `ClaudIAAgent._called_tool_records`."""
 
@@ -1545,9 +1545,17 @@ class ClaudIAAgent:
         variable.
 
         This block does not restore the payloads; it states that they are gone. It covers
-        every tool that reads, not just the TradingView ones from that incident: the
-        blindness is generic, and an IBKR read is exactly as invisible as a chart read. The
-        proposal tools are the one exclusion, for the two reasons below.
+        every tool the session called except `PROPOSAL_TOOL_NAMES` — reads and writers
+        alike, not just the TradingView ones from that incident, because the blindness is
+        generic and an IBKR read is exactly as invisible as a chart read.
+
+        Writers are listed but must never be *re-run* on the strength of it, which is why
+        the header's remedy is phrased as a read ("read it again … rather than recalling
+        it") and not as "call the tool again". The ledger names `create_price_alert`,
+        `delete_alert`, `pine_set_source` and `chart_set_symbol` among others; re-calling
+        the first of those creates a second alert nobody asked for. That is the same
+        argument the proposal exclusion below rests on, and the first wording of this header
+        had not generalised it.
 
         **Identity only — names, nothing else, and that is a safety boundary.** Never a
         `tool_input_json`, never a `tool_result_json`, never counts or timestamps. Same rule
@@ -1558,9 +1566,9 @@ class ClaudIAAgent:
 
         `PROPOSAL_TOOL_NAMES` are excluded. Two independent reasons, either sufficient:
 
-        - The header's remedy is "call the tool again in this turn". That is right for a
-          read and wrong for a proposal: re-calling `propose_order` emits a second staging
-          button the user never asked for, which is an order-flow action, not a lookup.
+        - Even phrased as a read, naming a proposal tool here is wrong: `propose_order` has
+          no read to offer, so the only thing a re-call could mean is emitting a second
+          staging button the user never asked for — an order-flow action, not a lookup.
         - A proposal call already has its own, more careful section on this same channel
           (`_emission_records`), whose value rests on excluding a render that *failed*. A
           second section naming `propose_order` with no such filter would put that name back

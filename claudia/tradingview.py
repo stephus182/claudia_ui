@@ -178,6 +178,16 @@ _EPOCH_KEYS = frozenset({"time", "timestamp", "from", "to"})
 _EPOCH_MIN = 100_000_000  # 1973-03-03
 _EPOCH_MAX = 4_000_000_000  # 2096-10-02
 
+# WHAT THIS COSTS, stated because _trim_blobs below is justified purely on token cost and it
+# would be dishonest to measure one side of the seam and not the other. A `<key>_utc` sibling
+# is ~42 chars, added per bar. On the live 20-bar data_get_ohlcv payload captured 2026-08-11:
+# 3,138 -> 3,978 chars, +27%. data_get_ohlcv defaults to 100 bars and serves up to 500
+# (MAX_OHLCV_BARS), so a full pull costs proportionally more — roughly what the blob trim saves,
+# and several times that at 500. Accepted rather than optimised: annotating only the first and
+# last bar would hand the interior rows back to the model's own arithmetic, which is the exact
+# defect this exists to remove (it printed 2026-08-11 as "May 12", every row wrong, with a
+# drifting offset that no endpoint pair would have exposed).
+
 
 def _annotate_epochs(_name: str, payload: Payload) -> Payload:
     """Add a `<key>_utc` ISO-8601 sibling beside every epoch-seconds field, at any depth.
@@ -225,16 +235,40 @@ def _walk_epochs(node: object) -> object:
 
 
 # Our channel for telling the model to distrust the payload the key sits in — so it is ours
-# alone. A sidecar-supplied one is dropped in _post_process before any transform runs: never
-# relayed, never deferred to. That is the OPPOSITE resolution from the `_utc` siblings above,
+# alone. A sidecar-supplied one is dropped in _post_process before any transform runs, at every
+# depth: never relayed, never deferred to (on that path — see the fail-open note on
+# _EMPTY_RESULT_GUARDS). That is the OPPOSITE resolution from the `_utc` siblings above,
 # and deliberately so — a sidecar `time_utc` is data ABOUT the payload and legitimately wins,
 # while this is a statement about the payload's TRUSTWORTHINESS and cannot be sourced from
 # the thing being judged. Reserved once, for every present and future transform, rather than
 # defended inside any one of them.
 #
-# Latent rather than live: the sidecar builds its responses from fixed keys and none of them
-# is this one. It is reserved because it is an injection surface into a trusted channel.
+# Stripped at EVERY depth, not just the top level, and that is not belt-and-braces:
+# data_get_study_values is curated and returns `studies[].inputs` keyed by the Pine author's
+# input ids and `studies[].values` keyed by their plot titles (data.js:518, 528). Both key
+# spaces are third-party content, so a Pine script can name a key `claudia_warning` and, with
+# a top-level-only scrub, have it delivered to the model as ClaudIA's own voice. Measured
+# 2026-08-11: two forged warnings reached the model through that shape before this was
+# recursive. Cannot reach order flow (Hard Rule 1 and both gates stand); the exposure is the
+# model being misled about a chart read, on the one channel that exists to say "distrust this".
+#
+# Deliberately NOT a _TRANSFORMS entry: removing a key can empty a container, which would
+# order-couple it to _flag_empty_result. It runs once, before the loop, on its own terms.
 _RESERVED_KEY = "claudia_warning"
+
+
+def _strip_reserved(payload: Payload) -> Payload:
+    """Drop `_RESERVED_KEY` at every depth, so only we can ever author one."""
+    return {k: _strip_walk(v) for k, v in payload.items() if k != _RESERVED_KEY}
+
+
+def _strip_walk(node: object) -> object:
+    """Recurse into containers; every dict reached is stripped of `_RESERVED_KEY`."""
+    if isinstance(node, dict):
+        return _strip_reserved(node)
+    if isinstance(node, list):
+        return [_strip_walk(item) for item in node]
+    return node
 
 
 # A tool whose success flag is meaningless unless a named field came back non-empty.
@@ -253,13 +287,13 @@ _RESERVED_KEY = "claudia_warning"
 # it unconditionally, so it is always an object.)
 #
 # Every message here is OUR constant, and on the transform path it is the only claudia_warning
-# that can reach the model: _post_process drops any the sidecar sent before the transforms run.
-# The reservation stops there, and the gap is worth naming rather than rounding off. On the three
-# fail-open paths — non-JSON, a non-object payload, or a transform raising — _post_process returns
-# the sidecar's bytes untouched, so a claudia_warning inside them survives. Measured, not assumed:
-# a top-level array carrying one comes through. That is what fail-open means and the trade is
-# deliberate; passing a tool result through unread beats swallowing it. Do not "fix" it by
-# re-serialising those paths.
+# that can reach the model: _post_process strips any the sidecar sent, at every depth, before the
+# transforms run. The reservation stops at that path, and the gap is worth naming rather than
+# rounding off. On the three fail-open paths — unparseable input, a non-object payload, or a
+# transform raising — _post_process returns the sidecar's bytes untouched, so a claudia_warning
+# inside them survives. Measured, not assumed: a top-level array carrying one comes through. That
+# is what fail-open means and the trade is deliberate; passing a tool result through unread beats
+# swallowing it. Do not "fix" it by re-serialising those paths.
 _EMPTY_RESULT_GUARDS: dict[str, tuple[str, str]] = {
     "indicator_set_inputs": (
         "updated_inputs",
@@ -401,11 +435,15 @@ def _post_process(name: str, raw: str) -> str:
     """
     try:
         payload = json.loads(raw)
-    except (ValueError, TypeError):
+    except Exception:
+        # Widened past (ValueError, TypeError) deliberately: the C scanner raises
+        # RecursionError on a deeply nested payload, which would escape to execute()'s
+        # bare handler and report a SUCCEEDED call as failed — the outcome this
+        # docstring calls worse than the defects the seam fixes.
         return raw
     if not isinstance(payload, dict):
         return raw
-    payload.pop(_RESERVED_KEY, None)
+    payload = _strip_reserved(payload)
     try:
         for transform in _TRANSFORMS:
             payload = transform(name, payload)

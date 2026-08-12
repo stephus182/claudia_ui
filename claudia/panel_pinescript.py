@@ -70,9 +70,11 @@ def _pine_error_detail(result: str) -> str:
     return result
 
 
-# The three spellings of the Pine Script fence tag, case-insensitive. The trailing `\b`
-# still matters — it is what keeps an unrelated tag that merely starts with "pine"
-# (```pineapple) out — but the tag list is now the thing doing the work.
+# The three spellings of the Pine Script fence tag, case-insensitive. The trailing `\b` still
+# earns its place: it rejects a tag that continues in WORD characters (```pineapple,
+# ```pinescriptfoo, ```pine_script). It does not reject a punctuation continuation —
+# ```pine.foo still matches, with the remainder swallowed as an info string by `[^\n]*` —
+# which is harmless and not worth a stricter pattern. The tag list is what does the real work.
 #
 # It used to be `pine\b` alone, which the Task 9.2 research doc justified as avoiding "a
 # longer fence tag", naming ```pinescript as the case to reject. That reasoning was
@@ -90,7 +92,11 @@ def extract_pine_blocks(text: str) -> list[str]:
     Matches ```pine, ```pinescript and ```pine-script in any case; `[^\\n]*` tolerates an
     info string after the tag, and multiple blocks per message are all captured.
     """
-    return [block.strip() for block in _PINE_FENCE.findall(text)]
+    # Blank blocks are dropped. An empty fence used to yield [""], which rendered a button
+    # row whose Inject called pine_set_source("") — that CLEARS the user's Pine editor
+    # (pine.js:266-277 does m.editor.setValue("")). Pre-existing, but widening the tag set
+    # from one spelling to three widened the ways to trigger it.
+    return [stripped for block in _PINE_FENCE.findall(text) if (stripped := block.strip())]
 
 
 async def render_pinescript_blocks(
