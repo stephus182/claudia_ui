@@ -38,7 +38,8 @@ alternative" from 2026-07-24 until this was corrected on 2026-08-05.
 
 2. **Mid-conversation system messages.** `agent._append_operator_message` appends a
    `{"role": "system"}` entry to `messages` — the non-spoofable operator channel carrying
-   the proposal-emission and completed-order records. Supported on **Claude Opus 4.8,
+   the called-tool ledger, the proposal-emission and completed-order records, and any
+   guardrail notices. Supported on **Claude Opus 4.8,
    Claude Opus 5, Claude Fable 5 and Claude Mythos 5 only**; the docs exclude the Sonnet
    line explicitly (*"not available on Claude Sonnet 5; use the top-level `system` field
    instead"*, read 2026-08-05).
@@ -51,11 +52,20 @@ alternative" from 2026-07-24 until this was corrected on 2026-08-05.
    400 invalid_request_error: "role 'system' is not supported on this model"
    ```
 
-**Requirement 2 fails late, not at startup.** The operator message is only appended when
-there is something to deliver, so an unsupported model behaves perfectly until the first
-order proposal renders — and then returns a 400 on every turn thereafter, because each one
-now replays an emission record. The channel that breaks is the one whose whole job is
-stopping ClaudIA from denying that a staged order exists.
+**Requirement 2 fails partway through a session, not at startup.** The operator message is
+appended only when there is something to deliver, so an unsupported model behaves perfectly
+until the channel first carries a payload — and returns a 400 on every turn thereafter.
+
+**When that happens moved on 2026-08-11, and it is now much earlier.** It used to be "the
+first rendered order proposal", which made the failure rare and late. The **called-tool
+ledger** rides the same channel, so it now activates on the turn *after any non-proposal
+tool call*. Measured over this repo's own history: **53 of the 63 sessions that ever
+received a user message (84%) made a ledger-eligible call**, against **10 (16%)** that
+recorded a `trade_proposed` decision. So on an unsupported model this went from an edge case
+to the normal path — worse if unnoticed, easier to spot if it is.
+
+The channel that breaks carries the payloads that stop ClaudIA answering from memory about a
+tool result it no longer holds, and stop it denying that a staged order exists.
 
 `agent.warn_if_model_lacks_operator_channel` logs a loud ERROR at startup for anything
 outside the known-good set. It warns rather than refusing, since the list can only go stale

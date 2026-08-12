@@ -12,7 +12,8 @@ Panel UI (localhost:8001 — native pn.serve Tornado, no FastAPI/uvicorn)
 claudia/panel_app.py        — pn.serve entry: session lifecycle, status dots, startup action buttons
 claudia/panel_sink.py       — PanelMessageSink: agent output → pn.chat.ChatInterface (MessageSink protocol)
 claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_flow.py cores
-claudia/panel_pinescript.py — ```pine copy (real client-side clipboard) / inject buttons
+claudia/panel_pinescript.py — Pine-fence copy (real clipboard) / inject buttons
+                              (matches pine | pinescript | pine-script, any case)
 claudia/panel_chart.py      — external HoloViews candlestick chart pane (STK, cache-backed)
 claudia/dashboard_data.py   — live dashboard: pure data (ledger, positions, realised windows), no panel import
 claudia/dashboard_poller.py — live dashboard: process-wide 15s poller caching one DashboardSnapshot

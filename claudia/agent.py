@@ -296,8 +296,16 @@ def warn_if_model_lacks_operator_channel(model: str) -> str | None:
     rather than raising, for the same reason that one does: the list above can only go
     stale in the direction of a *new* supported model, and refusing to start would turn a
     lagging constant into an outage. The log line says what will break and when, because
-    the symptom — a 400 that only begins after the first order proposal — is not something
-    anyone would trace back to a model id unaided.
+    the symptom — a 400 that begins partway through a session rather than at startup — is
+    not something anyone would trace back to a model id unaided.
+
+    **When it starts moved on 2026-08-11.** It used to be "after the first rendered order
+    proposal", which made the failure rare and late. The called-tool ledger puts the channel
+    in use from the turn after *any* non-proposal tool call, so on an unsupported model the
+    400 now arrives far earlier and in far more sessions. Measured over this repo's own
+    history: 53 of the 63 sessions that ever received a user message made a ledger-eligible
+    call (**84%**), against 10 (16%) that recorded a `trade_proposed` decision. Bigger blast
+    radius and an easier symptom to spot — but only if this message says so.
 
     Args:
         model: The resolved `CLAUDIA_MODEL` value.
@@ -310,9 +318,11 @@ def warn_if_model_lacks_operator_channel(model: str) -> str | None:
     log.error(
         "MODEL %r IS NOT KNOWN TO SUPPORT MID-CONVERSATION SYSTEM MESSAGES. ClaudIA will "
         "start and answer normally, then fail with an API 400 on EVERY turn once the "
-        "first order proposal has rendered — that is when the operator channel starts "
-        "carrying emission records. Those records are what stop ClaudIA denying that a "
-        "staged order exists. Known-good: %s. If this model is newly supported, add it to "
+        "operator channel has anything to carry — which is the turn after ANY tool call, "
+        "because the called-tool ledger rides this channel, and again for rendered "
+        "proposals, completed orders and guardrail notices. Those payloads are what stop "
+        "ClaudIA answering from memory about a tool result it no longer has, or denying "
+        "that a staged order exists. Known-good: %s. If this model is newly supported, add it to "
         "agent._OPERATOR_CHANNEL_MODELS; check "
         "https://platform.claude.com/docs/en/build-with-claude/prompt-caching",
         model,

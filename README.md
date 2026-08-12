@@ -10,7 +10,7 @@ ClaudIA is a Panel-based trading assistant that gives you a persistent, principl
 - **Execution-triggered P&L** — a background listener watches for trade executions (any origin — mobile, TWS, web, API) and refreshes account P&L automatically each time a trade fills; no continuous polling
 - **Full trade history** — 7-year backfill via IBKR Flex Queries; `sync_flex_trades` keeps it current; `get_trades source='store'` queries with no date limit
 - **Human-confirmed order staging** — ClaudIA proposes trades (equities and futures); you click a button → Touch ID → AppKit colored dialog (green/BUY, red/SELL). The LLM has no order-execution tools. CME Rule 536-B fields auto-added for futures
-- **TradingView live integration** — reads your active chart, sets symbols/timeframes; every ```pine block ClaudIA emits gets a **Copy** button (real client-side clipboard) and an **Inject into TradingView** button that sets the Pine Editor source directly
+- **TradingView live integration** — reads your active chart, sets symbols/timeframes; every Pine-fenced block ClaudIA emits (`pine`, `pinescript` or `pine-script`, any case) gets a **Copy** button (real client-side clipboard) and an **Inject into TradingView** button that sets the Pine Editor source directly
 - **Live account dashboard** — KPI strip · positions · working orders · realised P&L, polled every 15s, read-only by construction. Note the "Realised today" tile follows IBKR's accounting day, which **rolls in the late ET evening, not at midnight** — see [Live Dashboard](#live-dashboard--and-the-two-realised-figures)
 - **External candlestick chart pane** — a HoloViews/hvplot chart beside the chat (symbol/period/bar controls, SMA overlay, volume subplot), OHLCV from the Drive cache with fetch-on-miss from IBKR; fully independent of the conversation
 - **Screenshot analysis** — upload any TradingView chart for vision-based analysis (no Desktop required)
@@ -103,7 +103,7 @@ Panel UI (localhost:8001 — native pn.serve Tornado)
 claudia/panel_app.py        — pn.serve entry: session lifecycle, status dots, startup buttons
 claudia/panel_sink.py       — PanelMessageSink: agent output → pn.chat.ChatInterface
 claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_flow cores
-claudia/panel_pinescript.py — ```pine copy (real clipboard) / inject buttons
+claudia/panel_pinescript.py — Pine-fence copy (real clipboard) / inject buttons
 claudia/panel_chart.py      — external HoloViews candlestick chart pane (STK, cache-backed)
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching
 claudia/proposal_tools.py   — strict-schema propose_order/cancel/modify declarations (no execution)

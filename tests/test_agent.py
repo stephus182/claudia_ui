@@ -3137,17 +3137,22 @@ def test_a_model_without_the_operator_channel_is_reported_with_the_symptom(model
     `claude-sonnet-4-6` was recommended by `docs/env-vars-reference.md` until 2026-08-05:
     it meets the adaptive-thinking requirement, which is the only one that had been
     checked. Mid-conversation `role: "system"` messages are Opus-4.8/Opus-5/Fable/Mythos
-    only (verified against the official prompt-caching page), so the Sonnet line 400s —
-    but only from the first rendered proposal onward, which is what makes the symptom hard
-    to trace back to a model id.
+    only (verified against the official prompt-caching page), so the Sonnet line 400s once
+    the operator channel carries anything — which since 2026-08-11 is the turn after ANY
+    tool call, not just from the first rendered proposal. The message must name the
+    EARLIEST trigger: a reader told only about proposals would rule the channel out for a
+    session that never touched orders, which is now the common case (measured over this
+    repo's history: 84% of sessions with a user message make a ledger-eligible call, against
+    16% that record a proposal).
     """
     from claudia.agent import warn_if_model_lacks_operator_channel
 
     with caplog.at_level(logging.ERROR, logger="claudia.agent"):
         assert warn_if_model_lacks_operator_channel(model) == model
     assert model in caplog.text
-    assert "400" in caplog.text          # names the failure
-    assert "proposal" in caplog.text     # names when it starts
+    assert "400" in caplog.text           # names the failure
+    assert "tool call" in caplog.text     # names the EARLIEST trigger
+    assert "proposal" in caplog.text      # and still names the later ones
 
 
 def test_the_operator_channel_allowlist_excludes_the_sonnet_line():
