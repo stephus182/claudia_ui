@@ -125,7 +125,8 @@ _CURATED_TOOLS = {
     "chart_set_timeframe",
     "indicator_set_inputs",
     # …and the getter it depends on: input ids are not guessable (a built-in RSI uses
-    # in_0..in_7, an EMA on the same chart uses "length"), and an unmatched key is a
+    # in_0..in_7 on one study instance, "length" on another of the SAME indicator type,
+    # both measured on one chart 2026-08-11), and an unmatched key is a
     # silent no-op reported as success. Curating the setter alone made that a false
     # success on 2026-08-11. Pairs with the guard added in a75e9ec, whose message names
     # this tool as the remedy — test_empty_result_guards_only_name_curated_tools keeps
@@ -264,9 +265,11 @@ _EMPTY_RESULT_GUARDS: dict[str, tuple[str, str]] = {
         "updated_inputs",
         "NOTHING WAS CHANGED. None of the requested keys matched this study's input "
         "ids, and the sidecar reports success either way. Input ids are not guessable "
-        "-- the built-in RSI uses in_0..in_7 while an EMA on the same chart uses "
-        "'length'. Call data_get_indicator on this entity_id to read the real ids, "
-        "then retry. Do not report this change as done.",
+        "and not stable across studies: two instances of the SAME indicator on one "
+        "chart have been measured reporting different key styles -- opaque in_0..in_7 "
+        "on one, friendly names like 'length' on another. Call data_get_indicator on "
+        "this entity_id to read that study's actual ids, then retry with those. Do not "
+        "report this change as done.",
     ),
 }
 
