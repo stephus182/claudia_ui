@@ -56,7 +56,14 @@ if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
     fi
 fi
 
-echo "▶ Launching TradingView with --remote-debugging-port=$DEBUG_PORT…"
+# Braced because an ellipsis follows. Measured 2026-08-12: bash 3.2 running this
+# FILE from an automation shell (LANG=C.UTF-8) folds the multibyte `…` into the
+# variable name and dies on `set -u` with "DEBUG_PORT…: unbound variable" — after
+# the script had already quit TradingView, the worst possible place to stop. The
+# same construct passed via `bash -c` on a command line, so this is not a pure
+# locale story; the braces close it under every invocation tried (repro + fix both
+# verified against the exact failing invocation). Interactive Terminal runs never hit it.
+echo "▶ Launching TradingView with --remote-debugging-port=${DEBUG_PORT}…"
 # Guarded so a not-installed TradingView gives a clear message instead of
 # aborting on `set -e` before the timeout hint below.
 open -a "$APP_NAME" --args --remote-debugging-port="$DEBUG_PORT" \
