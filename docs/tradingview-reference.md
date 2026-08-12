@@ -53,9 +53,11 @@ button to paste it into the Pine Editor via the `pine_set_source` MCP tool.
 
 All 16 names re-verified present against sidecar `55534aa` on 2026-07-31 (via `list_tools()`,
 which needs no CDP); last verified against a *live* TradingView Desktop 2026-06-30. The 17th,
-`data_get_indicator`, was curated on 2026-08-11 and is **confirmed registered in the sidecar
-source** (`~/.tradingview-mcp/src/tools/data.js:14`) — it has **not** been exercised against a
-live TradingView Desktop, nor checked via `list_tools()`. Tool
+`data_get_indicator`, was curated on 2026-08-11 and **is the best-verified name in the set**:
+registered at `~/.tradingview-mcp/src/tools/data.js:14`, reported by `list_tools()` the same
+evening (`84 total tools, 17 curated` in the startup log), and **exercised against a live
+TradingView Desktop** that night — it returned the real RSI input ids, which the model then used
+to complete a change its first guess had silently no-opped. Tool
 descriptions are provided by the sidecar
 at runtime via MCP `list_tools()` — they appear in the Anthropic `tools=` parameter and
 are the only documentation ClaudIA receives about what each tool does.
@@ -67,6 +69,43 @@ are the only documentation ClaudIA receives about what each tool does.
 | Pine Script IDE | `pine_set_source`, `pine_smart_compile`, `pine_get_errors`, `pine_get_source` |
 | Strategy results | `data_get_strategy_results`, `data_get_equity` (equity curve), `data_get_trades` |
 | Utility | `tv_health_check`, `capture_screenshot` |
+
+## Result post-processing (`_post_process` in `claudia/tradingview.py`)
+
+**Every sidecar result crosses `TradingViewBridge.execute()`, and since 2026-08-11 it is
+transformed there before the model sees it.** So a payload in `claudia.db` will not always match
+what the sidecar emitted. Three transforms run, in a `_TRANSFORMS` tuple; each takes the tool name
+and the parsed payload and returns a payload. All three came out of the 2026-08-11 live batch.
+
+| Transform | What you will see | Why |
+| --- | --- | --- |
+| `_annotate_epochs` | a `<key>_utc` sibling beside `time` / `timestamp` / `from` / `to` — e.g. `"time": 1786455000, "time_utc": "2026-08-11T13:30:00Z"` | the payload carries bare epoch seconds and no date string, so the model was converting them in its head. It printed 2026-08-11 as "May 12", every row wrong, while every price round-tripped exactly |
+| `_flag_empty_result` | a `claudia_warning` key on a tool that reported success while its own payload shows a no-op | `indicator_set_inputs` returns `success: true` with `updated_inputs: {}` when no override key matched a real input id, and the model announced the change as done |
+| `_trim_blobs` | `"text": "<omitted: 2422 chars>"` in place of an oversized value under a `text` key | Pine studies carry obfuscated source there. It was 5,280 of 8,641 chars (61%) of a live `data_get_study_values` result |
+
+Four properties worth knowing before changing anything here:
+
+- **The seam is inert unless it fires.** 12 of the 16 payloads captured on 2026-08-11 come back
+  byte-identical. `indent=2` and the default `ensure_ascii=True` are what preserve that — the
+  sidecar already emits indent-2 JSON. **Do not set `ensure_ascii=False`**: JS escapes a lone
+  surrogate to ASCII, and re-emitting it raw produces a `str` that cannot be UTF-8 encoded, which
+  crashes the `conversation_store` insert. That was tried and reverted the same day.
+- **It fails open.** Anything that is not a JSON object, and anything a transform raises on, is
+  returned untouched. A transform that swallowed a tool result — or turned a succeeded call into a
+  reported failure — would be worse than the defects it fixes.
+- **`claudia_warning` is a reserved key**, dropped from the incoming payload before any transform
+  runs. It is our channel for telling the model to distrust a payload, so it cannot be sourced
+  from the thing being judged. Note this is the *opposite* resolution from `_utc`, where a
+  sidecar-supplied sibling legitimately wins — that one is data, this one is a trust statement.
+- **Epoch annotation is UTC, never exchange-local.** The exchange is not knowable from the payload
+  and guessing it would be an instrument-specific rule. Expect ClaudIA's times to differ from the
+  chart's clock by the exchange offset — on 2026-08-11 the chart read `16:00` UTC-4 for the bar
+  annotated `20:00:00Z`. Both correct; not a regression.
+
+Live-verified 2026-08-11 (evening): dates matched the payload 20/20, and a deliberately wrong
+input key produced the warning, which the model read and recovered from by calling
+`data_get_indicator`. **The blob trim has not fired live** — it is verified by replaying the
+captured payload only.
 
 ## Upgrading the sidecar
 

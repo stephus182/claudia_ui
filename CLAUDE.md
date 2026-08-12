@@ -30,6 +30,7 @@ claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / uploa
 claudia/session_reporter.py — auto-generated Markdown session report (tool calls, decisions)
 claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health
 claudia/tradingview.py      — tradingview-mcp sidecar + CDP health + TradingViewBridge
+                              (execute() post-processes every result before the model sees it)
     ↓                               ↓
 ibkr_core_mcp               tradingview-mcp (Node.js, stdio)
 (local editable install)            ↓
@@ -321,7 +322,16 @@ the fix that established this (75,480 → 2,910 tokens/session).
   `Trade == Lot + WashSale`. Both traps were live in this repo and are gated now.
 - Market calendar (20 exchanges, futures schedules): `docs/market-calendar-reference.md`
 - GDrive sync (folder layout, error handling): `docs/gdrive-sync-reference.md`
-- TradingView integration (sidecar, curated tools, recovery): `docs/tradingview-reference.md` and `docs/tradingview-mcp-recovery.md`
+- TradingView integration (sidecar, curated tools, recovery): `docs/tradingview-reference.md` and
+  `docs/tradingview-mcp-recovery.md`. **Since 2026-08-11 `execute()` post-processes every sidecar
+  result**, so a payload in `claudia.db` need not match what the sidecar emitted: epoch fields gain
+  a `<key>_utc` ISO sibling, a tool reporting success over its own empty result gains a
+  `claudia_warning`, and oversized Pine `text` blobs become `<omitted: N chars>`. The seam is inert
+  otherwise — 12 of 16 real payloads pass through byte-identical — and it fails open on anything it
+  cannot parse. **Do not set `ensure_ascii=False` there**: it turns a JS-escaped lone surrogate into
+  a string that cannot be UTF-8 encoded and crashes the `conversation_store` insert (tried and
+  reverted 2026-08-11). Full table and rationale: `docs/tradingview-reference.md` § Result
+  post-processing
 - Web scraping — the 4 tools ClaudIA can call (`fetch_page`, `crawl_site`, `search_site`,
   `firecrawl_search`), paywalled-site logins, and what a blocked page looks like:
   `ibkr_core_mcp/docs/web-scraper-reference.md`. Two things that bite from ClaudIA's side:
