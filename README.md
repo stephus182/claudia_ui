@@ -211,6 +211,48 @@ table for every figure on the screen — then `REALISED_LEDGER_WINDOW` in the sa
 
 ---
 
+## Agent Behavior — how ClaudIA is stopped from asserting what it did not do
+
+A trading assistant that invents a price, a position or an action it never took is worse
+than one that says "I don't know". Constraints against that sit in **three layers**, and
+which layer a rule lives in decides whether it is a control or a wish:
+
+| Layer | Where | Model can ignore it? |
+|---|---|---|
+| Prompt — user documents | `context.md` / `principles.md` (Drive) | Yes — persona and trading judgment **only** |
+| Prompt — safety block | `_SAFETY_BLOCK`, `agent.py` — appended last, non-overridable | Yes |
+| **Code — evidence** | four claim detectors + a `role:"system"` operator channel | **No** |
+
+**The instruction layer is provably not enough.** An audit of the entire conversation store
+(2026-08-12, all 225 assistant messages) found **23 verified instances across nine sessions
+since 2026-06-24** where ClaudIA asserted an action or result nothing had produced — and the
+worst was a fabricated "raw tool result" produced *on demand when the user asked for one as
+an audit*, **on the same day the prompt rule forbidding exactly that was added.** So the
+rules are backed in code.
+
+**The architecture, in one line: *the trigger is textual, the verdict is evidence*.** A
+detector keys on what the model wrote; the ruling comes from persisted rows and the turn's
+real tool set — never from asking the model whether it was telling the truth.
+
+| Detector | Asserts |
+|---|---|
+| `_claims_completed_proposal` | claimed a staged order ⇒ a proposal was really recorded |
+| `_claims_fresh_book_check` | claimed a live-book check ⇒ a book tool really ran this turn |
+| `_claims_completed_action` | reported any completed action ⇒ some tool really ran this turn |
+| `_claims_verbatim_tool_result` | showed a "raw tool result" ⇒ some tool really ran this turn |
+
+A fire produces an unhedged correction to the user, a persisted row, its own decision type,
+and a non-forgeable `role:"system"` note so the false claim cannot become precedent next
+turn. **Precision is a measurement, not an argument:** frozen at 21 fires (all individually
+verified fabrications), 22 near-identical texts cleared by their real tool calls, **0 false
+positives** — `tests/test_corpus_precision.py`.
+
+Of Anthropic's [seven documented hallucination techniques](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-hallucinations)
+(three basic, four advanced) ClaudIA implements **four**, treats one as analogous, declines
+one with a reason, and finds one not applicable — the technique-by-technique map, the
+per-layer rationale and the known limits are in
+[`docs/agent-behavior-reference.md`](docs/agent-behavior-reference.md).
+
 ## Agent — Prompt & Context Handling
 
 `claudia/agent.py` assembles four kinds of information into every API call: the
@@ -256,6 +298,7 @@ Implementation plan and live-verified numbers —
 | [`docs/README.md`](docs/README.md) | Full documentation catalog — every doc in `docs/`, categorized |
 | [`CLAUDE.md`](CLAUDE.md) | Developer guide: setup, env vars, architecture, hard rules |
 | [`SECURITY.md`](SECURITY.md) | Security model: order barriers, threat model, audit checklist |
+| [`docs/agent-behavior-reference.md`](docs/agent-behavior-reference.md) | **Agent behavior: the safety block, the three enforcement layers, the four claim detectors, and the Anthropic-technique map** |
 | [`docs/flex-query-setup.md`](docs/flex-query-setup.md) | IBKR Flex Query setup: token, query config, backfill, ongoing sync |
 | [`docs/tradingview-mcp-recovery.md`](docs/tradingview-mcp-recovery.md) | TradingView break patterns, recovery steps, CDP fallback |
 | [`docs/connectivity.md`](docs/connectivity.md) | IBKR / GDrive / TradingView check logic, reconnection flows, live test results |

@@ -8,7 +8,7 @@ most commonly needed links; this file is the full catalog.
 Living documentation describing current behavior — read on demand, updated in place as the
 code changes.
 
-Grouped by domain — a flat list of seventeen entries made it hard to see which document
+Grouped by domain — a flat list (seventeen entries at the time) made it hard to see which document
 owns a question. Within each group, the file that answers "where do I start" is listed first.
 
 **IBKR — the broker connection, orders and trade data**
@@ -35,6 +35,7 @@ owns a question. Within each group, the file that answers "where do I start" is 
 
 | File | Description |
 | --- | --- |
+| [`agent-behavior-reference.md`](agent-behavior-reference.md) | **How ClaudIA is stopped from asserting what it did not do — start here for anything about model behavior.** The three enforcement layers and why a rule in the wrong one is not a control, `_SAFETY_BLOCK`'s nine sections, the four claim detectors (*trigger textual, verdict evidence*), the operator channel, the frozen precision measurement, the Anthropic technique-by-technique map, and the known limits |
 | [`context-loading-reference.md`](context-loading-reference.md) | `context.md`/`principles.md` loading, hot-reload, versioning, prompt-cache mechanics |
 | [`conversation-memory-reference.md`](conversation-memory-reference.md) | `claudia.db` schema — sessions, messages, decisions, doc_versions, FTS5 |
 | [`prompt-caching-upgrade.md`](prompt-caching-upgrade.md) | Prompt-caching implementation note — status, verified numbers, findings |

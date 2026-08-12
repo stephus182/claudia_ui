@@ -617,15 +617,21 @@ or future-tense veto would silently swallow.
 def _claims_completed_proposal(text: str) -> str | None:
     """Return the sentence claiming a completed order action, or None if there is none.
 
-    Anthropic's "Reduce hallucinations" guidance lists four basic techniques; `_SAFETY_BLOCK`
-    implements three. The fourth is *"have Claude verify each claim by finding a supporting
-    quote after it generates a response — if it can't find a quote, it must retract the
-    claim"* (https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-hallucinations).
-    This is that check with one deliberate divergence: the doc has the model audit itself,
-    which is worthless here, because the model that narrated a phantom cancel is exactly the
-    one that would be asked whether it made one. **The trigger is textual; the verdict is
-    evidence.** This function only decides that a claim was made — whether it is true is
-    settled by `_pending_proposal` at the call site, and by nothing else.
+    This implements **Verify with citations**, the third of the three *basic* strategies in
+    Anthropic's "Reduce hallucinations" guidance — *"have Claude verify each claim by finding
+    a supporting quote after it generates a response — if it can't find a quote, it must
+    retract the claim"*
+    (https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-hallucinations).
+    One deliberate divergence: the doc has the model audit itself, which is worthless here,
+    because the model that narrated a phantom cancel is exactly the one that would be asked
+    whether it made one. **The trigger is textual; the verdict is evidence.** This function
+    only decides that a claim was made — whether it is true is settled by `_pending_proposal`
+    at the call site, and by nothing else.
+
+    (Counted 2026-08-12: the page carries **three** basic strategies and four advanced ones.
+    This docstring said "four basic techniques … the fourth is" from 2026-07-27 until then —
+    an inherited miscount, corrected rather than repeated. Full technique-by-technique map:
+    `docs/agent-behavior-reference.md`.)
 
     Precision is the entire design constraint. A detector that fires on ClaudIA's own honest
     self-correction is worse than no detector: it teaches the user to ignore the one signal
