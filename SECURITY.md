@@ -175,6 +175,50 @@ of this writing, the block's non-overridable subsections are:
   violation than not knowing the answer. Added 2026-07-10 after a live-reproduced
   fabrication finding (3 instances in one session); live re-verified 2026-07-17.
 
+### 5.1 Code-layer enforcement — the safety block is instruction, not enforcement
+
+Everything above is text in the system prompt. A model can ignore text, and has: the same
+failure class has now produced **five measured fabrications across two sessions**, where
+ClaudIA asserted an action it never took. So the rules above are backed in code, in
+`claudia/agent.py`. The split is deliberate — **the trigger is textual, the verdict is
+evidence**: a detector keys on what the model wrote, but the ruling comes from persisted
+rows, never from asking the model whether it was telling the truth.
+
+| Mechanism | Asserts |
+| --- | --- |
+| `_claims_completed_proposal` → `_emit_unbacked_claim_notice` | claimed a staged proposal ⇒ one was actually recorded (else a `proposal_claim_unbacked` decision) |
+| `_claims_fresh_book_check` | claimed a live-book check ⇒ a book-reading tool really ran this turn (else `book_claim_unverified`) |
+| `_emission_records` | replays which proposals genuinely rendered a button — excluding `proposal_render_failed`, so a failed render is never replayed as a success |
+| `_completed_order_records` | replays order actions that reached IBKR, which leave no transcript at all (button click, no tool call) |
+| `_called_tool_records` | names the tools called earlier and states their results are **gone** from context — added 2026-08-11 |
+
+All of them are delivered by `_append_operator_message` as a single mid-conversation
+`role: "system"` message. **That role is the security property**: anything the model can
+write it can forge, and the failure being corrected is a model asserting something untrue
+about its own output. Records carry **identity only — never values**: a tool name, an order
+id, a symbol. A remembered-looking price or quantity would be a fabrication surface, and
+order parameters are immutable (§2).
+
+The last row closes a gap the others could not see. `_history_to_messages` deliberately
+drops tool rows — the DB stores no Anthropic `tool_use_id`s, and orphaned `tool_result`
+blocks are an API 400 — and its docstring assumed the assistant's own prose was an adequate
+substitute. Measured 2026-08-11: it is not. Asked about chart settings its own prose had
+recorded only by study *name*, ClaudIA invented colours, line widths, precision and band
+levels — categories no tool it had called can return at all (`chart_get_state` yields
+`{id, name}` per study and nothing else). The identical question in a fresh session, with
+no prose to lean on, produced five tool calls and ten of ten fields correct against the
+live chart read over CDP.
+
+**Model requirement:** mid-conversation `system` messages are not supported on every model,
+and since the ledger rides this channel an unsupported model now fails on the turn after any
+tool call rather than only after an order proposal. `warn_if_model_lacks_operator_channel`
+logs a loud startup error; there is deliberately **no** fallback to a `<system-reminder>` in
+the user turn, because that channel is forgeable and silently downgrading a non-spoofable one
+is worse than refusing the model. See `docs/env-vars-reference.md`.
+
+**Known limit, stated rather than implied:** none of this covers a fabricated claim about a
+*new* action with nothing in context to recycle — observed 2026-08-11 and still unguarded.
+
 ---
 
 ## 6. TradingView MCP Sidecar
