@@ -1872,6 +1872,7 @@ class ClaudIAAgent:
         decision_type: str,
         summary_text: str,
         operator_note: str,
+        metadata: dict | None = None,
     ) -> None:
         """Contradict one unbacked claim on all four surfaces, in the one safe order.
 
@@ -1897,6 +1898,10 @@ class ClaudIAAgent:
             decision_type: The row type, distinct per shape so the log stays separable.
             summary_text: The decision row's static summary. Never interpolates `claim`.
             operator_note: The non-forgeable `role:"system"` body for the next turn.
+            metadata: Optional structured fields for the decision row. Only the
+                render-failure shape uses it (`{"kind": ...}`); `add_decision` already
+                defaults it to None, so the four claim shapes write exactly the row they
+                always did.
         """
         log.warning(log_message, claim)
         self._store.add_message(self._session_id, "assistant", notice)
@@ -1905,6 +1910,7 @@ class ClaudIAAgent:
             decision_type=decision_type,
             summary_text=summary_text,
             message_id=msg_id,
+            metadata=metadata,
         )
         self._pending_operator_notes.append(operator_note)
         await self._sink.send_message(notice)
@@ -2042,19 +2048,24 @@ class ClaudIAAgent:
         # Persisted, not just displayed. session_reporter's anomaly scan reads tool rows
         # only, so an assistant-side failure can never surface there — and with no decision
         # row either, three consecutive 2026-07-17 failures produced a clean session report.
-        # The decision row below is what puts this in the report's Decisions section; the
-        # message row puts it in the FTS index and in the next turn's replayed history.
-        self._store.add_message(self._session_id, "assistant", _GUARDRAIL_NOTICE)
-        self._store.add_decision(
-            session_id=self._session_id,
+        # The decision row is what puts this in the report's Decisions section; the message
+        # row puts it in the FTS index and in the next turn's replayed history.
+        #
+        # Routed through `_emit_correction` since 2026-08-12: this was the fifth hand-rolled
+        # copy of the persist→record→queue→display sequence, and the only one the ordering
+        # test did not cover. `claim` is the proposal kind rather than a sentence — this
+        # shape has no offending text, the failure is a missing button — so nothing live
+        # reaches the log that was not already there.
+        await self._emit_correction(
+            msg_id,
+            kind,
+            log_message="Proposal accepted but not rendered (kind=%r)",
+            notice=_GUARDRAIL_NOTICE,
             decision_type="proposal_render_failed",
             summary_text=f"{kind} proposal accepted but not rendered — nothing staged",
-            message_id=msg_id,
+            operator_note=_OPERATOR_NOTE.format(kind=kind),
             metadata={"kind": kind},
         )
-        # Operator channel: the model must not keep defending a dead claim next turn.
-        self._pending_operator_notes.append(_OPERATOR_NOTE.format(kind=kind))
-        await self._sink.send_message(_GUARDRAIL_NOTICE)
 
     def _called_tool_records(self) -> str:
         """Return this session's called-tool ledger, or "" when no tool has been called.

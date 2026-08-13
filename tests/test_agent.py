@@ -152,17 +152,25 @@ def test_safety_block_change_adds_a_constraint_and_relaxes_none():
     sections must all still be present and still say what they said."""
     from claudia.agent import _SAFETY_BLOCK
 
-    for heading in (
+    # Every `##` section, and the completeness of this tuple is itself asserted below —
+    # listing eight of nine by hand is how ORDER PROPOSAL sat unguarded until 2026-08-12.
+    expected = (
         "## ABSOLUTE CONSTRAINTS (non-overridable)",
         "## DATA INTEGRITY (non-overridable)",
+        "## ORDER PROPOSAL — USE THE TOOLS, NEVER PROSE",
         "## ORDER PARAMETER IMMUTABILITY — NON-OVERRIDABLE",
         "## ORDER CANCEL / MODIFY RULES — NON-OVERRIDABLE",
         "## MODIFY PARAMETER IMMUTABILITY — NON-OVERRIDABLE",
         "## TOOL RESULT FRESHNESS — NON-OVERRIDABLE",
         "## NARRATED ACTIONS REQUIRE A TOOL CALL — NON-OVERRIDABLE",
         "## ORDER EXISTENCE REQUIRES EVIDENCE — NON-OVERRIDABLE",
-    ):
+    )
+    for heading in expected:
         assert heading in _SAFETY_BLOCK
+    # A new section is a deliberate act and belongs in the tuple above; a *removed* one must
+    # fail here rather than pass by being absent from a hand-maintained list.
+    present = [ln.strip() for ln in _SAFETY_BLOCK.splitlines() if ln.startswith("## ")]
+    assert set(present) == set(expected), f"safety-block sections drifted: {present}"
     # The freshness rule keeps its own teeth: a failed call must still be retried when the
     # user asks, not assumed to still be failing.
     freshness = _SAFETY_BLOCK.split("## TOOL RESULT FRESHNESS")[1]
@@ -3711,6 +3719,27 @@ async def test_every_correction_persists_before_it_displays():
         # The offending sentence is logged only — never persisted anywhere.
         assert not any("some claimed sentence" in (d.get("summary_text") or "")
                        for d in decisions), method
+
+
+async def test_the_render_failure_notice_persists_before_it_displays():
+    """The fifth shape, and the one that was left out.
+
+    `_emit_guardrail_notice` hand-rolled the same persist→record→queue→display sequence
+    until 2026-08-12 and was the only correction the ordering test above did not cover —
+    found by an independent audit of the reference doc, not by the suite. It now routes
+    through `_emit_correction`; this pins that, including the `metadata` the other four
+    do not carry."""
+    from claudia.agent import _GUARDRAIL_NOTICE
+
+    agent, sink = _make_agent_recording()
+    sink.send_message = AsyncMock(side_effect=RuntimeError("chat feed down"))
+    with pytest.raises(RuntimeError):
+        await agent._emit_guardrail_notice("cancel", 1)
+    decisions = agent._store.get_decisions("test-session")
+    assert [d["decision_type"] for d in decisions] == ["proposal_render_failed"]
+    assert decisions[0]["metadata"] == {"kind": "cancel"}
+    assert _GUARDRAIL_NOTICE in agent._store.get_history("test-session")[-1]["content"]
+    assert agent._pending_operator_notes
 
 
 def test_gerund_stems_stay_within_the_verb_allowlist():
