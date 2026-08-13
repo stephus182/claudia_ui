@@ -113,7 +113,7 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (1,183 tests as of 2026-08-05)
+pytest        # full suite — all unit, no IBKR gateway needed (1,577 tests as of 2026-08-13)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
@@ -267,6 +267,9 @@ the fix that established this (75,480 → 2,910 tokens/session).
   headless button testing): `docs/panel/panel-reference.md`
 - Panel UI design & styling (no-styling baseline, shadow-DOM constraint, scraped styling
   surface, proposed restyle direction): `docs/panel/ui-design-reference.md`
+- Panel component model (object taxonomy, the real class hierarchy, the Param foundation,
+  the four interactivity APIs and how they rank, and the four routes to building a component
+  of our own): `docs/panel/component-model-reference.md`
 - Panel data surfaces — Tabulator/Number/ECharts, the `pn.extension()` gate, side windows,
   stream/patch + connectivity, and 27 measured gotchas (16 onwards found live against the
   account): `docs/panel/data-surfaces-reference.md`

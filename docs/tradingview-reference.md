@@ -139,9 +139,12 @@ Verification run: sidecar unit tests **152/152 pass** (`npm run test:unit`), lin
 no renames, so `_CURATED_TOOLS` was not touched. `tests/e2e.test.js` fails without TradingView
 Desktop running, which is expected. `vendor/` re-snapshotted to `55534aa`.
 
-**Still unproven:** every tool *call* against live TradingView. `list_tools()` needs no CDP, so
-the tool-name check above is solid, but schema drift inside a tool is not auto-detected — the
-16 curated tools have not been exercised against a live desktop since the upgrade.
+**Still unproven *as of that 2026-07-31 upgrade*:** every tool *call* against live TradingView.
+`list_tools()` needs no CDP, so the tool-name check above is solid, but schema drift inside a
+tool is not auto-detected — the 16 curated tools had not been exercised against a live desktop
+at that point. **Closed since:** the full T0–T8 batch ran 2026-08-11 against this sidecar and
+completed 2026-08-12; the curated set is now **17** (`data_get_indicator` added and
+live-verified). See § Result post-processing and `docs/project-status.md` § Live Test Log.
 
 The 68 non-curated tools now include `tv_update` (sidecar self-update), `alert_create`/`_list`/
 `_delete`, the overhauled `watchlist_*` set and `tv_launch`. **Whether any of those should join
