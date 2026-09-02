@@ -63,6 +63,7 @@ from claudia.panel_chart import build_chart_pane
 from claudia.panel_dashboard import build_dashboard
 from claudia.panel_markdown import safe_markdown
 from claudia.panel_sink import PanelMessageSink
+from claudia.panel_theme import apply_session_theme, register_claudia_avatar, user_display_name
 from claudia.session_reporter import generate_session_report
 from claudia.status import ConnectivityChecker, ServiceStatus
 from claudia.tradingview import TradingViewBridge, check_cdp_running, launch_tradingview
@@ -84,10 +85,18 @@ load_dotenv(override=False)
 # to tell the user anything. Without it `pn.state.notifications` is None and a dropped
 # socket reconnects — or fails to — in silence.
 #
-# `design=` / `theme=` are deliberately absent. They belong to the deferred restyle
-# track (docs/panel/ui-design-reference.md §8.3), and this call is shared with it: adding
-# a table must not silently pre-empt those decisions.
+# `design=` is deliberately absent — still a deferred restyle decision
+# (docs/panel/ui-design-reference.md §8.3). `theme=` is absent for a harder reason: a
+# global theme silences the `?theme=` URL override (panel/config.py reads the global slot
+# before the session args), so the theme is set per session in `_build_session_root` via
+# panel_theme.apply_session_theme — CLAUDIA_THEME is the default, `?theme=` wins. Enforced
+# by tests/test_panel_app.py::test_extension_call_does_not_pre_empt_the_restyle_track.
 pn.extension("tabulator", notifications=True)
+
+# ClaudIA's chat avatar: an in-place entry in ChatMessage.default_avatars, so every message
+# authored "ClaudIA" carries it without any send site passing avatar=. Missing file → Panel's
+# letter fallback plus one warning (docs/panel/ui-customisation-reference.md §2).
+register_claudia_avatar()
 
 # Automatic WebSocket reconnect with exponential backoff (1/2/4/8/16/32s). Requires
 # panel >= 1.8 and bokeh >= 3.8, both floored in pyproject.toml. A trading session that
@@ -738,7 +747,21 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     # (ChatStep, Column, image panes) bypass renderers and are unaffected. Note this must be
     # the top-level `renderers` param — passing it inside message_params raises TypeError,
     # since ChatFeed._build_message already forwards self.renderers explicitly.
-    chat = pn.chat.ChatInterface(renderers=[safe_markdown])
+    #
+    # Phase-1 surface (2026-09-02, docs/panel/ui-customisation-reference.md §1): Rerun/Undo/
+    # Clear are hidden — they replay or erase messages on a surface that can stage live
+    # orders; Send stays (Enter sends too), Stop keeps its default. Reaction icons are off for
+    # every message the feed builds. The box is the default ChatAreaInput, three rows, growing
+    # to ten. The human's author label comes from CLAUDIA_USER_NAME.
+    chat = pn.chat.ChatInterface(
+        renderers=[safe_markdown],
+        user=user_display_name(),
+        widgets=pn.chat.ChatAreaInput(placeholder="Ask ClaudIA…", rows=3, max_rows=10),
+        show_rerun=False,
+        show_undo=False,
+        show_clear=False,
+        message_params={"show_reaction_icons": False},
+    )
 
     # store/loader are read by the session-end cleanup consumers (End Session
     # button + destroy hook); init_task keeps a strong reference to the
@@ -1148,6 +1171,9 @@ def _build_session_root() -> pn.Column:
     dots and the dashboard ride the same 5-second callback: one timer, two synchronous
     cache reads, no I/O on the session's event loop.
     """
+    # First, while this session's Document is current: Panel scopes the theme to the
+    # session here, which is what lets `?theme=` override CLAUDIA_THEME (panel_theme.py).
+    apply_session_theme()
     chat = _build_chat_app()
     indicators = _make_status_indicators()
     dashboard = build_dashboard(chart_pane=build_chart_pane())

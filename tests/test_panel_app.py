@@ -1502,7 +1502,11 @@ def test_notifications_and_reconnect_are_enabled():
 
 
 def test_extension_call_does_not_pre_empt_the_restyle_track():
-    """`design=`/`theme=` belong to the deferred restyle plan, not to a table addition."""
+    """`design=` is still a deferred restyle decision; `theme=` must NEVER go here.
+
+    A global theme silences the `?theme=` URL override (panel/config.py `_config.theme`
+    reads the global slot before the session args), so the theme is set per session in
+    `panel_theme.apply_session_theme` — see the test below and claudia/panel_theme.py."""
     import inspect
 
     import claudia.panel_app as app
@@ -1511,6 +1515,92 @@ def test_extension_call_does_not_pre_empt_the_restyle_track():
     call = source[source.index("pn.extension("):]
     call = call[: call.index(")") + 1]
     assert "design=" not in call and "theme=" not in call
+
+
+# ── UI customisation phase 1 (2026-09-02) ────────────────────────────────────
+
+
+def test_import_registers_claudia_avatar_after_the_extension_call():
+    """The avatar hook runs at import, once, after pn.extension — and is effective only
+    when the asset exists (the letter fallback is the documented alternative)."""
+    import inspect
+
+    import claudia.panel_app as app
+    from claudia.panel_theme import CLAUDIA_AVATAR_PATH
+
+    source = inspect.getsource(app)
+    # Line-anchored: the comment above the call also says "pn.extension(".
+    assert source.index('\npn.extension("') < source.index("\nregister_claudia_avatar()")
+    registered = pn.chat.ChatMessage.default_avatars.get("claudia")
+    expected = str(CLAUDIA_AVATAR_PATH) if CLAUDIA_AVATAR_PATH.is_file() else None
+    assert registered == expected
+
+
+@pytest.mark.asyncio
+async def test_chat_interface_phase1_surface(monkeypatch):
+    """Send-only footer, no reaction icons, a multi-line box with ClaudIA's placeholder,
+    and the human's configured display name."""
+    monkeypatch.setenv("CLAUDIA_USER_NAME", "Steph")
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("x", "Steph", chat), timeout=_CALLBACK_TIMEOUT)
+
+    # Rerun/Undo/Clear replay or erase messages on a surface that can stage live orders.
+    assert (chat.show_rerun, chat.show_undo, chat.show_clear) == (False, False, False)
+    assert chat.show_send is True
+    assert chat.message_params["show_reaction_icons"] is False
+    # Every message the feed builds inherits it — including the ones already sent.
+    assert all(m.show_reaction_icons is False for m in chat.objects if isinstance(m, pn.chat.ChatMessage))
+    assert chat.user == "Steph"
+    widget = chat.active_widget
+    assert isinstance(widget, pn.chat.ChatAreaInput)
+    assert widget.placeholder == "Ask ClaudIA…"
+    assert widget.rows == 3
+    assert widget.enter_sends is True
+
+
+@pytest.mark.asyncio
+async def test_session_root_applies_the_session_theme():
+    """The theme is resolved inside the per-session factory, where Panel scopes it to the
+    session Document — the only place `?theme=` can override `CLAUDIA_THEME`."""
+    from claudia.panel_app import _build_session_root
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch("claudia.panel_app.apply_session_theme", return_value="dark") as apply_theme,
+        patch.object(pn.state, "add_periodic_callback"),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = _build_session_root()
+        chat = _find_chat(root)
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    apply_theme.assert_called_once_with()
 
 
 @pytest.mark.asyncio
