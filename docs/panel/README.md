@@ -35,6 +35,12 @@ Distinct from:
   scraped styling surface (designs, themes, the eight `--design-*` tokens, templates,
   `ChatInterface`'s own appearance parameters), the open design questions, a **proposed**
   direction for the Track D restyle, and the official-source URL index.
+- [UI customisation reference](ui-customisation-reference.md) — **what is set and how to change
+  it.** Started 2026-09-02 with phase 1 of the customisation track: the settings table (theme via
+  `CLAUDIA_THEME` + `?theme=`, ClaudIA's avatar, the human's label, Send-only footer, no reaction
+  icons), the how-tos, the executed findings each rests on (the theme is session-scoped in
+  `pn.config`; the Fast template's theme switch is a page reload), a costed **menu** of the next
+  easy changes, the phase-2 candidates, and its own dated source index.
 - [Panel component model reference](component-model-reference.md) — **how a component is built,
   wired and updated.** Started 2026-08-01. The object taxonomy (widgets / panes / indicators /
   layouts / templates / notifications) and the *real* class hierarchy underneath it (an Indicator

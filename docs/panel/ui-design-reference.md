@@ -8,8 +8,10 @@ Two rules govern this doc:
 1. **Every Panel claim is scraped and cited** (CLAUDE.md "API Docs First"). Official URLs and
    their scrape date are in §9.
 2. **§8 is a proposal, not a decision.** The deep restyle is its own project — Track D in
-   [`docs/project-status.md`](../project-status.md) Known Gap #14 — to be brainstormed with the
-   user first. Nothing here has been agreed.
+   [`docs/project-status.md`](../project-status.md) Known Gap #23 — to be brainstormed with the
+   user first. **Phase 1 was agreed and shipped 2026-09-02** — the record of what is now set,
+   and how to change it, is [`ui-customisation-reference.md`](ui-customisation-reference.md);
+   this document remains the styling *surface* and the long-form proposal.
 
 Companion: `panel-reference.md` (how the Panel layer works today).
 Versions described: **panel 1.9.3**, **bokeh 3.9.2**.
@@ -26,9 +28,9 @@ Versions described: **panel 1.9.3**, **bokeh 3.9.2**.
 | `stylesheets=` on any component | **No** |
 | `css_classes=` / `styles=` | **No** |
 | `raw_css` / `global_css` | **No** |
-| `design=` or `theme=` | **No** |
-| `pn.extension(...)` called at all | **No** |
-| `pn.config` touched | **No** |
+| `design=` or `theme=` | `design=` **No**. `theme=` **per session since 2026-09-02** — `panel_theme.apply_session_theme`, deliberately *not* on `pn.extension()` (a global theme silences the `?theme=` override) |
+| `pn.extension(...)` called at all | **Yes since 2026-08-04** — `pn.extension("tabulator", notifications=True)` (this table said *No* until 2026-09-02) |
+| `pn.config` touched | **Yes** — `reconnect = True` (2026-08-04) and the session-scoped `theme` (2026-09-02) |
 | Any template (`FastListTemplate`, `BootstrapTemplate`, …) | **No** |
 | `static_dirs=` on `pn.serve` | **No** |
 
@@ -321,13 +323,14 @@ Stated as questions, not decisions:
 2. **P&L is colorless** on a trading surface (§1, §4).
 3. **Chart and chat share no palette.** `#26a69a`/`#ef5350` are orphan constants; nothing else
    in the app knows those colors exist.
-4. **No dark theme**, on a tool used against dark charting software.
+4. ~~**No dark theme**, on a tool used against dark charting software.~~ **Closed 2026-09-02:**
+   `CLAUDIA_THEME` default + `?theme=` per-tab override (`ui-customisation-reference.md` §2.1).
 5. **No page chrome** — no header, no branding, no place to put controls that are not
    conversation.
 6. **Chat-vs-chart split is unset** — a bare `pn.Row` with no ratio, and tabs were never
    compared side-by-side.
-7. **`Rerun` / `Undo` / `Clear` are exposed** on an interface where a message can stage a live
-   order.
+7. ~~**`Rerun` / `Undo` / `Clear` are exposed** on an interface where a message can stage a live
+   order.~~ **Closed 2026-09-02:** hidden, Send only (`ui-customisation-reference.md` §1).
 8. **`claudia-logo.png` is dead weight** — 1.1 MB, unreferenced, unservable.
 
 ---
@@ -356,9 +359,11 @@ using? Worth a five-minute live check before building the Row-pair workaround.
 
 ### 8.3 Adopt `pn.extension(design=..., theme='dark')`
 
-ClaudIA calls `pn.extension()` **nowhere**, so this is a new global call — it is also the
-documented prerequisite for `notifications=True`, which the buttons research already wants.
-Dark suits a trading surface used beside TradingView.
+*(Written when ClaudIA called `pn.extension()` nowhere; the call exists since 2026-08-04.)*
+**Theme: done 2026-09-02, per session and deliberately NOT on this call** — Panel's
+`config.theme` getter reads the global slot before the `?theme=` session argument, so a
+global default would kill the URL override (`ui-customisation-reference.md` §3.1). What this
+section still holds open is `design=`. Dark suits a trading surface used beside TradingView.
 **Cost:** one call, then re-smoke every screen. **Open questions:** which design — Bootstrap,
 Material, or Native? Does a global design change the already-shipped Button `color=` semantics?
 Note the migration plan flagged a **Panel 2.0 / 3.0 API transition** (2.0 targeted Q2 2026,
@@ -378,7 +383,10 @@ that or build a thin layer above it?
 
 A template gives header, sidebar, main and modal. The sidebar is the natural home for the
 status dots and the chart controls, pulling non-conversation UI out of the chat column; the
-modal is the right place for destructive confirms.
+modal is the right place for destructive confirms. **Measured 2026-09-02:** the Fast
+template's built-in `theme_toggle` is a page reload (`panel/template/fast/js/fast_template.js:39-49`),
+which in ClaudIA is a new session — it must be hidden or labelled as such
+(`ui-customisation-reference.md` §2.1).
 **Cost:** the largest single change — the layout root is rewritten and every smoke re-run.
 **Open questions:** which template (`FastListTemplate` and `BootstrapTemplate` are the usual
 candidates)? Does moving the chart into a sidebar/main split conflict with wanting it large?
@@ -398,6 +406,9 @@ Fonts, bubble treatment, avatars — all via `stylesheets=[':host …', ':host *
 makes iteration slow, and everything above changes what it should look like.
 **Open question:** how much of the stock chat chrome (`Rerun`/`Undo`/`Clear`, like buttons,
 timestamps) should simply be turned off via §4's parameters instead of styled?
+**Partly answered 2026-09-02:** `Rerun`/`Undo`/`Clear` and the reaction icons are off via
+parameters, no CSS (`ui-customisation-reference.md` §1); timestamps and the copy icon stay,
+listed in its §4 menu.
 
 ### Not recommended
 

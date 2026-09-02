@@ -18,6 +18,8 @@
 | `CLAUDIA_DOCS_PATH` | optional | Path to context.md / principles.md (default: `docs/`) |
 | `CLAUDIA_DB_PATH` | optional | ClaudIA SQLite DB path (default: `data/claudia.db`) |
 | `CLAUDIA_VOICE_ENABLED` | optional | Reserved — TTS output not yet implemented |
+| `CLAUDIA_THEME` | optional | Panel theme for every session: `default` (light) or `dark` (default: `default`). `?theme=dark` / `?theme=default` on the URL overrides it per tab. Bad values are logged and skipped. `docs/panel/ui-customisation-reference.md` §2.1 |
+| `CLAUDIA_USER_NAME` | optional | Author label on your own chat messages (default: `User`). Label only — nothing downstream reads it. `docs/panel/ui-customisation-reference.md` §2.3 |
 | `FIRECRAWL_API_KEY` | optional | Firecrawl API key — enables `firecrawl_search` and `firecrawl_crawl` tools; keyless free tier works without it (rate-limited) |
 | `GDRIVE_WEB_DOCS_FOLDER_ID` | optional | Drive folder for `firecrawl_crawl` saved web docs (`web_docs/` subfolder of root if unset) |
 | `CRAWL4AI_PROFILES_DIR` | optional | Directory for Crawl4AI browser login profiles (default: `~/.ibkr_core/crawl4ai_profiles`); used by `ibkr_core_mcp/scrape_fallback.py` both as the Firecrawl fallback *and* as the `fetch_page` tool's direct route. **This is what makes paywalled sites (FT, WSJ, NYT) return full articles.** Create one per domain with `python -m ibkr_core_mcp.scrape_fallback create-profile <url>` — interactive, needs a real terminal. |

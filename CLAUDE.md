@@ -15,6 +15,7 @@ claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_f
 claudia/panel_pinescript.py — Pine-fence copy (real clipboard) / inject buttons
                               (matches pine | pinescript | pine-script, any case)
 claudia/panel_chart.py      — external HoloViews candlestick chart pane (STK, cache-backed)
+claudia/panel_theme.py      — session theme (CLAUDIA_THEME + ?theme=), user label, ClaudIA's avatar
 claudia/dashboard_data.py   — live dashboard: pure data (ledger, positions, realised windows), no panel import
 claudia/dashboard_poller.py — live dashboard: process-wide 15s poller caching one DashboardSnapshot
 claudia/panel_dashboard.py  — live dashboard: KPI strip + Tabs(Chart/Positions/Orders/P&L), no IBKR and no SQL
@@ -113,7 +114,7 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (1,577 tests as of 2026-08-13)
+pytest        # full suite — all unit, no IBKR gateway needed (1,601 tests as of 2026-09-02)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
@@ -265,6 +266,12 @@ the fix that established this (75,480 → 2,910 tokens/session).
   `docs/connectivity.md` § A borrowed session / § Runbook
 - Panel implementation (serving model, session lifecycle, MessageSink seam, widget gotchas,
   headless button testing): `docs/panel/panel-reference.md`
+- **UI customisation** (what is set and how to change it — theme default + per-tab URL
+  override, ClaudIA's avatar, user label, Send-only footer, no reaction icons; the costed menu
+  of next easy changes; phase-2 candidates): `docs/panel/ui-customisation-reference.md`.
+  The theme is set **per session**, never on `pn.extension()` — a global theme silences the
+  `?theme=` override (Panel reads the global slot first). Panel's only built-in theme switch
+  (Fast template) is a page reload, i.e. a new ClaudIA session — do not add it as a "toggle".
 - Panel UI design & styling (no-styling baseline, shadow-DOM constraint, scraped styling
   surface, proposed restyle direction): `docs/panel/ui-design-reference.md`
 - Panel component model (object taxonomy, the real class hierarchy, the Param foundation,
