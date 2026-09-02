@@ -35,6 +35,7 @@ hearts, and a menu of other easy changes. Decisions taken in the same session:
 | Footer buttons | Send only (Stop replaces it while a reply streams) | [`panel_app.py:760-762`](../../claudia/panel_app.py#L760-L762) `show_rerun/undo/clear=False` | — | delete the three lines |
 | Input box | `ChatAreaInput`, 3 rows growing to 10, placeholder "Ask ClaudIA…", Enter sends | [`panel_app.py:759`](../../claudia/panel_app.py#L759) | — | delete `widgets=` |
 | Reaction icons | off on every message | [`panel_app.py:763`](../../claudia/panel_app.py#L763) `message_params={"show_reaction_icons": False}` | — | delete the line |
+| Intro card (added later on 2026-09-02) | the opening bubble is the standing portrait over "ClaudIA is ready — loading…"; `_init_session` updates the **same message** in place to "— connected to IBKR." / "— IBKR not connected." (or "session init failed"), **no earlier than 3 s after send** (`_INTRO_MIN_SECONDS` — an offline IBKR answers in ~1 s and the portrait would only flicker; init itself is never delayed) | `panel_theme.intro_card`, `claudia/assets/claudia-standing.jpg` (320×480, 37 KB, embedded once per session); `_settle_intro` in `panel_app._build_chat_app` | — | delete the asset (plain text, one warning) |
 
 ### 1.1 Live smoke, 2026-09-02 (IBKR offline, TradingView not running)
 
@@ -54,7 +55,12 @@ tiles read `—`):
 | KPI `Number` tiles inherit the theme colour | ✅ |
 | `Tabulator` under dark | ⚠ **light skin on a dark page** — a white block; header text legible, body empty (offline). Not changed in phase 1; `theme="midnight"` is the one-line fix in §4, to be judged with data in the table |
 | Chart pane under dark | **not verified** — cache miss (`AAPL_1D_6M_2026-09-02`, IBKR offline). Source says `pn.pane.HoloViews` applies Bokeh's dark theme (§3.1); confirm at the next connected session |
+| Intro card (second smoke, light theme) | ✅ portrait over the loading line at ~1 s (`…-intro-loading.png`); same bubble reads "— IBKR not connected." after init (`…-intro-settled.png`). The first cut had no minimum display time and the card had already settled at the first capture (`…-intro-settled-no-min.png`) — hence the 3 s floor |
 | Transient: an empty bubble with a blank avatar ~1s after load | Expected — the opening-status message streaming before its text arrives; it fills in (`…-dark-initialising.png` vs `…-dark.png`) |
+
+**Light is the chosen default** (user, 2026-09-02: dark is "secondary for now", to be used
+once it looks better — the tables still wear the light skin under dark, §1.1). Nothing to
+set: an unset `CLAUDIA_THEME` is light.
 
 **Deliberately not on `pn.extension(...)`:** `theme=`. See §3.1 — a global theme would
 silence the URL override. The guard is
@@ -254,6 +260,19 @@ Cost: **S** = one parameter or line, **M** = one function plus a test, **L** = i
 
 ## 5. Phase 2 candidates, with their real cost
 
+**Next up, by user request (2026-09-02) — layout, not styling:**
+
+- **Chat input pinned to the bottom of the chat pane** (VS Code style) and **the KPI strip
+  pinned at the top** while the conversation scrolls. Today the page itself grows with the
+  messages, so the input row drifts down and the strip scrolls away. Panel's `ChatInterface`
+  already scrolls its feed internally (`chat_interface.css`: `.chat-feed-log { max-height:
+  calc(100% - 75px) }`) and keeps the input below it — **but only when the component has a
+  bounded height**. The likely fix is sizing, not CSS: give the chat `sizing_mode="stretch_both"`
+  inside a column that is itself bounded by the viewport (the root is already `stretch_both`;
+  the intermediate `pn.Column` around dots + chat is not), so the feed scrolls inside the pane,
+  the input stays put, and the page never scrolls — which pins the strip for free. Needs a live
+  look at the intermediate Column and at the dashboard tabs' height on a short window. Cost: M.
+
 1. **A page template** (`FastListTemplate`): header with logo + title, a sidebar for the status
    dots and the screenshot upload (pulling non-conversation UI out of the chat column), a
    modal for destructive confirms. Cost: the layout root becomes a template, the positional
@@ -270,7 +289,8 @@ Cost: **S** = one parameter or line, **M** = one function plus a test, **L** = i
 4. **Screenshot gallery** — before/after captures per phase in `docs/panel/screenshots/`
    (git-ignored; register each in its README with the account-data column filled honestly).
 5. **Status dot labels** (§4, first row) — the most-asked "which dot is which" gap.
-6. **Intro / "connected" card** (user idea, 2026-09-02): show the standing portrait
+6. ~~**Intro / "connected" card**~~ **Shipped 2026-09-02, same day** — see the §1 table row.
+   Original note, kept for the reasoning: show the standing portrait
    (`~/Documents/Claudia_docs/claudia_standing.png`, to be resized to ~480 px tall and stored as
    `claudia/assets/claudia-standing.png`) once per session. Recommended shape: the opening
    "ClaudIA is ready…" bubble becomes a `Column(Image, Markdown)` and its `object` is updated

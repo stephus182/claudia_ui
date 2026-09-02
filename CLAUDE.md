@@ -114,7 +114,7 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (1,601 tests as of 2026-09-02)
+pytest        # full suite — all unit, no IBKR gateway needed (1,610 tests as of 2026-09-02)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
