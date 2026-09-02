@@ -32,10 +32,12 @@ def restore_default_avatars():
 
 @pytest.fixture
 def restore_panel_theme():
-    """Put pn.config.theme back — the applier writes the global slot when no Document is current."""
-    old = pn.config.theme
+    """Restore Panel's *global* theme slot (`_theme_`, None at import) — with no Document
+    current the applier writes it, and leaving it truthy would silence Panel's own `?theme=`
+    fallback for the rest of the process."""
+    old = pn.config._theme_
     yield
-    pn.config.theme = old
+    pn.config._theme_ = old
 
 
 # ── resolve_theme ─────────────────────────────────────────────────────────────
@@ -86,6 +88,14 @@ def test_resolve_theme_invalid_env_var_warns_and_falls_back(caplog):
     assert "bogus" in warnings[0].getMessage()
 
 
+def test_resolve_theme_undecodable_url_argument_is_skipped_not_fatal(caplog):
+    """`?theme=%FF` is not UTF-8. It runs on the first line of the session factory, so it
+    must be logged and skipped like any other bad value — never take the session down."""
+    with caplog.at_level(logging.WARNING, logger="claudia.panel_theme"):
+        assert panel_theme.resolve_theme("dark", {"theme": [b"\xff"]}) == "dark"
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
 def test_resolve_theme_invalid_url_argument_falls_back_to_env_default(caplog):
     """A typo in the URL lands on the configured default, not on light."""
     with caplog.at_level(logging.WARNING, logger="claudia.panel_theme"):
@@ -101,6 +111,23 @@ def test_apply_session_theme_sets_panel_config(monkeypatch, restore_panel_theme)
     monkeypatch.setenv("CLAUDIA_THEME", "dark")
     assert panel_theme.apply_session_theme(session_args={}) == "dark"
     assert pn.config.theme == "dark"
+
+
+def test_apply_session_theme_writes_the_session_slot_not_the_global_one(monkeypatch):
+    """The mechanism the whole design rests on: with a session Document current the value
+    lands in Panel's per-session slot and the process-wide slot is untouched — a global
+    value would silence `?theme=` for every other session."""
+    from bokeh.document import Document
+    from panel.io.state import set_curdoc
+
+    monkeypatch.setenv("CLAUDIA_THEME", "dark")
+    global_before = pn.config._theme_
+    doc = Document()
+    with set_curdoc(doc):
+        assert panel_theme.apply_session_theme(session_args={}) == "dark"
+        assert pn.config.theme == "dark"
+        assert pn.config._session_config[doc]["theme"] == "dark"
+    assert pn.config._theme_ == global_before
 
 
 def test_apply_session_theme_url_wins_over_env(monkeypatch, restore_panel_theme):
@@ -160,8 +187,20 @@ def test_register_claudia_avatar_makes_claudia_messages_carry_the_image(
     assert panel_theme.register_claudia_avatar(avatar) is True
     # Sent exactly the way panel_sink / panel_app send: user name, no avatar argument.
     msg = pn.chat.ChatMessage("hi", user="ClaudIA")
-    assert msg.avatar == str(avatar)
+    assert msg.avatar == _TINY_PNG  # the bytes, read once at registration
     assert isinstance(msg._render_avatar(), pn.pane.Image)
+
+
+def test_register_claudia_avatar_survives_braces_in_the_checkout_path(tmp_path, restore_default_avatars):
+    """Panel runs `.format(dist_path=…)` on a *string* avatar (panel/chat/utils.py), so a
+    path containing `{` or `}` would raise KeyError on every message. Registering the bytes
+    sidesteps that — and reads the file once instead of per message."""
+    folder = tmp_path / "a{b}c"
+    folder.mkdir()
+    avatar = folder / "claudia-avatar.png"
+    avatar.write_bytes(_TINY_PNG)
+    assert panel_theme.register_claudia_avatar(avatar) is True
+    assert isinstance(pn.chat.ChatMessage("hi", user="ClaudIA")._render_avatar(), pn.pane.Image)
 
 
 def test_register_claudia_avatar_does_not_touch_other_authors(tmp_path, restore_default_avatars):
@@ -231,12 +270,14 @@ def test_every_claudia_author_label_carries_the_avatar(tmp_path, restore_default
     avatar.write_bytes(_TINY_PNG)
     panel_theme.register_claudia_avatar(avatar)
     for author in panel_theme.CLAUDIA_AUTHORS:
-        assert pn.chat.ChatMessage("hi", user=author).avatar == str(avatar), author
+        assert pn.chat.ChatMessage("hi", user=author).avatar == _TINY_PNG, author
 
 
 def test_claudia_authors_covers_every_label_used_in_the_package():
     """Structural guard over the CLASS: a new `user=\"ClaudIA — …\"` send site anywhere in
-    claudia/ must be added to CLAUDIA_AUTHORS, or its bubbles silently lose the avatar."""
+    claudia/ must be added to CLAUDIA_AUTHORS, or its bubbles silently lose the avatar.
+    Sees literal `user="…"` keyword arguments only — an author passed through a variable
+    (order_flow's `send_status(text, author)`, all "System" today) is outside its reach."""
     import re
     from pathlib import Path
 

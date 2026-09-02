@@ -116,9 +116,11 @@ _DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))
 _VERSIONS_PATH = _DOCS_PATH / "versions"
 _DB_PATH = Path(os.environ.get("CLAUDIA_DB_PATH", "data/claudia.db"))
 _PANEL_PORT = int(os.environ.get("CLAUDIA_PANEL_PORT", "8001"))
-# Minimum time the intro portrait stays in the opening bubble. An offline IBKR answers in
-# about a second, which would reduce the intro to a flicker; init itself is never
-# delayed — only the in-place settle of that one message is.
+# Floor on how soon the intro portrait may be settled, measured from the message's
+# construction in the session factory — i.e. server-side, before the page has loaded, so
+# on-screen time is this minus page-load latency (~0.5 s on localhost). An offline IBKR
+# answers in about a second, which would otherwise reduce the intro to a flicker; init
+# itself is never delayed — only the in-place settle of that one message is.
 _INTRO_MIN_SECONDS = 3.0
 
 # ── Module state & process-level singletons ───────────────────────────────────
@@ -888,7 +890,18 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             if not _session["closed"]:
                 intro.object = text
 
-        _session["intro_task"] = asyncio.create_task(_later())
+        task = asyncio.create_task(_later())
+        task.add_done_callback(_log_settle_outcome)
+        _session["intro_task"] = task
+
+    def _log_settle_outcome(task: asyncio.Task[None]) -> None:
+        """Surface a failed deferred settle in the log instead of as an unretrieved-exception
+        warning at garbage collection; a cancelled one (superseded) is expected and silent."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.warning("Intro card settle failed (session %s): %r", session_id, exc)
 
     # Task 8.1: standalone screenshot upload. ChatInterface's native file tab
     # unpacks its upload wrapper before the callback sees it (mime/filename
@@ -944,7 +957,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             # Echo the screenshot into the feed (the standalone widget renders
             # no message of its own), then hand the agent the Anthropic vision
             # block — parity with the removed app.py.
-            chat.send(pn.pane.Image(io.BytesIO(data), width=400), user="User", respond=False)
+            # Signed with the same label as typed messages (CLAUDIA_USER_NAME), not a
+            # hard-coded "User" — one human, one author label.
+            chat.send(pn.pane.Image(io.BytesIO(data), width=400), user=chat.user, respond=False)
             block = {
                 "type": "image",
                 "source": {
@@ -1221,8 +1236,9 @@ def _build_session_root() -> pn.Column:
     dots and the dashboard ride the same 5-second callback: one timer, two synchronous
     cache reads, no I/O on the session's event loop.
     """
-    # First, while this session's Document is current: Panel scopes the theme to the
-    # session here, which is what lets `?theme=` override CLAUDIA_THEME (panel_theme.py).
+    # Anywhere in the factory works — the session Document is current throughout and
+    # Panel reads the theme at render time; what matters is that it is set HERE, per
+    # session, which is what lets `?theme=` override CLAUDIA_THEME (panel_theme.py).
     apply_session_theme()
     chat = _build_chat_app()
     indicators = _make_status_indicators()

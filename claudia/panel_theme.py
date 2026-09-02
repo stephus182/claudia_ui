@@ -84,7 +84,11 @@ def resolve_theme(env_value: str | None, session_args: Mapping[str, Any] | None)
         values = session_args.get("theme")
         if values:
             first = values[0]
-            url_raw = first.decode("utf-8") if isinstance(first, bytes) else str(first)
+            # errors="replace": `?theme=%FF` is not UTF-8 and this runs on the first line of
+            # the session factory — a bad byte is a bad value to skip, not a crash.
+            url_raw = (
+                first.decode("utf-8", errors="replace") if isinstance(first, bytes) else str(first)
+            )
     for source, raw in (("?theme", url_raw), ("CLAUDIA_THEME", env_value)):
         candidate = _normalise(raw)
         if candidate is None:
@@ -143,8 +147,13 @@ def register_claudia_avatar(path: Path = CLAUDIA_AVATAR_PATH) -> bool:
             "(e.g. `sips -Z 128 <src> --out %s`)",
             path, size // 1024, path,
         )
+    # The bytes, not the path: Panel runs `.format(dist_path=…)` on a *string* avatar
+    # (panel/chat/utils.py `avatar_lookup`), so a checkout path containing `{`/`}` would
+    # raise on every message; bytes are in Panel's Avatar union, and the file is read once
+    # here instead of once per message.
+    data = path.read_bytes()
     for author in CLAUDIA_AUTHORS:
-        pn.chat.ChatMessage.default_avatars[author] = str(path)
+        pn.chat.ChatMessage.default_avatars[author] = data
     return True
 
 
@@ -156,7 +165,9 @@ def intro_card(
     The caller keeps the returned ``ChatMessage`` and later sets its ``object`` to the
     settled text, so the portrait plays once per session and the bubble ends as the ready
     line — no overlay (Panel documents updating a sent message in place); the caller holds
-    the card for a minimum display time so a fast init does not reduce it to a flicker.
+    the card for a minimum time (measured from the message's construction on the server, so
+    on-screen time is that minus page-load latency) so a fast init does not reduce it to a
+    flicker.
     Without the asset the plain string is returned, so the feed's own renderer handles it.
     """
     if not path.is_file():

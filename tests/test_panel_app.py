@@ -1532,7 +1532,7 @@ def test_import_registers_claudia_avatar_after_the_extension_call():
     # Line-anchored: the comment above the call also says "pn.extension(".
     assert source.index('\npn.extension("') < source.index("\nregister_claudia_avatar()")
     registered = pn.chat.ChatMessage.default_avatars.get("ClaudIA")
-    expected = str(CLAUDIA_AVATAR_PATH) if CLAUDIA_AVATAR_PATH.is_file() else None
+    expected = CLAUDIA_AVATAR_PATH.read_bytes() if CLAUDIA_AVATAR_PATH.is_file() else None
     assert registered == expected
 
 
@@ -2069,11 +2069,13 @@ async def _wait_until(predicate, timeout=_CALLBACK_TIMEOUT):
 
 
 @pytest.mark.asyncio
-async def test_image_upload_reaches_agent_as_vision_block():
+async def test_image_upload_reaches_agent_as_vision_block(monkeypatch):
     """Driving the FileInput's public params (mime_type/filename first, value
     last — the watcher keys on value) must deliver the fixed caption plus an
     Anthropic base64 vision block whose data round-trips to the raw bytes, echo
-    the image into the feed, and reset the widget for the next upload."""
+    the image into the feed — signed with the configured display name, the same
+    label as typed messages — and reset the widget for the next upload."""
+    monkeypatch.setenv("CLAUDIA_USER_NAME", "Steph")
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -2109,7 +2111,8 @@ async def test_image_upload_reaches_agent_as_vision_block():
     # The screenshot is echoed into the feed (the standalone widget renders no
     # message of its own), and the server-side reset also cleared the metadata
     # so re-uploading the same file re-fires the watcher.
-    assert any(isinstance(m.object, pn.pane.Image) for m in chat.objects)
+    echoed = [m for m in chat.objects if isinstance(m.object, pn.pane.Image)]
+    assert echoed and all(m.user == "Steph" for m in echoed)
     assert fi.mime_type is None and fi.filename is None
 
 

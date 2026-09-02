@@ -43,8 +43,9 @@ Every visual parameter in the entire application:
 - three hex constants in [`panel_chart.py:40-42`](../../claudia/panel_chart.py#L40-L42) —
   `#26a69a` / `#ef5350` / `#666`
 
-Also: `claudia/assets/claudia-logo.png` (1.1 MB) exists but is **referenced by no code**, and
-there is no `static_dirs=` to serve it — Chainlit-era residue, not a live asset.
+Also: `claudia/assets/claudia-logo.png` (1.4 MB since 2026-09-02, when the user's new logo replaced
+the 1.1 MB original) exists but is **referenced by no code**, and there is no `static_dirs=` to
+serve it — reserved for the phase-2 header (`ui-customisation-reference.md` §5).
 
 ### What the baseline actually looks like
 
@@ -331,7 +332,7 @@ Stated as questions, not decisions:
    compared side-by-side.
 7. ~~**`Rerun` / `Undo` / `Clear` are exposed** on an interface where a message can stage a live
    order.~~ **Closed 2026-09-02:** hidden, Send only (`ui-customisation-reference.md` §1).
-8. **`claudia-logo.png` is dead weight** — 1.1 MB, unreferenced, unservable.
+8. **`claudia-logo.png` is dead weight** — 1.4 MB (1.1 MB until 2026-09-02), unreferenced, unservable.
 
 ---
 

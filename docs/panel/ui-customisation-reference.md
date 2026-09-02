@@ -15,9 +15,10 @@ Two rules govern this doc (same as its companion):
    Firecrawl on **2026-09-02** (site docs at that date: **panel v1.9.4**; installed: **1.9.3**,
    `pip show panel`). The 1.9.4 delta (§6, releases page) is mostly Tabulator/ESM/OAuth fixes;
    the three entries that touch this work are "Fix `Feed` rendering all objects at once"
-   (#8667 — `ChatFeed` builds on `layout.Feed`) and two Fast-theme fixes (#8704, #8652), none
+   (#8667 — `ChatFeed` renders its log in a `layout.Feed`, `feed.py:241`) and two Fast-theme fixes (#8704, #8652), none
    of which changes a parameter used here. Where the docs are silent, the installed source is cited by
-   path and line, and the finding was executed, not read.
+   path and line, and the finding was executed, not read. **Our own code is cited by symbol**, not by
+   line — every line anchor in this doc rotted twice on its first day; `grep -n` finds a symbol.
 2. **Simple first.** Phase 1 uses Panel parameters only — no CSS, no template, no custom
    component. Anything needing more is listed in §4/§5 with its real cost, not built.
 
@@ -30,14 +31,14 @@ hearts, and a menu of other easy changes. Decisions taken in the same session:
 
 | Setting | Value | Where | Env var | Revert |
 |---|---|---|---|---|
-| Theme default | light unless `CLAUDIA_THEME=dark` | [`panel_theme.py:100`](../../claudia/panel_theme.py#L100) `apply_session_theme`, called first thing in [`panel_app.py:1226`](../../claudia/panel_app.py#L1226) | `CLAUDIA_THEME` | unset the var |
-| Theme per tab | `?theme=dark` / `?theme=default` on the URL wins over the env var | [`panel_theme.py:69`](../../claudia/panel_theme.py#L69) `resolve_theme` | — | drop the query parameter |
-| ClaudIA's avatar | `claudia/assets/claudia-avatar.png`, registered in `ChatMessage.default_avatars` | [`panel_theme.py:125`](../../claudia/panel_theme.py#L125), called at import in [`panel_app.py:105`](../../claudia/panel_app.py#L105) | — | delete the file (letter fallback + one warning) |
-| Human's author label | `CLAUDIA_USER_NAME`, else `User` | [`panel_theme.py:119`](../../claudia/panel_theme.py#L119); applied at [`panel_app.py:768`](../../claudia/panel_app.py#L768) | `CLAUDIA_USER_NAME` | unset the var |
-| Footer buttons | Send only (Stop replaces it while a reply streams) | [`panel_app.py:770-772`](../../claudia/panel_app.py#L770-L772) `show_rerun/undo/clear=False` | — | delete the three lines |
-| Input box | `ChatAreaInput`, 3 rows growing to 10, placeholder "Ask ClaudIA…", Enter sends | [`panel_app.py:769`](../../claudia/panel_app.py#L769) | — | delete `widgets=` |
-| Reaction icons | off on every message | [`panel_app.py:773`](../../claudia/panel_app.py#L773) `message_params={"show_reaction_icons": False}` | — | delete the line |
-| Intro card (added later on 2026-09-02) | the opening bubble is the standing portrait over "ClaudIA is ready — loading…"; `_init_session` updates the **same message** in place to "— connected to IBKR." / "— IBKR not connected." (or "session init failed"), **no earlier than 3 s after send** (`_INTRO_MIN_SECONDS` — an offline IBKR answers in ~1 s and the portrait would only flicker; init itself is never delayed) | `panel_theme.intro_card`, `claudia/assets/claudia-standing.jpg` (320×480, 37 KB, embedded once per session); `_settle_intro` in `panel_app._build_chat_app` | — | delete the asset (plain text, one warning) |
+| Theme default | light unless `CLAUDIA_THEME=dark` | `panel_theme.apply_session_theme`, called in `panel_app._build_session_root` | `CLAUDIA_THEME` | unset the var |
+| Theme per tab | `?theme=dark` / `?theme=default` on the URL wins over the env var | `panel_theme.resolve_theme` | — | drop the query parameter |
+| ClaudIA's avatar | `claudia/assets/claudia-avatar.png`, registered in `ChatMessage.default_avatars` | `panel_theme.register_claudia_avatar`, called at import in `panel_app` right after `pn.extension(...)` | — | delete the file (letter fallback + one warning) |
+| Human's author label (typed messages and screenshot uploads alike) | `CLAUDIA_USER_NAME`, else `User` | `panel_theme.user_display_name`; applied as `user=` in `panel_app._build_chat_app` | `CLAUDIA_USER_NAME` | unset the var |
+| Footer buttons | Send only (Stop replaces it while a reply streams) | `show_rerun/undo/clear=False` in `panel_app._build_chat_app` | — | delete the three lines |
+| Input box | `ChatAreaInput`, 3 rows growing to 10, placeholder "Ask ClaudIA…", Enter sends | `widgets=` in `panel_app._build_chat_app` | — | delete `widgets=` |
+| Reaction icons | off on every message | `panel_app._build_chat_app`: `message_params={"show_reaction_icons": False}` | — | delete the line |
+| Intro card (added later on 2026-09-02) | the opening bubble is the standing portrait over "ClaudIA is ready — loading…"; `_init_session` updates the **same message** in place to "— connected to IBKR." / "— IBKR not connected." (or "session init failed"), **no earlier than 3 s after the message was built** (`_INTRO_MIN_SECONDS`, measured server-side in the factory, so on-screen time is that minus page-load latency, ~0.5 s on localhost — an offline IBKR answers in ~1 s and the portrait would only flicker; init itself is never delayed) | `panel_theme.intro_card`, `claudia/assets/claudia-standing.jpg` (320×480, 37 KB, embedded once per session); `_settle_intro` in `panel_app._build_chat_app` | — | delete the asset (plain text, one warning) |
 
 ### 1.1 Live smoke, 2026-09-02 (IBKR offline, TradingView not running)
 
@@ -59,6 +60,16 @@ tiles read `—`):
 | Chart pane under dark | **not verified** — cache miss (`AAPL_1D_6M_2026-09-02`, IBKR offline). Source says `pn.pane.HoloViews` applies Bokeh's dark theme (§3.1); confirm at the next connected session |
 | Intro card (second smoke, light theme) | ✅ portrait over the loading line at ~1 s (`…-intro-loading.png`); same bubble reads "— IBKR not connected." after init (`…-intro-settled.png`). The first cut had no minimum display time and the card had already settled at the first capture (`…-intro-settled-no-min.png`) — hence the 3 s floor |
 | Transient: an empty bubble with a blank avatar ~1s after load | Expected — the opening-status message streaming before its text arrives; it fills in (`…-dark-initialising.png` vs `…-dark.png`) |
+
+**Review record, 2026-09-02 (self-review + an independent reviewer on the same diff).** Found
+and fixed the same day: the avatar skipped every suffixed ClaudIA label (proposals,
+PineScript); screenshot uploads still signed as `User`; a non-UTF-8 `?theme=%FF` would have
+crashed session build; the theme test pinned Panel's global slot rather than the session slot
+(now asserted under a real `Document`); a checkout path containing `{`/`}` would have broken
+every message (the avatar is registered as bytes now); two deferred settles could race; the
+3 s floor was described as on-screen time when it is measured server-side; the 1.9.4 note was
+too strong; `rows` default is 1 in the installed package, not 2; and every line-number citation
+had rotted — replaced by symbol citations.
 
 **Light is the chosen default** (user, 2026-09-02: dark is "secondary for now", to be used
 once it looks better — the tables still wear the light skin under dark, §1.1). Nothing to
@@ -117,7 +128,9 @@ Drop a **small** PNG at `claudia/assets/claudia-avatar.png`. The committed file 
 user's chatbot portrait (source 1254×1254, resized to 160 px on 2026-09-02 — the smoke
 earlier that day ran on a temporary copy of the logo). Panel embeds a local path as
 base64 in every message model (`panel/chat/utils.py` `build_avatar_pane` →
-`pn.pane.Image`), so a 1 MB file adds ~1.3 MB (base64) to every message. `register_claudia_avatar` warns above
+`pn.pane.Image`), so a 1 MB file adds ~1.3 MB (base64) to every message. `register_claudia_avatar`
+registers the file's **bytes** (read once) rather than the path: Panel `.format()`s a string avatar,
+so a checkout path containing `{` or `}` would break every message. `register_claudia_avatar` warns above
 200 KB. To shrink a source image on macOS:
 
 ```bash
@@ -126,14 +139,14 @@ sips -Z 128 path/to/source.png --out claudia/assets/claudia-avatar.png
 
 The registration is Panel's documented in-place update of `ChatMessage.default_avatars`
 (ChatMessage reference: "You can modify, but not replace the dictionary"). Keys are matched
-after `to_alpha_numeric` (`panel/chat/utils.py:23-29` — non-alphanumerics stripped,
+after `to_alpha_numeric` (`panel/chat/utils.py:23-29` — `\W` stripped, so underscores stay,
 lower-cased), so `"ClaudIA"` covers `user="ClaudIA"` in any case — **but each suffixed label
 is its own key**: `"ClaudIA — Order Proposal"`, `"— Cancel Proposal"`, `"— Modify Proposal"`
 and `"— PineScript"` (the proposal and PineScript renders) are registered one by one from
 `panel_theme.CLAUDIA_AUTHORS`, and a source-scan test fails if a new `user="ClaudIA — …"`
 literal appears anywhere in `claudia/` without an entry. (The first cut registered `"claudia"`
 only and the proposal bubbles fell back to the letter — caught in the same-day review.) This
-is why no send site passes `avatar=`: [`panel_sink.py:154`](../../claudia/panel_sink.py#L154),
+is why no send site passes `avatar=`: `PanelMessageSink.send_message` (`panel_sink.py`),
 the opening messages and the renders all inherit it from the author label.
 
 The 1.4 MB `claudia/assets/claudia-logo.png` (1254×1254, replaced 2026-09-02 with the user's
@@ -150,10 +163,11 @@ Blank or unset → `User`. The value is a label only; nothing downstream (store,
 
 ### 2.4 Change the input box
 
-`ChatAreaInput` parameters (ChatAreaInput reference, §6): `rows` (default 2), `max_rows`
+`ChatAreaInput` parameters (ChatAreaInput reference, §6): `rows` (default **1** in the installed
+`panel/chat/input.py:55` — the reference page says 2), `max_rows`
 (default 10, with `auto_grow=True`), `placeholder`, `enter_sends` (`False` → Ctrl-Enter
-sends), `resizable`. Edit the `widgets=` line at
-[`panel_app.py:769`](../../claudia/panel_app.py#L769). Passing our own instance keeps
+sends), `resizable`. Edit the `widgets=` line in
+`panel_app._build_chat_app`. Passing our own instance keeps
 Enter-to-send because `ChatInterface` wires auto-send by widget type
 (`panel/chat/interface.py:296-304`).
 
@@ -183,7 +197,7 @@ Each was executed against the installed package, not inferred from prose.
 
 `panel/config.py` (1.9.3): `theme` is **not** in `_config._globals`, so
 `pn.config.theme = x` while `state.curdoc` is set writes `_session_config[curdoc]`
-(`__setattr__`, lines 436-462), and the `theme` getter (line 677) reads that slot first. The
+(`__setattr__`, lines 436-462), and the `theme` getter (`def theme`, line 675) reads that slot first. The
 getter's order is: session slot → global slot (`_theme_`, set by `pn.extension(theme=…)` /
 `pn.config.theme` at import) → `?theme=` in `session_args` → `"default"`. **A global default
 therefore beats the URL parameter**, which is why ClaudIA resolves the precedence itself and
