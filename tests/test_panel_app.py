@@ -1681,6 +1681,50 @@ async def test_opening_bubble_does_not_claim_ready_when_init_fails():
     assert after == "**ClaudIA** — session init failed, see below."
 
 
+def _parent_of(root, node):
+    """The layout that directly holds `node`."""
+    return next(n for n in _iter_tree(root) if node in getattr(n, "objects", []))
+
+
+@pytest.mark.asyncio
+async def test_chat_pane_is_viewport_bound_so_the_input_stays_at_the_bottom():
+    """User request 2026-09-02: the chat box pinned to the bottom of the chat pane and the
+    KPI strip pinned at the top. Both follow from one thing — the chat must be bounded by
+    the viewport instead of growing the page: ChatInterface scrolls its own feed
+    (`.chat-feed-log { max-height: calc(100% - 75px) }`) only when it has a height, so it
+    and the column that holds it must both stretch to the Row's height."""
+    from claudia.panel_app import _build_session_root
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "add_periodic_callback"),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = _build_session_root()
+        chat = _find_chat(root)
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    assert chat.sizing_mode == "stretch_both"
+    chat_column = _parent_of(root, chat)
+    assert isinstance(chat_column, pn.Column)
+    assert chat_column.sizing_mode == "stretch_both"
+    # The status-dot row above the chat must NOT stretch, or it would take half the height.
+    dots_row = chat_column.objects[0]
+    assert isinstance(dots_row, pn.Row)
+    assert dots_row.sizing_mode in (None, "stretch_width", "fixed")
+
+
 @pytest.mark.asyncio
 async def test_opening_bubble_keeps_the_portrait_for_the_minimum_display_time():
     """A fast init (IBKR offline answers in ~1s) must not reduce the intro to a flicker:

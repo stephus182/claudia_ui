@@ -773,6 +773,11 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         show_undo=False,
         show_clear=False,
         message_params={"show_reaction_icons": False},
+        # Viewport-bound, not page-growing (user request 2026-09-02): with a height of its
+        # own, ChatInterface scrolls its feed internally and keeps the input row at the
+        # bottom; the column holding it stretches too (_build_session_root), so the page
+        # never scrolls and the KPI strip stays at the top for free.
+        sizing_mode="stretch_both",
     )
 
     # store/loader are read by the session-end cleanup consumers (End Session
@@ -1273,6 +1278,9 @@ def _build_session_root() -> pn.Column:
             pn.Column(
                 pn.Row(*indicators.values(), _screenshot_file_input(chat)),
                 chat,
+                # stretch_both here and on the chat: the chat pane is bounded by the
+                # viewport, so the feed scrolls inside it and the input stays put.
+                sizing_mode="stretch_both",
             ),
             dashboard.tabs,
             sizing_mode="stretch_both",

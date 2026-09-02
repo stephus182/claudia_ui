@@ -38,6 +38,7 @@ hearts, and a menu of other easy changes. Decisions taken in the same session:
 | Footer buttons | Send only (Stop replaces it while a reply streams) | `show_rerun/undo/clear=False` in `panel_app._build_chat_app` | — | delete the three lines |
 | Input box | `ChatAreaInput`, 3 rows growing to 10, placeholder "Ask ClaudIA…", Enter sends | `widgets=` in `panel_app._build_chat_app` | — | delete `widgets=` |
 | Reaction icons | off on every message | `panel_app._build_chat_app`: `message_params={"show_reaction_icons": False}` | — | delete the line |
+| Pinned layout (later on 2026-09-02, by user request) | the chat pane is bounded by the viewport: `ChatInterface(sizing_mode="stretch_both")` and `sizing_mode="stretch_both"` on the column holding the dots row + chat. Panel's chat then scrolls its own feed (`.chat-feed-log`, `max-height: calc(100% - 75px)`) and keeps the input row at the bottom; the page never scrolls, so the KPI strip stays at the top for free. **Measured** with 40 long messages at 1500×950 and 1280×680: document height == viewport, feed `scrollHeight` 9,179 px inside a 626 px pane, input row fully inside the viewport | `panel_app._build_chat_app` (`sizing_mode=`) and `_build_session_root` (the inner `pn.Column`) | — | remove both `sizing_mode` arguments (the page grows with the messages again) |
 | Intro card (added later on 2026-09-02) | the opening bubble is the standing portrait over "ClaudIA is ready — loading…"; `_init_session` updates the **same message** in place to "— connected to IBKR." / "— IBKR not connected." (or "session init failed"), **no earlier than 3 s after the message was built** (`_INTRO_MIN_SECONDS`, measured server-side in the factory, so on-screen time is that minus page-load latency, ~0.5 s on localhost — an offline IBKR answers in ~1 s and the portrait would only flicker; init itself is never delayed) | `panel_theme.intro_card`, `claudia/assets/claudia-standing.jpg` (320×480, 37 KB, embedded once per session); `_settle_intro` in `panel_app._build_chat_app` | — | delete the asset (plain text, one warning) |
 
 ### 1.1 Live smoke, 2026-09-02 (IBKR offline, TradingView not running)
@@ -59,6 +60,7 @@ tiles read `—`):
 | `Tabulator` under dark | ⚠ **light skin on a dark page** — a white block; header text legible, body empty (offline). Not changed in phase 1; `theme="midnight"` is the one-line fix in §4, to be judged with data in the table |
 | Chart pane under dark | **not verified** — cache miss (`AAPL_1D_6M_2026-09-02`, IBKR offline). Source says `pn.pane.HoloViews` applies Bokeh's dark theme (§3.1); confirm at the next connected session |
 | Intro card (second smoke, light theme) | ✅ portrait over the loading line at ~1 s (`…-intro-loading.png`); same bubble reads "— IBKR not connected." after init (`…-intro-settled.png`). The first cut had no minimum display time and the card had already settled at the first capture (`…-intro-settled-no-min.png`) — hence the 3 s floor |
+| Pinned layout (third smoke, scratch harness on :8002 serving the real root under the test patches, 40 messages) | ✅ page does not scroll at 1500×950 or 1280×680; input row at the bottom of the viewport; feed scrolls internally and auto-scrolls to the newest message; Positions tab fits at 680 px (`…-layout-pinned-*.png`) |
 | Transient: an empty bubble with a blank avatar ~1s after load | Expected — the opening-status message streaming before its text arrives; it fills in (`…-dark-initialising.png` vs `…-dark.png`) |
 
 **Review record, 2026-09-02 (self-review + an independent reviewer on the same diff).** Found
@@ -284,9 +286,9 @@ Cost: **S** = one parameter or line, **M** = one function plus a test, **L** = i
 
 ## 5. Phase 2 candidates, with their real cost
 
-**Next up, by user request (2026-09-02) — layout, not styling:**
+**Shipped the same evening (2026-09-02) — see the §1 table row; the analysis below was right:**
 
-- **Chat input pinned to the bottom of the chat pane** (VS Code style) and **the KPI strip
+- ~~**Chat input pinned to the bottom of the chat pane**~~ (VS Code style) and **the KPI strip
   pinned at the top** while the conversation scrolls. Today the page itself grows with the
   messages, so the input row drifts down and the strip scrolls away. Panel's `ChatInterface`
   already scrolls its feed internally (`chat_interface.css`: `.chat-feed-log { max-height:
