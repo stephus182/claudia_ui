@@ -102,9 +102,9 @@ parameter is the per-tab override.
 
 ### 2.2 Replace ClaudIA's avatar
 
-Drop a **small** PNG at `claudia/assets/claudia-avatar.png` — **the committed file is a
-placeholder** (a 128 px copy of `claudia-logo.png`, made 2026-09-02 so the path could be
-smoked end to end); overwrite it with the real avatar, same name. Panel embeds a local path as
+Drop a **small** PNG at `claudia/assets/claudia-avatar.png`. The committed file is the
+user's chatbot portrait (source 1254×1254, resized to 160 px on 2026-09-02 — the smoke
+earlier that day ran on a temporary copy of the logo). Panel embeds a local path as
 base64 in every message model (`panel/chat/utils.py` `build_avatar_pane` →
 `pn.pane.Image`), so a 1 MB file is a 1 MB message. `register_claudia_avatar` warns above
 200 KB. To shrink a source image on macOS:
@@ -120,8 +120,9 @@ lower-cased), so the key `"claudia"` covers `user="ClaudIA"`. This is why no sen
 `avatar=`: [`panel_sink.py:154`](../../claudia/panel_sink.py#L154), the opening messages and the
 order-proposal renders all say `user="ClaudIA"` and inherit it.
 
-The 1.1 MB `claudia/assets/claudia-logo.png` (1254×1254) is **not** the avatar; it is reserved
-for a phase-2 header (§5).
+The 1.4 MB `claudia/assets/claudia-logo.png` (1254×1254, replaced 2026-09-02 with the user's
+new logo) is **not** the avatar; it is reserved for a phase-2 header (§5) and must be
+resized before a template embeds it.
 
 ### 2.3 Rename the human
 
