@@ -187,3 +187,34 @@ def test_default_avatar_path_is_inside_the_package_assets_dir():
     """The expected asset location is fixed and next to claudia-logo.png."""
     assert panel_theme.CLAUDIA_AVATAR_PATH.parent.name == "assets"
     assert panel_theme.CLAUDIA_AVATAR_PATH.name == "claudia-avatar.png"
+
+
+# ── intro_card ────────────────────────────────────────────────────────────────
+
+
+def test_intro_card_is_the_portrait_over_the_text_when_the_asset_exists(tmp_path):
+    """The opening bubble carries the standing portrait above the ready text."""
+    portrait = tmp_path / "claudia-standing.jpg"
+    portrait.write_bytes(_TINY_PNG)
+    card = panel_theme.intro_card("**ClaudIA is ready**", path=portrait)
+    assert isinstance(card, pn.Column)
+    image, text = card.objects
+    assert isinstance(image, pn.pane.Image)
+    assert image.object == str(portrait)
+    assert image.height == panel_theme.INTRO_HEIGHT
+    assert isinstance(text, pn.pane.Markdown)
+    assert text.object == "**ClaudIA is ready**"
+
+
+def test_intro_card_falls_back_to_plain_text_without_the_asset(tmp_path, caplog):
+    """No portrait → the plain string, so the feed's own renderer handles it; one warning."""
+    with caplog.at_level(logging.WARNING, logger="claudia.panel_theme"):
+        card = panel_theme.intro_card("**ClaudIA is ready**", path=tmp_path / "nope.png")
+    assert card == "**ClaudIA is ready**"
+    assert any("nope.png" in r.getMessage() for r in caplog.records)
+
+
+def test_intro_asset_path_is_inside_the_package_assets_dir():
+    """Same home as the avatar and the logo."""
+    assert panel_theme.CLAUDIA_INTRO_PATH.parent.name == "assets"
+    assert panel_theme.CLAUDIA_INTRO_PATH.name == "claudia-standing.jpg"

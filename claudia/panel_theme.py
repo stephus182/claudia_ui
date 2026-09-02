@@ -24,6 +24,8 @@ from typing import Any
 
 import panel as pn
 
+from claudia.panel_markdown import safe_markdown
+
 log = logging.getLogger(__name__)
 
 THEMES: tuple[str, ...] = ("default", "dark")
@@ -35,6 +37,13 @@ CLAUDIA_AVATAR_PATH = Path(__file__).parent / "assets" / "claudia-avatar.png"
 AVATAR_SIZE_WARN_BYTES = 200 * 1024
 """A local avatar path is base64-embedded in *every* message model (panel/chat/utils.py
 ``build_avatar_pane`` → ``pn.pane.Image``), so a large file is paid on each message."""
+
+CLAUDIA_INTRO_PATH = Path(__file__).parent / "assets" / "claudia-standing.jpg"
+"""The standing portrait shown in the opening bubble while a session loads (once per session,
+so it may be larger than the avatar — still keep it a JPEG of a few tens of KB)."""
+
+INTRO_HEIGHT = 240
+"""Rendered height of the intro portrait, in CSS px."""
 
 
 def _normalise(value: str | None) -> str | None:
@@ -122,3 +131,23 @@ def register_claudia_avatar(path: Path = CLAUDIA_AVATAR_PATH) -> bool:
         )
     pn.chat.ChatMessage.default_avatars["claudia"] = str(path)
     return True
+
+
+def intro_card(
+    text: str, path: Path = CLAUDIA_INTRO_PATH, height: int = INTRO_HEIGHT
+) -> pn.Column | str:
+    """The opening bubble: the standing portrait over ``text`` while the session loads.
+
+    The caller keeps the returned ``ChatMessage`` and later sets its ``object`` to the
+    settled text, so the portrait plays once per session and the bubble ends as the ready
+    line — no overlay (Panel documents updating a sent message in place); the caller holds
+    the card for a minimum display time so a fast init does not reduce it to a flicker.
+    Without the asset the plain string is returned, so the feed's own renderer handles it.
+    """
+    if not path.is_file():
+        log.warning("Intro portrait not found at %s — plain opening text", path)
+        return text
+    # safe_markdown, not a bare Markdown pane: the one sanctioned construction route
+    # (security audit H-1, tests/test_security_regressions.py) — the text is ours, the rule
+    # is structural.
+    return pn.Column(pn.pane.Image(str(path), height=height), safe_markdown(text))

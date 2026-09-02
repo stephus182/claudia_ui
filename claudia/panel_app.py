@@ -29,6 +29,7 @@ import io
 import logging
 import os
 import signal
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -63,7 +64,12 @@ from claudia.panel_chart import build_chart_pane
 from claudia.panel_dashboard import build_dashboard
 from claudia.panel_markdown import safe_markdown
 from claudia.panel_sink import PanelMessageSink
-from claudia.panel_theme import apply_session_theme, register_claudia_avatar, user_display_name
+from claudia.panel_theme import (
+    apply_session_theme,
+    intro_card,
+    register_claudia_avatar,
+    user_display_name,
+)
 from claudia.session_reporter import generate_session_report
 from claudia.status import ConnectivityChecker, ServiceStatus
 from claudia.tradingview import TradingViewBridge, check_cdp_running, launch_tradingview
@@ -110,6 +116,10 @@ _DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))
 _VERSIONS_PATH = _DOCS_PATH / "versions"
 _DB_PATH = Path(os.environ.get("CLAUDIA_DB_PATH", "data/claudia.db"))
 _PANEL_PORT = int(os.environ.get("CLAUDIA_PANEL_PORT", "8001"))
+# Minimum time the intro portrait stays in the opening bubble. An offline IBKR answers in
+# about a second, which would reduce the intro to a flicker; init itself is never
+# delayed — only the in-place settle of that one message is.
+_INTRO_MIN_SECONDS = 3.0
 
 # ── Module state & process-level singletons ───────────────────────────────────
 
@@ -775,6 +785,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         "init_task": None,
         "closed": False,
         "unsubscribe": None,
+        "intro_task": None,
     }
     _init_done = asyncio.Event()
 
@@ -836,15 +847,40 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             raise  # Panel's callback_exception="summary" still renders the friendly message
 
     chat.callback = _on_user_input
-    chat.send(
-        # Was "gathering your account status…", which stopped being true on 2026-08-05:
-        # the dashboard gathers it, continuously, and this message no longer waits on any
-        # account call. What still follows via _send_opening_status is the local dataset
-        # line, TradingView, and a caveat if either half of IBKR is down.
-        "**ClaudIA is ready** — loading your trade history…",
+    # The opening bubble is the intro card: the standing portrait over the loading line
+    # (user request 2026-09-02, once per session — never on reconnects). _init_session
+    # settles the SAME message in place to the measured IBKR state, so the portrait is
+    # the loading splash and the bubble ends as the ready line.
+    #
+    # Was "gathering your account status…", which stopped being true on 2026-08-05: the
+    # dashboard gathers it, continuously, and this message no longer waits on any account
+    # call. What still follows via _send_opening_status is the local dataset line,
+    # TradingView, and a caveat if either half of IBKR is down.
+    intro = chat.send(
+        intro_card("**ClaudIA is ready** — loading your trade history…"),
         user="ClaudIA",
         respond=False,
     )
+    intro_sent_at = time.monotonic()
+
+    def _settle_intro(text: str) -> None:
+        """Replace the intro card with its settled text (same message, updated in place),
+        no earlier than _INTRO_MIN_SECONDS after it was sent. Called from the init task;
+        the deferred path is a task on the same loop (context copied, so the session
+        Document stays current) whose reference is kept in _session (RUF006)."""
+        if intro is None:
+            return
+        remaining = _INTRO_MIN_SECONDS - (time.monotonic() - intro_sent_at)
+        if remaining <= 0:
+            intro.object = text
+            return
+
+        async def _later() -> None:
+            """Settle the card once the minimum display time has elapsed."""
+            await asyncio.sleep(remaining)
+            intro.object = text
+
+        _session["intro_task"] = asyncio.create_task(_later())
 
     # Task 8.1: standalone screenshot upload. ChatInterface's native file tab
     # unpacks its upload wrapper before the callback sees it (mime/filename
@@ -1116,11 +1152,17 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 chat, toolkit, tv_offline
             )
             _session["agent"] = agent
+            _settle_intro(
+                "**ClaudIA is ready** — IBKR not connected."
+                if ibkr_offline
+                else "**ClaudIA is ready** — connected to IBKR."
+            )
             _send_action_buttons(chat, _session, session_id, ibkr_offline, tv_offline)
             await _maybe_background_flex_sync(chat, toolkit, ibkr_offline)
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
             _session["error"] = str(exc)
+            _settle_intro("**ClaudIA** — session init failed, see below.")
             chat.send(
                 f"**Session init failed:** {exc} — check the server logs and reload the page.",
                 user="System",

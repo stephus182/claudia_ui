@@ -1603,6 +1603,96 @@ async def test_session_root_applies_the_session_theme():
     apply_theme.assert_called_once_with()
 
 
+async def _build_chat_with_ibkr(
+    ibkr_offline: bool,
+    *,
+    toolkit_raises: Exception | None = None,
+    min_seconds: float = 0.0,
+    settle_wait: float = 0.0,
+):
+    """Build the chat under the standard patches, return (chat, first_message_before_init,
+    the same message after init + `settle_wait`). `toolkit_raises` forces the init-failure
+    path; `min_seconds` is the intro card's minimum display time."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    toolkit_patch = (
+        patch("claudia.panel_app._get_toolkit", side_effect=toolkit_raises)
+        if toolkit_raises is not None
+        else patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit)
+    )
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        toolkit_patch,
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, ibkr_offline)),
+        ),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        with patch("claudia.panel_app._INTRO_MIN_SECONDS", min_seconds):
+            chat = _build_chat_app()
+            first = chat.objects[0]
+            before = first.object
+            await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
+            await asyncio.sleep(settle_wait)
+    return chat, before, first.object
+
+
+@pytest.mark.asyncio
+async def test_opening_bubble_starts_as_the_portrait_card():
+    """While the session loads, the first ClaudIA bubble is the standing portrait over the
+    ready text — the intro the user asked for, once per session."""
+    from claudia.panel_theme import CLAUDIA_INTRO_PATH
+
+    assert CLAUDIA_INTRO_PATH.is_file(), "the intro asset is part of the repo"
+    chat, before, _after = await _build_chat_with_ibkr(ibkr_offline=False)
+    assert chat.objects[0].user == "ClaudIA"
+    assert isinstance(before, pn.Column)
+    assert isinstance(before.objects[0], pn.pane.Image)
+    assert "ClaudIA is ready" in before.objects[1].object
+
+
+@pytest.mark.asyncio
+async def test_opening_bubble_settles_to_connected_when_ibkr_answers():
+    """Same message, updated in place: the portrait goes, the measured IBKR state stays."""
+    _chat, _before, after = await _build_chat_with_ibkr(ibkr_offline=False)
+    assert after == "**ClaudIA is ready** — connected to IBKR."
+
+
+@pytest.mark.asyncio
+async def test_opening_bubble_settles_to_not_connected_when_ibkr_is_offline():
+    """Offline is stated, not implied by a missing 'connected'."""
+    _chat, _before, after = await _build_chat_with_ibkr(ibkr_offline=True)
+    assert after == "**ClaudIA is ready** — IBKR not connected."
+
+
+@pytest.mark.asyncio
+async def test_opening_bubble_does_not_claim_ready_when_init_fails():
+    """A failed init must not leave 'ClaudIA is ready' under her portrait."""
+    _chat, _before, after = await _build_chat_with_ibkr(
+        ibkr_offline=False, toolkit_raises=RuntimeError("boom")
+    )
+    assert after == "**ClaudIA** — session init failed, see below."
+
+
+@pytest.mark.asyncio
+async def test_opening_bubble_keeps_the_portrait_for_the_minimum_display_time():
+    """A fast init (IBKR offline answers in ~1s) must not reduce the intro to a flicker:
+    the card stays for at least the minimum, then settles — without delaying init itself."""
+    chat, _before, right_after_init = await _build_chat_with_ibkr(
+        ibkr_offline=True, min_seconds=0.3, settle_wait=0.0
+    )
+    assert isinstance(right_after_init, pn.Column)  # init done, portrait still up
+    await asyncio.sleep(0.5)
+    assert chat.objects[0].object == "**ClaudIA is ready** — IBKR not connected."
+
+
 @pytest.mark.asyncio
 async def test_session_root_composes_the_dashboard_tabs_and_table():
     """One Tabs with three named tabs, one Tabulator, and it is not editable."""
