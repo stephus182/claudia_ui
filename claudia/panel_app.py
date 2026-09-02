@@ -870,15 +870,23 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         Document stays current) whose reference is kept in _session (RUF006)."""
         if intro is None:
             return
+        # A later settle supersedes an earlier pending one (init can fail AFTER the
+        # success settle was scheduled); cancelling keeps the two from racing.
+        pending = _session.get("intro_task")
+        if pending is not None:
+            pending.cancel()
+            _session["intro_task"] = None
         remaining = _INTRO_MIN_SECONDS - (time.monotonic() - intro_sent_at)
         if remaining <= 0:
             intro.object = text
             return
 
         async def _later() -> None:
-            """Settle the card once the minimum display time has elapsed."""
+            """Settle the card once the minimum display time has elapsed — unless the
+            session was torn down meanwhile (a tab closed within the first seconds)."""
             await asyncio.sleep(remaining)
-            intro.object = text
+            if not _session["closed"]:
+                intro.object = text
 
         _session["intro_task"] = asyncio.create_task(_later())
 

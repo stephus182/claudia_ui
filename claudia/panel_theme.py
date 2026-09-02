@@ -34,6 +34,18 @@ THEMES: tuple[str, ...] = ("default", "dark")
 CLAUDIA_AVATAR_PATH = Path(__file__).parent / "assets" / "claudia-avatar.png"
 """Where ClaudIA's chat avatar is expected. Absent → Panel's letter fallback, with a warning."""
 
+CLAUDIA_AUTHORS: tuple[str, ...] = (
+    "ClaudIA",
+    "ClaudIA — Order Proposal",
+    "ClaudIA — Cancel Proposal",
+    "ClaudIA — Modify Proposal",
+    "ClaudIA — PineScript",
+)
+"""Every author label ClaudIA signs a bubble with. Panel keys avatars on the alphanumeric
+form of the author name, so each label is its own key and must be registered on its own.
+Guarded by a source scan in tests/test_panel_theme.py — a new label without an entry here
+would silently lose the avatar."""
+
 AVATAR_SIZE_WARN_BYTES = 200 * 1024
 """A local avatar path is base64-embedded in *every* message model (panel/chat/utils.py
 ``build_avatar_pane`` → ``pn.pane.Image``), so a large file is paid on each message."""
@@ -111,13 +123,15 @@ def user_display_name() -> str:
 
 
 def register_claudia_avatar(path: Path = CLAUDIA_AVATAR_PATH) -> bool:
-    """Make every message authored ``"ClaudIA"`` carry the image at ``path``.
+    """Make every message ClaudIA authors (each label in ``CLAUDIA_AUTHORS``) carry ``path``.
 
-    Uses the documented in-place update of ``ChatMessage.default_avatars`` (keys are matched
-    alphanumerically and case-insensitively, so ``"claudia"`` covers ``user="ClaudIA"``). This
-    reaches every send site — the sink, the opening messages, proposals — without any of them
-    passing ``avatar=``. Returns ``False`` and leaves Panel's letter fallback in place when the
-    file is missing.
+    Uses the documented in-place update of ``ChatMessage.default_avatars``. Panel matches keys
+    after ``to_alpha_numeric`` (non-alphanumerics stripped, lower-cased), so ``"ClaudIA"``
+    covers ``user="ClaudIA"`` in any case — but ``"ClaudIA — Order Proposal"`` is a *different*
+    key, which is why every label is registered. This reaches every send site — the sink, the
+    opening messages, the proposal and PineScript renders — without any of them passing
+    ``avatar=``. Returns ``False`` and registers nothing when the file is missing — Panel's
+    letter fallback then applies (an entry registered earlier is not removed).
     """
     if not path.is_file():
         log.warning("ClaudIA avatar not found at %s — using Panel's letter fallback", path)
@@ -129,7 +143,8 @@ def register_claudia_avatar(path: Path = CLAUDIA_AVATAR_PATH) -> bool:
             "(e.g. `sips -Z 128 <src> --out %s`)",
             path, size // 1024, path,
         )
-    pn.chat.ChatMessage.default_avatars["claudia"] = str(path)
+    for author in CLAUDIA_AUTHORS:
+        pn.chat.ChatMessage.default_avatars[author] = str(path)
     return True
 
 

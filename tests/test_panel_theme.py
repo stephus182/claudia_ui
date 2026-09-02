@@ -140,12 +140,13 @@ def test_register_claudia_avatar_missing_file_warns_and_leaves_panel_default(
     """No file → False, one warning naming the path, and Panel's letter fallback untouched."""
     # Start clean: importing claudia.panel_app elsewhere in the run registers the real
     # asset, and a missing file must not *add* a key — it is not asked to remove one.
-    pn.chat.ChatMessage.default_avatars.pop("claudia", None)
+    for author in panel_theme.CLAUDIA_AUTHORS:
+        pn.chat.ChatMessage.default_avatars.pop(author, None)
     missing = tmp_path / "nope.png"
     with caplog.at_level(logging.WARNING, logger="claudia.panel_theme"):
         assert panel_theme.register_claudia_avatar(missing) is False
     assert any(str(missing) in r.getMessage() for r in caplog.records)
-    assert "claudia" not in pn.chat.ChatMessage.default_avatars
+    assert not set(panel_theme.CLAUDIA_AUTHORS) & set(pn.chat.ChatMessage.default_avatars)
     # Panel's own fallback: first letter of the author name, resolved at render time.
     assert pn.chat.ChatMessage("hi", user="ClaudIA")._render_avatar().object == "C"
 
@@ -218,3 +219,31 @@ def test_intro_asset_path_is_inside_the_package_assets_dir():
     """Same home as the avatar and the logo."""
     assert panel_theme.CLAUDIA_INTRO_PATH.parent.name == "assets"
     assert panel_theme.CLAUDIA_INTRO_PATH.name == "claudia-standing.jpg"
+
+
+# ── every ClaudIA author label carries the avatar ─────────────────────────────
+
+
+def test_every_claudia_author_label_carries_the_avatar(tmp_path, restore_default_avatars):
+    """Panel keys avatars on the alphanumeric author name, so \"ClaudIA — Order Proposal\" is
+    a different key from \"ClaudIA\": each label ClaudIA signs with must be registered."""
+    avatar = tmp_path / "claudia-avatar.png"
+    avatar.write_bytes(_TINY_PNG)
+    panel_theme.register_claudia_avatar(avatar)
+    for author in panel_theme.CLAUDIA_AUTHORS:
+        assert pn.chat.ChatMessage("hi", user=author).avatar == str(avatar), author
+
+
+def test_claudia_authors_covers_every_label_used_in_the_package():
+    """Structural guard over the CLASS: a new `user=\"ClaudIA — …\"` send site anywhere in
+    claudia/ must be added to CLAUDIA_AUTHORS, or its bubbles silently lose the avatar."""
+    import re
+    from pathlib import Path
+
+    package = Path(panel_theme.__file__).parent
+    used = set()
+    for path in sorted(package.glob("*.py")):
+        used.update(re.findall(r'user="(ClaudIA[^"\n]*)"', path.read_text(encoding="utf-8")))
+    assert used, "no ClaudIA author literal found — the scan is broken"
+    missing = used - set(panel_theme.CLAUDIA_AUTHORS)
+    assert not missing, f"author labels without an avatar entry: {sorted(missing)}"

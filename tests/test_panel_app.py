@@ -1531,7 +1531,7 @@ def test_import_registers_claudia_avatar_after_the_extension_call():
     source = inspect.getsource(app)
     # Line-anchored: the comment above the call also says "pn.extension(".
     assert source.index('\npn.extension("') < source.index("\nregister_claudia_avatar()")
-    registered = pn.chat.ChatMessage.default_avatars.get("claudia")
+    registered = pn.chat.ChatMessage.default_avatars.get("ClaudIA")
     expected = str(CLAUDIA_AVATAR_PATH) if CLAUDIA_AVATAR_PATH.is_file() else None
     assert registered == expected
 
@@ -1686,11 +1686,24 @@ async def test_opening_bubble_keeps_the_portrait_for_the_minimum_display_time():
     """A fast init (IBKR offline answers in ~1s) must not reduce the intro to a flicker:
     the card stays for at least the minimum, then settles — without delaying init itself."""
     chat, _before, right_after_init = await _build_chat_with_ibkr(
-        ibkr_offline=True, min_seconds=0.3, settle_wait=0.0
+        ibkr_offline=True, min_seconds=1.0, settle_wait=0.0
     )
     assert isinstance(right_after_init, pn.Column)  # init done, portrait still up
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.2)
     assert chat.objects[0].object == "**ClaudIA is ready** — IBKR not connected."
+
+
+@pytest.mark.asyncio
+async def test_opening_bubble_failure_after_success_settle_wins():
+    """Init can fail AFTER the success settle was scheduled (a later step raises). The
+    failure text must be what stays — the earlier deferred settle is cancelled, not raced."""
+    with patch("claudia.panel_app._send_action_buttons", side_effect=RuntimeError("late")):
+        chat, _before, right_after_init = await _build_chat_with_ibkr(
+            ibkr_offline=False, min_seconds=1.0, settle_wait=0.0
+        )
+        assert isinstance(right_after_init, pn.Column)
+        await asyncio.sleep(1.2)
+    assert chat.objects[0].object == "**ClaudIA** — session init failed, see below."
 
 
 @pytest.mark.asyncio
