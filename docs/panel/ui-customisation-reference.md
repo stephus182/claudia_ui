@@ -270,6 +270,14 @@ Cost: **S** = one parameter or line, **M** = one function plus a test, **L** = i
 4. **Screenshot gallery** — before/after captures per phase in `docs/panel/screenshots/`
    (git-ignored; register each in its README with the account-data column filled honestly).
 5. **Status dot labels** (§4, first row) — the most-asked "which dot is which" gap.
+6. **Intro / "connected" card** (user idea, 2026-09-02): show the standing portrait
+   (`~/Documents/Claudia_docs/claudia_standing.png`, to be resized to ~480 px tall and stored as
+   `claudia/assets/claudia-standing.png`) once per session. Recommended shape: the opening
+   "ClaudIA is ready…" bubble becomes a `Column(Image, Markdown)` and its `object` is updated
+   in place to the connected text when account data goes live (ChatMessage reference: a sent
+   message's value can be updated). **Not** on every IBKR reconnect — the dot flips at most
+   startups (gap #26) and mid-session, and a picture each time is noise. A timed swap (session
+   periodic callback) or a template modal are the alternatives, both costlier. Cost: M.
 
 ---
 
