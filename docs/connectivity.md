@@ -34,6 +34,11 @@ What stays here: the status-light mechanics above, and the two services below. (
 2026-09-03 the lights are the colours of the action bar's `[IBKR] [TradingView] [Drive]`
 buttons, not dots; a click on a button **reconnects** — `docs/panel/ui-customisation-reference.md` §2.6.)
 
+Drive's neutral state is real since 2026-09-04: no sync client **and** no token file →
+`UNKNOWN` (`ConnectivityChecker.gdrive_configured`), rendered as the bordered neutral button,
+disabled, with a "set GOOGLE_DRIVE_FOLDER_ID" tooltip. A configured Drive whose ping fails is
+`ERROR`, red. Until then the checker published only OK/ERROR for Drive.
+
 One IBKR fact belongs on this page because it is about the **light**, not the session:
 the light is green only when `GatewaySession`'s phase is `LIVE` — authenticated, connected
 **and** confirmed against a real data endpoint. `check_ibkr()` performs no HTTP; it reads

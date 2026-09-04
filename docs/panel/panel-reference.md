@@ -279,6 +279,10 @@ other in `tests/test_panel_action_bar.py`). `ActionBar.repaint` maps:
 | `ERROR` | `"danger"` | red | reconnect |
 | `UNKNOWN` | `"default"` | white with a border — not configured / not checked yet, **not** an error | IBKR and TradingView: reconnect; Drive: **disabled**, tooltip says to set `GOOGLE_DRIVE_FOLDER_ID` |
 
+`UNKNOWN` for Drive is published by the checker only when nothing is configured
+(`ConnectivityChecker.gdrive_configured`, 2026-09-04 — before that Drive was never
+`UNKNOWN` after the first poll). After End Session `repaint` is a no-op (`_ended`).
+
 End Session is `"default"` too. Not `"light"`: Bokeh's `.bk-btn-light` rule ends in
 `border-color: transparent` (bokeh.js, verified 2026-09-04), so on the white page a `light`
 button is indistinguishable from loose text — the user's first remark on the live bar.

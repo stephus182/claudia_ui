@@ -65,7 +65,22 @@ tiles read `—`):
 | Pinned layout (third smoke, scratch harness on :8002 serving the real root under the test patches, 40 messages) | ✅ page does not scroll at 1500×950 or 1280×680; input row at the bottom of the viewport; feed scrolls internally and auto-scrolls to the newest message; Positions tab fits at 680 px (`…-layout-pinned-*.png`) |
 | Transient: an empty bubble with a blank avatar ~1s after load | Expected — the opening-status message streaming before its text arrives; it fills in (`…-dark-initialising.png` vs `…-dark.png`) |
 
-### 1.2 Live smoke, 2026-09-03 (gateway up, real account — System log + action bar, commit `b3de83d`)
+### 1.2 Review record, 2026-09-04 (independent reviewer over `08d5654..46d1067`, fixes in `42a0c65`)
+
+Three findings verified by execution, three by reading; all fixed test-first, one suggestion
+disproved by a mutation test and dropped:
+
+| Finding | Fix |
+|---|---|
+| **The System log feed had no `renderers=[safe_markdown]`** — tool results, gateway details and exception text rendered with Panel's default Markdown pane, raw HTML on (the H-1 hole the chat closed in July, re-opened for the log) | `renderers=[safe_markdown]` on the feed; a structural test now requires it on **every** `ChatFeed`/`ChatInterface` in `claudia/` — control the class, not the instance |
+| The 5-second repaint re-enabled the three service buttons within 5 s of End Session | `disable_all()` sets an `_ended` flag and `repaint()` returns early on it |
+| Drive's "not configured" state was unreachable: the checker only ever published OK/ERROR for Drive, so an unconfigured Drive was **red** with "Click to reconnect", and a configured one was disabled with a false tooltip for its first 5 s | `ConnectivityChecker.gdrive_configured()`: no sync client and no token file → `UNKNOWN`, as `ServiceStatus` had documented all along; the bar test now drives the real checker |
+| `osascript quit` / `pkill` ran synchronously on the process-wide event loop (a hung TradingView would freeze every session) | `asyncio.to_thread` with timeouts; `_wait_for` polls its predicates off-loop too |
+| `establish(emit=syslog.say)` called the log from the worker thread | `emit=lambda line: loop.call_soon_threadsafe(syslog.say, line)` |
+| End Session swallowed a failing cleanup; the TradingView timeout text hard-coded "30s" | error line in the log; `_TV_CDP_WAIT_S` interpolated |
+| *Suggestion:* concurrent `_run_checks` could double-alert | **Disproved**: the state is written before the alert is awaited, so a second run never sees the stale state; a lock was added, its test survived the lock's removal, both were dropped (`status.py` docstring records it) |
+
+### 1.3 Live smoke, 2026-09-03 (gateway up, real account — System log + action bar, commit `b3de83d`)
 
 | Check | Result |
 |---|---|
