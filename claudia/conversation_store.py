@@ -506,6 +506,13 @@ class ConversationStore:
             order book while **no order-book tool was called**; whatever order state that
             message stated is unverified
 
+        From `claudia/panel_app.py` — IBKR reported, nobody decided (2026-09-04):
+          - ``execution_reported`` — a fill arrived on the execution WebSocket and was shown
+            to the user (chat message authored IBKR, System log, operator note). Any origin:
+            ClaudIA-staged or external. In **no** allowlist: it is a broker event, not a
+            proposal render and not a completed order *action* of ClaudIA's — the model learns
+            of it through the operator note, never as evidence of its own action.
+
         From `claudia/order_flow.py` — the user clicked and both gates passed:
           - ``trade_staged`` / ``trade_cancelled`` / ``trade_modified`` — the write reached
             IBKR. These are `COMPLETED_ORDER_ACTION_TYPES`, replayed to the model by

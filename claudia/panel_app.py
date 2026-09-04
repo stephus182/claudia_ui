@@ -53,7 +53,7 @@ from claudia.agent import ClaudIAAgent, warn_if_model_lacks_operator_channel
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.dashboard_poller import DashboardPoller
-from claudia.execution_listener import ExecutionListener
+from claudia.execution_listener import ExecutionListener, ExecutionReport, format_execution_report
 from claudia.flex_sync import dataset_fingerprint, validate_dataset
 from claudia.gateway_preflight import warn_if_session_borrowed
 from claudia.gateway_session import SessionPhase, get_session
@@ -387,6 +387,15 @@ async def _send_opening_status(
     return trade_context, ibkr_offline
 
 
+def _detach_subscriptions(_session: dict[str, Any]) -> None:
+    """Unsubscribe this session's alert and fill callbacks, once. Safe to call twice."""
+    for key in ("unsubscribe", "unsubscribe_fills"):
+        unsub = _session.get(key)
+        if unsub is not None:
+            unsub()
+            _session[key] = None
+
+
 def _make_alert_subscriber(syslog: SystemLog) -> Callable[[str], Awaitable[None]]:
     """Async subscriber for ConnectivityChecker alerts — texts arrive pre-formatted
     (_DISCONNECT_MESSAGES/_RECONNECT_MESSAGES). Runs inside the checker's poll task on
@@ -398,6 +407,54 @@ def _make_alert_subscriber(syslog: SystemLog) -> Callable[[str], Awaitable[None]
         syslog.say(text, "warning")
 
     return _on_alert
+
+
+def _make_fill_subscriber(
+    chat: pn.chat.ChatInterface, syslog: SystemLog, _session: dict[str, Any], session_id: str
+) -> Callable[[ExecutionReport], Awaitable[None]]:
+    """Async subscriber for `ExecutionListener` fills — the automatic execution report.
+
+    Three surfaces, one event (2026-09-04, after the user's ES stop filled and nothing on
+    screen said so until asked):
+
+    - a chat message authored **IBKR** — the broker's record, not the assistant's claim, and
+      the one documented exception to the "session events go to the System log" rule: a fill
+      is the event a trader must not miss (`ui-customisation-reference.md` §2.6);
+    - a warning line in the System log, which also raises the toast;
+    - an operator note for the agent, so the next turn already knows — skipped when init has
+      not produced an agent yet, never deferred (the screen is what matters first);
+    - a decision row (`execution_reported`) in the session's store when it exists, so the
+      session report carries the fill and the transcript of events is complete.
+
+    Runs inside the listener's task on the session's loop, like the connectivity alerts; a
+    closed session's sends are harmless no-ops, and the listener logs a raising subscriber
+    rather than dying.
+    """
+    async def _on_fill(report: ExecutionReport) -> None:
+        """Show one fill on all three surfaces."""
+        text = format_execution_report(report)
+        headline = text.splitlines()[0].replace("**", "")
+        chat.send(text, user="IBKR", respond=False)
+        syslog.say(headline, "warning")
+        agent = _session.get("agent")
+        if agent is not None:
+            agent.note_execution(text)
+        store = _session.get("store")
+        if store is not None:
+            try:
+                store.add_decision(
+                    session_id=session_id,
+                    decision_type="execution_reported",
+                    summary_text=headline,
+                    symbol=report.contract.split(" ")[0] if report.contract else None,
+                    metadata={"execution": report.__dict__},
+                )
+            except Exception:
+                # The screen already has the fill; a failed row is a logging loss, not a
+                # reason to raise inside the listener's delivery loop.
+                log.exception("Could not record execution %s (session %s)", report.execution_id, session_id)
+
+    return _on_fill
 
 
 def _build_action_bar(
@@ -419,10 +476,7 @@ def _build_action_bar(
         (End Session then closing the tab cleans up exactly once)."""
         if _session["closed"]:
             return
-        unsub = _session["unsubscribe"]
-        if unsub is not None:
-            unsub()
-            _session["unsubscribe"] = None
+        _detach_subscriptions(_session)
         _session["closed"] = True
         syslog.say("Saving session…")
         try:
@@ -772,6 +826,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         "init_task": None,
         "closed": False,
         "unsubscribe": None,
+        "unsubscribe_fills": None,
         "intro_task": None,
     }
     _init_done = asyncio.Event()
@@ -787,10 +842,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         return immediately (blocking here freezes every live session)."""
         if _session["closed"]:
             return
-        unsub = _session["unsubscribe"]
-        if unsub is not None:
-            unsub()
-            _session["unsubscribe"] = None
+        _detach_subscriptions(_session)
         _session["closed"] = True
         task = asyncio.get_running_loop().create_task(
             _run_session_cleanup(session_id, _session["store"], _session["loader"])
@@ -1116,14 +1168,16 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             _session["unsubscribe"] = _connectivity_checker.subscribe(
                 _make_alert_subscriber(syslog)
             )
-            if _session["closed"]:
-                # Session was destroyed while init was still running — undo the
-                # subscription we just made into a dead session.
-                _session["unsubscribe"]()
-                _session["unsubscribe"] = None
             if _execution_listener is None:
                 _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
             _execution_listener.start()
+            _session["unsubscribe_fills"] = _execution_listener.subscribe(
+                _make_fill_subscriber(chat, syslog, _session, session_id)
+            )
+            if _session["closed"]:
+                # Session was destroyed while init was still running — undo the
+                # subscriptions we just made into a dead session.
+                _detach_subscriptions(_session)
             # Same construct-once/start-each-session shape as the checker above; start() is
             # idempotent and restarts a cancelled task. The poller reads `toolkit.client`
             # directly rather than going through ClaudeToolkit.execute(), which returns

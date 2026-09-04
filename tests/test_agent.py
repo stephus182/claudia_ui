@@ -3772,3 +3772,36 @@ def test_gerund_stems_stay_within_the_verb_allowlist():
         # Stems are the verb, optionally minus a final 'e' or plus a doubled consonant.
         candidates = {stem, stem + "e", stem[:-1]}
         assert candidates & verbs, f"gerund stem {stem!r} has no verb in the allowlist"
+
+
+# ── Execution reports in the operator channel (2026-09-04) ───────────────────
+
+
+def test_note_execution_queues_one_operator_note(agent):
+    """A fill reported by IBKR's WebSocket is queued as an operator note — the
+    non-spoofable channel — so the next turn already knows, without the user asking.
+    The text is IBKR's record verbatim, prefixed so the model reads it as a broker event."""
+    agent.note_execution("**FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00** · 12:47:05 ET · CME")
+    assert len(agent._pending_operator_notes) == 1
+    note = agent._pending_operator_notes[0]
+    assert note.startswith("IBKR reported an execution")
+    assert "BOUGHT 1 ES Sep18 '26 @ 7,732.00" in note
+
+
+async def test_execution_note_reaches_the_model_once_on_the_next_turn():
+    """Delivered in the next turn's system message, then cleared — same lifecycle as the
+    render-failure notes it shares the channel with."""
+    agent, _sink = _make_agent_recording()
+    stream = MagicMock(side_effect=[
+        _FakeStream(_text_response_events("Noted, you are flat.")),
+        _FakeStream(_text_response_events("Anything else?")),
+    ])
+    agent._client.messages.stream = stream
+
+    agent.note_execution("**FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00** · 12:47:05 ET · CME")
+    await agent.handle_message("where do I stand?")
+    first = _system_texts(stream.call_args_list[0].kwargs["messages"])
+    assert any("IBKR reported an execution" in t and "7,732.00" in t for t in first)
+
+    await agent.handle_message("thanks")
+    assert not any("IBKR reported an execution" in t for t in _system_texts(stream.call_args_list[1].kwargs["messages"]))

@@ -3029,3 +3029,135 @@ async def test_end_session_reports_a_failed_cleanup_instead_of_vanishing():
     texts = list(syslog.entries)
     assert any("Session cleanup failed" in t and "drive upload exploded" in t for t in texts)
     assert not any("Session ended." in t for t in texts)
+
+
+# ── Automatic execution report (2026-09-04) ───────────────────────────────────
+#
+# The ES stop filled at 12:47 and nothing on screen said so until the user asked. The
+# listener now tells each session; this is the wiring. The chat message is authored IBKR —
+# the broker's record, not the assistant's claim — and is the one documented exception to
+# the "session events go to the System log" rule.
+
+
+def _report():
+    """Today's real fill as an ExecutionReport."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    from claudia.execution_listener import ExecutionReport
+
+    return ExecutionReport.from_event(TradeExecution(
+        execution_id="00010181.6a9a4b19.01.01", symbol="ES", side="B", size=1.0, price=7732.0,
+        trade_time="20260904-16:47:05", order_ref="CLAUDIA-1788538622110", exchange="CME",
+        contract_description_1="Sep18 '26",
+    ))
+
+
+@pytest.mark.asyncio
+async def test_fill_subscriber_posts_an_ibkr_authored_message_a_log_line_and_an_agent_note():
+    """One fill → chat message by 'IBKR', a warning line in the System log (toast), and an
+    operator note for the agent when one exists."""
+    from claudia.panel_app import _make_fill_subscriber
+    from claudia.panel_markdown import safe_markdown
+    from claudia.panel_system_log import SystemLog
+
+    chat = pn.chat.ChatInterface(renderers=[safe_markdown])
+    syslog = SystemLog()
+    agent = MagicMock()
+    store = MagicMock()
+    session_state = {"agent": agent, "closed": False, "store": store}
+    await _make_fill_subscriber(chat, syslog, session_state, "s1")(_report())
+
+    assert len(chat.objects) == 1
+    message = chat.objects[0]
+    assert message.user == "IBKR"
+    assert "FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00" in message.object
+    assert any("FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00" in e for e in syslog.entries)
+    agent.note_execution.assert_called_once()
+    assert "7,732.00" in agent.note_execution.call_args.args[0]
+    store.add_decision.assert_called_once()
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "execution_reported"
+    assert kwargs["session_id"] == "s1" and kwargs["symbol"] == "ES"
+    assert kwargs["metadata"]["execution"]["execution_id"] == "00010181.6a9a4b19.01.01"
+
+
+@pytest.mark.asyncio
+async def test_fill_subscriber_without_an_agent_still_reports_on_screen():
+    """Before init finishes there is no agent yet — the screen must still get the fill."""
+    from claudia.panel_app import _make_fill_subscriber
+    from claudia.panel_markdown import safe_markdown
+    from claudia.panel_system_log import SystemLog
+
+    chat = pn.chat.ChatInterface(renderers=[safe_markdown])
+    syslog = SystemLog()
+    await _make_fill_subscriber(chat, syslog, {"agent": None, "closed": False, "store": None}, "s1")(_report())
+    assert chat.objects[0].user == "IBKR"
+    assert len(syslog.entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_init_subscribes_to_fills_and_end_session_unsubscribes(backend_singletons):
+    """The session subscribes its fill callback next to its alert callback, and End Session
+    detaches both — a closed session must get no fill reports."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    unsub_alerts = MagicMock()
+    unsub_fills = MagicMock()
+    backend_singletons.checker_cls.return_value.subscribe.return_value = unsub_alerts
+    backend_singletons.listener_cls.return_value.subscribe.return_value = unsub_fills
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch("claudia.panel_app._run_session_cleanup",
+              new=AsyncMock(return_value="7 messages saved")),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        backend_singletons.listener_cls.return_value.subscribe.assert_called_once()
+        fill_cb = backend_singletons.listener_cls.return_value.subscribe.call_args.args[0]
+        await fill_cb(_report())
+        assert any(m.user == "IBKR" for m in chat.objects)
+        await _get_click_callback(_action_bar(chat).end_button)(None)
+    unsub_alerts.assert_called_once()
+    unsub_fills.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_destroy_hook_unsubscribes_fills_too(backend_singletons):
+    """Closing the tab must detach the fill callback as well as the alert callback."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    unsub_fills = MagicMock()
+    backend_singletons.listener_cls.return_value.subscribe.return_value = unsub_fills
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status",
+              new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "on_session_destroyed") as mock_register,
+        patch("claudia.panel_app._run_session_cleanup", new=AsyncMock(return_value="ok")),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        hook = mock_register.call_args.args[0]
+        hook(MagicMock())
+        await asyncio.sleep(0.05)
+    unsub_fills.assert_called_once()

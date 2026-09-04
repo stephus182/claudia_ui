@@ -38,7 +38,11 @@ import contextlib
 import logging
 import os
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import requests
 from ibkr_core_mcp.auth import BrowserCookieAuth
@@ -59,6 +63,68 @@ _IDLE_POLL = 5
 _PNL_CAPTURE_TIMEOUT = 10.0  # seconds to wait for a P&L tick after an execution
 
 _CLOSED = object()  # sentinel: the pump task signals a clean WebSocket close
+
+_ET = ZoneInfo("America/New_York")
+
+
+@dataclass(frozen=True)
+class ExecutionReport:
+    """One fill, as IBKR reported it — the fields a trader reads, pre-formatted.
+
+    Built ONLY from the `TradeExecution` event (2026-09-04): the assistant writes none of it,
+    which is why the chat message that carries it is authored "IBKR", not "ClaudIA". Unknown
+    fields render as `?` or are omitted — never guessed. No currency: the event carries none,
+    and a bare number is the honest render (`order_flow._price_suffix` makes the same choice).
+    """
+
+    execution_id: str
+    verb: str          # BOUGHT / SOLD / the raw side if IBKR sends something else
+    size: str          # "1", "2.5", or "?"
+    contract: str      # "ES Sep18 '26", "AAPL"
+    price: str         # "7,732.00" or "?"
+    time_et: str       # "12:47:05 ET" from the UTC trade_time, or ""
+    exchange: str
+    origin: str        # "via ClaudIA (CLAUDIA-…)" or "external (TWS / mobile / web portal)"
+
+    @classmethod
+    def from_event(cls, event: TradeExecution) -> ExecutionReport:
+        """Map IBKR's event verbatim. Today's real fill: `B 1 ES Sep18 '26 @ 7732.0`,
+        `20260904-16:47:05`, ref `CLAUDIA-1788538622110`, CME → BOUGHT 1 ES Sep18 '26 @
+        7,732.00 · 12:47:05 ET · CME · via ClaudIA."""
+        side = (event.side or "").strip().upper()
+        verb = {"B": "BOUGHT", "BUY": "BOUGHT", "S": "SOLD", "SELL": "SOLD"}.get(side, side or "?")
+        size = f"{event.size:g}" if isinstance(event.size, (int, float)) else "?"
+        price = f"{event.price:,.2f}" if isinstance(event.price, (int, float)) else "?"
+        contract = " ".join(p for p in (event.symbol, event.contract_description_1) if p).strip() or "?"
+        time_et = ""
+        raw = (event.trade_time or "").strip()
+        # IBKR's documented format is YYYYMMDD-HH:mm:ss UTC; anything else is left blank.
+        with contextlib.suppress(ValueError):
+            time_et = (
+                datetime.strptime(raw, "%Y%m%d-%H:%M:%S").replace(tzinfo=UTC).astimezone(_ET)
+                .strftime("%H:%M:%S ET")
+            )
+        ref = (event.order_ref or "").strip()
+        origin = f"via ClaudIA ({ref})" if ref.upper().startswith("CLAUDIA-") else "external (TWS / mobile / web portal)"
+        return cls(
+            execution_id=event.execution_id, verb=verb, size=size, contract=contract,
+            price=price, time_et=time_et, exchange=(event.exchange or "").strip(), origin=origin,
+        )
+
+
+def format_execution_report(report: ExecutionReport) -> str:
+    """The chat text for a fill: one bold line a trader reads in a glance, then provenance.
+
+    Rendered through the chat's `safe_markdown` renderer like every plain string; nothing here
+    is model output.
+    """
+    head = f"**FILLED: {report.verb} {report.size} {report.contract} @ {report.price}**"
+    tail = " · ".join(p for p in (report.time_et, report.exchange) if p)
+    first = f"{head} · {tail}" if tail else head
+    return f"{first}\n{report.origin} · execution {report.execution_id}"
+
+
+FillSubscriber = Callable[[ExecutionReport], Awaitable[None]]
 
 
 def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
@@ -150,6 +216,38 @@ class ExecutionListener:
         self._store = store
         self._task: asyncio.Task | None = None
         self._session_override = session
+        self._subscribers: list[FillSubscriber] = []
+
+    def subscribe(self, callback: FillSubscriber) -> Callable[[], None]:
+        """Register an async callback for every fill (any origin). Returns an unsubscribe.
+
+        Same shape as `ConnectivityChecker.subscribe`: one process-wide listener, one
+        callback per browser session, detached on End Session and on the destroy hook.
+        """
+        self._subscribers.append(callback)
+
+        def _unsubscribe() -> None:
+            """Detach this callback. Safe to call twice — a missing entry is ignored."""
+            with contextlib.suppress(ValueError):
+                self._subscribers.remove(callback)
+
+        return _unsubscribe
+
+    async def _notify_fill(self, event: TradeExecution) -> None:
+        """Deliver one fill to every subscriber; a raising subscriber is logged, not fatal.
+
+        The list is copied so a callback that unsubscribes itself mid-notify cannot corrupt
+        the walk, and an exception in one session cannot cost another its report or the
+        listener its loop.
+        """
+        report = ExecutionReport.from_event(event)
+        for subscriber in list(self._subscribers):
+            try:
+                await subscriber(report)
+            except Exception as exc:
+                log.warning(
+                    "Could not deliver an execution report to a subscriber: %s", exc, exc_info=True
+                )
 
     @property
     def _session(self) -> Any:
@@ -241,6 +339,9 @@ class ExecutionListener:
                     while True:
                         item = await _next_item(queue)
                         if isinstance(item, TradeExecution):
+                            # Report FIRST: the capture below can block up to 10 s per
+                            # round, and a fill must not wait on a P&L tick (2026-09-04).
+                            await self._notify_fill(item)
                             await self._capture_pnl_until_settled(ws, queue)
                 except StopAsyncIteration:
                     return  # WebSocket closed cleanly — _run_with_retry treats

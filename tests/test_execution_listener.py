@@ -597,3 +597,112 @@ async def test_waiting_for_a_session_does_not_consume_the_backoff_budget():
         f"idle waits must use _IDLE_POLL ({_IDLE_POLL}s), not the error backoff "
         f"{_RETRY_DELAYS}: got {waits}"
     )
+
+
+# ── Execution reports (2026-09-04) ────────────────────────────────────────────
+#
+# The user's ES stop filled at 12:47 and nothing on screen said so until asked. The listener
+# already receives every fill in real time; it now tells its subscribers, before the P&L
+# capture that can block for 10 s. The report is built ONLY from IBKR's event fields.
+
+_TODAYS_FILL = {  # the real event of 2026-09-04 16:47:05 UTC, verbatim field values
+    "execution_id": "00010181.6a9a4b19.01.01", "conid": 649180671, "symbol": "ES",
+    "side": "B", "size": 1.0, "price": 7732.0, "trade_time": "20260904-16:47:05",
+    "order_ref": "CLAUDIA-1788538622110", "exchange": "CME", "net_amount": 386600.0,
+    "account": "U1675699", "company_name": "E-mini S&P 500",
+    "contract_description_1": "Sep18 '26", "sec_type": "FUT",
+}
+
+
+def test_execution_report_from_todays_real_fill():
+    """Every field from the event, none invented: BOUGHT, 1, ES Sep18 '26, 7,732.00, ET time,
+    CME, and the ClaudIA origin read from the order ref."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    from claudia.execution_listener import ExecutionReport
+
+    report = ExecutionReport.from_event(TradeExecution(**_TODAYS_FILL))
+    assert report.verb == "BOUGHT"
+    assert report.size == "1"
+    assert report.contract == "ES Sep18 '26"
+    assert report.price == "7,732.00"
+    assert report.time_et == "12:47:05 ET"
+    assert report.exchange == "CME"
+    assert report.origin == "via ClaudIA (CLAUDIA-1788538622110)"
+    assert report.execution_id == "00010181.6a9a4b19.01.01"
+
+
+def test_execution_report_handles_sold_external_and_missing_fields():
+    """S → SOLD; no order_ref → external; missing price/size/time → omitted, never guessed."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    from claudia.execution_listener import ExecutionReport
+
+    report = ExecutionReport.from_event(TradeExecution(execution_id="E9", symbol="AAPL", side="S"))
+    assert report.verb == "SOLD"
+    assert report.size == "?" and report.price == "?" and report.time_et == ""
+    assert report.contract == "AAPL"
+    assert report.origin == "external (TWS / mobile / web portal)"
+
+
+def test_format_execution_report_is_one_bold_line_plus_provenance():
+    """The chat line a trader reads in one glance, then the provenance line."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    from claudia.execution_listener import ExecutionReport, format_execution_report
+
+    text = format_execution_report(ExecutionReport.from_event(TradeExecution(**_TODAYS_FILL)))
+    assert text.startswith("**FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00** · 12:47:05 ET · CME")
+    assert "via ClaudIA (CLAUDIA-1788538622110)" in text
+    assert "00010181.6a9a4b19.01.01" in text
+    assert "$" not in text and "USD" not in text  # the event carries no currency
+
+
+@pytest.mark.asyncio
+async def test_subscribers_are_told_of_each_fill_before_the_pnl_capture():
+    """Order pinned: the report reaches subscribers BEFORE _capture_pnl_until_settled, which
+    can block up to 10 s per round — a fill must not wait on a P&L tick."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    listener, _ = _make_listener()
+    order = MagicMock()
+    received = []
+
+    async def subscriber(report):
+        """Record the report and the moment it arrived relative to the capture."""
+        order.report(report.execution_id)
+        received.append(report)
+
+    capture = AsyncMock(side_effect=lambda *a, **k: order.capture())
+    fake_ws = _fake_ws([TradeExecution(**_TODAYS_FILL), TradeExecution(execution_id="E2")])
+    unsubscribe = listener.subscribe(subscriber)
+    with patch("claudia.execution_listener.BrowserCookieAuth"), \
+         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws), \
+         patch.object(listener, "_capture_pnl_until_settled", new=capture):
+        await listener._run_once()
+    assert [r.execution_id for r in received] == ["00010181.6a9a4b19.01.01", "E2"]
+    names = [c[0] for c in order.mock_calls]
+    assert names == ["report", "capture", "report", "capture"]
+    unsubscribe()
+    assert listener._subscribers == []
+
+
+@pytest.mark.asyncio
+async def test_a_raising_subscriber_is_logged_and_does_not_stop_the_others(caplog):
+    """One bad session callback must not cost another session its fill report, nor the
+    listener its loop."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    listener, _ = _make_listener()
+    good = AsyncMock()
+    bad = AsyncMock(side_effect=RuntimeError("session gone"))
+    listener.subscribe(bad)
+    listener.subscribe(good)
+    fake_ws = _fake_ws([TradeExecution(**_TODAYS_FILL)])
+    with patch("claudia.execution_listener.BrowserCookieAuth"), \
+         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws), \
+         patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()), \
+         caplog.at_level(logging.WARNING):
+        await listener._run_once()
+    good.assert_awaited_once()
+    assert any("execution report" in r.message.lower() for r in caplog.records)

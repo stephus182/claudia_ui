@@ -2264,6 +2264,19 @@ class ClaudIAAgent:
             return ""
         return "\n".join([_COMPLETED_ORDER_HEADER, *lines])
 
+    def note_execution(self, report_text: str) -> None:
+        """Queue a fill reported by IBKR's WebSocket for the next turn's operator message.
+
+        The execution listener delivers the report to every session the moment IBKR sends it
+        (2026-09-04); this puts the same text — the broker's record, not model output — into
+        the non-spoofable channel so the model knows about the fill on the user's next
+        message without being asked. Delivered once, then cleared, like every other note.
+        """
+        self._pending_operator_notes.append(
+            "IBKR reported an execution (broker record via the execution WebSocket; not your "
+            f"action, not something you placed or verified this turn): {report_text}"
+        )
+
     def _append_operator_message(self, messages: list) -> None:
         """Deliver the operator channel as one `role: "system"` message after the user turn.
 
