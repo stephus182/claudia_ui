@@ -29,7 +29,9 @@ claudia/opening_status.py   — UI-free opening-status builders (session state +
 claudia/flex_sync.py        — session-start dataset validation + the "did this pull change anything" gate
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
-claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger fallback
+claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger fallback; since
+                              2026-09-04 also the fill subscription: every execution reaches each
+                              session as an IBKR-authored chat message + log toast + operator note
 claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / upload at stop
 claudia/session_reporter.py — auto-generated Markdown session report (tool calls, decisions)
 claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health
@@ -116,7 +118,7 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (1,707 tests as of 2026-09-04)
+pytest        # full suite — all unit, no IBKR gateway needed (1,718 tests as of 2026-09-04)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):

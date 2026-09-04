@@ -257,6 +257,12 @@ becomes one `error` line ("✕ IBKR reconnect failed: …"). What each click doe
 | Drive | `GDriveSync.reconnect()` (drops the cached service and re-authenticates via `load_or_refresh_credentials`, never a browser), then re-poll. Disabled with a tooltip when Drive was never configured (`UNKNOWN`), because there is nothing to reconnect to |
 | End Session | unchanged: unsubscribe, save, report, upload; the bar disables itself first |
 
+**The one exception to the rule — fills (2026-09-04).** A fill reported by IBKR's execution
+WebSocket goes to the **chat**, authored **IBKR** (not ClaudIA, not System), *and* to the log
+with a toast, *and* into the agent's operator channel. A fill is the event a trader must not
+miss, and the author label says whose record it is: the broker's, not the assistant's. Details
+and the four surfaces: `docs/order-api-reference.md` § Automatic execution reports.
+
 **Why the log card is below the input, not between feed and input:** the feed and the input
 row are one `ChatInterface`; putting anything between them means reaching into its internals.
 Below the input is also where VS Code puts its panel relative to the editor, and the action bar

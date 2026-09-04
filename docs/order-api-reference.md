@@ -348,6 +348,32 @@ proposal. Empirically the mislabel itself was cosmetic (IBKR accepted the modify
 the usability regression was real. See the resolved Known Gaps entry in `docs/project-status.md`
 for commit references and a known residual edge case.
 
+## Automatic execution reports (2026-09-04)
+
+A fill is shown the moment IBKR sends it — the user does not ask. `ExecutionListener` (already
+subscribed to the `str` WebSocket topic for every execution, any origin) now has
+`subscribe(callback)` like `ConnectivityChecker`, and notifies each session **before** its P&L
+capture (which can block up to 10 s per round). The `ExecutionReport` it delivers is built only
+from IBKR's event fields — BOUGHT/SOLD from `side`, size, `symbol` + `contract_description_1`,
+price, `trade_time` (UTC) shown in ET, exchange, origin from the `CLAUDIA-` order ref — nothing
+model-written and no currency claimed (the event carries none).
+
+Per session, `panel_app._make_fill_subscriber` puts it on four surfaces:
+
+| Surface | What | Why |
+|---|---|---|
+| Chat message authored **IBKR** | `**FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00** · 12:47:05 ET · CME` + provenance line | The broker's record, not the assistant's claim — the one documented exception to "session events go to the System log": a fill must not be missed |
+| System log, `warning` | the headline, with the 8 s toast | Noticed while reading something else; on record |
+| Operator note (`agent.note_execution`) | the same text, prefixed "IBKR reported an execution … not your action" | The next turn already knows; the channel cannot be spoofed by model output |
+| Decision row `execution_reported` | headline, symbol, the report's fields | The session report carries it; in no allowlist (it is not a ClaudIA action) |
+
+Detached on End Session and on the destroy hook together with the alert subscription. If the
+WebSocket is down there is no report and nothing is invented; the red IBKR light and the
+dashboard's 15 s refresh remain. Not done: a P&L-after-fill line (the realised tile refreshes
+within 15 s), a poller-based fallback. Live status: **code-verified 2026-09-04; the first
+automatic report awaits the next real fill** (the two fills of that day, 12:47 and the SELL
+after it, happened on a server that predates the feature).
+
 ## Post-dispatch read-back (L2)
 
 **Evidence is the only source of truth for orders, no assumptions.** A dispatch response
