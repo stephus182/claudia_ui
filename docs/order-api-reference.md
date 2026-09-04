@@ -118,8 +118,23 @@ routing depends on `sec_type`:
   **not** sent: IBKR rejects any non-empty value as undocumented field 8089 on this account class — proven by
   whatif isolation 2026-07-23 (`order_flow.py`, the field-spec comment). This line said "added automatically"
   until 2026-09-04; the code had stopped sending it on 2026-07-23.
-- Contract multiplier fetched from `/trsrv/futures` response and passed as `_multiplier` display field
-- Gate 2 dialog shows correct notional: `price × qty × multiplier`
+- **Multiplier, currency and contract label come from `/iserver/contract/{conid}/info`**
+  (`order_flow._futures_contract_facts`, on every futures path — conid supplied or resolved),
+  passed as `_multiplier`, `_currency` and `_companyName` (e.g. `ESU6 · expires 2026-09-18 · x50`)
+  display fields. Until 2026-09-04 this line said the multiplier came from `/trsrv/futures`:
+  **it never did** — those rows carry only `conid`, `expirationDate`, `ltd`, the cut-offs,
+  `symbol` and `underlyingConid` (measured), the tests had invented a `multiplier` key, and
+  on the conid-supplied path the lookup was skipped entirely. Found live the same day: Gate 2
+  printed `Total (est.): 7,735.00` for one ES contract standing for 386,750 USD.
+  Source: <https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/contract-information-by-contract-id.md>
+- Gate 2 dialog shows the notional as `price × qty × multiplier` with the ISO currency; when the
+  multiplier could not be learned it prints `— (contract multiplier unknown; not price × quantity)`
+  rather than a number wrong by the multiplier (`_multiplier_unknown`, ibkr_core_mcp `e12b6fd`).
+  The symbol line carries the local symbol and expiry, so the contract month is visible before
+  the send — the proposal text still shows only `ES [FUT]`.
+- **Read side of a resting stop**: IBKR reports it with `price` `''` and the stop in
+  `auxPrice` / `stop_price` (`orderType` `Stop`, measured on order 853170745); the dashboard's
+  order book has a `Stop` column for it since 2026-09-04.
 
 ### Stop orders on US futures — what IBKR does with them (scraped 2026-09-04)
 

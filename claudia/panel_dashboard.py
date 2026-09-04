@@ -1242,6 +1242,7 @@ class DashboardView:
                 "Qty": NumberFormatter(format=_QTY_FORMAT),
                 "Filled": NumberFormatter(format=_QTY_FORMAT),
                 "Limit": NumberFormatter(format=_PRICE_FORMAT),
+                "Stop": NumberFormatter(format=_PRICE_FORMAT),
             },
             text_align=dict.fromkeys(_ORDER_NUMERIC, "right"),
             header_tooltips=dict(_ORDER_TOOLTIPS),
