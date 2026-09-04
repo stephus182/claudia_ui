@@ -39,6 +39,8 @@ hearts, and a menu of other easy changes. Decisions taken in the same session:
 | Input box | `ChatAreaInput`, 3 rows growing to 10, placeholder "Ask ClaudIA…", Enter sends | `widgets=` in `panel_app._build_chat_app` | — | delete `widgets=` |
 | Reaction icons | off on every message | `panel_app._build_chat_app`: `message_params={"show_reaction_icons": False}` | — | delete the line |
 | Pinned layout (later on 2026-09-02, by user request) | the chat pane is bounded by the viewport: `ChatInterface(sizing_mode="stretch_both")` and `sizing_mode="stretch_both"` on the column holding the dots row + chat. Panel's chat then scrolls its own feed (`.chat-feed-log`, `max-height: calc(100% - 75px)`) and keeps the input row at the bottom; the page never scrolls, so the KPI strip stays at the top for free. **Measured** with 40 long messages at 1500×950 and 1280×680: document height == viewport, feed `scrollHeight` 9,179 px inside a 626 px pane, input row fully inside the viewport | `panel_app._build_chat_app` (`sizing_mode=`) and `_build_session_root` (the inner `pn.Column`) | — | remove both `sizing_mode` arguments (the page grows with the messages again) |
+| System log (2026-09-03) | a collapsed `pn.Card` titled "System log (n)" under the chat input, holding a read-only timestamped `ChatFeed`; every **session-level** event lands there (§2.6 has the routing rule) and `warning`/`error` entries also raise a toast. The chat keeps only the conversation and the per-turn feedback that answers something you just did | `panel_system_log.SystemLog`; every call site is `syslog.say(...)` in `panel_app` (`_build_action_bar`, `_maybe_background_flex_sync`, `_init_session`, `_make_alert_subscriber`) | — | route a call back to `chat.send(..., user="System")` — the source-scan test `test_no_session_level_system_send_reaches_the_chat_feed` will name it |
+| Action bar (2026-09-03) | `[IBKR] [TradingView] [Drive] [End Session]` at the bottom of the chat column, replacing the three status dots **and** the "System" message that used to carry the buttons. **Colour is the light**: `success` green = up, `danger` red = down, `light` grey = not configured / not checked yet. **A click reconnects; it never merely checks** (user rule). Repainted every 5 s from the checker's cache, and again right after a reconnect | `panel_action_bar.ActionBar` (`SERVICE_LABELS` for order and labels, `_COLOR` for the mapping); the three reconnect coroutines in `panel_app._build_action_bar` | — | there is no "revert" short of restoring the dots from git — the bar *is* the status display now |
 | Intro card (added later on 2026-09-02) | the opening bubble is the standing portrait over "ClaudIA is ready — loading…"; `_init_session` updates the **same message** in place to "— connected to IBKR." / "— IBKR not connected." (or "session init failed"), **no earlier than 3 s after the message was built** (`_INTRO_MIN_SECONDS`, measured server-side in the factory, so on-screen time is that minus page-load latency, ~0.5 s on localhost — an offline IBKR answers in ~1 s and the portrait would only flicker; init itself is never delayed) | `panel_theme.intro_card`, `claudia/assets/claudia-standing.jpg` (320×480, 37 KB, embedded once per session); `_settle_intro` in `panel_app._build_chat_app` | — | delete the asset (plain text, one warning) |
 
 ### 1.1 Live smoke, 2026-09-02 (IBKR offline, TradingView not running)
@@ -62,6 +64,21 @@ tiles read `—`):
 | Intro card (second smoke, light theme) | ✅ portrait over the loading line at ~1 s (`…-intro-loading.png`); same bubble reads "— IBKR not connected." after init (`…-intro-settled.png`). The first cut had no minimum display time and the card had already settled at the first capture (`…-intro-settled-no-min.png`) — hence the 3 s floor |
 | Pinned layout (third smoke, scratch harness on :8002 serving the real root under the test patches, 40 messages) | ✅ page does not scroll at 1500×950 or 1280×680; input row at the bottom of the viewport; feed scrolls internally and auto-scrolls to the newest message; Positions tab fits at 680 px (`…-layout-pinned-*.png`) |
 | Transient: an empty bubble with a blank avatar ~1s after load | Expected — the opening-status message streaming before its text arrives; it fills in (`…-dark-initialising.png` vs `…-dark.png`) |
+
+### 1.2 Live smoke, 2026-09-03 (gateway up, real account — System log + action bar, commit `b3de83d`)
+
+| Check | Result |
+|---|---|
+| Left column order: chat → input → `System log (n)` collapsed → Choose File → `[IBKR] [TradingView] [Drive] [End Session]` | ✅ (`2026-09-03-system-log-collapsed-1500x950.png`) |
+| Chat shows no `System` bubble | ✅ only ClaudIA's two opening bubbles; the startup "IBKR Gateway disconnected / reconnected" pair that used to be two chat bubbles is now entries 1–2 of the log |
+| Lights | at first paint IBKR **red**, TradingView grey, Drive green; IBKR **green by 20:17:37** after the checker's second poll. The red start is the checker's first poll racing the session owner's first read — the same latency the dots had; a candidate in §4 |
+| Expand the card | ✅ two timestamped entries, gear avatar, no reaction/copy icons (`…-system-log-expanded-1500x950.png`) |
+| Click IBKR while live | ✅ log: "Reading the session before touching anything…", "✔ Already authenticated — not opening the login page.", "✅ Session is live"; nothing opened, light stayed green, button re-enabled |
+| Click Drive | ✅ log: "▶ Reconnecting Google Drive…", "✅ Drive connected."; light green, button re-enabled (`…-system-log-after-reconnects-1500x950.png`, 11 entries) |
+| Click TradingView | **not smoked** — it launches TradingView Desktop on the machine; the path is the pre-existing launch handler moved verbatim, covered by the three click tests |
+| Page height == viewport, log expanded | ✅ 1500×950 and 1280×680; End Session bottom at 675 px of 680 (`…-system-log-expanded-1280x680.png`). At 680 px with the log **expanded** the chat feed is squeezed to one bubble — collapse the card to read the chat; `_FEED_HEIGHT` (240 px) is the knob if that bites |
+| Toast on the disconnect alert | not captured — Panel toasts sit outside the Playwright screenshot timing; the `notifications.warning` call is pinned by `test_warning_and_error_toast_when_notifications_exist` |
+| Page width | still 1,802 px at a 1,500 px window — the chart controls row (`panel_chart.py`, four default-width widgets); pre-existing, separate fix |
 
 **Review record, 2026-09-02 (self-review + an independent reviewer on the same diff).** Found
 and fixed the same day: the avatar skipped every suffixed ClaudIA label (proposals,
@@ -189,6 +206,50 @@ Enter-to-send because `ChatInterface` wires auto-send by widget type
 `renderers` must stay a **top-level** argument — inside `message_params` it raises
 (`panel_app.py`, comment above the constructor).
 
+### 2.6 System log and action bar (2026-09-03)
+
+**The routing rule, decided by cause** (the way IDE assistants do it): what explains an answer
+stays with the answer; what happens *to the session* goes to the log.
+
+| Stays in the chat (per-turn) | Moves to the System log (session-level) |
+|---|---|
+| tool-call `ChatStep`s (`panel_sink.tool_step`) | connectivity alerts (`ConnectivityChecker.subscribe` → `_make_alert_subscriber`) — `warning` |
+| "Response truncated" (`send_max_tokens_warning`) | Flex sync result (`info`), validation / coverage warnings (`warning`) |
+| upload rejected / upload failed / the echoed screenshot | document reloaded (`info`), doc-version warning (`warning`) |
+| Pine inject outcomes (`panel_pinescript`) | gateway and TradingView reconnect progress and outcome |
+| the honest "Setup required / Session init failed" **reply** to a message typed after a failed init | "Saving session…", "Session ended.", "Session init failed", "Setup required" at init time (`error`) |
+
+Levels: `info` = entry only; `warning` = entry + 8 s toast; `error` = entry + sticky toast
+(`panel_system_log._TOAST_DURATION_MS`). The count in the card title is the whole "unread"
+mechanism — deliberately no badge, no auto-expand.
+
+**To log a new session-level event:** call `syslog.say(text, level)` wherever `syslog` is in
+scope in `panel_app` (`_build_chat_app`'s closures, or pass it in as `_maybe_background_flex_sync`
+does). Do **not** `chat.send(..., user="System")` — the source-scan test names the four per-turn
+sends that are allowed and fails on a fifth.
+
+**The buttons.** `SERVICE_LABELS` in `panel_action_bar` fixes the order and the labels;
+`ConnectivityChecker.get_status()` keys them, and a test pins the two key sets against each
+other. Each click awaits the reconnect coroutine injected by `panel_app._build_action_bar`,
+disable-first with the `loading` spinner, always re-enabled in `finally`; a raising reconnect
+becomes one `error` line ("✕ IBKR reconnect failed: …"). What each click does:
+
+| Button | Click |
+|---|---|
+| IBKR | `get_session().establish(GatewayManager(), emit=syslog.say)` on a worker thread — the one shared session owner runs the **read-only pre-flight first**, so a live session is left alone ("Already authenticated — not opening the login page") and only a session that needs it gets a container start / login page. Never a forced re-login |
+| TradingView | launch Desktop with the debug port if it is not up, rebuild the sidecar bridge, hand the tools to the agent, then re-poll the checker |
+| Drive | `GDriveSync.reconnect()` (drops the cached service and re-authenticates via `load_or_refresh_credentials`, never a browser), then re-poll. Disabled with a tooltip when Drive was never configured (`UNKNOWN`), because there is nothing to reconnect to |
+| End Session | unchanged: unsubscribe, save, report, upload; the bar disables itself first |
+
+**Why the log card is below the input, not between feed and input:** the feed and the input
+row are one `ChatInterface`; putting anything between them means reaching into its internals.
+Below the input is also where VS Code puts its panel relative to the editor, and the action bar
+is the status-bar analogue at the very bottom.
+
+**The "+" attachment button, deferred 2026-09-03:** Panel's chat input has no attachment
+slot; two `widgets=` render as a tab strip, not a "+"; and a button that opens the OS picker
+needs a browser-side workaround. The file picker keeps its widget and moved down instead.
+
 ---
 
 ## 3. Research findings the implementation rests on
@@ -270,7 +331,9 @@ Cost: **S** = one parameter or line, **M** = one function plus a test, **L** = i
 
 | Change | Cost | How | Note |
 |---|---|---|---|
-| Label the three status dots (which is IBKR / GDrive / TV) | M | `pn.Row(dot, pn.pane.Markdown(label))` per service — `BooleanStatus` has no `description` on 1.9.3 | `ui-design-reference.md` §8.2 |
+| ~~Label the three status dots~~ | — | **Superseded 2026-09-03:** the dots became labelled buttons (§2.6) | — |
+| Faster first IBKR light | S | the checker's first poll runs at start, before the session owner's first read, so the IBKR button starts red for up to 60 s on a healthy gateway (§1.2). Either delay the first poll until `GatewaySession` has read once, or poll at 5 s until the first `LIVE` | pre-existing with the dots; visible now that the log records the false "disconnected" |
+| System log feed height | S | `panel_system_log._FEED_HEIGHT` (240 px) — at a 680 px window an expanded log leaves one chat bubble visible | §1.2 |
 | Hide timestamp / copy icon | S | `message_params` (§2.5) | copy icon is arguably useful; decide by use |
 | Icon-only footer, tooltips | S | `show_button_name=False`, `show_button_tooltips=True` | moot with Send only |
 | Ctrl-Enter to send | S | `enter_sends=False` on the `ChatAreaInput` | multi-line drafts without accidental sends |
@@ -308,13 +371,20 @@ Cost: **S** = one parameter or line, **M** = one function plus a test, **L** = i
    or accept that a flip ends the session and say so in the UI.
 2. **Buttons under the box** — a live CSS probe against the nested input row (§3.3). If it
    fails, the Panel-native alternative is our own `pn.Row` of buttons *below* the
-   `ChatInterface` with `show_send=False` (Enter still sends).
+   `ChatInterface` with `show_send=False` (Enter still sends). **Partly moot since
+   2026-09-03:** the action bar is exactly such a `pn.Row` below the `ChatInterface`; only
+   Send itself remains in the nested input row.
 3. **Saved presets** ("templates" in the user's words): a small settings file (`TOML`) the env
    vars in §1 read from, so a look can be named and switched. Only worth it once there are
    more than a handful of knobs — today there are two env vars.
 4. **Screenshot gallery** — before/after captures per phase in `docs/panel/screenshots/`
    (git-ignored; register each in its README with the account-data column filled honestly).
-5. **Status dot labels** (§4, first row) — the most-asked "which dot is which" gap.
+5. ~~**Status dot labels**~~ **Superseded 2026-09-03** — the dots are now the three labelled
+   reconnect buttons of the action bar (§2.6).
+7. **"+" attachment button** in the input row (deferred 2026-09-03, see §2.6 for why): the
+   Panel-native shape is a `button_properties` icon button beside Send whose click *reveals* a
+   small picker row under the box; opening the OS picker directly is a browser-side workaround.
+   Cost: S for the reveal version, plus a live look at the input row's stylesheet scope.
 6. ~~**Intro / "connected" card**~~ **Shipped 2026-09-02, same day** — see the §1 table row.
    Original note, kept for the reasoning: show the standing portrait
    (`~/Documents/Claudia_docs/claudia_standing.png`, to be resized to ~480 px tall and stored as

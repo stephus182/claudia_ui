@@ -30,9 +30,11 @@ session and a login that can fail in ways no retry fixes. The drift record makes
 of the fourteen stale claims found in this file on 2026-08-06, **every one was an IBKR
 claim.**
 
-What stays here: the status-dot mechanics above, and the two services below.
+What stays here: the status-light mechanics above, and the two services below. (Since
+2026-09-03 the lights are the colours of the action bar's `[IBKR] [TradingView] [Drive]`
+buttons, not dots; a click on a button **reconnects** — `docs/panel/ui-customisation-reference.md` §2.6.)
 
-One IBKR fact belongs on this page because it is about the **dot**, not the session:
+One IBKR fact belongs on this page because it is about the **light**, not the session:
 the light is green only when `GatewaySession`'s phase is `LIVE` — authenticated, connected
 **and** confirmed against a real data endpoint. `check_ibkr()` performs no HTTP; it reads
 the owner's cached state. `/portfolio/*` and `/iserver/*` are separate subsystems that have
@@ -105,7 +107,8 @@ failed at session start and no bridge was created).
 ### Reconnection process
 
 1. Status light turns red or gray
-2. Click **"Launch TradingView"** button in the ClaudIA welcome message
+2. Click the **TradingView** button in the action bar under the chat (until 2026-09-03: the
+   "Launch TradingView" button in the welcome message)
    — or manually: `open -a "Trading View" --args --remote-debugging-port=9222`
 3. ClaudIA polls CDP port for up to 30s
 4. On success: sidecar restarts, tools become available, light turns green
@@ -155,10 +158,12 @@ claudia/status.py          — ConnectivityChecker: check_gdrive(), check_tradin
 claudia/gdrive_sync.py     — GDriveSync.ping(), upload_db(), download_db()
 claudia/tradingview.py     — CDP health probe behind check_tradingview()
 claudia/panel_app.py       — ConnectivityChecker construction (passes gdrive_sync=);
-                             pn.indicators.BooleanStatus dots updated in-session via a
-                             periodic callback
+                             the action bar repainted in-session via a periodic callback;
+                             the three reconnect coroutines (_build_action_bar)
+claudia/panel_action_bar.py — the buttons whose colour is the light (2026-09-03)
+claudia/panel_system_log.py — where connectivity alerts land now (2026-09-03)
 # IBKR gateway modules are listed in docs/ibkr-gateway.md, not here.
-# Post Phase-11 cutover: status is shown by in-session Panel BooleanStatus indicators.
-# The Chainlit custom.js status bar polling GET /api/status was removed (no such HTTP route
-# in panel_app — the dots are pushed over Panel's own websocket).
+# Post Phase-11 cutover: status is shown in-session by Panel widgets (BooleanStatus dots until
+# 2026-09-03, Button colours since). The Chainlit custom.js status bar polling GET /api/status
+# was removed (no such HTTP route in panel_app — state is pushed over Panel's own websocket).
 ```

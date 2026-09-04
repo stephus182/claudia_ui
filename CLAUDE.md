@@ -9,7 +9,9 @@ ClaudIA is a Panel-based trading assistant chatbot that connects to Interactive 
 ```
 Panel UI (localhost:8001 — native pn.serve Tornado, no FastAPI/uvicorn)
     ↓
-claudia/panel_app.py        — pn.serve entry: session lifecycle, status dots, startup action buttons
+claudia/panel_app.py        — pn.serve entry: session lifecycle, the reconnect coroutines, layout root
+claudia/panel_system_log.py — System log: collapsed card + read-only feed for session-level events (not the chat)
+claudia/panel_action_bar.py — action bar: IBKR/TradingView/Drive reconnect buttons lit by ConnectivityChecker
 claudia/panel_sink.py       — PanelMessageSink: agent output → pn.chat.ChatInterface (MessageSink protocol)
 claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_flow.py cores
 claudia/panel_pinescript.py — Pine-fence copy (real clipboard) / inject buttons
@@ -105,7 +107,7 @@ cd ~/.tradingview-mcp && npm install && cd -   # pure JS — no build step
 # 7. Run ClaudIA
 ./start-claudia.sh            # recommended: IBKR gateway + ClaudIA
 # or:
-python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" button available)
+python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat starts the gateway)
 # → Open http://localhost:8001
 ```
 
@@ -114,7 +116,7 @@ python -m claudia.panel_app   # ClaudIA only (in-chat "Start IBKR Gateway" butto
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (1,617 tests as of 2026-09-02)
+pytest        # full suite — all unit, no IBKR gateway needed (1,643 tests as of 2026-09-03)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
@@ -252,7 +254,11 @@ a real import ("expanded and loaded into context at launch"); backtick-wrapping 
 literal path instead. See `docs/plans/2026-07-10-claude-md-delink-imports.md` for
 the fix that established this (75,480 → 2,910 tokens/session).
 
-- Connectivity (IBKR/GDrive/TV status dots, check logic, reconnection flows): `docs/connectivity.md`.
+- Connectivity (IBKR/GDrive/TV status lights, check logic, reconnection flows): `docs/connectivity.md`.
+  Since 2026-09-03 the lights are the colours of the action bar's buttons under the chat, and a
+  click **reconnects** (IBKR through the session owner's read-only pre-flight, never a forced
+  re-login); session-level events go to the collapsed **System log** card, not the chat —
+  routing rule and button table in `docs/panel/ui-customisation-reference.md` §2.6.
   **Before opening the IBKR login page — from a script, a button, or by hand — run
   `python -m claudia.gateway_preflight`** (read-only: two GETs, never a write). Only one
   brokerage session exists per username across Client Portal, TWS and IBKR Mobile, so a

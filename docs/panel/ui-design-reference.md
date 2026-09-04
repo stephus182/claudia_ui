@@ -56,6 +56,9 @@ defaults:
 - Three status dots flush to the top-left corner. **No label text is visible beside them** —
   from the UI alone you cannot tell which dot is IBKR, GDrive or TradingView (the `label=`
   values are set in code but do not render as adjacent text in this capture).
+  **Gone since 2026-09-03:** the dots became the action bar's three labelled reconnect
+  buttons at the bottom of the chat column, and the "System" message that carried the action
+  buttons went with them (`ui-customisation-reference.md` §2.6).
 - Grey circular avatars with a letter/glyph, the author name as plain text above each bubble,
   light-grey rounded message bubbles, and a copy/like icon pair plus an `HH:MM` timestamp
   beneath every message.
@@ -311,7 +314,9 @@ Do not re-litigate these during a restyle:
 | `pn.pane.HoloViews` embedding + `pane.object=` refresh | Shipped (`panel_chart.py`) |
 | Real client-side clipboard via `js_on_click` | Shipped (`panel_pinescript.py`) |
 | Button `loading` spinner | Shipped (chart Load button) |
-| `BooleanStatus` as a status dot | Shipped, with the labelling gap noted in §1 |
+| `BooleanStatus` as a status dot | Shipped 2026-07, **retired 2026-09-03** — replaced by `Button(color=…)` as the light (`panel_action_bar.py`) |
+| `pn.Card(collapsed=True)` holding a read-only `ChatFeed` | Shipped 2026-09-03 (`panel_system_log.py`) |
+| `Button.color` / `disabled` / `loading` repainted from a periodic callback | Shipped 2026-09-03 (`panel_action_bar.ActionBar.repaint`) |
 | `label=` / `color=` over `name=` / `button_type=` | Required — see `panel-reference.md` §6 |
 
 ---
@@ -349,14 +354,13 @@ this is either a text post-processing pass in claudia_ui or a change in the othe
 real test corpus — misclassifying a sign is worse than no color at all. Red/green only, or a
 neutral for flat? And color must not be the *only* signal (accessibility).
 
-### 8.2 Label the status dots
+### 8.2 Label the status dots — CLOSED 2026-09-03
 
-`pn.indicators.BooleanStatus` on 1.9.3 exposes `name` and `label` but **no `description`
-parameter** (verified against the installed package), so a hover tooltip is not available on
-the indicator itself. The workable options are a `pn.Row(dot, pn.pane.Markdown(label))` pair
-per service, or wrapping each dot in a tooltip-capable container.
-**Cost:** small. **Open question:** does `label` render in some layout context we are not
-using? Worth a five-minute live check before building the Row-pair workaround.
+*(Kept for the reasoning.)* `pn.indicators.BooleanStatus` on 1.9.3 exposes `name` and `label`
+but **no `description` parameter** (verified against the installed package), so a hover
+tooltip was not available on the indicator itself. The user's answer was better than a label:
+the dots became **buttons**, whose text is the label, whose `color` is the light, and whose
+`description` is the tooltip — and a click reconnects. See `ui-customisation-reference.md` §2.6.
 
 ### 8.3 Adopt `pn.extension(design=..., theme='dark')`
 
@@ -383,7 +387,7 @@ that or build a thin layer above it?
 ### 8.5 Adopt a template for page chrome
 
 A template gives header, sidebar, main and modal. The sidebar is the natural home for the
-status dots and the chart controls, pulling non-conversation UI out of the chat column; the
+action bar and the chart controls, pulling non-conversation UI out of the chat column; the
 modal is the right place for destructive confirms. **Measured 2026-09-02:** the Fast
 template's built-in `theme_toggle` is a page reload (`panel/template/fast/js/fast_template.js:39-49`),
 which in ClaudIA is a new session — it must be hidden or labelled as such

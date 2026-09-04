@@ -47,7 +47,9 @@ gateway). Serving behavior was verified by `docs/probes/pnserve_probe.py`.
 
 | Module | Lines | Responsibility |
 |---|---|---|
-| [`claudia/panel_app.py`](../../claudia/panel_app.py) | 1000 | `pn.serve` entry, session lifecycle, status dots, action buttons, screenshot upload, layout root |
+| [`claudia/panel_app.py`](../../claudia/panel_app.py) | 1000 | `pn.serve` entry, session lifecycle, the reconnect coroutines behind the action bar, screenshot upload, layout root |
+| [`claudia/panel_system_log.py`](../../claudia/panel_system_log.py) | 80 | System log: collapsed `pn.Card` + read-only `ChatFeed`; `say(text, level)` (2026-09-03) |
+| [`claudia/panel_action_bar.py`](../../claudia/panel_action_bar.py) | 130 | Action bar: IBKR / TradingView / Drive reconnect buttons lit by `ConnectivityChecker`, + End Session (2026-09-03) |
 | [`claudia/panel_sink.py`](../../claudia/panel_sink.py) | 132 | `PanelMessageSink` — agent output → `ChatInterface` |
 | [`claudia/panel_order_flow.py`](../../claudia/panel_order_flow.py) | 165 | Order/cancel/modify proposals → buttons → `order_flow.py` cores |
 | [`claudia/panel_chart.py`](../../claudia/panel_chart.py) | 259 | External HoloViews candlestick pane |
@@ -127,13 +129,20 @@ The complete UI structure, verbatim from
 [`_build_session_root`](../../claudia/panel_app.py#L950-L957):
 
 ```
-pn.Row(                              sizing_mode="stretch_both"
-├── pn.Column(
-│   ├── pn.Row(BooleanStatus×3, FileInput)     ← status dots + screenshot upload
-│   └── pn.chat.ChatInterface                  ← the conversation
-└── build_chart_pane()                         ← pn.Column: controls / status / pn.pane.HoloViews
+pn.Column(                                   sizing_mode="stretch_both"
+├── dashboard.kpi_strip                      ← KPI tiles + staleness line (2026-08-04)
+└── pn.Row(                                  sizing_mode="stretch_both"
+    ├── pn.Column(                           sizing_mode="stretch_both"
+    │   ├── pn.chat.ChatInterface            ← the conversation (stretch_both: feed scrolls inside)
+    │   ├── SystemLog.card                   ← pn.Card, collapsed: session-level events (2026-09-03)
+    │   ├── FileInput                        ← screenshot upload
+    │   └── ActionBar.row                    ← [IBKR] [TradingView] [Drive] [End Session]
+    └── dashboard.tabs                       ← Tabs( Chart · Positions · Orders · P&L )
 )
 ```
+
+*(The tree above was a bare `pn.Row(Column(dots-row, chat), chart)` from 2026-07-24 until the
+dashboard of 2026-08-04 and the 2026-09-03 restructure; the two dated notes are what changed.)*
 
 **There is no template, no sidebar, no header, and no modal.** Split ratio and
 side-by-side-vs-tabs are explicitly deferred restyle decisions
@@ -258,20 +267,21 @@ the shared loop freezes every live session.
 
 ---
 
-## 7. Status dots
+## 7. Status lights (the action bar's buttons — dots until 2026-09-03)
 
-[`_make_status_indicators`](../../claudia/panel_app.py#L284) builds one
-`pn.indicators.BooleanStatus` per service, keyed exactly like
-`ConnectivityChecker.get_status()`. [`_apply_status`](../../claudia/panel_app.py#L295) maps:
+`panel_action_bar.ActionBar` builds one `pn.widgets.Button` per service, keyed exactly like
+`ConnectivityChecker.get_status()` (`SERVICE_LABELS`; the two key sets are pinned against each
+other in `tests/test_panel_action_bar.py`). `ActionBar.repaint` maps:
 
-| `ServiceStatus` | `value` | `color` | Appearance |
+| `ServiceStatus` | `color` | Appearance | Click |
 |---|---|---|---|
-| `OK` | `True` | `"success"` | lit green |
-| `ERROR` | `True` | `"danger"` | lit red |
-| `UNKNOWN` | `False` | `"dark"` | unlit gray — not-yet-checked, **not** an error |
+| `OK` | `"success"` | green | reconnect anyway — for IBKR the pre-flight answers "already authenticated" and nothing opens |
+| `ERROR` | `"danger"` | red | reconnect |
+| `UNKNOWN` | `"light"` | grey — not configured / not checked yet, **not** an error | IBKR and TradingView: reconnect; Drive: **disabled**, tooltip says to set `GOOGLE_DRIVE_FOLDER_ID` |
 
-The mapping dict is `Literal`-typed so mypy accepts assignment into `BooleanStatus.color`'s
-`Literal[...]` parameter ([`:301-307`](../../claudia/panel_app.py#L301-L307)).
+The reconnect coroutines are injected from `panel_app._build_action_bar`; the bar itself imports
+neither IBKR nor `panel_app`. Disable-first + `loading` while a reconnect runs, always
+re-enabled in `finally`, and `repaint` leaves a busy button alone.
 
 **Two different intervals — do not conflate them:**
 
@@ -281,16 +291,29 @@ The mapping dict is `Literal`-typed so mypy accepts assignment into `BooleanStat
   (`POLL_INTERVAL = 60`, [`status.py:31`](../../claudia/status.py#L31)) — that interval is set
   by IBKR's `/tickle` keepalive requirement, not by the UI.
 
-Alerts are separate from dots: `ConnectivityChecker` pushes pre-formatted text to an async
-subscriber that calls `chat.send` directly, which is safe because the checker's poll task runs
-on the same process-wide loop as the session ([`:314-323`](../../claudia/panel_app.py#L314-L323)).
+Alerts are separate from the lights: `ConnectivityChecker` pushes pre-formatted text to an
+async subscriber (`_make_alert_subscriber`) that writes the **System log** as a `warning`
+(entry + toast) — since 2026-09-03 no longer the chat. A direct feed send is safe because the
+checker's poll task runs on the same process-wide loop as the session.
 
 ---
 
-## 8. Action buttons
+## 8. Action buttons → the action bar (2026-09-03)
 
-Sent as one `pn.Row` inside a chat message
-([`_send_action_buttons`](../../claudia/panel_app.py#L326)):
+Until 2026-09-03 the buttons were sent as one `pn.Row` inside a "System" chat message
+(`_send_action_buttons`), and "Start IBKR Gateway" / "Launch TradingView" existed only when the
+service was offline at init. Now `ActionBar.row` sits at the bottom of the chat column, the
+three service buttons **always** exist, and state lives in their colour (§7). End Session is
+the fourth button, `light`, unchanged in behaviour. The per-service reconnect logic is
+unchanged too — the handlers moved verbatim into `panel_app._build_action_bar` with their
+progress lines redirected from `chat.send` to `SystemLog.say`.
+
+The System log itself (`panel_system_log.SystemLog`) is a collapsed `pn.Card` under the input
+holding a read-only `pn.chat.ChatFeed` (`height=240`, so it scrolls inside the card and the
+pinned layout holds). The routing rule for what goes there and what stays in the chat:
+`ui-customisation-reference.md` §2.6.
+
+Original table, for the record:
 
 | Button | Shown when | `color` |
 |---|---|---|
@@ -435,7 +458,8 @@ files, so re-count rather than trust this table).
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_panel_app.py` | 60 | Factory/callback wiring, Drive-DB-before-store ordering, init failure paths, doc versioning, opening status, watchdog alert delivery, singleton lifecycle, cleanup + destroy hook, all three action buttons, Flex sync, status dots, screenshot upload |
+| `tests/test_panel_app.py` | 60 | Factory/callback wiring, Drive-DB-before-store ordering, init failure paths, doc versioning, opening status, watchdog alert delivery, singleton lifecycle, cleanup + destroy hook, the reconnect coroutines, Flex sync, System-log routing (incl. the source-scan guard), left-column composition, screenshot upload |
+| `tests/test_panel_system_log.py`, `tests/test_panel_action_bar.py` | 5 + 11 | The two 2026-09-03 modules headless: card state and count, toast levels, colour mapping, disable-first, error re-enable, busy-guard on repaint |
 | `tests/test_panel_pinescript.py` | 18 | Block-extraction edge cases, per-block closure correctness, `js_on_click` args, inject success/failure classification |
 | `tests/test_panel_chart.py` | 28 | Pane composition, `_on_load` cache/fetch/error/spinner paths and failure messaging, `build_chart_object` HoloViews assembly (wicks/bodies/SMA/volume, width scaling, column-order independence, 1-row refusal) |
 | `tests/test_panel_sink.py` | 10 | Message routing, pine detection, `ChatStep` streaming + failure, proposal delegation |

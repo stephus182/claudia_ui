@@ -25,7 +25,7 @@ Distinct from:
   Serving model (`pn.serve`, `websocket_origin`, SIGTERM translation), session lifecycle (the
   init gate, the `_init_lock` data-integrity rationale, the V4 destroy contract), the layout
   tree, the `MessageSink` seam, the widget idioms and gotchas that cost real debugging time,
-  status dots, the **HoloViews chart pane** (§9 — including the positional column-binding trap
+  status lights (buttons since 2026-09-03), the **HoloViews chart pane** (§9 — including the positional column-binding trap
   and the live production case where min-spacing beats median), how the 123 Panel tests drive
   buttons with no browser, how to assert on a HoloViews chart, **what does and does not prove a
   served app renders** (§10), and the version/dependency state. Every claim cites a `file:line`.
@@ -40,7 +40,9 @@ Distinct from:
   `CLAUDIA_THEME` + `?theme=`, ClaudIA's avatar, the human's label, Send-only footer, no reaction
   icons), the how-tos, the executed findings each rests on (the theme is session-scoped in
   `pn.config`; the Fast template's theme switch is a page reload), a costed **menu** of the next
-  easy changes, the phase-2 candidates, and its own dated source index.
+  easy changes, the phase-2 candidates, and its own dated source index. **2026-09-03:** §2.6
+  adds the System log (session events out of the chat, into a collapsed card) and the action
+  bar (the three status dots became labelled reconnect buttons), with the routing rule.
 - [Panel component model reference](component-model-reference.md) — **how a component is built,
   wired and updated.** Started 2026-08-01. The object taxonomy (widgets / panes / indicators /
   layouts / templates / notifications) and the *real* class hierarchy underneath it (an Indicator
