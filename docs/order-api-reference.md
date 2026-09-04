@@ -102,9 +102,51 @@ routing depends on `sec_type`:
 **Futures (FUT):**
 - Conid resolved via `IBKRClient.get_futures()` → `/trsrv/futures`, front month picked by lowest `expirationDate`
 - `/iserver/secdef/search` does **not** support FUT — do not use it for futures conid resolution
-- `manualIndicator: True` and `extOperator: "ClaudIA"` added automatically (CME Rule 536-B, mandatory since May 1, 2025)
+- `manualIndicator: True` added automatically (CME Rule 536-B, mandatory since May 1, 2025). `extOperator` is
+  **not** sent: IBKR rejects any non-empty value as undocumented field 8089 on this account class — proven by
+  whatif isolation 2026-07-23 (`order_flow.py`, the field-spec comment). This line said "added automatically"
+  until 2026-09-04; the code had stopped sending it on 2026-07-23.
 - Contract multiplier fetched from `/trsrv/futures` response and passed as `_multiplier` display field
 - Gate 2 dialog shows correct notional: `price × qty × multiplier`
+
+### Stop orders on US futures — what IBKR does with them (scraped 2026-09-04)
+
+Established before a live ES buy-stop test, from IBKR's own pages (local copies in
+`.firecrawl/ibkr/`, git-ignored):
+
+1. **A plain `STP` carries its stop in `price`, not `auxPrice`, on the Web API.** IBKR's Web
+   API lesson: *"To create a Stop order, we will change the order type from LMT to STP … We
+   will still use our price field to designate our stop price."* The TWS API is different
+   (`order.auxPrice = stopPrice`) — do not "fix" ours to match it. `order_flow.py` sends
+   `STP → price`, `STOP_LIMIT → price` (limit) + `auxPrice` (stop). ✔ matches the source.
+   Source: <https://www.interactivebrokers.com/campus/trading-lessons/placing-orders/>
+2. **Stops on US futures are simulated by IBKR and, by default, trigger only during RTH.**
+   *"Interactive Brokers provides customers with simulated stop orders … simulated stop orders in
+   U.S. futures contracts other than single stock futures will only be triggered during regular
+   trading hours unless you specify otherwise."* CME/Globex: stop-**limit** orders configured to
+   trigger outside RTH are native to Globex, with the constraint buy limit ≥ stop / sell limit
+   ≤ stop. Source: <https://www.interactivebrokers.com/en/trading/us-futures-stop-order.php>
+3. **"Specify otherwise" is the `outsideRTH` order attribute.** IBKR staff, on the outside-RTH
+   lesson: MKT/LMT orders on a CME future *"are active throughout the 24 hour trading day … and
+   do not require the Outside RTH attribute"* — stops are not in that list, and where the
+   attribute is not applicable it is *"grayed out"*. Source (article + the staff replies in the
+   comments): <https://www.interactivebrokers.com/campus/trading-lessons/trading-outside-regular-trading-hours-rth/>.
+   The Web API field is `outsideRTH: bool` (place-order example shows it on a GTC TRAILLMT):
+   <https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md>
+4. **ClaudIA cannot set it today.** `propose_order` has no `outside_rth` field and
+   `_execute_staged_order_core` never sends `outsideRTH` (the field-spec comment lists it as
+   "no — allow execution outside regular trading hours" and the body omits it). So a GTC stop on
+   ES placed through ClaudIA rests overnight but is eligible to trigger only in the RTH session.
+   Gap #29 in `docs/project-status.md`; the fix is a strict-schema field (live-API probe first,
+   per the `proposal_tools` docstring), passed through to the body and **shown in the Gate 2
+   dialog** — an attribute that changes when an order can fire belongs in the human's view.
+5. **Which contract a FUT proposal lands on.** Without `conid`, the resolver picks the lowest
+   `expirationDate` from `/trsrv/futures`: for ES on 2026-09-04 that is the **2026-09-18**
+   contract (conid 649180671), two weeks from expiry — a GTC order on it ends at expiry. A
+   proposal that carries `conid` wins outright (rule (1) above), so a further-out contract *is*
+   expressible: have ClaudIA read `get_futures` and put the wanted contract's conid in the
+   proposal. Measured the same day: ES last 7715.00 at 11:25 ET; the full chain lists Sep-2026
+   through Jun-2031.
 
 **Futures Options (FOP):**
 - `/iserver/secdef/search` does not document FOP either, and FOP conid can't be derived from

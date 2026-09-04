@@ -38,6 +38,9 @@ guessing paths.
 | Ping / `tickle` | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md> |
 | Authentication status | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/authentication-status.md> |
 | Orders / modify (two-call pattern) | <https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/> |
+| Orders / place — Web API lesson (`STP` uses `price`) | <https://www.interactivebrokers.com/campus/trading-lessons/placing-orders/> |
+| Stop orders on US futures — simulated, RTH-only unless `outsideRTH` | <https://www.interactivebrokers.com/en/trading/us-futures-stop-order.php> |
+| Outside-RTH attribute — eligibility by product (CME MKT/LMT need none, stops do) | <https://www.interactivebrokers.com/campus/trading-lessons/trading-outside-regular-trading-hours-rth/> |
 | IBKR Campus (general) | <https://www.interactivebrokers.com/campus/ibkr-api-page/> |
 | Competing-session / gateway launch walkthrough | <https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/> |
 
