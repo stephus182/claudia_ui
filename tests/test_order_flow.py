@@ -1868,9 +1868,10 @@ async def test_modify_field_comparison_tolerates_ibkr_number_formatting():
 
 @pytest.mark.asyncio
 async def test_modify_says_plainly_that_price_is_not_verifiable():
-    """IBKR's order-status response carries no discrete limit/stop price field, so a
-    price change cannot be machine-verified. Say that, and surface IBKR's own
-    order_description so the human can read the resting price themselves."""
+    """A status response WITHOUT a limit_price/stop_price (the documented shape) cannot
+    verify a price change. Say that, and surface IBKR's own order_description so the human
+    can read the resting price themselves. (Measured 2026-09-04: the live response usually
+    does carry them — see the two tests below — so this is the fallback, not the rule.)"""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, order_description="BUY 1 AAPL LMT 105.00 GTC")
     contents = _sent_contents(await _run_modify(_make_modify_action(), ibkr_mod))
@@ -2265,3 +2266,62 @@ def test_modify_readback_caveats_outside_rth_when_ibkr_does_not_report_it():
     assert "outside RTH True" not in line
     # the other fields still confirm on their own
     assert "quantity 1" in line
+
+
+# ── Price verification on the modify read-back (measured 2026-09-04) ─────────
+#
+# The order-status response carries `limit_price` for a limit order and `stop_price` for a
+# stop — undocumented, like `outside_rth`. Measured on three resting orders: AAPL LMT
+# limit_price '150.00'; external ES LMT '7660.00'; ES STP stop_price '7732.00' with
+# limit_price ''. Until then every price modify was reported "could not be verified" on the
+# strength of the documented shape, and the live modify of 2026-09-04 12:40 read that way.
+
+
+@pytest.mark.asyncio
+async def test_modify_readback_verifies_a_stop_price_from_stop_price():
+    """The live case: STP moved 7735 → 7732, status stop_price '7732.00' → verified."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    _set_readback(client, order_type="STP", stop_price="7732.00", limit_price="")
+    action = _make_modify_action({
+        "order_id": "853170745", "conid": 649180671, "symbol": "ES", "action": "BUY",
+        "quantity": 1, "order_type": "STP", "stop_price": 7732.0, "tif": "GTC",
+        "sec_type": "FUT", "outside_rth": True,
+        "changes": [{"field": "stop_price", "previous_value": 7735.0}],
+    })
+    contents = _sent_contents(await _run_modify(action, ibkr_mod))
+    assert any("stop price 7732.0" in c for c in contents)
+    assert not any("price could not be verified" in c for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_modify_readback_verifies_a_limit_price_from_limit_price():
+    """LMT: the request's `price` is compared against the status's `limit_price`."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    _set_readback(client, limit_price="105.00")
+    contents = _sent_contents(await _run_modify(_make_modify_action(), ibkr_mod))
+    assert any("limit price 105.0" in c for c in contents)
+    assert not any("price could not be verified" in c for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_modify_readback_reports_a_price_that_did_not_land():
+    """A limit read back at the OLD price is a mismatch — the whole point of reading back."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    _set_readback(client, limit_price="100.00")
+    contents = _sent_contents(await _run_modify(_make_modify_action(), ibkr_mod))
+    assert any("does NOT match" in c and "limit price" in c for c in contents)
+
+
+def test_compare_modify_readback_checks_both_prices_of_a_stop_limit():
+    """STOP_LIMIT: `price` ↔ limit_price and `auxPrice` ↔ stop_price, each on its own."""
+    from claudia.order_flow import _compare_modify_readback
+
+    body = {"quantity": 1, "orderType": "STOP_LIMIT", "tif": "GTC", "side": "BUY",
+            "price": 7740.0, "auxPrice": 7735.0}
+    status = {"total_size": 1, "order_type": "STOP_LIMIT", "tif": "GTC", "side": "B",
+              "limit_price": "7740.00", "stop_price": "7735.00"}
+    agree, line = _compare_modify_readback(body, status)
+    assert agree is True and "limit price 7740.0" in line and "stop price 7735.0" in line
+    status["stop_price"] = "7730.00"
+    agree, line = _compare_modify_readback(body, status)
+    assert agree is False and "stop price" in line

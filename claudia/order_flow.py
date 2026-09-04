@@ -700,12 +700,31 @@ _MODIFY_READBACK_FIELDS = (
 )
 """The fields IBKR's order-status response exposes discretely AND that a modify sets.
 
-Price is absent on purpose: the documented response has no limit/stop price field —
-`average_price` is "the average price of execution", not the resting price — so a price
-change is not machine-verifiable here. It is reported as such rather than parsed out of
-`order_description`, which would be a string heuristic dressed as a fact. `outsideRTH`
-is listed but only sometimes observable (see the tuple's comment); when the response
-lacks it the read-back says so explicitly rather than reporting the modify as matched."""
+Prices are not in this tuple because which status field holds them depends on the order
+type — see `_price_readback_fields`. Until 2026-09-04 they were "absent on purpose": the
+*documented* response has no limit/stop price field (`average_price` is "the average price
+of execution"). The live response does — `limit_price` on a limit order, `stop_price` on a
+stop, measured on three resting orders — so a price is now compared when the field is
+present and caveated only when it is not. `outsideRTH` is likewise only sometimes observable
+(see the tuple's comment); an absent field never counts as agreement."""
+
+
+def _price_readback_fields(order_body: dict) -> tuple[tuple[str, str, str], ...]:
+    """The (body key, status field, label) price pairs a modify of this order type sets.
+
+    Measured 2026-09-04 on the live account: the order-status response carries
+    `limit_price` for a limit order (`'150.00'`, `'7660.00'`) and `stop_price` for a stop
+    (`'7732.00'`, with `limit_price` `''`) — neither is in IBKR's documented response, like
+    `outside_rth`. A STOP_LIMIT sets both (`price` = limit, `auxPrice` = stop).
+    """
+    otype = str(order_body.get("orderType", "")).upper()
+    if otype == "LMT":
+        return (("price", "limit_price", "limit price"),)
+    if otype == "STP":
+        return (("price", "stop_price", "stop price"),)
+    if otype == "STOP_LIMIT":
+        return (("price", "limit_price", "limit price"), ("auxPrice", "stop_price", "stop price"))
+    return ()
 
 
 # IBKR answers with a different vocabulary than it accepts, and not even one of its own:
@@ -764,16 +783,24 @@ def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]
         agreement was never observed. Absent fields alone never *cause* a mismatch, so a
         sparse response cannot manufacture a false alarm.
 
-    A price in the request always adds an explicit caveat that the price was not
-    verified, with IBKR's own `order_description` quoted so the human can read the
-    resting price themselves.
+    A price in the request is compared against the status's `limit_price` / `stop_price`
+    (`_price_readback_fields`); only when the response lacks that field does the line carry
+    the explicit "could not be verified" caveat, with IBKR's own `order_description` quoted
+    so the human can read the resting price themselves.
     """
     matched: list[str] = []
     mismatched: list[str] = []
-    for req_key, obs_key, label in _MODIFY_READBACK_FIELDS:
+    unverified_prices: list[str] = []
+    price_fields = _price_readback_fields(order_body)
+    for req_key, obs_key, label in (*_MODIFY_READBACK_FIELDS, *price_fields):
         if req_key not in order_body:
             continue
         observed_value = status.get(obs_key)
+        if (req_key, obs_key, label) in price_fields and (
+            observed_value is None or not str(observed_value).strip()
+        ):
+            unverified_prices.append(label)
+            continue
         # A missing or blank read-back field is an absence of information, not a
         # disagreement — reporting it as a mismatch would be a false alarm, and false
         # alarms are what teach a user to ignore the real ones. (An explicit 0 is a
@@ -813,7 +840,7 @@ def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]
             f"outsideRTH={order_body['outsideRTH']!r}; read it in IBKR's own order ticket."
         )
 
-    if "price" in order_body or "auxPrice" in order_body:
+    if unverified_prices:
         description = status.get("order_description")
         evidence = (
             f"IBKR's own description of the order now resting: `{description}` — read the "
@@ -822,9 +849,10 @@ def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]
             else "and the response carried no `order_description` to read it from."
         )
         line += (
-            "\n⚠️ The **price could not be verified**: IBKR's order-status response has no "
-            "discrete limit/stop price field (`average_price` is the average price of "
-            f"execution, not the resting price). {evidence}"
+            f"\n⚠️ The **{' and '.join(unverified_prices)} could not be verified**: IBKR's "
+            "order-status response did not carry the field for this order (it usually does "
+            "— `limit_price` / `stop_price`, measured 2026-09-04 — but the documented shape "
+            f"has neither). {evidence}"
         )
     return agree, line
 

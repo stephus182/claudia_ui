@@ -397,11 +397,15 @@ reads `Submitted` — the status only proves the order exists. `_compare_modify_
 `order_type`, `tif`→`tif`, `side`→`side`, numerically first so IBKR returning `"3.0"` for a
 requested `3` is a match. A missing or blank read-back field counts as *not comparable*, never
 as disagreement — a false alarm is what teaches a user to ignore the real ones.
-**Price is not machine-verifiable here**: the documented order-status response has no discrete
-limit/stop price field (`average_price` is the average price of *execution*). Rather than parse
-it out of `order_description` — a string heuristic dressed as a fact — a price modify says
-plainly that the price could not be verified and quotes IBKR's own `order_description` so the
-human can read the resting price.
+**Prices are verified from `limit_price` / `stop_price` since 2026-09-04.** The *documented*
+order-status response has no discrete price field (`average_price` is the average price of
+*execution*), and until that day every price modify was reported "could not be verified" on
+that basis. Measured live on three resting orders, the response does carry `limit_price` on a
+limit (`'150.00'`, `'7660.00'`) and `stop_price` on a stop (`'7732.00'`, `limit_price` `''`) —
+undocumented, like `outside_rth`. `_price_readback_fields` maps the request's `price` /
+`auxPrice` to those by order type (`_compare_modify_readback`); a response that lacks the field
+still gets the plain "could not be verified" caveat with IBKR's own `order_description` quoted,
+never a value parsed out of that string.
 
 `_is_ibkr_rejection` is retained and its role narrowed: it can no longer authorise a success
 claim, only a failure one. It remains the sole detector of a dispatch that never became an
