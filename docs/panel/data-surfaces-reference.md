@@ -480,8 +480,10 @@ the agent to function.
    red. `Trend` was considered and **not** used: its `value_change` badge is a percentage, and
    P&L has no honest denominator.
 3. **Live execution feed** — `Tabulator.stream(...)` fed from `ExecutionListener` through the
-   verified `call_soon_threadsafe` bridge (§5.3). Still unbuilt; the dashboard polls at 15s
-   instead, which is sufficient for account state but not for a fill-by-fill tape.
+   verified `call_soon_threadsafe` bridge (§5.3). The tape is still unbuilt, but the feed's seam
+   exists since 2026-09-04: `ExecutionListener.subscribe` delivers each fill to every session,
+   which today shows it as an IBKR-authored chat message + toast (`docs/order-api-reference.md`
+   § Automatic execution reports). A tape would be one more subscriber.
 4. **Indicator overlays on the candlestick** — **volume subplot, MA (SMA) overlay, and zoom sync
    between the two rows shipped 2026-08-03** (`panel_chart.py`, via the HoloViews/hvplot engine —
    §1.1 D1 — not the "pure Bokeh, no new dependency" originally planned here). Hover tooltips come

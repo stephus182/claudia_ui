@@ -115,7 +115,7 @@ claudia/opening_status.py   — UI-free opening-status builders
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
 claudia/status.py           — ConnectivityChecker: polls IBKR/GDrive/TV every 60s
-claudia/execution_listener.py — ExecutionListener: WS trade-execution listener, triggers P&L checks
+claudia/execution_listener.py — ExecutionListener: WS trade-execution listener; reports every fill to each session (IBKR-authored chat message + toast), then triggers the P&L check
 claudia/tradingview.py      — tradingview-mcp sidecar, CDP health, TradingViewBridge
 claudia/gdrive_sync.py      — claudia.db + context/principles sync to Google Drive
 claudia/session_reporter.py — auto-generate session report at session end

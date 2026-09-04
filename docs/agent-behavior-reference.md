@@ -68,6 +68,10 @@ flowchart TB
   did. That separation — trigger on the left, verdict from the right — is the whole design.
 - **Display is last in the correction sequence.** A failing chat feed can cost the *user's
   view* of a correction; it must never cost the *record* of one.
+- **The channel carries one more payload since 2026-09-04**: a fill reported by IBKR's
+  execution WebSocket (`ClaudIAAgent.note_execution`, queued by `panel_app`'s fill subscriber),
+  prefixed so the model reads it as a broker record and not as its own action. Same
+  deliver-once-then-clear lifecycle as the guardrail notes.
 - **The dashed line closes the loop.** The operator note re-enters on the following turn as
   a `role: "system"` message the model cannot forge, so an uncorrected claim never becomes
   in-context precedent for the next one.

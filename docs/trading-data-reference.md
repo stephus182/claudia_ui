@@ -145,6 +145,13 @@ self-contained subscriber, consistent with ClaudIA's direct-import architecture.
 on disconnect mirrors `ibkr_core_mcp.mcp_server._stream_loop_with_retry`'s shape (delays: 5s,
 10s, 30s, 60s).
 
+**Fill reports (2026-09-04).** Before the P&L capture, the listener delivers each execution to
+its subscribers (`ExecutionListener.subscribe`, one callback per browser session) as an
+`ExecutionReport` built only from IBKR's event fields; the session shows it as an IBKR-authored
+chat message, a System-log toast, an operator note and an `execution_reported` decision row.
+The user never has to ask "did it fill?". Surfaces and rules:
+`docs/order-api-reference.md` § Automatic execution reports.
+
 Both surfaces render via the same `format_pnl_snapshot()` helper
 (`claudia/execution_listener.py`) so they can't drift out of sync — any individually
 `None` numeric field renders as "n/a" rather than discarding the whole snapshot.

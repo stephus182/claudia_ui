@@ -169,7 +169,12 @@ right after the connectivity checker (`claudia/panel_app.py`, `_init_session` st
 IBKR ping check in Phase 5.
 
 - Subscribes to IBKR's execution WebSocket feed (any order origin, not just ClaudIA's own)
-- On each trade execution, triggers a one-shot P&L snapshot check. This used to drive an
+- **Since 2026-09-04, on each trade execution it first tells every session** (each session
+  subscribes its fill callback here, next to its connectivity-alert callback, and detaches both
+  on End Session / tab close): a chat message authored **IBKR**, a System-log toast, an operator
+  note for the agent and an `execution_reported` decision row — the automatic execution report,
+  `docs/order-api-reference.md` § Automatic execution reports
+- Then, on each trade execution, triggers a one-shot P&L snapshot check. This used to drive an
   "Account P&L" line in the welcome message; that line was retired on 2026-08-05 (the
   dashboard's KPI strip polls it live). The snapshot itself still runs and is still what
   `get_live_pnl` reads

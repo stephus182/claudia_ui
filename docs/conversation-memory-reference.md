@@ -7,7 +7,7 @@ All interactions are stored in `data/claudia.db` (separate from ibkr_core_mcp's
 |---|---|
 | `sessions` | One row per Panel session, with start/end time, document hash, and `doc_version` |
 | `messages` | Full message history (user, assistant, tool calls and results) — primary memory store |
-| `decisions` | User-directed trade proposals surfaced by ClaudIA — each tagged with `doc_version`. ClaudIA does not decide to trade; it surfaces a proposal when directed by the user. The user decides at the button → Touch ID → confirmation dialog. |
+| `decisions` | User-directed trade proposals surfaced by ClaudIA — each tagged with `doc_version`. ClaudIA does not decide to trade; it surfaces a proposal when directed by the user. The user decides at the button → Touch ID → confirmation dialog. Also, since 2026-09-04, `execution_reported` rows: fills IBKR reported on the execution WebSocket and the session showed (any origin) — a broker event, in no replay allowlist. Full type list: `ConversationStore.add_decision`'s docstring. |
 | `doc_versions` | Versioned snapshots of `context.md` + `principles.md` — full text, hash, date |
 
 (A `relationships` table and a decisions FTS index were removed 2026-07-03 — never wired to
