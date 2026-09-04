@@ -105,7 +105,7 @@ authenticated flag alone never turns the dot green. It is also IBKR's documented
 prerequisite for the portfolio endpoints, so one call discharges both obligations.
 
 `ConnectivityChecker.check_ibkr()` is a cached lookup of that result and issues no HTTP,
-which is why the status dot and the dashboard KPI tiles can no longer disagree about
+which is why the IBKR light (the action bar's button since 2026-09-03) and the dashboard KPI tiles can no longer disagree about
 whether IBKR is up. The gateway answers HTTP 200 regardless of auth state, so the body is
 parsed: both `iserver.authStatus.authenticated` and `.connected` must be true.
 
@@ -235,7 +235,7 @@ sibling test proving the carve-out still reports a genuine outage as DOWN).
   fires only on positive proof: valid SSO **and** a named `CLIENT_APP` **and** an
   unauthenticated gateway. Never on absence — a warning that fires when it need not is one
   that gets ignored when it must not.
-- **The "Start IBKR Gateway" button** — hands a `GatewayManager` to
+- **The IBKR button** (in the action bar under the chat since 2026-09-03; "Start IBKR Gateway" in the welcome message before) — hands a `GatewayManager` to
   `GatewaySession.establish()`, which reads the session *before* anything touches the
   container and opens a login page only from `FREE`. It used to inline its own sequence and
   call `GatewayManager.start()` — which removes any existing container — **before** the
@@ -268,7 +268,7 @@ The two pings serve different purposes:
 
 **Gateway container stopped:**
 1. Status light turns red (connection refused, not HTTP 200)
-2. Click **"Start IBKR Gateway"** button in the ClaudIA welcome message
+2. Click the red **IBKR** button in the action bar under the chat
    — or run `./start-claudia.sh` in a new terminal
 3. Container starts; gateway Java process comes up (~30s)
 4. Browser opens `https://localhost:5055` automatically
@@ -400,6 +400,6 @@ tests/test_gateway_ownership.py — the repo-level guards that keep all of the a
 about it; `gateway_preflight` reads; `gateway_launch` presents; `ibkr_core_mcp` owns the
 container and the transport, never a session opinion.
 
-Related: `docs/connectivity.md` (Google Drive, TradingView, status dots) ·
+Related: `docs/connectivity.md` (Google Drive, TradingView, the status lights) ·
 `docs/startup-flow.md` (where the gateway sits in the launch sequence) ·
 `docs/api-reference.md` (IBKR source-of-truth URLs).

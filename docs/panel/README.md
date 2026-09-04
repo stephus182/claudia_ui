@@ -123,7 +123,7 @@ orientation:
 - **Periodic callbacks:** `pn.state.add_periodic_callback(cb, period, start=False)` +
   `pn.state.onload(cb.start)` avoids the held-event double-registration ValueError; the
   callback is session-scoped with automatic cleanup. (plan Task 6.2)
-- **Status dots:** `pn.indicators.BooleanStatus(value, color)`. **Buttons:** `label=` /
+- **Status dots** (retired 2026-09-03 for the action bar's buttons): `pn.indicators.BooleanStatus(value, color)`. **Buttons:** `label=` /
   `color=` (NOT the deprecated `name=` / `button_type=` for construction, though both
   params exist). **File upload:** standalone `pn.widgets.FileInput` + param watcher (a
   `ChatInterface` `widgets=[FileInput]` gets unpacked before the callback — does NOT work).

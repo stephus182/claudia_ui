@@ -26,7 +26,7 @@ owns a question. Within each group, the file that answers "where do I start" is 
 | File | Description |
 | --- | --- |
 | [`startup-flow.md`](startup-flow.md) | Every phase of ClaudIA startup in order — the first place to look at a failed launch |
-| [`connectivity.md`](connectivity.md) | Status dots, **Google Drive and TradingView** check logic and reconnection. IBKR moved to `ibkr-gateway.md` on 2026-08-06 |
+| [`connectivity.md`](connectivity.md) | Status lights (the action bar's buttons since 2026-09-03), **Google Drive and TradingView** check logic and reconnection. IBKR moved to `ibkr-gateway.md` on 2026-08-06 |
 | [`env-vars-reference.md`](env-vars-reference.md) | Full environment variable reference |
 | [`gdrive-sync-reference.md`](gdrive-sync-reference.md) | GDrive sync — folder layout, credential flow, error handling |
 | [`windows-compatibility.md`](windows-compatibility.md) | Windows-specific platform issues found during macOS development |
@@ -73,7 +73,7 @@ at [`panel/README.md`](panel/README.md), which indexes:
 
 | File | Description |
 | --- | --- |
-| [`panel/panel-reference.md`](panel/panel-reference.md) | How ClaudIA uses Panel — serving model, session lifecycle, layout tree, `MessageSink` seam, widget gotchas, status dots, chart pane, headless button testing, dependency state |
+| [`panel/panel-reference.md`](panel/panel-reference.md) | How ClaudIA uses Panel — serving model, session lifecycle, layout tree, `MessageSink` seam, widget gotchas, status lights (the action bar, ex-dots), chart pane, headless button testing, dependency state |
 | [`panel/ui-design-reference.md`](panel/ui-design-reference.md) | UI design & styling — the no-styling baseline, the shadow-DOM constraint, Panel's scraped styling surface (designs/themes/tokens/templates), open design questions, a proposed Track D direction, official-source index |
 | [`panel/ui-customisation-reference.md`](panel/ui-customisation-reference.md) | What the UI's adjustable settings are and how to change them — phase 1 (2026-09-02): theme default + URL override, ClaudIA's avatar, user label, Send-only footer, no reaction icons; a costed menu of the next easy changes; phase-2 candidates with their real cost |
 | [`panel/component-model-reference.md`](panel/component-model-reference.md) | How a Panel component is built, parameterised and composed — the model behind the two references above |

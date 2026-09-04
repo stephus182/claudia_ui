@@ -198,7 +198,7 @@ Read this section before touching any Panel code here. Each item cost real debug
 ### `label=` / `color=`, never `name=` / `button_type=`
 `Widget.name` raises `PendingDeprecationWarning` on Panel 1.9.3 (probe-verified), which would
 break the test suite's 1-warning gate. `label=` is the supported replacement. Applies to
-`Button`, `BooleanStatus`, `TextInput`, `Select`.
+`Button`, `BooleanStatus` (retired 2026-09-03), `TextInput`, `Select`.
 
 Three details from the 1.9.0 release notes + a 2026-07-31 probe of the installed package:
 `label`, `color` and `variant` are the **canonical** parameters and `name`, `button_type`,
@@ -329,9 +329,11 @@ Original table, for the record:
 | Start IBKR Gateway | IBKR offline | `primary` |
 | Launch TradingView | TradingView offline | `warning` |
 
-All three stream progress messages, drive blocking work through `asyncio.to_thread`, and
-force-refresh the connectivity checker afterwards. Launch TradingView rebuilds the bridge under
-`_tv_bridge_lock` and re-wires the checker and the agent's tool merge.
+All three streamed progress messages, drove blocking work through `asyncio.to_thread`, and
+force-refreshed the connectivity checker afterwards — all still true of the action bar's
+reconnects, whose progress now goes to the System log. The TradingView reconnect rebuilds the
+bridge under `_tv_bridge_lock` and re-wires the checker and the agent's tool merge, and since
+2026-09-04 quits a portless TradingView and relaunches it with the port first.
 
 ---
 
@@ -633,7 +635,7 @@ silently broke the CDP-port override (the sidecar renamed the env var) and the f
 ## 12. See also
 
 - `ui-design-reference.md` — styling surface, shadow-DOM constraint, official-source index
-- [`docs/connectivity.md`](../connectivity.md) — what the status dots are reporting
+- [`docs/connectivity.md`](../connectivity.md) — what the status lights (the action bar's buttons) are reporting
 - [`docs/startup-flow.md`](../startup-flow.md) — startup phase by phase
 - [`docs/order-api-reference.md`](../order-api-reference.md) — the full order-staging spec
   behind `panel_order_flow.py`

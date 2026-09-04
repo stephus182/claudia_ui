@@ -82,8 +82,8 @@ Four consequences, none of them visible from the taxonomy prose:
 
 1. **An Indicator *is* a Widget.** The docs say indicators "sit in between widgets and panes"
    **[S]**; in code `BooleanStatus` inherits `Widget` directly. The difference is behavioral
-   (no browser→Python edit path), not structural. Anything true of a widget's parameters is
-   true of our status dots.
+   (no browser→Python edit path), not structural. Anything true of a widget's parameters was
+   true of our status dots (retired 2026-09-03 — the action bar's `Button`s are widgets outright).
 2. **`ChatInterface` is a *layout*, not a widget.** See §12 — this is the single most
    consequential finding in this document for ClaudIA.
 3. **`ChatStep` is a `Card`, which is a `Column`.** The tool-step objects
@@ -690,7 +690,7 @@ data-source answer first.
 | 10 | `Select` has **no** `value_throttled`; only sliders and text inputs have throttling params | **[P]** |
 | 11 | Bootstrap's **JavaScript** does not work with Panel — it cannot reach into the shadow root. Its CSS is fine | **[S]** |
 | 12 | `ChatFeed` list mutation is verified **Python-side only**; live browser re-render untested | **[P]/[?]** |
-| 13 | An **Indicator is a Widget** in the MRO — widget parameter facts apply to our status dots | **[P]** |
+| 13 | An **Indicator is a Widget** in the MRO — widget parameter facts applied to our status dots (retired 2026-09-03) | **[P]** |
 | 14 | `hasattr(overlay, "Overlay")` is **`True`** on a bare HoloViews `Overlay` and returns an *empty* element — type-test with `isinstance(obj, hv.Layout)`, never `hasattr` (§3) | **[P]** |
 | 15 | Bokeh's `Model.select()` returns a **generator** (annotated `Iterable[Model]`) — `len()` on it raises `TypeError`; wrap in `list(...)` | **[P]** |
 | 16 | `pn.pane.HoloViews.linked_axes` does **not** link axes within one `Layout` — that is holoviews' own `Layout.shared_axes` (default `True`), which applies with no Panel pane involved. `linked_axes` links across *separate panes* in a Panel layout | **[P]** |

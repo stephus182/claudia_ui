@@ -58,8 +58,9 @@ Verify the port is open:
 nc -zv localhost 9222   # should print "succeeded"
 ```
 
-Without this flag, `check_cdp_running()` returns `False` and ClaudIA shows the
-"Launch TradingView" button in the welcome message.
+Without this flag, `check_cdp_running()` returns `False`, the TradingView button in the
+action bar stays neutral/red, and clicking it quits and relaunches TradingView with the flag
+(since 2026-09-04; before that the button refused and pointed at the helper script).
 
 ---
 

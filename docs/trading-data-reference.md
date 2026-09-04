@@ -206,7 +206,8 @@ the bridge exists but CDP port 9222 is unreachable.
 `GatewayManager.startup()` then starts the Panel UI.
 
 If you launch `python -m claudia.panel_app` directly and the gateway is offline,
-the welcome message shows a **"Start IBKR Gateway"** action button. Clicking it:
+the **IBKR** button in the action bar under the chat is red. Clicking it (after a
+read-only pre-flight that leaves a working session alone):
 
 1. Ensures Docker Desktop is running (launches it on macOS if needed)
 2. Starts the gateway container

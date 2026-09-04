@@ -118,9 +118,10 @@ Binary discovery order:
 6. `vendor/tradingview-mcp/index.js`
 
 - If TradingView Desktop is not running (CDP port 9222 unreachable): sidecar starts
-  but TV tools return errors. Status: UNKNOWN (gray dot).
-- If sidecar binary is missing entirely: TV tools unavailable. "Launch TradingView"
-  button shown in welcome message.
+  but TV tools return errors. Status: UNKNOWN (neutral TradingView button).
+- If sidecar binary is missing entirely: TV tools unavailable. The TradingView button in
+  the action bar under the chat launches and connects it (since 2026-09-03; before that a
+  "Launch TradingView" button in the welcome message).
 - TV offline is non-fatal — screenshot mode (Claude vision) is always available.
 
 ---
@@ -180,7 +181,9 @@ IBKR ping check in Phase 5.
 
 ## Phase 5 — IBKR gateway check
 
-**File:** `claudia/panel_app.py` → `_send_action_buttons()` (was app.py ~463–480, pre-cutover)
+**File:** `claudia/panel_app.py` → `_send_opening_status()` decides `ibkr_offline`; the
+reconnect itself lives in `_build_action_bar()` (until 2026-09-03 `_send_action_buttons()`,
+was app.py ~463–480, pre-cutover)
 
 `toolkit.client.ping()` checks `iserver/auth/status`:
 - Returns `True` only when `authenticated=true`
@@ -195,7 +198,8 @@ halves fail separately, and inferring one from the other put a "gateway not conn
 beside a dashboard drawing live balances (2026-08-04, `docs/connectivity.md`).
 
 - `ibkr_offline = True` either way — it means *the brokerage session* is down, which is what
-  the flag's consumers act on: it adds the "Start IBKR Gateway" button and defers the Flex sync
+  the flag's consumers act on: it defers the Flex sync and words the opening line (the IBKR
+  button in the action bar exists regardless — its colour carries the state)
 - account endpoints answering → `BROKERAGE_SESSION_DOWN`: the dashboard keeps drawing, and the
   chat names the half that is missing
 - neither answering → `OFFLINE_STATUS`, and the dashboard blanks to match
@@ -253,10 +257,11 @@ The welcome message includes:
 - Live orders summary — if IBKR online
 - Flex trade coverage info (date range, integrity status)
 - Market calendar block (today, trading day status)
-- Action buttons (one or more of):
-  - "Start IBKR Gateway" — only if IBKR offline
-  - "Launch TradingView" — only if TV sidecar not available
-  - "End Session" — always present
+- (Until 2026-09-03 the welcome message also carried the action buttons. They now live in
+  the **action bar** under the chat, always present: IBKR, TradingView, Drive — colour =
+  state, click = reconnect — and End Session. Session-level lines such as connectivity
+  alerts and the Flex sync result go to the **System log** card, not the chat.
+  `docs/panel/ui-customisation-reference.md` §2.6.)
 
 ---
 
@@ -270,8 +275,8 @@ The welcome message includes:
 | `context.md` not loading | Phase 1: file path, permissions (`chmod 600`), or Drive not configured |
 | Version warning at startup | Phase 2: file changed since last session — intentional, verify content |
 | TradingView unavailable | Phase 3: sidecar binary path, Node.js version, `vendor/` fallback |
-| Status dots all red | Phase 4: network issue, gateway container stopped, Drive unreachable |
-| "Start IBKR Gateway" button appears | Phase 5: gateway not running or session expired — click to start |
+| Action-bar buttons all red | Phase 4: network issue, gateway container stopped, Drive unreachable |
+| IBKR button red | Phase 5: gateway not running or session expired — click it to reconnect (pre-flight first, login only if needed) |
 | "IBKR Gateway disconnected" after login | Phase 4+5: competing session or session not fully synced — restart gateway |
 | No Flex data / stale trades | Phase 6: Flex token/query ID not set, or rate limit hit |
 | Market calendar missing from system prompt | Phase 7: exchange-calendars library issue |
@@ -305,19 +310,19 @@ No container restart. No login. Session uninterrupted.
 
 ### Session lost while ClaudIA is running (in-chat recovery)
 
-1. ConnectivityChecker detects `authenticated=false` → "IBKR Gateway disconnected" alert in chat
-2. "Start IBKR Gateway" button appears (or was already in the welcome message)
-3. User clicks → the `start_gateway` action callback (`claudia/panel_app.py` → `_send_action_buttons()`, was app.py's `on_start_gateway`) runs
-   directly — **not** `GatewayManager.startup()`, and there is no "skip if already connected"
-   check on this path. It calls `ensure_docker_running()` then `start()`, which
-   **unconditionally** removes and recreates the gateway container every time, then
-   `wait_for_gateway()` and `open_login_page()`. (The fast-path skip-if-authenticated logic
-   in `startup()` is only used by `start-claudia.sh`'s pre-Panel Phase -1, not this in-chat
-   button.)
-4. ConnectivityChecker detects recovery → "IBKR Gateway reconnected" alert
+1. ConnectivityChecker detects the session is no longer live → "IBKR Gateway disconnected"
+   line in the System log (a warning toast too), IBKR button turns red
+2. User clicks the **IBKR** button → `_build_action_bar()`'s reconnect hands a
+   `GatewayManager` to `GatewaySession.establish()`, the one shared session owner: it
+   **pre-flights first** (read-only), leaves a working session alone, starts the container
+   only if it is not running, and opens the login page only from `FREE`. Progress lines
+   stream into the System log. (Until 2026-08-06 this path called `GatewayManager.start()`
+   unconditionally, recreating the container before any pre-flight — see
+   `docs/ibkr-gateway.md`.)
+3. ConnectivityChecker detects recovery → "IBKR Gateway reconnected" line, button green
 
 **Common issues:**
 - **Login prompt on every restart**: Check `docker ps` — if the container is not running between restarts, the session is being lost before ClaudIA starts. Likely cause: Mac sleep (caffeinate should prevent this) or Docker Desktop stopping.
 - **Competing session**: Another TWS/mobile session holds the token. Log out from all other IBKR sessions, then re-authenticate via the gateway URL.
-- **Gateway starts but session drops immediately**: Competing session or IBKR 2FA timing issue. Click "Start IBKR Gateway" again for a clean state.
+- **Gateway starts but session drops immediately**: Competing session or IBKR 2FA timing issue. Click the IBKR button again — the pre-flight names a borrowed session rather than retrying it.
 - **Container present but not authenticated**: Session timed out. Full path runs — remove/recreate/login.

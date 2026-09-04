@@ -41,7 +41,7 @@ disagreement is called out (there is one — §6.5).
 | Surface | State |
 |---|---|
 | Candlestick chart | **Shipped.** HoloViews/hvplot (`pn.pane.HoloViews`, superseded 2026-08-03 — §1.1 D1), cache-backed, own Load button, STK only. [`panel_chart.py`](../../claudia/panel_chart.py) **[C]** |
-| Status dots | **Shipped.** `pn.indicators.BooleanStatus` ×3 **[C]** |
+| Status lights | **Shipped** as `pn.indicators.BooleanStatus` ×3, **retired 2026-09-03** for the action bar's `Button(color=…)` — the button's colour is the light and a click reconnects (`panel_action_bar.py`) **[C]** |
 | Tables | **Shipped 2026-08-04.** One `Tabulator` — the dashboard's positions table: `disabled=True`, `formatters`, `text_align`, `header_filters`, `header_tooltips`, `pagination='local'`, and `.style.map` for signed P&L. [`panel_dashboard.py`](../../claudia/panel_dashboard.py) **[C]** |
 | Value indicators | **Shipped 2026-08-04.** Six `pn.indicators.Number` KPI tiles with sign-threshold `colors` **[C]** |
 | Second chart | **Shipped 2026-08-04.** Realised-P&L cumulative area + daily bars, a second `pn.pane.HoloViews` **[C]** |
@@ -204,7 +204,7 @@ All 10 confirmed present as `pn.indicators.*` on 1.9.3 **[P]**: `BooleanStatus`,
 | `Number` | `value`, `format` (`'{value}'`), `colors` as `[(threshold, color), …]`, `default_color`, `font_size`, `title_size`, `nan_format` | KPI tile; thresholds give colour for free |
 | `LinearGauge` | `bounds`, `value`, `format`, `colors` (fractions or list), `show_boundaries`, `needle_color`, `unfilled_color`, `horizontal` | Compact gauge — e.g. utilization against a limit |
 | `Gauge` / `Dial` | radial equivalents | Bigger, more decorative |
-| `BooleanStatus` | `value`, `color` | Already shipped as the connectivity dots **[C]** |
+| `BooleanStatus` | `value`, `color` | Was the connectivity dots until 2026-09-03; replaced by coloured `Button`s **[C]** |
 | `Progress` / `LoadingSpinner` / `Tqdm` | | Long-task feedback; `Button.loading` already covers the shipped cases **[C]** |
 | `TooltipIcon` | `value` (tooltip text) | A candidate fix for the unlabelled-dots gap (`ui-design-reference.md` §8.2) **[?]** |
 

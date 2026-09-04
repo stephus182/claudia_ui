@@ -18,8 +18,8 @@ ClaudIA is a Panel-based trading assistant that gives you a persistent, principl
 - **Persistent memory** — all sessions, decisions, and symbol observations stored in SQLite with FTS5 search ("what did I decide about NVDA last month?")
 - **GDrive sync** — `claudia.db` and context/principles docs auto-sync to Google Drive; pick up any session from any machine
 - **Hot-reload documents** — edit `context.md` or `principles.md` while a session is open; changes apply from the next message
-- **In-chat startup buttons** — "Start IBKR Gateway" and "Launch TradingView" action buttons appear when services are offline at session start
-- **Connectivity status dots** — live IBKR / GDrive / TradingView indicators above the chat; the dots re-read status every 5s over Panel's websocket, and the underlying services are polled every 60s (IBKR's `/tickle` keepalive interval)
+- **Action bar** — IBKR / TradingView / Drive buttons under the chat whose colour is the live state (green up, red down, neutral not configured), plus End Session. A click **reconnects**: IBKR through a read-only pre-flight that never forces a re-login, TradingView by quitting a portless instance and relaunching it with the debug port, Drive by re-authenticating. Colours re-read every 5s over Panel's websocket; the services are polled every 60s (IBKR's `/tickle` keepalive interval)
+- **System log** — a collapsed, terminal-style card under the chat for everything that happens *to* the session (connectivity, Flex sync, document reloads, gateway/TradingView progress, session end); the chat keeps only the conversation
 - **Session reports** — auto-generated Markdown report at session end: tools called, decisions, errors, connectivity state
 
 ---
@@ -66,7 +66,7 @@ cd ~/.tradingview-mcp && npm install && cd -   # pure JS — no build step
 # 6. Launch
 ./start-claudia.sh             # recommended: starts IBKR gateway + ClaudIA
 # or:
-python -m claudia.panel_app    # ClaudIA only — use the in-chat "Start IBKR Gateway" button
+python -m claudia.panel_app    # ClaudIA only — the IBKR button under the chat starts the gateway
 ```
 
 Open **http://localhost:8001**
@@ -76,7 +76,7 @@ Open **http://localhost:8001**
 ## TradingView Desktop
 
 For live chart integration, TradingView Desktop must be open with remote debugging enabled.
-ClaudIA can launch it for you via the **"Launch TradingView"** button in the welcome message, or manually:
+ClaudIA launches it for you when you click the **TradingView** button under the chat (quitting and relaunching an instance that is running without the port), or manually:
 
 ```bash
 open -a "Trading View" --args --remote-debugging-port=9222
@@ -100,7 +100,9 @@ and recovery steps, including a direct CDP from Python fallback.
 ```
 Panel UI (localhost:8001 — native pn.serve Tornado)
     ↓
-claudia/panel_app.py        — pn.serve entry: session lifecycle, status dots, startup buttons
+claudia/panel_app.py        — pn.serve entry: session lifecycle, the reconnect coroutines, layout root
+claudia/panel_system_log.py — System log: collapsed terminal-style card for session-level events
+claudia/panel_action_bar.py — action bar: IBKR/TradingView/Drive reconnect buttons lit by ConnectivityChecker
 claudia/panel_sink.py       — PanelMessageSink: agent output → pn.chat.ChatInterface
 claudia/panel_order_flow.py — order/cancel/modify proposal buttons → order_flow cores
 claudia/panel_pinescript.py — Pine-fence copy (real clipboard) / inject buttons
