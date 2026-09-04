@@ -137,7 +137,7 @@ Established before a live ES buy-stop test, from IBKR's own pages (local copies 
    `_execute_staged_order_core` never sends `outsideRTH` (the field-spec comment lists it as
    "no — allow execution outside regular trading hours" and the body omits it). So a GTC stop on
    ES placed through ClaudIA rests overnight but is eligible to trigger only in the RTH session.
-   Gap #29 in `docs/project-status.md`; the fix is a strict-schema field (live-API probe first,
+   Gap #33 in `docs/project-status.md`; the fix is a strict-schema field (live-API probe first,
    per the `proposal_tools` docstring), passed through to the body and **shown in the Gate 2
    dialog** — an attribute that changes when an order can fire belongs in the human's view.
 5. **Which contract a FUT proposal lands on.** Without `conid`, the resolver picks the lowest
