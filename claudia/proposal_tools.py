@@ -139,8 +139,10 @@ _OUTSIDE_RTH: dict[str, object] = {
         "not say — never assume, and never change it on a modify unless asked."
     ),
 }
+# boolean added 2026-09-04 with `outside_rth` (review #3): a boolean prior value was
+# inexpressible, and strict mode would have steered the model into "false" / 0 / null.
 _SCALAR: dict[str, object] = {
-    "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "null"}]
+    "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "null"}]
 }
 _CHANGES: dict[str, object] = {
     "type": "array",
@@ -245,8 +247,12 @@ PROPOSE_MODIFY: dict[str, object] = {
         "user asks you to change any parameter of an order that is already working — price, "
         "quantity, order type, or time in force. Requires a get_order_status(order_id) call "
         "first in this conversation — it returns the conid and the full current field set. "
-        "Copy every field the user did NOT ask to change byte-for-byte from that result, "
-        "outside_rth included. Renders a button; modifies nothing by itself."
+        "Copy every field the user did NOT ask to change byte-for-byte from that result. "
+        "outside_rth is the exception: IBKR's order status reports it for stocks "
+        "(outside_rth) but NOT for futures, so for a futures order take it from what the "
+        "user asked when the order was placed or modified in this conversation; if you do "
+        "not know, send null — the approval text will warn that the modify resends the "
+        "order without the attribute. Renders a button; modifies nothing by itself."
     ),
     "strict": True,
     "input_schema": {

@@ -102,16 +102,17 @@ def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> s
 def _apply_outside_rth(order_body: dict, proposal: dict) -> None:
     """Copy the proposal's `outside_rth` into the body as IBKR's `outsideRTH` — only when stated.
 
-    `None` (the user did not say) sends nothing, which is today's behaviour and IBKR's
-    default; `True`/`False` go verbatim (order-parameter immutability: no fabricated value in
-    either direction). Shared by the place and modify paths so a modify — which resends the
+    `None` (the user did not say) sends nothing, which is IBKR's default; `True`/`False` go
+    verbatim, and nothing else is coerced — `_proposal_defect` rejects a non-boolean before
+    it reaches here, and this guard is the belt to that brace (order-parameter immutability:
+    no fabricated value in either direction). Shared by the place and modify paths so a modify — which resends the
     whole order — cannot drop the attribute the original carried. Why it exists: IBKR
     simulates stops on US futures and triggers them only in RTH unless this is set
     (docs/order-api-reference.md § Stop orders on US futures, 2026-09-04).
     """
     value = proposal.get("outside_rth")
-    if value is not None:
-        order_body["outsideRTH"] = bool(value)
+    if isinstance(value, bool):  # never bool(): "false" would become True (review #4)
+        order_body["outsideRTH"] = value
 
 
 def _outside_rth_line(proposal: dict) -> str | None:
@@ -125,12 +126,16 @@ def _outside_rth_line(proposal: dict) -> str | None:
     sec_type = str(proposal.get("sec_type", "STK")).upper()
     value = proposal.get("outside_rth")
     futures_stop = sec_type in ("FUT", "FOP") and otype in ("STP", "STOP_LIMIT")
-    if value:
+    # A stated value reads differently from "not set": the bodies differ (False is sent,
+    # None is not), so the approval text must too (review #5).
+    if value is True:
         return "⏰ Outside RTH: **yes** — active through the whole electronic session."
+    if value is False:
+        return "⏰ Outside RTH: **no** (stated) — regular trading hours only."
     if futures_stop:
         return (
-            "⏰ Outside RTH: **no** — IBKR triggers futures stops during regular trading "
-            "hours only; say so if you want it active through the electronic session."
+            "⏰ Outside RTH: **not set** — IBKR triggers futures stops during regular "
+            "trading hours only; say so if you want it active through the electronic session."
         )
     return None
 
@@ -652,13 +657,19 @@ _MODIFY_READBACK_FIELDS = (
     ("orderType", "order_type", "order type"),
     ("tif", "tif", "time in force"),
     ("side", "side", "side"),
+    # Measured 2026-09-04: the status of a STOCK order carries `outside_rth` (snake_case,
+    # bool); the status of a FUTURES order carries no such key at all. Present → compared;
+    # absent → skipped here and caveated below, never treated as agreement.
+    ("outsideRTH", "outside_rth", "outside RTH"),
 )
 """The fields IBKR's order-status response exposes discretely AND that a modify sets.
 
 Price is absent on purpose: the documented response has no limit/stop price field —
 `average_price` is "the average price of execution", not the resting price — so a price
 change is not machine-verifiable here. It is reported as such rather than parsed out of
-`order_description`, which would be a string heuristic dressed as a fact."""
+`order_description`, which would be a string heuristic dressed as a fact. `outsideRTH`
+is listed but only sometimes observable (see the tuple's comment); when the response
+lacks it the read-back says so explicitly rather than reporting the modify as matched."""
 
 
 # IBKR answers with a different vocabulary than it accepts, and not even one of its own:
@@ -733,6 +744,8 @@ def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]
         # value, not a blank, so it is still compared.)
         if observed_value is None or not str(observed_value).strip():
             continue
+        if req_key == "outsideRTH" and not isinstance(observed_value, bool):
+            continue  # only a real boolean is a claim about the attribute
         if _values_match(order_body[req_key], observed_value):
             matched.append(f"{label} {order_body[req_key]}")
         else:
@@ -755,6 +768,14 @@ def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]
             "**not confirmed** — nothing was observed to compare against the request."
         )
         agree = False
+
+    if "outsideRTH" in order_body and not isinstance(status.get("outside_rth"), bool):
+        line += (
+            "\n⚠️ **Outside RTH could not be verified**: IBKR's order-status response "
+            "does not report the attribute for this order (measured 2026-09-04: reported "
+            "for stocks, absent for futures). The request carried "
+            f"outsideRTH={order_body['outsideRTH']!r}; read it in IBKR's own order ticket."
+        )
 
     if "price" in order_body or "auxPrice" in order_body:
         description = status.get("order_description")
@@ -1168,6 +1189,17 @@ def _format_modify_summary(proposal: dict) -> str:
     reason = proposal.get("reason", "")
 
     lines = [f"**MODIFY order {order_id}: {symbol}**"]
+    rth_line = _outside_rth_line(proposal)
+    if rth_line and proposal.get("outside_rth") is None:
+        # A modify resends the whole order: null here DROPS the attribute the original
+        # may have carried, and IBKR does not report it for futures, so nothing downstream
+        # can catch it (review #1, measured 2026-09-04).
+        rth_line += (
+            " This modify will resend the order WITHOUT the attribute — state it if the "
+            "original had it."
+        )
+    if rth_line:
+        lines.append(rth_line)
     if changes:
         for change in changes:
             if not isinstance(change, dict):

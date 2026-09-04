@@ -380,3 +380,26 @@ def test_modify_rejects_malformed_changes(changes: Any) -> None:
     }
     errors = list(Draft202012Validator(_schema("propose_modify")).iter_errors(proposal))
     assert errors, f"schema accepted malformed changes: {changes}"
+
+
+def test_previous_value_accepts_a_boolean_for_an_outside_rth_change() -> None:
+    """Review 2026-09-04 #3: `outside_rth` became modifiable but `previous_value` admitted
+    only string | number | null, so a boolean prior was inexpressible and strict mode would
+    have steered the model into "false" / 0 / null. Booleans are now in the scalar union."""
+    ok = {
+        "order_id": "555", "conid": 649180671, "symbol": "ES", "action": "BUY", "quantity": 1,
+        "order_type": "STP", "limit_price": None, "stop_price": 7720.0, "tif": "GTC",
+        "sec_type": "FUT", "outside_rth": True, "reason": "keep it live overnight",
+        "changes": [{"field": "outside_rth", "previous_value": False}],
+    }
+    assert not list(Draft202012Validator(_schema("propose_modify")).iter_errors(ok))
+
+
+def test_modify_description_does_not_point_outside_rth_at_a_source_that_lacks_it() -> None:
+    """Measured 2026-09-04: `get_order_status` returns `outside_rth` for a stock order and
+    NO such key for a futures order (`.firecrawl/ibkr/order-status.md` documents neither).
+    The modify description must say where the value comes from for futures — the user —
+    rather than tell the model to copy a field that is not there."""
+    desc = next(t for t in PROPOSAL_TOOLS if t["name"] == "propose_modify")["description"]
+    assert "outside_rth" in desc
+    assert "futures" in desc.lower()

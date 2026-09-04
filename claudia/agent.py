@@ -1080,9 +1080,9 @@ def _proposal_defect(kind: str, inputs: dict) -> str | None:
     """Return why a proposal must be rejected, or None when it carries no defect.
 
     `strict: true` already guarantees the types, enums, required keys and closed objects of
-    `proposal_tools.py`'s schemas, so nothing here re-checks those. Four things it cannot
+    `proposal_tools.py`'s schemas, so nothing here re-checks those. Five things it cannot
     express are checked here instead, because retiring `order_proposal_schema.py` would
-    otherwise drop each guarantee silently. All four apply to every proposal kind that
+    otherwise drop each guarantee silently. Each applies to every proposal kind that
     declares the field — the schemas share `_QUANTITY` across all three tools:
 
     1. `quantity > 0` — `exclusiveMinimum` is a hard 400 on the tools endpoint (probed
@@ -1097,6 +1097,9 @@ def _proposal_defect(kind: str, inputs: dict) -> str | None:
        list rather than a probe: `uniqueItems` was never sent, because a rejected keyword
        is a registration-time 400 on every request and adding it to find out is the risk
        this handler exists to avoid.
+    5. `outside_rth` is True, False or None (2026-09-04). Strict mode types it on the API
+       path; this is the guard for every other caller, because `bool("false")` is True and
+       a coerced order attribute is a fabricated one.
 
     The type checks below are belt-and-braces against a caller that is not the strict tool
     loop (tests, a future non-API path); they are not a claim that the schema fails.
@@ -1121,6 +1124,11 @@ def _proposal_defect(kind: str, inputs: dict) -> str | None:
         order_id = inputs.get("order_id")
         if not isinstance(order_id, str) or not order_id.strip():
             return f"order_id={order_id!r} is blank"
+
+    if "outside_rth" in inputs:
+        outside_rth = inputs["outside_rth"]
+        if outside_rth is not None and not isinstance(outside_rth, bool):
+            return f"outside_rth={outside_rth!r} must be true, false or null"
 
     if kind == "modify":
         changes = inputs.get("changes")

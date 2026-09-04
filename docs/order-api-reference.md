@@ -152,7 +152,19 @@ Established before a live ES buy-stop test, from IBKR's own pages (local copies 
    approval text, the Gate 2 dialog and the Orders tab, and the read side was measured first:
    `/iserver/account/orders` returns `outsideRTH` although its doc does not list it — `False`
    on a resting AAPL GTC limit, `None` on a resting ES Sep-26 GTC limit — hence three states
-   on screen. Live verification: the user's ES buy stop, recorded in the Live Test Log.
+   on screen. `/iserver/account/order/{id}` (order status) was measured too: `outside_rth`
+   (snake_case, bool) on the stock order, **no such key at all** on the futures order. So
+   the modify read-back compares it when IBKR reports a boolean and otherwise appends an
+   explicit "could not be verified" caveat (like the price), and `propose_modify`'s
+   description tells the model the value for a futures order comes from the user, not from
+   a status field that is not there. Review record 2026-09-04 (independent, adversarial):
+   seven findings, all addressed before the live test — no `bool()` coercion (only a real
+   boolean is sent; `_proposal_defect` check #5 rejects anything else), a stated `false`
+   reads "no (stated)" while `null` reads "not set", the modify summary warns that `null`
+   resends the order without the attribute, a boolean `previous_value` is expressible in
+   `changes`, Gate 2 ignores a present-but-`None` key, and `get_live_orders` renders
+   `outsideRTH=yes|no|not-reported`. Live verification: the user's ES buy stop, recorded in
+   the Live Test Log.
 5. **Which contract a FUT proposal lands on.** Without `conid`, the resolver picks the lowest
    `expirationDate` from `/trsrv/futures`: for ES on 2026-09-04 that is the **2026-09-18**
    contract (conid 649180671), two weeks from expiry — a GTC order on it ends at expiry. A

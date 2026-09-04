@@ -1261,6 +1261,24 @@ def test_duplicate_changes_entries_are_rejected(agent):
     assert "limit_price" in result
 
 
+@pytest.mark.parametrize("value", ["false", "yes", 0, 1, 1.0])
+def test_non_boolean_outside_rth_is_rejected(agent, value):
+    """Review 2026-09-04 #4: the fifth guarantee. Strict mode types the field on the API path,
+    but the core is reachable without the schema, and bool("false") is True — a fabricated
+    value on an order attribute. Anything but True/False/None is rejected whole."""
+    result = agent._handle_local_tool("propose_order", {**VALID_ORDER, "outside_rth": value})
+    assert agent._pending_proposal is None
+    assert "rejected" in result.lower()
+    assert "outside_rth" in result
+
+
+@pytest.mark.parametrize("value", [True, False, None])
+def test_boolean_or_null_outside_rth_is_accepted(agent, value):
+    """The three legitimate states pass the defect check."""
+    result = agent._handle_local_tool("propose_order", {**VALID_ORDER, "outside_rth": value})
+    assert agent._pending_proposal is not None, result
+
+
 def test_rejection_never_repairs_the_proposal(agent):
     """Order parameters are immutable: a bad proposal is rejected whole, never normalised."""
     import copy
