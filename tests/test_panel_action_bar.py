@@ -39,10 +39,14 @@ def test_row_holds_the_three_service_buttons_then_end_session_in_order():
     assert isinstance(bar.row, pn.Row)
     assert [b.label for b in bar.row.objects] == ["IBKR", "TradingView", "Drive", "End Session"]
     assert all(isinstance(b, pn.widgets.Button) for b in bar.row.objects)
+    # Every button must read as a button: no `light` (borderless) anywhere, at build or after.
+    assert all(b.color != "light" for b in bar.row.objects)
+    assert bar.end_button.color == "default"
 
 
 def test_repaint_maps_status_to_colour():
-    """OK → success (green), ERROR → danger (red), UNKNOWN → light (grey)."""
+    """OK → success (green), ERROR → danger (red), UNKNOWN → default (white with a real
+    border — `light` is Bokeh's borderless style and melted into the page, user 2026-09-04)."""
     bar, _ = _bar()
     bar.repaint({
         "ibkr": ServiceStatus.OK,
@@ -51,7 +55,7 @@ def test_repaint_maps_status_to_colour():
     })
     assert bar.buttons["ibkr"].color == "success"
     assert bar.buttons["tv"].color == "danger"
-    assert bar.buttons["gdrive"].color == "light"
+    assert bar.buttons["gdrive"].color == "default"
 
 
 def test_repaint_ignores_unknown_keys_and_leaves_missing_ones_alone():
@@ -60,7 +64,7 @@ def test_repaint_ignores_unknown_keys_and_leaves_missing_ones_alone():
     bar.repaint({"ibkr": ServiceStatus.OK})
     bar.repaint({"nope": ServiceStatus.ERROR})
     assert bar.buttons["ibkr"].color == "success"
-    assert bar.buttons["tv"].color == "light"
+    assert bar.buttons["tv"].color == "default"
 
 
 def test_drive_unknown_is_disabled_because_nothing_is_configured():
@@ -85,7 +89,7 @@ async def test_click_awaits_the_injected_reconnect_once_and_repaints_after():
     """A click runs that service's reconnect exactly once, then repaints from `status`."""
     status = MagicMock(return_value={"tv": ServiceStatus.OK})
     bar, kw = _bar(status=status)
-    assert bar.buttons["tv"].color == "light"
+    assert bar.buttons["tv"].color == "default"
     await _get_click_callback(bar.buttons["tv"])(None)
     status.assert_called_once()
     kw["reconnect"]["tv"].assert_awaited_once()

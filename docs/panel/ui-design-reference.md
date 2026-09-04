@@ -317,6 +317,7 @@ Do not re-litigate these during a restyle:
 | `BooleanStatus` as a status dot | Shipped 2026-07, **retired 2026-09-03** — replaced by `Button(color=…)` as the light (`panel_action_bar.py`) |
 | `pn.Card(collapsed=True)` holding a read-only `ChatFeed` | Shipped 2026-09-03 (`panel_system_log.py`) |
 | `Button.color` / `disabled` / `loading` repainted from a periodic callback | Shipped 2026-09-03 (`panel_action_bar.ActionBar.repaint`) |
+| `Button(color="light")` as a neutral button | **Rejected 2026-09-04** — `.bk-btn-light` is `border-color: transparent` in Bokeh's CSS, so it reads as text on a white page; `color="default"` is the bordered neutral. `button_style="outline"` exists as the other route (not used: the filled green/red are the light) |
 | `label=` / `color=` over `name=` / `button_type=` | Required — see `panel-reference.md` §6 |
 
 ---

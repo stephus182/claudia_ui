@@ -277,7 +277,11 @@ other in `tests/test_panel_action_bar.py`). `ActionBar.repaint` maps:
 |---|---|---|---|
 | `OK` | `"success"` | green | reconnect anyway — for IBKR the pre-flight answers "already authenticated" and nothing opens |
 | `ERROR` | `"danger"` | red | reconnect |
-| `UNKNOWN` | `"light"` | grey — not configured / not checked yet, **not** an error | IBKR and TradingView: reconnect; Drive: **disabled**, tooltip says to set `GOOGLE_DRIVE_FOLDER_ID` |
+| `UNKNOWN` | `"default"` | white with a border — not configured / not checked yet, **not** an error | IBKR and TradingView: reconnect; Drive: **disabled**, tooltip says to set `GOOGLE_DRIVE_FOLDER_ID` |
+
+End Session is `"default"` too. Not `"light"`: Bokeh's `.bk-btn-light` rule ends in
+`border-color: transparent` (bokeh.js, verified 2026-09-04), so on the white page a `light`
+button is indistinguishable from loose text — the user's first remark on the live bar.
 
 The reconnect coroutines are injected from `panel_app._build_action_bar`; the bar itself imports
 neither IBKR nor `panel_app`. Disable-first + `loading` while a reconnect runs, always
@@ -317,7 +321,7 @@ Original table, for the record:
 
 | Button | Shown when | `color` |
 |---|---|---|
-| End Session | always | `light` |
+| End Session | always | `light` (borderless — replaced by `default` on 2026-09-04) |
 | Start IBKR Gateway | IBKR offline | `primary` |
 | Launch TradingView | TradingView offline | `warning` |
 

@@ -2907,7 +2907,7 @@ async def test_refresh_repaints_the_bar_from_the_checker(monkeypatch):
     bar = _action_bar(chat)
     assert bar.buttons["ibkr"].color == "success"
     assert bar.buttons["tv"].color == "danger"
-    assert bar.buttons["gdrive"].color == "light"
+    assert bar.buttons["gdrive"].color == "default"
 
 
 @pytest.mark.asyncio

@@ -2,8 +2,8 @@
 
 Replaces the status dots and the in-chat button message (2026-09-03). The rule the user
 set: a click **reconnects**, it never merely checks — the light is already accurate, that is
-the whole point. Colour is the light: green connected, red down, grey not configured (or
-not yet checked). The bar is repainted from `ConnectivityChecker.get_status()` on the same
+the whole point. Colour is the light: green connected, red down, white with a border for
+not configured (or not yet checked). The bar is repainted from `ConnectivityChecker.get_status()` on the same
 5-second timer as the dashboard, and again immediately after a reconnect finishes.
 
 Panel-only: no IBKR, no SQL, no `panel_app` import. The reconnect coroutines are injected —
@@ -27,10 +27,14 @@ _RECONNECT_HINT = "Click to reconnect"
 
 Reconnect = Callable[[], Awaitable[None]]
 
-_COLOR: dict[ServiceStatus, Literal["success", "danger", "light"]] = {
+# `default`, not `light`, for the neutral state and for End Session: Bokeh's `light` style
+# sets `border-color: transparent` (bokeh.js, `.bk-btn-light`), so a light button on the
+# white page reads as loose text with no edge. `default` keeps a real border and a white
+# fill — a button that looks like a button (user 2026-09-04).
+_COLOR: dict[ServiceStatus, Literal["success", "danger", "default"]] = {
     ServiceStatus.OK: "success",
     ServiceStatus.ERROR: "danger",
-    ServiceStatus.UNKNOWN: "light",
+    ServiceStatus.UNKNOWN: "default",
 }
 
 
@@ -63,12 +67,12 @@ class ActionBar:
         self._status = status
         self._busy: set[str] = set()
         self.buttons: dict[str, pn.widgets.Button] = {
-            key: pn.widgets.Button(label=label, color="light", description=_RECONNECT_HINT)
+            key: pn.widgets.Button(label=label, color="default", description=_RECONNECT_HINT)
             for key, label in SERVICE_LABELS.items()
         }
         for key, button in self.buttons.items():
             button.on_click(self._make_click(key))
-        self.end_button = pn.widgets.Button(label="End Session", color="light")
+        self.end_button = pn.widgets.Button(label="End Session", color="default")
         self.end_button.on_click(self._on_end)
         self.row = pn.Row(*self.buttons.values(), self.end_button)
 
