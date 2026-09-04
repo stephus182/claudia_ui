@@ -120,7 +120,24 @@ _QUANTITY: dict[str, object] = {
 # top-level fields, which are what actually reach IBKR, so there is nothing to drift.
 _MODIFIABLE_FIELD: dict[str, object] = {
     "type": "string",
-    "enum": ["limit_price", "stop_price", "quantity", "order_type", "tif"],
+    "enum": ["limit_price", "stop_price", "quantity", "order_type", "tif", "outside_rth"],
+}
+
+# IBKR's `outsideRTH` order attribute (2026-09-04, gap #33). Nullable like the prices: null
+# means "the user did not say", and the handler sends nothing for it. The description is the
+# ONLY text that reaches the model (a docstring never does), so it carries both the fact that
+# makes the field matter and the immutability rule. Sources for the fact:
+# docs/order-api-reference.md § Stop orders on US futures.
+_OUTSIDE_RTH: dict[str, object] = {
+    "anyOf": [{"type": "boolean"}, {"type": "null"}],
+    "description": (
+        "Allow the order to work outside regular trading hours (IBKR's outsideRTH). It "
+        "matters for STP and STOP_LIMIT orders on futures: IBKR simulates those stops and "
+        "triggers them only during regular trading hours unless this is true — a GTC stop "
+        "on ES without it is not active overnight. Set true only when the user asks for it "
+        "(e.g. 'active through the whole electronic session'); set null when the user did "
+        "not say — never assume, and never change it on a modify unless asked."
+    ),
 }
 _SCALAR: dict[str, object] = {
     "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "null"}]
@@ -164,6 +181,7 @@ PROPOSE_ORDER: dict[str, object] = {
             "tif": _TIF,
             "sec_type": _SEC_TYPE,
             "conid": _CONID,
+            "outside_rth": _OUTSIDE_RTH,
             "reason": {"type": "string"},
         },
         "required": [
@@ -176,6 +194,7 @@ PROPOSE_ORDER: dict[str, object] = {
             "tif",
             "sec_type",
             "conid",
+            "outside_rth",
             "reason",
         ],
         "additionalProperties": False,
@@ -226,8 +245,8 @@ PROPOSE_MODIFY: dict[str, object] = {
         "user asks you to change any parameter of an order that is already working — price, "
         "quantity, order type, or time in force. Requires a get_order_status(order_id) call "
         "first in this conversation — it returns the conid and the full current field set. "
-        "Copy every field the user did NOT ask to change byte-for-byte from that result. "
-        "Renders a button; modifies nothing by itself."
+        "Copy every field the user did NOT ask to change byte-for-byte from that result, "
+        "outside_rth included. Renders a button; modifies nothing by itself."
     ),
     "strict": True,
     "input_schema": {
@@ -243,6 +262,7 @@ PROPOSE_MODIFY: dict[str, object] = {
             "stop_price": _PRICE,
             "tif": _TIF,
             "sec_type": _SEC_TYPE,
+            "outside_rth": _OUTSIDE_RTH,
             "reason": {"type": "string"},
             # Task 3 resolved the adapter question by deleting the adapter:
             # order_flow._format_modify_summary now reads `changes` directly, so the dict
@@ -262,6 +282,7 @@ PROPOSE_MODIFY: dict[str, object] = {
             "stop_price",
             "tif",
             "sec_type",
+            "outside_rth",
             "reason",
             "changes",
         ],

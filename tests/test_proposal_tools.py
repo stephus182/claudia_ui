@@ -169,6 +169,25 @@ def test_nullable_fields_use_documented_anyOf_form() -> None:
     props = _schema("propose_order")["properties"]
     assert props["limit_price"] == {"anyOf": [{"type": "number"}, {"type": "null"}]}
     assert props["conid"] == {"anyOf": [{"type": "integer"}, {"type": "null"}]}
+    # 2026-09-04: the outside-RTH attribute, same nullable form (null = "the user did not say").
+    assert props["outside_rth"]["anyOf"] == [{"type": "boolean"}, {"type": "null"}]
+
+
+def test_outside_rth_is_carried_and_required_on_order_and_modify() -> None:
+    """`outside_rth` (2026-09-04, gap #33) is on propose_order AND propose_modify — a modify
+    resends the whole order, so a replacement without it would silently drop the attribute
+    and a futures stop would stop working overnight. Required under strict like every key;
+    its description is the only text that reaches the model, so it must say when to set it
+    and must not invite assumptions (order-parameter immutability)."""
+    for name in ("propose_order", "propose_modify"):
+        schema = _schema(name)
+        assert "outside_rth" in schema["properties"], name
+        assert "outside_rth" in schema["required"], name
+        desc = schema["properties"]["outside_rth"]["description"]
+        assert "futures" in desc.lower() and "regular trading hours" in desc.lower()
+        assert "never assume" in desc.lower() or "only when the user" in desc.lower()
+    changes_items = _schema("propose_modify")["properties"]["changes"]["items"]
+    assert "outside_rth" in changes_items["properties"]["field"]["enum"]
 
 
 def test_every_object_node_is_explicitly_closed() -> None:
@@ -211,6 +230,7 @@ def test_modify_carries_one_change_structure_not_two() -> None:
         "quantity",
         "order_type",
         "tif",
+        "outside_rth",  # 2026-09-04
     ]
     # New values are NOT duplicated here; the top-level fields are authoritative.
     assert "new_value" not in item["properties"]
@@ -288,6 +308,7 @@ def test_valid_proposal_is_accepted() -> None:
         "tif": "GTC",
         "sec_type": "FUT",
         "conid": None,
+        "outside_rth": None,
         "reason": "test order",
     }
     assert not list(Draft202012Validator(_schema("propose_order")).iter_errors(ok))
@@ -325,6 +346,7 @@ def test_valid_modify_proposal_is_accepted() -> None:
         "stop_price": None,
         "tif": "GTC",
         "sec_type": "FUT",
+        "outside_rth": None,
         "reason": "user moved the bid down 50 points",
         "changes": [{"field": "limit_price", "previous_value": 6100.0}],
     }

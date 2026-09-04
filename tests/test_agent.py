@@ -1133,7 +1133,7 @@ def test_log_thinking_usage_silent_when_details_absent(caplog):
 VALID_ORDER = {
     "symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "LMT",
     "limit_price": 185.0, "stop_price": None, "tif": "DAY", "sec_type": "STK",
-    "conid": None, "reason": "Breakout above resistance",
+    "conid": None, "outside_rth": None, "reason": "Breakout above resistance",
 }
 
 VALID_CANCEL = {
@@ -1896,7 +1896,7 @@ def test_guardrail_notice_never_claims_something_was_staged():
 SYNTHETIC_ORDER = {
     "symbol": "ZZZ", "action": "BUY", "quantity": 7, "order_type": "LMT",
     "limit_price": 333.25, "stop_price": None, "tif": "DAY", "sec_type": "STK",
-    "conid": None, "reason": "synthetic breakout",
+    "conid": None, "outside_rth": None, "reason": "synthetic breakout",
 }
 SYNTHETIC_CANCEL = {
     "order_id": "9990001111", "symbol": "YYY", "action": "SELL", "quantity": 8,
