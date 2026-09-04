@@ -17,12 +17,26 @@ what is actually vendored and outranks this line. ClaudIA exposes a curated
 ## Normal startup — no manual terminal commands needed
 
 1. Run `./start-claudia.sh` (or `python -m claudia.panel_app`).
-2. If TradingView Desktop is not running, the welcome message shows a **"Launch TradingView"** button.
+2. The **TradingView** button in the action bar under the chat is grey (or red) while
+   TradingView Desktop is not connected (until 2026-09-03: a "Launch TradingView" button in
+   the welcome message).
 3. Click it — ClaudIA calls `launch_tradingview()` which runs
-   `open -a "TradingView" --args --remote-debugging-port=9222`, polls for CDP port 9222
-   up to 30s, then reconnects the MCP sidecar. TV tools become available without a page reload.
-4. If TV is already running **without** the debug port, the button shows an error with
-   instructions to quit TV and relaunch — ClaudIA cannot inject the debug flag into a running process.
+   `open -a "TradingView" --args --remote-debugging-port=9222`, waits up to 10 s for a
+   TradingView **process** to exist, then up to 30 s for CDP port 9222, then reconnects the
+   MCP sidecar. TV tools become available without a page reload. Progress and outcome go to
+   the System log.
+4. Three failure outcomes, told apart since 2026-09-04 (`launch_tradingview` docstring):
+   - **"TradingView Desktop never started"** — `open` accepted the launch but no process
+     appeared. **Measured 2026-09-04: this is what a ClaudIA server started from a Claude Code
+     tool shell does** — `open -a` returns 0 and launches nothing there, not even Calculator.
+     Launch TradingView from a real Terminal (`./scripts/launch-tradingview-debug.sh`) and
+     click again: with the port already up the button skips the launch and only connects the
+     sidecar. Better: start ClaudIA itself from Terminal (`./start-claudia.sh`).
+   - **"already running without the remote debug port"** — the flag can only be set at
+     launch; run the quit+relaunch helper. ClaudIA never quits the user's app.
+   - **"did not open its debug port within 30s"** — the process exists but no port: the same
+     helper, or the app build dropped the flag (`docs/tradingview-mcp-recovery.md`).
+   A non-zero `open` exit is raised with its stderr (it used to go to `/dev/null`).
 
 ## Sidecar behavior when TradingView Desktop is not running
 
