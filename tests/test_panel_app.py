@@ -2959,3 +2959,18 @@ async def test_a_raising_reconnect_reaches_the_server_log_and_the_system_log(mon
         await _get_click_callback(_bar_button(chat, "tv"))(None)
     assert any("never started" in t for t in _log_texts(chat))
     assert any("never started" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_tradingview_click_streams_launch_progress_into_the_system_log(monkeypatch):
+    """The launch's own progress lines (quitting, launching, waiting) go to the System log:
+    launch_tradingview is handed the log's `say` as `emit` (2026-09-04)."""
+    from claudia import panel_app
+    from claudia.panel_app import _system_log
+
+    chat, _, _ = await _build_chat_with_ibkr(ibkr_offline=True)
+    monkeypatch.setattr(panel_app, "_connectivity_checker", None)
+    launch = AsyncMock(return_value=False)
+    with patch("claudia.panel_app.launch_tradingview", new=launch):
+        await _get_click_callback(_bar_button(chat, "tv"))(None)
+    assert launch.call_args.kwargs["emit"] == _system_log(chat).say

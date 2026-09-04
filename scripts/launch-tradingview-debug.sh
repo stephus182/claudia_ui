@@ -3,10 +3,13 @@
 # open, so the tradingview-mcp sidecar can drive it.
 #
 # WHY THIS EXISTS: the debug port (--remote-debugging-port=9222) can only be set
-# at launch. If TradingView is ALREADY running without it, ClaudIA's in-app
-# "Launch TradingView" button / launch_tradingview() cannot fix it — they refuse
-# to quit your app for you and instead point here. This script does the full
-# quit → relaunch → wait-for-CDP cycle in one command.
+# at launch, so a TradingView already running without it must be quit and
+# relaunched. Since 2026-09-04 ClaudIA's TradingView button does this same
+# quit → relaunch → wait-for-CDP cycle itself (claudia/tradingview.py
+# launch_tradingview mirrors this file; keep the two in step). This script is
+# the Terminal route: for when ClaudIA is not running, or was started from a
+# shell that cannot launch desktop apps (measured 2026-09-04: `open -a` from a
+# Claude Code tool shell returns 0 and launches nothing).
 #
 # macOS only (TradingView Desktop + `open -a`). Safe to re-run: if CDP is
 # already up it exits immediately without touching the running app.

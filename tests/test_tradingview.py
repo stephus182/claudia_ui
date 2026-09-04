@@ -735,15 +735,75 @@ async def test_launch_returns_true_once_the_port_opens(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_launch_refuses_when_already_running_without_the_port(monkeypatch):
-    """A running app without the port cannot be fixed in place — the helper is the answer."""
+async def test_launch_quits_a_running_app_without_the_port_then_relaunches(monkeypatch):
+    """User rule 2026-09-04 ("the button must have the same action" as the helper script):
+    an app running without the port is quit first, then relaunched with it. Order pinned:
+    quit → open. Progress lines reach `emit`."""
+    _fast_waits(monkeypatch)
+    order = MagicMock()
+    quit_mock = AsyncMock(return_value=True)
+    open_mock = MagicMock(return_value=_open_ok())
+    order.attach_mock(quit_mock, "quit")
+    order.attach_mock(open_mock, "open")
+    emitted: list[str] = []
+    with (
+        patch("claudia.tradingview.platform.system", return_value="Darwin"),
+        # initial probe → False; the already-running check's port read → False;
+        # the one port poll after the relaunch → True
+        patch("claudia.tradingview.check_cdp_running", side_effect=[False, False, True]),
+        # already-running check → True; process wait after the relaunch → True
+        patch("claudia.tradingview._tv_process_running", return_value=True),
+        patch("claudia.tradingview._quit_tradingview", quit_mock),
+        patch("claudia.tradingview.subprocess.run", open_mock),
+    ):
+        assert await tv_module.launch_tradingview(emit=emitted.append) is True
+    assert [name for name, _, _ in order.mock_calls] == ["quit", "open"]
+    assert any("quitting it first" in line for line in emitted)
+
+
+@pytest.mark.asyncio
+async def test_launch_reports_an_app_that_would_not_quit(monkeypatch):
+    """If graceful quit and the forced kill both leave the process alive, say so — never
+    relaunch on top of it (the second instance would just hand off to the first)."""
     _fast_waits(monkeypatch)
     with (
         patch("claudia.tradingview.platform.system", return_value="Darwin"),
         patch("claudia.tradingview.check_cdp_running", return_value=False),
         patch("claudia.tradingview._tv_process_running", return_value=True),
+        patch("claudia.tradingview._quit_tradingview", new=AsyncMock(return_value=False)),
         patch("claudia.tradingview.subprocess.run") as run,
-        pytest.raises(RuntimeError, match="already running without"),
+        pytest.raises(RuntimeError, match="could not be quit"),
     ):
         await tv_module.launch_tradingview()
     run.assert_not_called()
+
+
+# ── _quit_tradingview ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_quit_asks_nicely_first_and_returns_true_when_the_process_goes(monkeypatch):
+    """osascript quit, then the process disappears: True, no pkill."""
+    monkeypatch.setattr(tv_module, "_TV_QUIT_WAIT_S", 0.0)
+    with (
+        patch("claudia.tradingview._tv_process_running", return_value=False),
+        patch("claudia.tradingview.subprocess.run") as run,
+    ):
+        assert await tv_module._quit_tradingview() is True
+    cmds = [c.args[0][0] for c in run.call_args_list]
+    assert cmds == ["osascript"]
+
+
+@pytest.mark.asyncio
+async def test_quit_falls_back_to_pkill_when_the_app_ignores_the_quit(monkeypatch):
+    """Still running after the graceful window: pkill -x, then re-check."""
+    monkeypatch.setattr(tv_module, "_TV_QUIT_WAIT_S", 0.0)
+    monkeypatch.setattr(tv_module, "_TV_KILL_SETTLE_S", 0.0)
+    with (
+        # graceful wait poll → still running; after pkill → gone
+        patch("claudia.tradingview._tv_process_running", side_effect=[True, False]),
+        patch("claudia.tradingview.subprocess.run") as run,
+    ):
+        assert await tv_module._quit_tradingview() is True
+    cmds = [c.args[0][0] for c in run.call_args_list]
+    assert cmds == ["osascript", "pkill"]

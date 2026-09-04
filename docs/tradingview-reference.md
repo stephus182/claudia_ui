@@ -20,11 +20,14 @@ what is actually vendored and outranks this line. ClaudIA exposes a curated
 2. The **TradingView** button in the action bar under the chat is grey (or red) while
    TradingView Desktop is not connected (until 2026-09-03: a "Launch TradingView" button in
    the welcome message).
-3. Click it — ClaudIA calls `launch_tradingview()` which runs
-   `open -a "TradingView" --args --remote-debugging-port=9222`, waits up to 10 s for a
-   TradingView **process** to exist, then up to 30 s for CDP port 9222, then reconnects the
-   MCP sidecar. TV tools become available without a page reload. Progress and outcome go to
-   the System log.
+3. Click it — ClaudIA calls `launch_tradingview()`, **the same action as
+   `scripts/launch-tradingview-debug.sh`** (user rule 2026-09-04, after the script worked
+   where the button had refused): if TradingView is running without the port it is quit
+   (graceful `osascript`, then `pkill -x`), then `open -a "TradingView" --args
+   --remote-debugging-port=9222`, up to 10 s for a TradingView **process** to exist, up to
+   30 s for CDP port 9222, then the MCP sidecar is reconnected. TV tools become available
+   without a page reload. Every progress line goes to the System log. Quitting loses no
+   workspace: TradingView auto-saves layouts to the account.
 4. Three failure outcomes, told apart since 2026-09-04 (`launch_tradingview` docstring):
    - **"TradingView Desktop never started"** — `open` accepted the launch but no process
      appeared. **Measured 2026-09-04: this is what a ClaudIA server started from a Claude Code
@@ -32,8 +35,9 @@ what is actually vendored and outranks this line. ClaudIA exposes a curated
      Launch TradingView from a real Terminal (`./scripts/launch-tradingview-debug.sh`) and
      click again: with the port already up the button skips the launch and only connects the
      sidecar. Better: start ClaudIA itself from Terminal (`./start-claudia.sh`).
-   - **"already running without the remote debug port"** — the flag can only be set at
-     launch; run the quit+relaunch helper. ClaudIA never quits the user's app.
+   - **"could not be quit"** — graceful quit and forced kill both left the process alive;
+     quit it by hand and click again. (Until 2026-09-04 a portless running app was refused
+     outright with a pointer to the helper.)
    - **"did not open its debug port within 30s"** — the process exists but no port: the same
      helper, or the app build dropped the flag (`docs/tradingview-mcp-recovery.md`).
    A non-zero `open` exit is raised with its stderr (it used to go to `/dev/null`).

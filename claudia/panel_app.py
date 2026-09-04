@@ -451,13 +451,13 @@ def _build_action_bar(
         debug port is an honest log line; anything that raises is reported by the bar
         (project-tradingview-robustness memory: never a crash)."""
         global _tv_bridge
-        syslog.say("▶ Launching TradingView Desktop with remote debugging…")
-        launched = await launch_tradingview()
+        # Same action as scripts/launch-tradingview-debug.sh (quit-if-portless, relaunch,
+        # wait), progress lines straight into the System log.
+        launched = await launch_tradingview(emit=syslog.say)
         if not launched:
             syslog.say(
-                "✕ TradingView Desktop did not open its debug port within 30s.\n\n"
-                "If it's already running without the debug port, it can't be "
-                "fixed in place — run the one-command quit+relaunch helper:\n"
+                "✕ TradingView Desktop is running but did not open its debug port within 30s.\n\n"
+                "Try once more, or from a Terminal:\n"
                 "```\n./scripts/launch-tradingview-debug.sh\n```",
                 "error",
             )

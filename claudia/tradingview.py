@@ -477,6 +477,10 @@ _TV_APP_NAME = "TradingView"
 # so tests can collapse them.
 _TV_START_WAIT_S = 10.0
 _TV_CDP_WAIT_S = 30.0
+# Graceful-quit window before the forced kill, and how long a kill gets to settle — the
+# same numbers as scripts/launch-tradingview-debug.sh, which this mirrors.
+_TV_QUIT_WAIT_S = 10.0
+_TV_KILL_SETTLE_S = 2.0
 
 
 def _tv_process_running() -> bool:
@@ -513,13 +517,38 @@ async def _wait_for(predicate: Callable[[], bool], timeout_s: float, interval_s:
         await asyncio.sleep(min(interval_s, remaining))
 
 
-async def launch_tradingview() -> bool:
-    """Launch TradingView Desktop with --remote-debugging-port on macOS.
+async def _quit_tradingview() -> bool:
+    """Quit TradingView Desktop: graceful (`osascript quit`), then `pkill -x` if it lingers.
 
-    Three outcomes, kept apart because they need three different answers from the user:
+    Mirrors the quit half of `scripts/launch-tradingview-debug.sh`. TradingView auto-saves
+    chart layouts to the account, so the quit loses no workspace (the script's header,
+    sourced to the sidecar's SETUP_GUIDE). Returns True when no process remains.
+    """
+    subprocess.run(
+        ["osascript", "-e", f'quit app "{_TV_APP_NAME}"'],
+        capture_output=True, text=True,
+    )
+    if await _wait_for(lambda: not _tv_process_running(), _TV_QUIT_WAIT_S):
+        return True
+    log.warning("TradingView did not quit gracefully within %.0fs — forcing", _TV_QUIT_WAIT_S)
+    subprocess.run(["pkill", "-x", _TV_APP_NAME], capture_output=True, text=True)
+    await asyncio.sleep(_TV_KILL_SETTLE_S)
+    return not _tv_process_running()
 
-    - **Already running without the port** → `RuntimeError` pointing at the quit+relaunch
-      helper (the flag can only be set at launch; ClaudIA will not quit the user's app).
+
+async def launch_tradingview(emit: Callable[[str], None] | None = None) -> bool:
+    """Launch TradingView Desktop with --remote-debugging-port on macOS — the same action
+    as `scripts/launch-tradingview-debug.sh` (user rule 2026-09-04: the button must do
+    what the script does), with progress lines to `emit` when given.
+
+    Outcomes, kept apart because they need different answers from the user:
+
+    - **Already running without the port** → quit it (graceful, then forced) and relaunch
+      with the flag, which can only be set at launch. Until 2026-09-04 this case refused
+      and pointed at the helper; the user ran the helper, it worked, and asked for the
+      button to do the same. An app that survives both quits →
+      `RuntimeError("could not quit …")`, never a relaunch on top of it (a second instance
+      just hands off to the first and exits).
     - **`open` accepted the launch but no TradingView process ever appeared** →
       `RuntimeError("… never started …")` pointing at a launch from a real Terminal.
       Measured 2026-09-04: `open -a` from a Claude Code tool shell — sandboxed or not —
@@ -546,15 +575,17 @@ async def launch_tradingview() -> bool:
             "Automatic TradingView launch is only supported on macOS. "
             f"Start it manually: open -a '{_TV_APP_NAME}' --args --remote-debugging-port={_TV_DEBUG_PORT}"
         )
+    say = emit or (lambda _line: None)
     if _tv_already_running_without_debug():
-        raise RuntimeError(
-            "TradingView is already running without the remote debug port "
-            "(it can only be set at launch). Run the one-command quit+relaunch "
-            "helper:\n"
-            "  ./scripts/launch-tradingview-debug.sh\n"
-            f"(equivalent: quit TradingView, then "
-            f"open -a '{_TV_APP_NAME}' --args --remote-debugging-port={_TV_DEBUG_PORT})"
-        )
+        say("▶ TradingView is running without the debug port — quitting it first…")
+        log.info("TradingView running without CDP port %d — quitting to relaunch", _TV_DEBUG_PORT)
+        if not await _quit_tradingview():
+            raise RuntimeError(
+                "TradingView is running without the remote debug port and could not be "
+                "quit (graceful quit and forced kill both left it running). Quit it by hand, "
+                "then click TradingView again."
+            )
+    say(f"▶ Launching TradingView with --remote-debugging-port={_TV_DEBUG_PORT}…")
     log.info("Launching TradingView Desktop with --remote-debugging-port=%d", _TV_DEBUG_PORT)
     # `open` returns as soon as LaunchServices accepts the request (it does not wait for
     # the app), so a blocking run on a worker thread costs nothing and keeps its exit code
@@ -581,6 +612,7 @@ async def launch_tradingview() -> bool:
             "  ./scripts/launch-tradingview-debug.sh\n"
             "then click TradingView again — the sidecar connect needs no launch."
         )
+    say(f"▶ Waiting up to {_TV_CDP_WAIT_S:.0f}s for the CDP port to come up…")
     if await _wait_for(check_cdp_running, _TV_CDP_WAIT_S):
         log.info("TradingView CDP port %d is ready", _TV_DEBUG_PORT)
         return True
