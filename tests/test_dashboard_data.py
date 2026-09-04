@@ -1460,3 +1460,26 @@ def test_with_quotes_attaches_by_conid_and_leaves_unquoted_rows_alone():
     assert out[0].quote is not None and out[0].quote.last == 11.5
     assert out[1].quote is None
     assert out[1].market_price == 21.0
+
+
+# ── outsideRTH on the order book (2026-09-04) ────────────────────────────────
+#
+# Measured the same day on the live account: /iserver/account/orders carries `outsideRTH`
+# (not in IBKR's doc) — False on a resting AAPL GTC limit, None on a resting ES Sep-26 GTC
+# limit. Three states on the read side, and None must stay None: an unreported attribute
+# rendered as "No" would be a negative claim IBKR never made.
+
+
+@pytest.mark.parametrize("raw, expected", [(True, True), (False, False), (None, None)])
+def test_parse_orders_reads_outside_rth_as_three_states(raw, expected):
+    """True/False verbatim, None (or absent) stays None."""
+    orders = dd.parse_orders([{"orderId": "1", "ticker": "ES", "totalSize": 1, "outsideRTH": raw}])
+    assert orders[0].outside_rth is expected
+
+
+def test_parse_orders_outside_rth_absent_or_junk_is_none():
+    """Only a real boolean is a claim; anything else is 'not reported'."""
+    absent = dd.parse_orders([{"orderId": "1", "ticker": "ES", "totalSize": 1}])
+    junk = dd.parse_orders([{"orderId": "2", "ticker": "ES", "totalSize": 1, "outsideRTH": "yes"}])
+    assert absent[0].outside_rth is None
+    assert junk[0].outside_rth is None

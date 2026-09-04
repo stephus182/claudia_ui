@@ -1221,6 +1221,11 @@ class LiveOrder:
     tif: str
     status: str
     origin: str = ""
+    # IBKR's outsideRTH attribute as reported on the order row — True / False, or None when
+    # the row does not carry a boolean. Measured 2026-09-04: the field is present though
+    # undocumented, False on a resting stock limit and **None on a resting ES futures
+    # limit**, so "not reported" is a real third state and must not collapse into False.
+    outside_rth: bool | None = None
 
     @property
     def is_claudia_staged(self) -> bool:
@@ -1266,6 +1271,9 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                 tif=str(row.get("timeInForce") or row.get("tif") or "").strip(),
                 status=str(row.get("status") or row.get("order_status") or "").strip(),
                 origin=str(row.get("order_ref") or row.get("orderRef") or "").strip(),
+                outside_rth=(
+                    row["outsideRTH"] if isinstance(row.get("outsideRTH"), bool) else None
+                ),
             )
         )
     return tuple(out)

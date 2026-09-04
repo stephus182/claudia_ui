@@ -674,7 +674,9 @@ _POSITION_TOOLTIPS = {
 _EMPTY = DashboardSnapshot(as_of=datetime.min.replace(tzinfo=UTC))
 
 
-_ORDER_COLUMNS = ["Order", "Symbol", "Side", "Qty", "Filled", "Limit", "Type", "TIF", "Status", "Origin"]
+_ORDER_COLUMNS = [
+    "Order", "Symbol", "Side", "Qty", "Filled", "Limit", "Type", "TIF", "Outside RTH", "Status", "Origin",
+]
 
 _ORDER_NUMERIC = ["Qty", "Filled", "Limit"]
 """The order columns that are numbers, and so need the same treatment as the positions
@@ -696,10 +698,24 @@ _ORDER_TOOLTIPS = {
               "which is the safe direction to be wrong in.",
     "Limit": "The resting price where the order type has one. No currency: the live-order "
              "feed does not carry one, so none is claimed.",
+    "Outside RTH": "Whether the order may act outside regular trading hours, as IBKR reports it. "
+                   "Decides when a stop on a US future can trigger. '—' = not reported by IBKR "
+                   "for this order (measured on futures rows) — not 'No'.",
     "Status": "IBKR's own status string, verbatim.",
     "Origin": "ClaudIA for orders staged through this app; external for TWS, mobile or the "
               "web portal — those cannot be modified or cancelled through the API.",
 }
+
+
+def _yes_no_or_dash(value: bool | None) -> str:
+    """Render a three-state attribute honestly: True → Yes, False → No, None → '—'.
+
+    The dash is "IBKR did not report it", which on a trading surface must never read as
+    "No" (unknown is not a negative claim).
+    """
+    if value is None:
+        return "—"
+    return "Yes" if value else "No"
 
 
 def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
@@ -725,6 +741,7 @@ def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
             "Limit": o.price,
             "Type": o.order_type,
             "TIF": o.tif,
+            "Outside RTH": _yes_no_or_dash(o.outside_rth),
             "Status": o.status,
             "Origin": "ClaudIA" if o.is_claudia_staged else "external",
         }

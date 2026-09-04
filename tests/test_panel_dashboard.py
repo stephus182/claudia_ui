@@ -1614,3 +1614,24 @@ def test_the_symbol_follows_the_book_when_it_changes():
     assert v._positions.formatters["Market value"].format.startswith("$")
     v.refresh(_snapshot(positions=(_pos_ccy("USD", 1), _pos_ccy("EUR", 2))), now=_NOW)
     assert not v._positions.formatters["Market value"].format.startswith("$")
+
+
+# ── Outside RTH column (2026-09-04) ───────────────────────────────────────────
+
+
+def test_order_columns_show_outside_rth_right_after_tif():
+    """TIF and the outside-RTH attribute together decide when a resting order can act;
+    they sit side by side so a trader reads both in one glance."""
+    cols = pdash._ORDER_COLUMNS
+    assert cols.index("Outside RTH") == cols.index("TIF") + 1
+
+
+def test_orders_frame_renders_outside_rth_as_yes_no_or_not_reported():
+    """True → Yes, False → No, None → '—' (IBKR did not report it — never a bare 'No')."""
+    frame = pdash.orders_frame(_snapshot(orders=(
+        _order(order_id="1", outside_rth=True),
+        _order(order_id="2", outside_rth=False),
+        _order(order_id="3", outside_rth=None),
+    )))
+    assert list(frame["Outside RTH"]) == ["Yes", "No", "—"]
+    assert "not reported" in pdash._ORDER_TOOLTIPS["Outside RTH"].lower()
