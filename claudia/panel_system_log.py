@@ -1,4 +1,4 @@
-"""System log — the collapsed card that holds a session's own events.
+"""System log — the collapsed card that holds a session's own events, one line each.
 
 What happens *to* the session (connectivity changes, Flex sync, document reloads, gateway
 and TradingView progress, session save/end) lands here instead of in the conversation.
@@ -6,16 +6,26 @@ What happens *in* the conversation — tool steps, a truncated reply, an upload 
 stays in the chat, because it answers something the user just did. The rule and the
 inventory behind it: `docs/panel/ui-customisation-reference.md` § System log and action bar.
 
+The body is terminal-style (user request 2026-09-04, "more like a terminal than a chat"):
+a scrolling `pn.Column` of one monospace `pn.pane.Str` per event, `HH:MM:SS  [LEVEL]  text`,
+newest at the bottom and scrolled into view. It replaced a `ChatFeed` of bubbles the same
+day. Each line is `panel_markdown.safe_text` — a `Str` pane, which renders its object as a
+raw string, every character escaped, no Markdown, no HTML — so tool results and exception
+text are safe here by construction (the ChatFeed before it needed `renderers=[safe_markdown]`
+for the same guarantee), and the one sanctioned construction site for markup panes stays one.
+
 Panel-only: no IBKR, no SQL, no `panel_app` import (same rule as the dashboard modules).
 """
 
 from __future__ import annotations
 
+import re
+import time
 from typing import Literal
 
 import panel as pn
 
-from claudia.panel_markdown import safe_markdown
+from claudia.panel_markdown import safe_text
 
 Level = Literal["info", "warning", "error"]
 
@@ -23,40 +33,53 @@ Level = Literal["info", "warning", "error"]
 # kind of thing a trader should have to acknowledge, an info line is not.
 _TOAST_DURATION_MS: dict[str, int] = {"warning": 8000, "error": 0}
 
-# Fixed so the feed scrolls inside the card instead of growing the page: the left
+# Fixed so the lines scroll inside the card instead of growing the page: the left
 # column's pinned sizing (08d5654) needs everything below the chat to be fixed-height.
 _FEED_HEIGHT = 240
 
+# Wrap long lines at the card's width and drop the <pre>'s default outer margin.
+_LINE_CSS = "pre { white-space: pre-wrap; margin: 0; }"
+
+# The level column, blank for info so ordinary lines stay short.
+_LEVEL_TAG: dict[str, str] = {"info": "", "warning": "WARN  ", "error": "ERR   "}
+
+_MARKDOWN_MARKS = re.compile(r"\*\*|`{1,3}")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def format_line(text: str, level: Level, clock: str) -> str:
+    """One terminal line: `HH:MM:SS  [WARN  |ERR   ]text`, Markdown marks dropped, newlines
+    collapsed. The messages are authored for the chat's Markdown renderer (`**bold**`,
+    fenced commands); in a monospace log the marks are noise, so they go and the words stay.
+    """
+    clean = _WHITESPACE.sub(" ", _MARKDOWN_MARKS.sub("", text)).strip()
+    return f"{clock}  {_LEVEL_TAG[level]}{clean}"
+
 
 class SystemLog:
-    """A collapsed `pn.Card` whose body is a read-only, timestamped `ChatFeed`.
+    """A collapsed `pn.Card` whose body is a scrolling column of monospace lines.
 
-    `say()` is the single route for session-level messages. It appends to the feed, bumps
-    the count shown in the card title (so a collapsed card still says how much is inside),
-    and raises a toast for `warning`/`error` so an event is noticed while the user is
-    reading the chat. The toast is a courtesy; the feed entry is the record.
+    `say()` is the single route for session-level messages. It appends a line, keeps the
+    raw text in `entries` (what tests and readers assert on), bumps the count shown in the
+    card title (so a collapsed card still says how much is inside), and raises a toast for
+    `warning`/`error` so an event is noticed while the user is reading the chat. The toast
+    is a courtesy; the line is the record.
     """
 
     def __init__(self, title: str = "System log") -> None:
-        """Build the card collapsed and empty.
-
-        `ChatFeed`, not `ChatInterface`: no input row, nothing to type into. Reaction and
-        copy icons are off for the same reason they are off in the chat (phase 1).
-        """
+        """Build the card collapsed and empty."""
         self._title = title
-        self._count = 0
-        self.feed = pn.chat.ChatFeed(
-            # Same renderer as the chat (security-audit-2026-07-25, H-1): tool results,
-            # gateway details and exception text land here verbatim, and Panel's default
-            # Markdown pane renders raw HTML. Review 2026-09-04 caught this feed without it.
-            renderers=[safe_markdown],
-            message_params={"show_reaction_icons": False, "show_copy_icon": False},
-            show_activity_dot=False,
+        self.entries: list[str] = []
+        # view_latest scrolls to the newest object on every append — the chat feed's
+        # auto-scroll, for a plain column.
+        self.lines = pn.Column(
+            scroll=True,
+            view_latest=True,
             height=_FEED_HEIGHT,
             sizing_mode="stretch_width",
         )
         self.card = pn.Card(
-            self.feed,
+            self.lines,
             title=title,
             collapsed=True,
             collapsible=True,
@@ -69,9 +92,14 @@ class SystemLog:
         `pn.state.notifications` is None outside a served session (and in every test), so
         the toast is guarded exactly as `panel_dashboard` guards its stale-data toast.
         """
-        self.feed.send(text, user="System", respond=False)
-        self._count += 1
-        self.card.title = f"{self._title} ({self._count})"
+        self.entries.append(text)
+        line = format_line(text, level, time.strftime("%H:%M:%S"))
+        # `Str` renders a <pre>, which does not wrap: a long gateway detail would be
+        # clipped at the card's edge. The rule must reach the <pre> itself — `styles=`
+        # lands on the pane's wrapper and the browser's `pre { white-space: pre }` wins —
+        # so it goes through the component's own `stylesheets` (scoped to its shadow DOM).
+        self.lines.append(safe_text(line, margin=(0, 6), stylesheets=[_LINE_CSS]))
+        self.card.title = f"{self._title} ({len(self.entries)})"
         if level == "info":
             return
         notifications = pn.state.notifications

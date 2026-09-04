@@ -66,6 +66,22 @@ def safe_markdown(obj: Any, **params: Any) -> pn.pane.Markdown:
     return pn.pane.Markdown(obj, renderer_options=_SAFE_RENDERER_OPTIONS, **params)
 
 
+def safe_text(text: str, **params: Any) -> pn.pane.Str:
+    """Build a ``Str`` pane: the text is shown as a raw string, every character escaped.
+
+    ``pn.pane.Str`` is Panel's literal-text pane — no Markdown, no HTML; its
+    ``_transform_object`` escapes the whole ``<pre>…</pre>`` it emits (panel/pane/markup.py,
+    verified 2026-09-04). It is constructed here, and only here, so the structural test that
+    bans direct ``pn.pane.*`` markup constructors elsewhere in the package keeps one
+    sanctioned site for every markup pane. Used by the System log's terminal-style lines.
+
+    Args:
+        text: The line to show. Untrusted input is expected and safe to pass.
+        **params: Extra pane parameters (``margin``, sizing).
+    """
+    return pn.pane.Str(text, **params)
+
+
 def escape_markup(text: str) -> str:
     """Escape HTML so ``text`` is displayed literally when streamed into a ChatStep.
 

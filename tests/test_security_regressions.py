@@ -774,3 +774,17 @@ def test_flex_validation_record_rewrite_stays_600(tmp_path):
     flex_sync._write_record(path, validity, (1, 2, None), datetime(2026, 8, 5, tzinfo=UTC))
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o600, "pre-existing 0644 record was not corrected"
+
+
+def test_safe_text_renders_a_payload_as_literal_text():
+    """`safe_text` (2026-09-04, the System log's terminal lines) is the one sanctioned `Str`
+    construction: every character of the object is escaped, so markup reaches the browser
+    as text. Sits with H-1 because it is the same guarantee for a different pane."""
+    from bokeh.document import Document
+
+    from claudia.panel_markdown import safe_text
+
+    pane = safe_text("<img src=x onerror=alert(1)> **not bold**")
+    model = pane.get_root(Document())
+    assert "&lt;img" in model.text
+    assert "<img" not in model.text

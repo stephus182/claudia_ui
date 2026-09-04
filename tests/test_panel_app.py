@@ -75,7 +75,7 @@ def _log_texts(chat) -> list[str]:
     """Every message in the System log attached to a built chat, in order (2026-09-03)."""
     from claudia.panel_app import _system_log
 
-    return [m.object for m in _system_log(chat).feed.objects]
+    return list(_system_log(chat).entries)
 
 
 def _bar_button(chat, key: str):
@@ -2711,7 +2711,7 @@ async def test_start_gateway_refuses_to_open_the_login_page_on_a_borrowed_sessio
         bar = panel_app._build_action_bar(syslog, session_state, "s1")
         await _get_click_callback(bar.buttons["ibkr"])(None)
 
-    texts = " ".join(m.object for m in syslog.feed.objects)
+    texts = " ".join(syslog.entries)
     assert "IBKRMOBILE_000.a-000" in texts
     assert "BORROWED" in texts
 
@@ -2737,7 +2737,7 @@ async def test_start_gateway_does_not_relogin_a_session_that_already_works():
         bar = panel_app._build_action_bar(syslog, session_state, "s1")
         await _get_click_callback(bar.buttons["ibkr"])(None)
 
-    texts = " ".join(m.object for m in syslog.feed.objects)
+    texts = " ".join(syslog.entries)
     assert "Session is live" in texts
 
 
@@ -2835,7 +2835,7 @@ async def test_connectivity_alert_lands_in_the_log_not_the_chat():
         "⚠️ **IBKR Gateway disconnected** — check the Client Portal and log in."
     )
     assert len(chat.objects) == 0
-    assert any("IBKR Gateway disconnected" in m.object for m in log.feed.objects)
+    assert any("IBKR Gateway disconnected" in t for t in log.entries)
 
 
 @pytest.mark.asyncio
@@ -3006,7 +3006,7 @@ async def test_gateway_progress_lines_emitted_from_the_worker_thread_reach_the_l
         await _get_click_callback(bar.buttons["ibkr"])(None)
         await asyncio.sleep(0)  # let the call_soon_threadsafe callback run
     assert seen_thread["name"] != threading.main_thread().name
-    texts = [m.object for m in syslog.feed.objects]
+    texts = list(syslog.entries)
     assert "▶ progress from the worker" in texts
     assert any("Gateway is not answering" in t for t in texts)
 
@@ -3026,6 +3026,6 @@ async def test_end_session_reports_a_failed_cleanup_instead_of_vanishing():
         bar = panel_app._build_action_bar(syslog, session_state, "s1")
         await _get_click_callback(bar.end_button)(None)
     assert session_state["closed"] is True
-    texts = [m.object for m in syslog.feed.objects]
+    texts = list(syslog.entries)
     assert any("Session cleanup failed" in t and "drive upload exploded" in t for t in texts)
     assert not any("Session ended." in t for t in texts)

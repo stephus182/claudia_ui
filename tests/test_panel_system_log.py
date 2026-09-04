@@ -1,4 +1,4 @@
-"""Tests for claudia.panel_system_log — the collapsed System log card."""
+"""Tests for claudia.panel_system_log — the collapsed System log card, terminal-style."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import panel as pn
 
-from claudia.panel_system_log import SystemLog
+from claudia.panel_system_log import SystemLog, format_line
 
 
 def test_card_starts_collapsed_with_a_bare_title():
@@ -18,23 +18,68 @@ def test_card_starts_collapsed_with_a_bare_title():
     assert log.card.title == "System log"
 
 
-def test_feed_is_read_only_and_chrome_free():
-    """The feed is a ChatFeed (no input row) with reaction and copy icons off."""
+def test_body_is_a_scrolling_column_of_monospace_lines():
+    """Terminal style (2026-09-04): a bounded, scrolling Column that follows the newest line;
+    each event is one `pn.pane.Str` — a raw string, no Markdown, no HTML."""
     log = SystemLog()
-    assert type(log.feed) is pn.chat.ChatFeed
-    assert log.feed.message_params["show_reaction_icons"] is False
-    assert log.feed.message_params["show_copy_icon"] is False
-    assert log.feed in log.card.objects
+    assert isinstance(log.lines, pn.Column)
+    assert log.lines.scroll is True
+    assert log.lines.view_latest is True
+    assert log.lines.height == 240
+    assert log.lines in log.card.objects
+    log.say("hello")
+    assert len(log.lines.objects) == 1
+    assert type(log.lines.objects[0]) is pn.pane.Str
+    # A <pre> does not wrap; a long gateway detail must wrap at the card's edge, not clip.
+    # The rule has to reach the <pre> element itself, hence a component stylesheet.
+    assert any("pre-wrap" in css for css in log.lines.objects[0].stylesheets)
 
 
-def test_say_appends_a_system_message_and_counts_in_the_title():
-    """Each say() adds one 'System' message and bumps the count in the card title."""
+def test_say_keeps_the_raw_text_and_counts_in_the_title():
+    """Each say() keeps the raw text in `entries` and bumps the count in the card title."""
     log = SystemLog()
     log.say("first")
     log.say("second", "warning")
-    assert [m.object for m in log.feed.objects] == ["first", "second"]
-    assert all(m.user == "System" for m in log.feed.objects)
+    assert log.entries == ["first", "second"]
     assert log.card.title == "System log (2)"
+
+
+def test_format_line_is_timestamp_level_text_with_markdown_dropped():
+    """`HH:MM:SS  [WARN  |ERR   ]text`; `**`, backticks and fences go, newlines collapse."""
+    assert format_line("**Session ended.** 3 saved\n\nSafe to close.", "info", "10:02:08") == (
+        "10:02:08  Session ended. 3 saved Safe to close."
+    )
+    assert format_line("run `x`", "warning", "10:02:08") == "10:02:08  WARN  run x"
+    assert format_line("boom", "error", "10:02:08") == "10:02:08  ERR   boom"
+
+
+def test_lines_are_rendered_as_raw_strings_not_html():
+    """Security (2026-07-25 audit H-1): tool results and exception text land here verbatim.
+    `Str` escapes every character of its object, so a payload renders as text."""
+    from bokeh.document import Document
+
+    log = SystemLog()
+    log.say("<img src=x onerror=alert(1)>")
+    model = log.lines.objects[0].get_root(Document())
+    assert "&lt;img" in model.text
+    assert "<img" not in model.text
+
+
+def test_every_chat_feed_in_the_package_installs_the_safe_renderer():
+    """Structural guard: any ChatFeed/ChatInterface constructed in claudia/*.py must pass
+    renderers=[safe_markdown] — the chat had it, the (former) log feed did not, and only a
+    per-widget test caught the gap. Control the class, not the instance."""
+    import re
+    from pathlib import Path
+
+    misses = []
+    for path in sorted(Path("claudia").glob("*.py")):
+        src = path.read_text()
+        for m in re.finditer(r"pn\.chat\.(ChatFeed|ChatInterface)\(", src):
+            window = src[m.end():m.end() + 800]
+            if "renderers=[safe_markdown]" not in window:
+                misses.append(f"{path}:{src[:m.start()].count(chr(10)) + 1}")
+    assert not misses, f"ChatFeed/ChatInterface without renderers=[safe_markdown]: {misses}"
 
 
 def test_warning_and_error_toast_when_notifications_exist(monkeypatch):
@@ -56,39 +101,8 @@ def test_warning_and_error_toast_when_notifications_exist(monkeypatch):
 
 
 def test_say_never_raises_without_a_served_session(monkeypatch):
-    """pn.state.notifications is None outside pn.serve — the log entry is still written."""
+    """pn.state.notifications is None outside pn.serve — the line is still written."""
     monkeypatch.setattr(type(pn.state), "notifications", None, raising=False)
     log = SystemLog()
     log.say("x", "error")
-    assert len(log.feed.objects) == 1
-
-
-def test_feed_installs_the_safe_markdown_renderer():
-    """Security (2026-07-25 audit H-1, re-found by review 2026-09-04): the log feed shows
-    tool results, gateway details and exception text verbatim, so it needs the same
-    HTML-off renderer as the chat — Panel's default Markdown pane renders raw HTML."""
-    from claudia.panel_markdown import safe_markdown
-
-    log = SystemLog()
-    assert safe_markdown in log.feed.renderers
-    log.say("<img src=x onerror=alert(1)>")
-    pane = log.feed.objects[0]._object_panel
-    assert type(pane).__name__ == "Markdown"
-    assert pane.renderer_options == {"html": False}
-
-
-def test_every_chat_feed_in_the_package_installs_the_safe_renderer():
-    """Structural guard: any ChatFeed/ChatInterface constructed in claudia/*.py must pass
-    renderers=[safe_markdown] — the chat had it, the log did not, and only a per-widget
-    test caught the gap. Control the class, not the instance."""
-    import re
-    from pathlib import Path
-
-    misses = []
-    for path in sorted(Path("claudia").glob("*.py")):
-        src = path.read_text()
-        for m in re.finditer(r"pn\.chat\.(ChatFeed|ChatInterface)\(", src):
-            window = src[m.end():m.end() + 800]
-            if "renderers=[safe_markdown]" not in window:
-                misses.append(f"{path}:{src[:m.start()].count(chr(10)) + 1}")
-    assert not misses, f"ChatFeed/ChatInterface without renderers=[safe_markdown]: {misses}"
+    assert log.entries == ["x"]
