@@ -1483,3 +1483,16 @@ def test_parse_orders_outside_rth_absent_or_junk_is_none():
     junk = dd.parse_orders([{"orderId": "2", "ticker": "ES", "totalSize": 1, "outsideRTH": "yes"}])
     assert absent[0].outside_rth is None
     assert junk[0].outside_rth is None
+
+
+def test_parse_orders_reads_the_stop_price_from_ibkr_s_stop_fields():
+    """Live 2026-09-04: a resting ES stop came back with price '' and the stop in
+    `auxPrice` / `stop_price` (7735.00). The book must read it, or a stop shows no price."""
+    orders = dd.parse_orders([{
+        "orderId": "853170745", "ticker": "ES", "totalSize": 1, "orderType": "Stop",
+        "price": "", "auxPrice": "7735.00", "stop_price": "7735.00",
+    }])
+    assert orders[0].price is None
+    assert orders[0].stop_price == 7735.0
+    plain = dd.parse_orders([{"orderId": "1", "ticker": "AAPL", "totalSize": 1, "price": 150.0}])
+    assert plain[0].stop_price is None

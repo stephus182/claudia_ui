@@ -99,6 +99,42 @@ def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> s
     return f" @ {' / '.join(parts)}" if parts else ""
 
 
+def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | None, str]:
+    """(multiplier, currency, label) for a futures contract, from `/iserver/contract/{conid}/info`.
+
+    Measured 2026-09-04 on ES conid 649180671: `multiplier` `'50'`, `currency` `'USD'`,
+    `local_symbol` `'ESU6'`, `maturity_date` `'20260918'`. `/trsrv/futures` — the chain the
+    resolver uses — carries no multiplier at all, so this is the only source. Read-only, and
+    total by construction: any failure or unparseable field yields `None`/`""`, and the
+    caller then tells Gate 2 the multiplier is unknown rather than printing a wrong number.
+
+    The label, e.g. `ESU6 · expires 2026-09-18 · x50`, is what the dialog shows as the
+    symbol line — the contract month, which neither the proposal text nor the dialog
+    showed before 2026-09-04.
+    """
+    try:
+        info = ibkr.get_contract_info(conid) or {}
+    except Exception as exc:
+        log.warning("Contract info unavailable for conid %s: %s", conid, exc)
+        return None, None, ""
+    try:
+        multiplier: float | None = float(info["multiplier"])
+    except (KeyError, TypeError, ValueError):
+        multiplier = None
+    raw_ccy = info.get("currency")
+    currency = str(raw_ccy).strip().upper() if isinstance(raw_ccy, str) and raw_ccy.strip() else None
+    parts: list[str] = []
+    local_symbol = info.get("local_symbol")
+    if isinstance(local_symbol, str) and local_symbol.strip():
+        parts.append(local_symbol.strip())
+    maturity = str(info.get("maturity_date") or "")
+    if len(maturity) == 8 and maturity.isdigit():
+        parts.append(f"expires {maturity[:4]}-{maturity[4:6]}-{maturity[6:]}")
+    if multiplier is not None:
+        parts.append(f"x{multiplier:g}")
+    return multiplier, currency, " · ".join(parts)
+
+
 def _apply_outside_rth(order_body: dict, proposal: dict) -> None:
     """Copy the proposal's `outside_rth` into the body as IBKR's `outsideRTH` — only when stated.
 
@@ -772,8 +808,8 @@ def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]
     if "outsideRTH" in order_body and not isinstance(status.get("outside_rth"), bool):
         line += (
             "\n⚠️ **Outside RTH could not be verified**: IBKR's order-status response "
-            "does not report the attribute for this order (measured 2026-09-04: reported "
-            "for stocks, absent for futures). The request carried "
+            "does not report the attribute for this order (measured 2026-09-04: present "
+            "once set, absent on an order that never had it). The request carried "
             f"outsideRTH={order_body['outsideRTH']!r}; read it in IBKR's own order ticket."
         )
 
@@ -857,14 +893,22 @@ async def _execute_staged_order_core(
             # apply here — this is IBKR's own response data.
             conid = int(contract.get("conid"))  # type: ignore[arg-type]
             company_name = contract.get("contractDesc", contract.get("description", ""))
-            raw_mult = contract.get("multiplier")
-            try:
-                multiplier = float(raw_mult) if raw_mult is not None else None
-            except (ValueError, TypeError):
-                multiplier = None
+            # No multiplier read here: /trsrv/futures rows carry none (measured 2026-09-04;
+            # the read that used to sit here had never fired live). It comes from contract
+            # info below, on every futures path.
         else:
             await send_status(_needs_conid_text(sec_type, symbol), "System")
             return
+
+        currency: str | None = None
+        if sec_type in ("FUT", "FOP"):
+            # Every futures path, conid-supplied or resolved: the multiplier is what turns
+            # a price into a notional on the Gate 2 screen, and the label carries the
+            # contract month the proposal text cannot show. Live 2026-09-04 (conid path):
+            # the dialog printed 7,735.00 for one ES contract worth 386,750 USD.
+            multiplier, currency, contract_label = _futures_contract_facts(ibkr, conid)
+            if contract_label:
+                company_name = contract_label
 
         claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"
         tif = (proposal.get("tif") or proposal.get("time_in_force") or proposal.get("timeInForce") or "DAY").upper()
@@ -917,6 +961,12 @@ async def _execute_staged_order_core(
             order_body["manualIndicator"] = True
             if multiplier is not None:
                 order_body["_multiplier"] = multiplier   # display only — stripped by client.py
+            else:
+                # Gate 2 must not fall back to price x qty on a future: that is not an
+                # estimate, it is the notional divided by the multiplier.
+                order_body["_multiplier_unknown"] = True
+            if currency:
+                order_body["_currency"] = currency       # display only — ISO code, never "$"
         if otype == "LMT" and limit_price is not None:
             order_body["price"] = float(limit_price)          # float
         elif otype == "STP" and proposal.get("stop_price") is not None:

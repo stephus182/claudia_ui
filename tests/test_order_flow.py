@@ -416,10 +416,18 @@ def _make_ibkr_mock():
     mod.BrowserCookieAuth = MagicMock()
     mod.Config.from_env.return_value = MagicMock()
     client.search_contract.return_value = [{"conid": 265598, "companyName": "APPLE INC"}]
+    # /trsrv/futures rows carry NO multiplier (measured 2026-09-04: keys are conid,
+    # expirationDate, ltd, cut-offs, symbol, underlyingConid). Until that day this mock
+    # invented one, and the multiplier path it "covered" had never fired live.
     client.get_futures.return_value = [
-        {"conid": 495512557, "expirationDate": 20260918, "multiplier": "50",
-         "contractDesc": "ES SEP 26"},
+        {"conid": 495512557, "expirationDate": 20260918, "contractDesc": "ES SEP 26"},
     ]
+    # /iserver/contract/{conid}/info is where the multiplier, currency and local symbol
+    # live (measured on ES conid 649180671: '50', 'USD', 'ESU6', maturity 20260918).
+    client.get_contract_info.return_value = {
+        "multiplier": "50", "currency": "USD", "local_symbol": "ESU6",
+        "maturity_date": "20260918", "instrument_type": "FUT",
+    }
     client.get_accounts.return_value = [{"accountId": "U12345"}]
     client.place_order_and_confirm.return_value = [{"orderId": "999"}]
     # Absent from the live book by default, so the existing place tests keep exercising
@@ -727,30 +735,47 @@ async def test_execute_staged_order_fut_cme_536b_fields():
 
 
 @pytest.mark.asyncio
-async def test_execute_staged_order_fut_multiplier_in_order_body():
-    """FUT: _multiplier from get_futures response passed as display field."""
+async def test_execute_staged_order_fut_multiplier_currency_and_label_from_contract_info():
+    """FUT via the resolver: the multiplier, currency and contract label come from
+    /iserver/contract/{conid}/info — never from /trsrv/futures, which carries no multiplier.
+    Live 2026-09-04: Gate 2 showed 'Total (est.): 7,735.00' for one ES contract, 50x short."""
     ibkr_mod, client = _make_ibkr_mock()
-    # Multiplier "50" as a string (matches IBKR response format)
-    client.get_futures.return_value = [
-        {"conid": 495512557, "expirationDate": 20260918, "multiplier": "50",
-         "contractDesc": "ES SEP 26"},
-    ]
     action = _make_action({
         "symbol": "ES", "action": "BUY", "quantity": 1,
         "order_type": "LMT", "limit_price": 5500.0, "sec_type": "FUT",
     })
     await _run(action, ibkr_mod)
+    client.get_contract_info.assert_called_once_with(495512557)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("_multiplier") == 50.0
+    assert order_body.get("_currency") == "USD"
+    assert "ESU6" in order_body.get("_companyName", "") and "2026-09-18" in order_body["_companyName"]
+    assert "_multiplier_unknown" not in order_body
 
 
 @pytest.mark.asyncio
-async def test_execute_staged_order_fut_no_multiplier_field_when_absent():
-    """FUT: _multiplier not added to order body when get_futures returns no multiplier."""
+async def test_execute_staged_order_fut_with_conid_still_fetches_the_multiplier():
+    """The live case: the proposal carries the conid (ClaudIA had just quoted the contract),
+    so get_futures is skipped — the multiplier must still be fetched, from contract info."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.get_futures.return_value = [
-        {"conid": 495512557, "expirationDate": 20260918, "contractDesc": "ES SEP 26"},
-    ]
+    action = _make_action({
+        "symbol": "ES", "action": "BUY", "quantity": 1, "conid": 649180671,
+        "order_type": "STP", "stop_price": 7735.0, "tif": "GTC", "sec_type": "FUT",
+    })
+    await _run(action, ibkr_mod)
+    client.get_futures.assert_not_called()
+    client.get_contract_info.assert_called_once_with(649180671)
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert order_body.get("_multiplier") == 50.0
+    assert order_body.get("_currency") == "USD"
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_fut_unknown_multiplier_is_flagged_not_guessed():
+    """Contract info unavailable → no _multiplier AND an explicit unknown flag, so Gate 2
+    cannot fall back to price x qty and show a 50x-short notional as if it were real."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_contract_info.side_effect = RuntimeError("503")
     action = _make_action({
         "symbol": "ES", "action": "BUY", "quantity": 1,
         "order_type": "MKT", "sec_type": "FUT",
@@ -758,6 +783,37 @@ async def test_execute_staged_order_fut_no_multiplier_field_when_absent():
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert "_multiplier" not in order_body
+    assert order_body.get("_multiplier_unknown") is True
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_stk_does_not_fetch_contract_info():
+    """Equities: no multiplier lookup, no futures display fields."""
+    ibkr_mod, client = _make_ibkr_mock()
+    action = _make_action({
+        "symbol": "AAPL", "action": "BUY", "quantity": 1, "conid": 265598,
+        "order_type": "MKT", "sec_type": "STK",
+    })
+    await _run(action, ibkr_mod)
+    client.get_contract_info.assert_not_called()
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert "_multiplier" not in order_body and "_multiplier_unknown" not in order_body
+
+
+def test_futures_contract_facts_parses_ibkr_strings_and_survives_junk():
+    """multiplier '50' → 50.0, maturity '20260918' → '2026-09-18'; junk → unknown, never raises."""
+    from claudia.order_flow import _futures_contract_facts
+
+    client = MagicMock()
+    client.get_contract_info.return_value = {
+        "multiplier": "50", "currency": "USD", "local_symbol": "ESU6", "maturity_date": "20260918",
+    }
+    assert _futures_contract_facts(client, 1) == (50.0, "USD", "ESU6 · expires 2026-09-18 · x50")
+    client.get_contract_info.return_value = {"multiplier": "fifty", "maturity_date": "soon"}
+    mult, ccy, label = _futures_contract_facts(client, 1)
+    assert mult is None and ccy is None and label == ""
+    client.get_contract_info.side_effect = RuntimeError("down")
+    assert _futures_contract_facts(client, 1) == (None, None, "")
 
 
 @pytest.mark.asyncio

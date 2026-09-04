@@ -675,10 +675,11 @@ _EMPTY = DashboardSnapshot(as_of=datetime.min.replace(tzinfo=UTC))
 
 
 _ORDER_COLUMNS = [
-    "Order", "Symbol", "Side", "Qty", "Filled", "Limit", "Type", "TIF", "Outside RTH", "Status", "Origin",
+    "Order", "Symbol", "Side", "Qty", "Filled", "Limit", "Stop", "Type", "TIF", "Outside RTH",
+    "Status", "Origin",
 ]
 
-_ORDER_NUMERIC = ["Qty", "Filled", "Limit"]
+_ORDER_NUMERIC = ["Qty", "Filled", "Limit", "Stop"]
 """The order columns that are numbers, and so need the same treatment as the positions
 table's: a format and right alignment. Without them IBKR's raw floats render as `1.0` and
 `6000.5` against `1` and `6,000.50` two tabs away — the same unscannable column the
@@ -696,8 +697,10 @@ _ORDER_TOOLTIPS = {
     "Qty": "Total order size, not the remainder.",
     "Filled": "How much has executed. Shows 0 when IBKR reports no remaining quantity, "
               "which is the safe direction to be wrong in.",
-    "Limit": "The resting price where the order type has one. No currency: the live-order "
-             "feed does not carry one, so none is claimed.",
+    "Limit": "The resting limit price where the order type has one. No currency: the "
+             "live-order feed does not carry one, so none is claimed.",
+    "Stop": "The stop (trigger) price, from IBKR's auxPrice / stop_price — a stop's price is "
+            "not a limit, so it has its own column (2026-09-04).",
     "Outside RTH": "Whether the order may act outside regular trading hours, as IBKR reports it. "
                    "Decides when a stop on a US future can trigger. '—' = not reported by IBKR "
                    "for this order (measured on futures rows) — not 'No'.",
@@ -739,6 +742,7 @@ def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
             "Qty": o.quantity,
             "Filled": o.filled,
             "Limit": o.price,
+            "Stop": o.stop_price,
             "Type": o.order_type,
             "TIF": o.tif,
             "Outside RTH": _yes_no_or_dash(o.outside_rth),

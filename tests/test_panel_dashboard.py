@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
+import pandas as pd
 import panel as pn
 import pytest
 
@@ -1197,8 +1198,10 @@ def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
     read-only guarantees these sit alongside are asserted by
     `test_order_table_is_read_only_no_click_or_edit_handlers`, not repeated here.
     """
-    assert set(view._orders.formatters) == {"Qty", "Filled", "Limit"}
-    assert view._orders.text_align == {"Qty": "right", "Filled": "right", "Limit": "right"}
+    assert set(view._orders.formatters) == {"Qty", "Filled", "Limit", "Stop"}
+    assert view._orders.text_align == {
+        "Qty": "right", "Filled": "right", "Limit": "right", "Stop": "right",
+    }
     assert set(view._orders.header_tooltips) <= set(pdash._ORDER_COLUMNS)
 
 
@@ -1635,3 +1638,20 @@ def test_orders_frame_renders_outside_rth_as_yes_no_or_not_reported():
     )))
     assert list(frame["Outside RTH"]) == ["Yes", "No", "—"]
     assert "not reported" in pdash._ORDER_TOOLTIPS["Outside RTH"].lower()
+
+
+def test_order_columns_show_stop_right_after_limit():
+    """A stop's resting price is not a limit; the book says which one it is."""
+    cols = pdash._ORDER_COLUMNS
+    assert cols.index("Stop") == cols.index("Limit") + 1
+    assert "Stop" in pdash._ORDER_NUMERIC
+
+
+def test_orders_frame_renders_the_stop_price():
+    """The live ES stop of 2026-09-04: no limit, stop 7735 — rendered in its own column."""
+    frame = pdash.orders_frame(_snapshot(orders=(
+        _order(order_id="853170745", symbol="ES", order_type="Stop", price=None, stop_price=7735.0),
+    )))
+    row = frame.iloc[0]
+    assert row["Stop"] == 7735.0
+    assert pd.isna(row["Limit"])

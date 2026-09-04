@@ -1226,11 +1226,25 @@ class LiveOrder:
     # undocumented, False on a resting stock limit and **None on a resting ES futures
     # limit**, so "not reported" is a real third state and must not collapse into False.
     outside_rth: bool | None = None
+    # A stop's resting price. IBKR keeps it out of `price`: the live ES stop of 2026-09-04
+    # came back with `price` '' and 7735.00 in `auxPrice` / `stop_price`.
+    stop_price: float | None = None
 
     @property
     def is_claudia_staged(self) -> bool:
         """Whether ClaudIA staged this order, by its local-id convention."""
         return self.origin.upper().startswith("CLAUDIA-")
+
+
+def _optional_float(raw: Any) -> float | None:
+    """A float when IBKR sent one (as a number or a numeric string), else None — never 0.0
+    for a blank, which on a price column would read as a real level."""
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
@@ -1274,6 +1288,7 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                 outside_rth=(
                     row["outsideRTH"] if isinstance(row.get("outsideRTH"), bool) else None
                 ),
+                stop_price=_optional_float(row.get("auxPrice") or row.get("stop_price")),
             )
         )
     return tuple(out)
