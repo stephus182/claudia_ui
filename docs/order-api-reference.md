@@ -369,7 +369,20 @@ Per session, `panel_app._make_fill_subscriber` puts it on four surfaces:
 
 Detached on End Session and on the destroy hook together with the alert subscription. If the
 WebSocket is down there is no report and nothing is invented; the red IBKR light and the
-dashboard's 15 s refresh remain. Not done: a P&L-after-fill line (the realised tile refreshes
+dashboard's 15 s refresh remain.
+
+**Rules the review of 2026-09-04 added, each with a test:** every fill is reported, including
+the ones the listener's P&L capture round consumes from the same queue (a bracket's second leg
+within 10 s of the first was silently dropped — reproduced with the real capture loop before
+the fix); each execution id is reported once (IBKR's `str` doc does not promise a resubscribe
+never re-sends); size and price keep IBKR's digits (no six-significant-figure truncation, no
+rounding of a 4-dp FX price — a known broker figure must not be altered any more than an
+unknown one may be guessed); a stock's description equal to its ticker is not joined twice
+(IBKR's documented STK shape is `"AMD" / "AMD"`); the System log captures the session's
+notifications area when it is built, because the listener task keeps the document of whichever
+session started it; the fill is never handled as a user turn (`respond=False`, pinned).
+Only the FUT event shape has been observed live; STK/OPT shapes rest on IBKR's documentation
+until a stock fills through the listener. Not done: a P&L-after-fill line (the realised tile refreshes
 within 15 s), a poller-based fallback. Live status: **code-verified 2026-09-04; the first
 automatic report awaits the next real fill** (the two fills of that day, 12:47 and the SELL
 after it, happened on a server that predates the feature).
