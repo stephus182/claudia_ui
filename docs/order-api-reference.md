@@ -43,12 +43,24 @@ unsupported keyword fails **every** request, not just a malformed one.
   "tif": "GTC",
   "sec_type": "STK",
   "conid": null,
+  "outside_rth": null,
   "reason": "one-line rationale"
 }
 ```
 
-All ten keys are `required` and no others are accepted — nullable fields carry an explicit
+All eleven keys are `required` and no others are accepted — nullable fields carry an explicit
 `null` rather than being omitted.
+
+`outside_rth` (added 2026-09-04, gap #33): nullable boolean, IBKR's `outsideRTH` attribute.
+`null` = the user did not say → nothing is sent and IBKR's default applies; `true`/`false` are
+sent verbatim, on `propose_modify` too (a modify resends the whole order, so a replacement
+without it would silently drop the attribute). It decides **when a stop on a US future can
+trigger** — see § Stop orders on US futures below. The field's description is the only text
+that reaches the model and carries the immutability rule ("set true only when the user asks
+… never assume"). Rendered on every human surface: the approval text (always for a futures
+stop, otherwise only when set), the Gate 2 dialog ("Outside RTH: Yes/No" when the body
+carries it — `ibkr_core_mcp/order_confirm.py`), and the dashboard's Orders tab as
+Yes / No / `—` (`—` = IBKR did not report it; measured `None` on a resting ES limit).
 
 `sec_type` values: `STK`, `FUT`, `OPT`, `FOP`, `CASH`.
 `order_type` values: `MKT`, `LMT`, `STP`, `STOP_LIMIT`. This is deliberately **narrower than
@@ -82,7 +94,7 @@ Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md
 | `ticker` | str | no | underlying symbol — valid IBKR field, not stripped |
 | `cOID` | str | no | customer order ID; max 64 chars; unique per 24h |
 | `listingExchange` | str | no | default: SMART routing |
-| `outsideRTH` | bool | no | allow execution outside regular trading hours |
+| `outsideRTH` | bool | no | allow execution outside regular trading hours — sent when the proposal's `outside_rth` is not `null` (2026-09-04) |
 | `manualIndicator` | bool | **FUT/FOP** | CME Rule 536-B — required since May 1, 2025 |
 | `extOperator` | str | **FUT/FOP** | CME Rule 536-B — identifies submitting system |
 
@@ -133,13 +145,14 @@ Established before a live ES buy-stop test, from IBKR's own pages (local copies 
    comments): <https://www.interactivebrokers.com/campus/trading-lessons/trading-outside-regular-trading-hours-rth/>.
    The Web API field is `outsideRTH: bool` (place-order example shows it on a GTC TRAILLMT):
    <https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md>
-4. **ClaudIA cannot set it today.** `propose_order` has no `outside_rth` field and
-   `_execute_staged_order_core` never sends `outsideRTH` (the field-spec comment lists it as
-   "no — allow execution outside regular trading hours" and the body omits it). So a GTC stop on
-   ES placed through ClaudIA rests overnight but is eligible to trigger only in the RTH session.
-   Gap #33 in `docs/project-status.md`; the fix is a strict-schema field (live-API probe first,
-   per the `proposal_tools` docstring), passed through to the body and **shown in the Gate 2
-   dialog** — an attribute that changes when an order can fire belongs in the human's view.
+4. **ClaudIA can set it since 2026-09-04** (`outside_rth`, above; gap #33). Until then
+   `propose_order` had no such field and the body never sent `outsideRTH`, so a GTC stop on ES
+   placed through ClaudIA rested overnight but could trigger only in the RTH session. The
+   schema change was probed against the live API (accepted), the attribute is shown in the
+   approval text, the Gate 2 dialog and the Orders tab, and the read side was measured first:
+   `/iserver/account/orders` returns `outsideRTH` although its doc does not list it — `False`
+   on a resting AAPL GTC limit, `None` on a resting ES Sep-26 GTC limit — hence three states
+   on screen. Live verification: the user's ES buy stop, recorded in the Live Test Log.
 5. **Which contract a FUT proposal lands on.** Without `conid`, the resolver picks the lowest
    `expirationDate` from `/trsrv/futures`: for ES on 2026-09-04 that is the **2026-09-18**
    contract (conid 649180671), two weeks from expiry — a GTC order on it ends at expiry. A

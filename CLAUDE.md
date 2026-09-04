@@ -116,7 +116,7 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (1,665 tests as of 2026-09-04)
+pytest        # full suite — all unit, no IBKR gateway needed (1,679 tests as of 2026-09-04)
 ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
@@ -201,6 +201,12 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   parameter gets a text warning, never a silent change — changing a parameter requires
   explicit user approval in a follow-up message. Enforced in `claudia/agent.py` system
   prompt and in memory (`feedback-order-parameter-immutability.md`).
+- **`outside_rth`** (2026-09-04): IBKR simulates stops on US futures and triggers them only in
+  regular trading hours unless the `outsideRTH` attribute is set. The proposal carries it as a
+  nullable boolean — `null` sends nothing, the user's `true`/`false` goes verbatim — on
+  `propose_modify` too, and it is shown in the approval text, the Gate 2 dialog and the Orders
+  tab (`—` there = not reported by IBKR, never "No"). Sources: `docs/order-api-reference.md`
+  § Stop orders on US futures.
 - Modify requests require the **full original order**, not a diff (IBKR API requirement).
   `propose_modify` carries the replacement order in its top-level fields plus a `changes`
   array of `{field, previous_value}` objects, used only to render the before/after diff.
