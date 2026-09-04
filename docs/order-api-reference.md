@@ -96,7 +96,7 @@ Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md
 | `listingExchange` | str | no | default: SMART routing |
 | `outsideRTH` | bool | no | allow execution outside regular trading hours — sent when the proposal's `outside_rth` is not `null` (2026-09-04) |
 | `manualIndicator` | bool | **FUT/FOP** | CME Rule 536-B — required since May 1, 2025 |
-| `extOperator` | str | **FUT/FOP** | CME Rule 536-B — identifies submitting system |
+| `extOperator` | str | **FUT/FOP** | CME Rule 536-B — identifies submitting system. **Not sent by ClaudIA**: IBKR rejects any non-empty value as undocumented field 8089 on this account class (whatif isolation, 2026-07-23); `manualIndicator` alone is accepted |
 
 Display-only fields use `_` prefix (`_companyName`, `_multiplier`) — stripped by `client.py`
 before the API call. `ticker` is **not** stripped (valid IBKR field).
@@ -194,7 +194,9 @@ Established before a live ES buy-stop test, from IBKR's own pages (local copies 
   **rejected with a chat message** directing the user to have ClaudIA call
   `get_option_chain` first and re-issue the proposal with `conid` filled in
 - Once `conid` is set, resolution is a pass-through (no `search_contract`/`get_futures` call)
-- Same `manualIndicator: True` + `extOperator: "ClaudIA"` requirement as FUT (CME Rule 536-B applies to FOP too)
+- Same `manualIndicator: True` as FUT, and likewise **no** `extOperator` (CME Rule 536-B applies to FOP too; the
+  8089 rejection is per account class, not per instrument). Multiplier, currency and label from contract info,
+  as for FUT — an FOP has never been placed live through ClaudIA, so that path is code-verified only.
 
 Source (536-B requirement): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
 
