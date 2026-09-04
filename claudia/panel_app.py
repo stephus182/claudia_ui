@@ -410,7 +410,11 @@ def _make_alert_subscriber(syslog: SystemLog) -> Callable[[str], Awaitable[None]
 
 
 def _make_fill_subscriber(
-    chat: pn.chat.ChatInterface, syslog: SystemLog, _session: dict[str, Any], session_id: str
+    chat: pn.chat.ChatInterface,
+    syslog: SystemLog,
+    _session: dict[str, Any],
+    session_id: str,
+    store: ConversationStore | None,
 ) -> Callable[[ExecutionReport], Awaitable[None]]:
     """Async subscriber for `ExecutionListener` fills — the automatic execution report.
 
@@ -423,8 +427,9 @@ def _make_fill_subscriber(
     - a warning line in the System log, which also raises the toast;
     - an operator note for the agent, so the next turn already knows — skipped when init has
       not produced an agent yet, never deferred (the screen is what matters first);
-    - a decision row (`execution_reported`) in the session's store when it exists, so the
-      session report carries the fill and the transcript of events is complete.
+    - a decision row (`execution_reported`) in the session's store (`store`, which exists at
+      subscription time — passed in rather than read from `_session`, where it is published
+      only later in init), so the session report carries the fill.
 
     Runs inside the listener's task on the session's loop, like the connectivity alerts; a
     closed session's sends are harmless no-ops, and the listener logs a raising subscriber
@@ -439,15 +444,14 @@ def _make_fill_subscriber(
         agent = _session.get("agent")
         if agent is not None:
             agent.note_execution(text)
-        store = _session.get("store")
         if store is not None:
             try:
                 store.add_decision(
                     session_id=session_id,
                     decision_type="execution_reported",
                     summary_text=headline,
-                    symbol=report.contract.split(" ")[0] if report.contract else None,
-                    metadata={"execution": report.__dict__},
+                    symbol=report.symbol or None,
+                    metadata={"execution": report.as_dict()},
                 )
             except Exception:
                 # The screen already has the fill; a failed row is a logging loss, not a
@@ -1172,7 +1176,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
             _execution_listener.start()
             _session["unsubscribe_fills"] = _execution_listener.subscribe(
-                _make_fill_subscriber(chat, syslog, _session, session_id)
+                _make_fill_subscriber(chat, syslog, _session, session_id, store)
             )
             if _session["closed"]:
                 # Session was destroyed while init was still running — undo the

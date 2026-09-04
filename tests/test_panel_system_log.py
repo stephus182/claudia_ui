@@ -106,3 +106,18 @@ def test_say_never_raises_without_a_served_session(monkeypatch):
     log = SystemLog()
     log.say("x", "error")
     assert log.entries == ["x"]
+
+
+def test_toast_area_is_captured_at_construction_for_the_session_that_built_it(monkeypatch):
+    """Review #5: the listener's task keeps the FIRST session's document for the life of the
+    process, so resolving `pn.state.notifications` at say-time would toast a dead tab after a
+    reload. The area is captured when the log is built — inside the session factory — and
+    used from then on."""
+    at_build = MagicMock()
+    monkeypatch.setattr(type(pn.state), "notifications", at_build, raising=False)
+    log = SystemLog()
+    later = MagicMock()
+    monkeypatch.setattr(type(pn.state), "notifications", later, raising=False)
+    log.say("lost the feed", "warning")
+    at_build.warning.assert_called_once()
+    later.warning.assert_not_called()

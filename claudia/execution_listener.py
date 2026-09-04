@@ -38,9 +38,11 @@ import contextlib
 import logging
 import os
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -66,6 +68,29 @@ _CLOSED = object()  # sentinel: the pump task signals a clean WebSocket close
 
 _ET = ZoneInfo("America/New_York")
 
+# Execution ids already reported, bounded. IBKR's `str` documentation says only that
+# `realtimeUpdatesOnly` decides whether historical executions are *displayed*; it does not
+# promise a resubscribe after a reconnect never re-sends one, so a replayed id must not
+# become a second FILLED message and a second decision row (review 2026-09-04, #7).
+_SEEN_EXECUTIONS_MAX = 500
+
+
+def _plain_number(value: float | int, min_decimals: int = 0) -> str:
+    """Render a broker figure without altering it: IBKR's digits, thousands grouped.
+
+    `f"{x:g}"` drops digits past six significant figures (1234567 → 1.23457e+06) and
+    `:.2f` rounds a 4-dp FX price — a known broker figure must not be altered any more than an
+    unknown one may be guessed (review 2026-09-04, #3). `Decimal(str(x))` keeps the digits
+    the float carried; `min_decimals` pads a price to the conventional two.
+    """
+    try:
+        q = Decimal(str(value)).normalize()
+    except InvalidOperation:
+        return str(value)
+    exponent = -q.as_tuple().exponent if q.as_tuple().exponent < 0 else 0  # type: ignore[operator]
+    decimals = max(int(exponent), min_decimals)
+    return f"{q:,.{decimals}f}"
+
 
 @dataclass(frozen=True)
 class ExecutionReport:
@@ -78,10 +103,11 @@ class ExecutionReport:
     """
 
     execution_id: str
+    symbol: str        # IBKR's `symbol`, e.g. "ES" — "" when absent
     verb: str          # BOUGHT / SOLD / the raw side if IBKR sends something else
-    size: str          # "1", "2.5", or "?"
-    contract: str      # "ES Sep18 '26", "AAPL"
-    price: str         # "7,732.00" or "?"
+    size: str          # "1", "1,234,567", "0.5", or "?" — IBKR's digits, never rounded
+    contract: str      # "ES Sep18 '26" (FUT, measured live); "AMD" (STK, IBKR's doc shape)
+    price: str         # "7,732.00", "1.08345" — IBKR's digits, two decimals at least, or "?"
     time_et: str       # "12:47:05 ET" from the UTC trade_time, or ""
     exchange: str
     origin: str        # "via ClaudIA (CLAUDIA-…)" or "external (TWS / mobile / web portal)"
@@ -93,9 +119,17 @@ class ExecutionReport:
         7,732.00 · 12:47:05 ET · CME · via ClaudIA."""
         side = (event.side or "").strip().upper()
         verb = {"B": "BOUGHT", "BUY": "BOUGHT", "S": "SOLD", "SELL": "SOLD"}.get(side, side or "?")
-        size = f"{event.size:g}" if isinstance(event.size, (int, float)) else "?"
-        price = f"{event.price:,.2f}" if isinstance(event.price, (int, float)) else "?"
-        contract = " ".join(p for p in (event.symbol, event.contract_description_1) if p).strip() or "?"
+        size = _plain_number(event.size) if isinstance(event.size, (int, float)) else "?"
+        price = _plain_number(event.price, 2) if isinstance(event.price, (int, float)) else "?"
+        symbol = (event.symbol or "").strip()
+        desc = (event.contract_description_1 or "").strip()
+        # IBKR's documented STK shape has contract_description_1 == symbol ("AMD" / "AMD");
+        # the measured FUT shape has symbol "ES" + description "Sep18 '26". Join only when
+        # the description does not already start with the ticker (review 2026-09-04, #4).
+        if desc and (not symbol or desc.startswith(symbol)):
+            contract = desc
+        else:
+            contract = " ".join(p for p in (symbol, desc) if p) or "?"
         time_et = ""
         raw = (event.trade_time or "").strip()
         # IBKR's documented format is YYYYMMDD-HH:mm:ss UTC; anything else is left blank.
@@ -107,9 +141,14 @@ class ExecutionReport:
         ref = (event.order_ref or "").strip()
         origin = f"via ClaudIA ({ref})" if ref.upper().startswith("CLAUDIA-") else "external (TWS / mobile / web portal)"
         return cls(
-            execution_id=event.execution_id, verb=verb, size=size, contract=contract,
-            price=price, time_et=time_et, exchange=(event.exchange or "").strip(), origin=origin,
+            execution_id=event.execution_id, symbol=symbol, verb=verb, size=size,
+            contract=contract, price=price, time_et=time_et,
+            exchange=(event.exchange or "").strip(), origin=origin,
         )
+
+    def as_dict(self) -> dict[str, str]:
+        """The report's fields as a plain, JSON-serialisable dict (for the decision row)."""
+        return asdict(self)
 
 
 def format_execution_report(report: ExecutionReport) -> str:
@@ -217,6 +256,7 @@ class ExecutionListener:
         self._task: asyncio.Task | None = None
         self._session_override = session
         self._subscribers: list[FillSubscriber] = []
+        self._seen_executions: deque[str] = deque(maxlen=_SEEN_EXECUTIONS_MAX)
 
     def subscribe(self, callback: FillSubscriber) -> Callable[[], None]:
         """Register an async callback for every fill (any origin). Returns an unsubscribe.
@@ -236,11 +276,23 @@ class ExecutionListener:
     async def _notify_fill(self, event: TradeExecution) -> None:
         """Deliver one fill to every subscriber; a raising subscriber is logged, not fatal.
 
-        The list is copied so a callback that unsubscribes itself mid-notify cannot corrupt
-        the walk, and an exception in one session cannot cost another its report or the
-        listener its loop.
+        Called from BOTH places an execution can surface — the outer loop and the P&L
+        capture round, which drains the same queue (review 2026-09-04, #1: a bracket's second
+        leg within 10 s of the first was consumed there and never reported). Each execution
+        id is reported once (see `_SEEN_EXECUTIONS_MAX`). The list is copied so a callback
+        that unsubscribes itself mid-notify cannot corrupt the walk; an exception in one
+        session — or in building the report — is logged and cannot cost another session its
+        report or the listener its loop.
         """
-        report = ExecutionReport.from_event(event)
+        if event.execution_id in self._seen_executions:
+            log.info("ExecutionListener: execution %s already reported — skipped", event.execution_id)
+            return
+        self._seen_executions.append(event.execution_id)
+        try:
+            report = ExecutionReport.from_event(event)
+        except Exception as exc:
+            log.warning("Could not build an execution report for %s: %s", event.execution_id, exc, exc_info=True)
+            return
         for subscriber in list(self._subscribers):
             try:
                 await subscriber(report)
@@ -413,6 +465,7 @@ class ExecutionListener:
                     )
                     return saw_extra_execution
                 if isinstance(item, TradeExecution):
+                    await self._notify_fill(item)  # every fill is reported, mid-round too
                     saw_extra_execution = True
         finally:
             # suppress() is equivalent to try/except/pass here — does not mask an

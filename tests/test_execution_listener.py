@@ -706,3 +706,102 @@ async def test_a_raising_subscriber_is_logged_and_does_not_stop_the_others(caplo
         await listener._run_once()
     good.assert_awaited_once()
     assert any("execution report" in r.message.lower() for r in caplog.records)
+
+
+# ── Review fixes 2026-09-04 ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fills_arriving_during_a_pnl_capture_round_are_reported_too():
+    """Review #1 (critical, verified by execution): the capture round consumes executions
+    from the same queue and only flagged them. A bracket's second leg, or a multi-lot
+    order's partial executions within 10 s, must each be reported. Real capture, no mock."""
+    from ibkr_core_mcp.streaming import PnLUpdate, TradeExecution
+
+    listener, _store = _make_listener()
+    received = []
+
+    async def subscriber(report):
+        """Collect every report."""
+        received.append(report.execution_id)
+
+    listener.subscribe(subscriber)
+    pnl = PnLUpdate(account="U1", row_type="", dpl=1.0, nl=2.0, upl=3.0, uel=4.0, mv=5.0)
+    fake_ws = _fake_ws([TradeExecution(execution_id="E1"), TradeExecution(execution_id="E2"), pnl, pnl])
+    with patch("claudia.execution_listener.BrowserCookieAuth"), \
+         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws):
+        await listener._run_once()
+    assert received == ["E1", "E2"]
+
+
+@pytest.mark.asyncio
+async def test_the_same_execution_id_is_reported_once():
+    """Review #7: IBKR's doc does not promise a resubscribe never re-sends an execution.
+    A replayed id must not produce a second FILLED message or a second decision row."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    listener, _ = _make_listener()
+    received = []
+
+    async def subscriber(report):
+        """Collect every report."""
+        received.append(report.execution_id)
+
+    listener.subscribe(subscriber)
+    fake_ws = _fake_ws([TradeExecution(execution_id="E1"), TradeExecution(execution_id="E1"),
+                        TradeExecution(execution_id="E2")])
+    with patch("claudia.execution_listener.BrowserCookieAuth"), \
+         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws), \
+         patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()):
+        await listener._run_once()
+    assert received == ["E1", "E2"]
+
+
+def test_report_preserves_ibkr_s_digits_for_size_and_price():
+    """Review #3: a known broker figure must not be altered. Two decimals when that is
+    exact, more when IBKR sent more; sizes never lose digits; thousands grouped."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    from claudia.execution_listener import ExecutionReport
+
+    r = ExecutionReport.from_event(TradeExecution(execution_id="E", size=1234567.0, price=7732.0))
+    assert r.size == "1,234,567" and r.price == "7,732.00"
+    r = ExecutionReport.from_event(TradeExecution(execution_id="E", size=100000.5, price=1.08345))
+    assert r.size == "100,000.5" and r.price == "1.08345"
+    r = ExecutionReport.from_event(TradeExecution(execution_id="E", size=0.123456789, price=0.0001))
+    assert r.size == "0.123456789" and r.price == "0.0001"
+
+
+def test_report_contract_label_does_not_double_the_ticker():
+    """Review #4: IBKR's documented STK shape has contract_description_1 == symbol
+    ("AMD" / "AMD"); joining both read 'SOLD 10 AMD AMD'. Futures keep 'ES Sep18 '26'."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    from claudia.execution_listener import ExecutionReport
+
+    stk = ExecutionReport.from_event(TradeExecution(execution_id="E", symbol="AMD", contract_description_1="AMD"))
+    assert stk.contract == "AMD"
+    opt = ExecutionReport.from_event(TradeExecution(execution_id="E", symbol="AAPL", contract_description_1="AAPL Jan16'26 250 Call"))
+    assert opt.contract == "AAPL Jan16'26 250 Call"
+    fut = ExecutionReport.from_event(TradeExecution(execution_id="E", symbol="ES", contract_description_1="Sep18 '26"))
+    assert fut.contract == "ES Sep18 '26"
+    assert fut.symbol == "ES" and stk.symbol == "AMD"
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_cannot_be_built_is_logged_not_fatal(caplog):
+    """Review #8: a parser failure must not become a 'connection error' with a reconnect."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    listener, _ = _make_listener()
+    good = AsyncMock()
+    listener.subscribe(good)
+    fake_ws = _fake_ws([TradeExecution(execution_id="E1")])
+    with patch("claudia.execution_listener.BrowserCookieAuth"), \
+         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws), \
+         patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()), \
+         patch("claudia.execution_listener.ExecutionReport.from_event", side_effect=ValueError("odd")), \
+         caplog.at_level(logging.WARNING):
+        await listener._run_once()
+    good.assert_not_awaited()
+    assert any("execution report" in r.message.lower() for r in caplog.records)

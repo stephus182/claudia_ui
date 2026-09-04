@@ -2267,7 +2267,7 @@ class ClaudIAAgent:
     def note_execution(self, report_text: str) -> None:
         """Queue a fill reported by IBKR's WebSocket for the next turn's operator message.
 
-        The execution listener delivers the report to every session the moment IBKR sends it
+        The execution listener delivers the report to every session as IBKR sends it
         (2026-09-04); this puts the same text — the broker's record, not model output — into
         the non-spoofable channel so the model knows about the fill on the user's next
         message without being asked. Delivered once, then cleared, like every other note.

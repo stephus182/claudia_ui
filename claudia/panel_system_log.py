@@ -70,6 +70,12 @@ class SystemLog:
         """Build the card collapsed and empty."""
         self._title = title
         self.entries: list[str] = []
+        # Captured now, inside the session factory where `pn.state.curdoc` is this session's
+        # document, and used by `say()` from then on. Resolving it at say-time would be wrong
+        # for a message delivered by a process-wide task (the execution listener, the
+        # connectivity checker): that task keeps the document of whichever session started
+        # it, so after a tab reload its toasts would target a dead page (review 2026-09-04).
+        self._notifications = pn.state.notifications
         # view_latest scrolls to the newest object on every append — the chat feed's
         # auto-scroll, for a plain column.
         self.lines = pn.Column(
@@ -89,8 +95,9 @@ class SystemLog:
     def say(self, text: str, level: Level = "info") -> None:
         """Record one event. Never raises: a missing notifications object is skipped.
 
-        `pn.state.notifications` is None outside a served session (and in every test), so
-        the toast is guarded exactly as `panel_dashboard` guards its stale-data toast.
+        The notifications area was captured at construction (see `__init__`); it is None
+        outside a served session (and in every test), so the toast is guarded exactly as
+        `panel_dashboard` guards its stale-data toast.
         """
         self.entries.append(text)
         line = format_line(text, level, time.strftime("%H:%M:%S"))
@@ -102,7 +109,7 @@ class SystemLog:
         self.card.title = f"{self._title} ({len(self.entries)})"
         if level == "info":
             return
-        notifications = pn.state.notifications
+        notifications = self._notifications
         if notifications is None:
             return
         duration = _TOAST_DURATION_MS[level]

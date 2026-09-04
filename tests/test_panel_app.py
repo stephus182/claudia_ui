@@ -3064,8 +3064,8 @@ async def test_fill_subscriber_posts_an_ibkr_authored_message_a_log_line_and_an_
     syslog = SystemLog()
     agent = MagicMock()
     store = MagicMock()
-    session_state = {"agent": agent, "closed": False, "store": store}
-    await _make_fill_subscriber(chat, syslog, session_state, "s1")(_report())
+    session_state = {"agent": agent, "closed": False}
+    await _make_fill_subscriber(chat, syslog, session_state, "s1", store)(_report())
 
     assert len(chat.objects) == 1
     message = chat.objects[0]
@@ -3090,7 +3090,7 @@ async def test_fill_subscriber_without_an_agent_still_reports_on_screen():
 
     chat = pn.chat.ChatInterface(renderers=[safe_markdown])
     syslog = SystemLog()
-    await _make_fill_subscriber(chat, syslog, {"agent": None, "closed": False, "store": None}, "s1")(_report())
+    await _make_fill_subscriber(chat, syslog, {"agent": None, "closed": False}, "s1", None)(_report())
     assert chat.objects[0].user == "IBKR"
     assert len(syslog.entries) == 1
 
@@ -3125,8 +3125,18 @@ async def test_init_subscribes_to_fills_and_end_session_unsubscribes(backend_sin
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
         backend_singletons.listener_cls.return_value.subscribe.assert_called_once()
         fill_cb = backend_singletons.listener_cls.return_value.subscribe.call_args.args[0]
+        handled_before = mock_agent_cls.return_value.handle_message.await_count
         await fill_cb(_report())
         assert any(m.user == "IBKR" for m in chat.objects)
+        # Review #2: respond=False is what keeps IBKR's text out of the user channel — a fill
+        # must never be handled as a user turn (it would be persisted as one, the spoofable
+        # channel the design forbids).
+        assert mock_agent_cls.return_value.handle_message.await_count == handled_before
+        # Review #6: the store exists at subscription time and the row is written with it.
+        mock_store.add_decision.assert_any_call(
+            session_id=ANY, decision_type="execution_reported", summary_text=ANY,
+            symbol="ES", metadata=ANY,
+        )
         await _get_click_callback(_action_bar(chat).end_button)(None)
     unsub_alerts.assert_called_once()
     unsub_fills.assert_called_once()
