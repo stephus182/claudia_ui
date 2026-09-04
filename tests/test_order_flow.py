@@ -2044,3 +2044,85 @@ def test_a_genuinely_changed_side_is_still_caught():
     )
     assert agree is False
     assert "side" in line
+
+
+# ── outside_rth → outsideRTH (2026-09-04, gap #33) ────────────────────────────
+#
+# IBKR simulates stops on US futures and triggers them only in RTH unless the outsideRTH
+# attribute is set (docs/order-api-reference.md § Stop orders on US futures). The proposal's
+# nullable `outside_rth` maps to the body only when the user said something: True/False are
+# sent as given, None sends nothing — today's behaviour, and IBKR's default.
+
+
+@pytest.mark.parametrize("value, expected", [(True, True), (False, False)])
+@pytest.mark.asyncio
+async def test_place_body_carries_outside_rth_when_the_proposal_states_it(value, expected):
+    """A stated outside_rth reaches IBKR as outsideRTH, verbatim (order-parameter immutability)."""
+    ibkr_mod, client = _make_ibkr_mock()
+    action = _make_action({
+        "symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "STP",
+        "stop_price": 7725.0, "tif": "GTC", "sec_type": "FUT", "outside_rth": value,
+    })
+    await _run(action, ibkr_mod)
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert order_body.get("outsideRTH") is expected
+
+
+@pytest.mark.parametrize("payload", [{"outside_rth": None}, {}])
+@pytest.mark.asyncio
+async def test_place_body_omits_outside_rth_when_the_user_did_not_say(payload):
+    """null (or absent, for older callers) sends nothing — never a fabricated False."""
+    ibkr_mod, client = _make_ibkr_mock()
+    action = _make_action({
+        "symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "STP",
+        "stop_price": 7725.0, "tif": "GTC", "sec_type": "FUT", **payload,
+    })
+    await _run(action, ibkr_mod)
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert "outsideRTH" not in order_body
+
+
+@pytest.mark.asyncio
+async def test_modify_body_carries_outside_rth_when_stated_and_omits_it_when_null():
+    """A modify resends the whole order: the attribute must survive the round trip."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    action = _make_modify_action({
+        "order_id": "555", "conid": 649180671, "symbol": "ES", "action": "BUY",
+        "quantity": 1, "order_type": "STP", "stop_price": 7720.0, "tif": "GTC",
+        "sec_type": "FUT", "outside_rth": True,
+        "changes": [{"field": "stop_price", "previous_value": 7725.0}],
+    })
+    await _run_modify(action, ibkr_mod)
+    _, _, order_body = client.modify_order_and_confirm.call_args.args
+    assert order_body.get("outsideRTH") is True
+
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    action = _make_modify_action({
+        "order_id": "555", "conid": 649180671, "symbol": "ES", "action": "BUY",
+        "quantity": 1, "order_type": "STP", "stop_price": 7720.0, "tif": "GTC",
+        "sec_type": "FUT", "outside_rth": None,
+        "changes": [{"field": "stop_price", "previous_value": 7725.0}],
+    })
+    await _run_modify(action, ibkr_mod)
+    _, _, order_body = client.modify_order_and_confirm.call_args.args
+    assert "outsideRTH" not in order_body
+
+
+def test_summary_states_outside_rth_for_every_futures_stop():
+    """A futures stop ALWAYS says whether it is active outside RTH — 'no' is the dangerous
+    default (IBKR triggers it only in RTH) and must be visible before Touch ID."""
+    base = {"symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "STP",
+            "stop_price": 7725.0, "tif": "GTC", "sec_type": "FUT"}
+    no = _format_order_summary({**base, "outside_rth": None})
+    assert "Outside RTH: **no**" in no and "regular trading hours" in no
+    yes = _format_order_summary({**base, "outside_rth": True})
+    assert "Outside RTH: **yes**" in yes and "electronic session" in yes
+    assert "Outside RTH: **no**" not in yes
+
+
+def test_summary_mentions_outside_rth_for_other_orders_only_when_set():
+    """A stock limit says nothing about RTH unless the user set the attribute."""
+    base = {"symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "LMT",
+            "limit_price": 150.0, "tif": "GTC", "sec_type": "STK"}
+    assert "Outside RTH" not in _format_order_summary({**base, "outside_rth": None})
+    assert "Outside RTH: **yes**" in _format_order_summary({**base, "outside_rth": True})

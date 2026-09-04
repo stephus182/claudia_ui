@@ -99,6 +99,42 @@ def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> s
     return f" @ {' / '.join(parts)}" if parts else ""
 
 
+def _apply_outside_rth(order_body: dict, proposal: dict) -> None:
+    """Copy the proposal's `outside_rth` into the body as IBKR's `outsideRTH` — only when stated.
+
+    `None` (the user did not say) sends nothing, which is today's behaviour and IBKR's
+    default; `True`/`False` go verbatim (order-parameter immutability: no fabricated value in
+    either direction). Shared by the place and modify paths so a modify — which resends the
+    whole order — cannot drop the attribute the original carried. Why it exists: IBKR
+    simulates stops on US futures and triggers them only in RTH unless this is set
+    (docs/order-api-reference.md § Stop orders on US futures, 2026-09-04).
+    """
+    value = proposal.get("outside_rth")
+    if value is not None:
+        order_body["outsideRTH"] = bool(value)
+
+
+def _outside_rth_line(proposal: dict) -> str | None:
+    """The approval line for the outside-RTH attribute, or None when nothing needs saying.
+
+    A stop or stop-limit on a future ALWAYS gets the line: "no" is the dangerous default
+    (the stop is inert outside regular trading hours) and belongs on the last screen before
+    Touch ID as much as "yes" does. Any other order mentions it only when the user set it.
+    """
+    otype = str(proposal.get("order_type", "MKT")).upper()
+    sec_type = str(proposal.get("sec_type", "STK")).upper()
+    value = proposal.get("outside_rth")
+    futures_stop = sec_type in ("FUT", "FOP") and otype in ("STP", "STOP_LIMIT")
+    if value:
+        return "⏰ Outside RTH: **yes** — active through the whole electronic session."
+    if futures_stop:
+        return (
+            "⏰ Outside RTH: **no** — IBKR triggers futures stops during regular trading "
+            "hours only; say so if you want it active through the electronic session."
+        )
+    return None
+
+
 def _format_order_summary(proposal: dict) -> str:
     """Build the human-approval text for a new order.
 
@@ -108,8 +144,9 @@ def _format_order_summary(proposal: dict) -> str:
 
     Recognised keys: `symbol`, `action`, `quantity`, `order_type` (default MKT),
     `limit_price` / `stop_price` (rendered by `_price_suffix`, which covers LMT, STP and
-    STOP_LIMIT), `sec_type` (default STK; labelled inline only when it is not STK), and
-    `reason`. TIF is read from `tif`, then `time_in_force`, then `timeInForce`, defaulting
+    STOP_LIMIT), `sec_type` (default STK; labelled inline only when it is not STK),
+    `outside_rth` (rendered by `_outside_rth_line` — always for a futures stop, otherwise
+    only when set), and `reason`. TIF is read from `tif`, then `time_in_force`, then `timeInForce`, defaulting
     to DAY — the identical expression `_execute_staged_order_core` uses, so display and
     execution cannot diverge. Do not change one without the other.
 
@@ -136,6 +173,9 @@ def _format_order_summary(proposal: dict) -> str:
     lines = [
         f"**{action} {qty} {symbol}{sec_label}** ({otype}{price_str}, {tif})",
     ]
+    rth_line = _outside_rth_line(proposal)
+    if rth_line:
+        lines.append(rth_line)
     if reason:
         lines.append(f"*Reason:* {reason}")
     lines.append(
@@ -865,6 +905,7 @@ async def _execute_staged_order_core(
                 order_body["price"] = float(limit_price)
             if proposal.get("stop_price") is not None:
                 order_body["auxPrice"] = float(proposal["stop_price"])
+        _apply_outside_rth(order_body, proposal)
 
         # Gate 1 (Touch ID) + Gate 2 (AppKit colored dialog) fire inside place_order()
         accounts = ibkr.get_accounts()
@@ -1231,6 +1272,7 @@ async def _execute_modify_order_core(
                 order_body["price"] = float(limit_price)
             if stop_price is not None:
                 order_body["auxPrice"] = float(stop_price)
+        _apply_outside_rth(order_body, proposal)
 
         accounts = ibkr.get_accounts()
         account_id = _resolve_account_id(accounts)
