@@ -35,7 +35,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import panel as pn
 from dotenv import load_dotenv
@@ -60,10 +60,12 @@ from claudia.gateway_session import SessionPhase, get_session
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
 from claudia.opening_status import build_trade_lines, gather_session_state
+from claudia.panel_action_bar import SERVICE_LABELS, ActionBar
 from claudia.panel_chart import build_chart_pane
 from claudia.panel_dashboard import build_dashboard
 from claudia.panel_markdown import safe_markdown
 from claudia.panel_sink import PanelMessageSink
+from claudia.panel_system_log import SystemLog
 from claudia.panel_theme import (
     apply_session_theme,
     intro_card,
@@ -380,73 +382,36 @@ async def _send_opening_status(
     return trade_context, ibkr_offline
 
 
-_INDICATOR_LABELS = {"ibkr": "IBKR", "gdrive": "GDrive", "tv": "TradingView"}
-
-
-def _make_status_indicators() -> dict[str, pn.indicators.BooleanStatus]:
-    """One BooleanStatus per service, keyed like ConnectivityChecker.get_status().
-    UNKNOWN at build: gray dot for not-yet-checked, not an error. label= (not
-    name=) — Widget.name raises PendingDeprecationWarning on Panel 1.9.3
-    (probe-verified, same as the Task 5.6b Button finding)."""
-    return {
-        key: pn.indicators.BooleanStatus(value=False, color="dark", label=label)
-        for key, label in _INDICATOR_LABELS.items()
-    }
-
-
-def _apply_status(
-    indicators: dict[str, pn.indicators.BooleanStatus], status: dict[str, ServiceStatus]
-) -> None:
-    """ServiceStatus → (value, color): OK → lit green, ERROR → lit red,
-    UNKNOWN → unlit gray (matches _run_checks()' not-configured-is-not-an-error
-    rule). Unknown keys in either direction are ignored."""
-    # Literal-typed so mypy accepts assignment into BooleanStatus.color's
-    # Literal['primary', ..., 'dark'] param type.
-    mapping: dict[ServiceStatus, tuple[bool, Literal["success", "danger", "dark"]]] = {
-        ServiceStatus.OK: (True, "success"),
-        ServiceStatus.ERROR: (True, "danger"),
-        ServiceStatus.UNKNOWN: (False, "dark"),
-    }
-    for key, ind in indicators.items():
-        if key in status:
-            value, color = mapping[status[key]]
-            ind.value, ind.color = value, color
-
-
-def _make_alert_subscriber(chat: pn.chat.ChatInterface) -> Callable[[str], Awaitable[None]]:
-    """Async subscriber for ConnectivityChecker alerts — texts arrive
-    pre-formatted (_DISCONNECT_MESSAGES/_RECONNECT_MESSAGES). Runs inside the
-    checker's poll task on the same process-wide loop as the session (V2/V3
-    probe basis), so a direct chat.send is safe; a closed session's send is a
-    harmless no-op (V4)."""
+def _make_alert_subscriber(syslog: SystemLog) -> Callable[[str], Awaitable[None]]:
+    """Async subscriber for ConnectivityChecker alerts — texts arrive pre-formatted
+    (_DISCONNECT_MESSAGES/_RECONNECT_MESSAGES). Runs inside the checker's poll task on
+    the same process-wide loop as the session (V2/V3 probe basis), so a direct feed send
+    is safe; a closed session's send is a harmless no-op (V4). Lands in the System log as
+    a warning (entry + toast): a lost feed is worth one interruption (2026-09-03)."""
     async def _on_alert(text: str) -> None:
-        """Deliver one connectivity alert into this session's chat feed."""
-        chat.send(text, user="System", respond=False)
+        """Deliver one connectivity alert into this session's System log."""
+        syslog.say(text, "warning")
 
     return _on_alert
 
 
-def _send_action_buttons(
-    chat: pn.chat.ChatInterface,
+def _build_action_bar(
+    syslog: SystemLog,
     _session: dict[str, Any],
     session_id: str,
-    ibkr_offline: bool,
-    tv_offline: bool,
-) -> None:
-    """End Session (always) + Start IBKR Gateway (when IBKR offline) + Launch
-    TradingView (when TV offline) — app.py action-button parity, Phase 3 widget
-    pattern (disable-first async handlers)."""
-    end_btn = pn.widgets.Button(label="End Session", color="light")
-    buttons: list[pn.widgets.Button] = [end_btn]
+) -> ActionBar:
+    """The reconnect coroutines behind the three service buttons, plus End Session.
 
-    async def _on_end(event: Any) -> None:
-        """End the session from the button: disable controls, unsubscribe, run cleanup.
+    Built at chat-build time, before init, so `_build_session_root` can compose the bar;
+    every handler reads the module singletons and `_session` at CLICK time, never at
+    build. Progress and outcomes go to the System log, not the chat (2026-09-03). The
+    buttons always exist — state lives in their colour (ActionBar.repaint), not in
+    whether they were offered, which is what the old ibkr_offline/tv_offline gating did.
+    """
 
-        Idempotent — the `_session["closed"]` guard means clicking End Session and then
-        closing the tab (which fires the destroy hook) cleans up exactly once.
-        """
-        for b in buttons:
-            b.disabled = True
+    async def _end_session() -> None:
+        """Save + report + upload once; idempotent with the destroy hook via `closed`
+        (End Session then closing the tab cleans up exactly once)."""
         if _session["closed"]:
             return
         unsub = _session["unsubscribe"]
@@ -454,115 +419,103 @@ def _send_action_buttons(
             unsub()
             _session["unsubscribe"] = None
         _session["closed"] = True
-        chat.send("Saving session…", user="System", respond=False)
+        syslog.say("Saving session…")
         status = await _run_session_cleanup(session_id, _session["store"], _session["loader"])
-        chat.send(
-            f"**Session ended.** {status}\n\nSafe to close this tab.",
-            user="System", respond=False,
+        syslog.say(f"**Session ended.** {status}\n\nSafe to close this tab.")
+
+    async def _reconnect_gateway() -> None:
+        """Reconnect IBKR via the one shared session owner.
+
+        Presentation only. Every decision — whether to start a container, whether the
+        session may be logged into, whether it is usable — belongs to
+        `claudia.gateway_session`, which `start-claudia.sh` and the CLI also call. The
+        owner runs the read-only pre-flight FIRST: a session that already works is left
+        alone (re-authenticating it is the harm), and the blocking work runs on a worker
+        thread with its progress lines streamed into the System log.
+        """
+        result = await asyncio.to_thread(
+            get_session().establish, GatewayManager(), emit=syslog.say
         )
+        if result.phase is SessionPhase.LIVE:
+            if _connectivity_checker is not None:
+                await _connectivity_checker._run_checks()
+            syslog.say(f"✅ **Session is live** — {result.detail}")
+        elif result.phase is SessionPhase.DOWN:
+            syslog.say(f"✕ **Gateway is not answering** — {result.detail}", "error")
+        else:
+            syslog.say(f"⚠️ **{result.phase.value.upper()}** — {result.detail}", "warning")
 
-    end_btn.on_click(_on_end)
+    async def _reconnect_tradingview() -> None:
+        """Launch TradingView Desktop with CDP debugging, then rebuild the sidecar bridge
+        and merge its tools into this session's agent. A launch that does not open its
+        debug port is an honest log line; anything that raises is reported by the bar
+        (project-tradingview-robustness memory: never a crash)."""
+        global _tv_bridge
+        syslog.say("▶ Launching TradingView Desktop with remote debugging…")
+        launched = await launch_tradingview()
+        if not launched:
+            syslog.say(
+                "✕ TradingView Desktop did not open its debug port within 30s.\n\n"
+                "If it's already running without the debug port, it can't be "
+                "fixed in place — run the one-command quit+relaunch helper:\n"
+                "```\n./scripts/launch-tradingview-debug.sh\n```",
+                "error",
+            )
+            return
+        syslog.say("▶ Connecting tradingview-mcp sidecar…")
+        async with _tv_bridge_lock:
+            if _tv_bridge is not None:
+                await _tv_bridge.stop()
+                _tv_bridge = None
+        bridge = await _get_tv_bridge()  # creates a fresh bridge under its own lock
+        if _connectivity_checker is not None:
+            _connectivity_checker.set_tv_bridge(bridge)
+        tv_tools = bridge.get_tools()
+        agent = _session.get("agent")
+        if agent is not None:
+            agent.set_tv_bridge(bridge, tv_tools)
+        syslog.say(f"✅ TradingView connected ({len(tv_tools)} tools available).")
+        # Re-poll LAST so the light follows without waiting for the timer — after the
+        # agent is wired, so a checker hiccup can be reported without undoing the connect.
+        if _connectivity_checker is not None:
+            await _connectivity_checker._run_checks()
 
-    if ibkr_offline:
-        gw_btn = pn.widgets.Button(label="Start IBKR Gateway", color="primary")
-        buttons.append(gw_btn)
+    async def _reconnect_drive() -> None:
+        """Re-authenticate the Drive client, then re-poll the checker so the light follows."""
+        if _gdrive_sync is None:
+            syslog.say("Drive not configured — set GOOGLE_DRIVE_FOLDER_ID and restart.", "warning")
+            return
+        syslog.say("▶ Reconnecting Google Drive…")
+        ok = await asyncio.to_thread(_gdrive_sync.reconnect)
+        if ok:
+            syslog.say("✅ Drive connected.")
+        else:
+            syslog.say("✕ Drive reconnect failed — token invalid or API unreachable.", "error")
+        if _connectivity_checker is not None:
+            await _connectivity_checker._run_checks()
 
-        async def _on_start_gateway(event: Any) -> None:
-            """Start the IBKR gateway from chat, via the one shared session owner.
+    def _status() -> dict[str, ServiceStatus]:
+        """The checker's cached status, or nothing before the checker exists."""
+        if _connectivity_checker is None:
+            return {}
+        return _connectivity_checker.get_status()
 
-            Presentation only. Every decision — whether to start a container, whether the
-            session may be logged into, whether it is usable — belongs to
-            `claudia.gateway_session`, which `start-claudia.sh` and the CLI also call.
-            This handler runs the blocking work on a worker thread, streams the owner's
-            progress lines into the chat feed, and renders the final phase.
-
-            Until 2026-08-06 it inlined its own sequence and called
-            `GatewayManager.start()` — which removes any existing container — *before* the
-            pre-flight, so the two verdicts the pre-flight existed for were computed
-            against a session that had already been destroyed.
-            """
-            gw_btn.disabled = True
-
-            def _say(line: str) -> None:
-                """Progress sink. Returns None; `chat.send` returns a ChatMessage."""
-                chat.send(line, user="System", respond=False)
-
-            try:
-                result = await asyncio.to_thread(
-                    get_session().establish, GatewayManager(), emit=_say
-                )
-                if result.phase is SessionPhase.LIVE:
-                    if _connectivity_checker is not None:
-                        await _connectivity_checker._run_checks()
-                    chat.send(f"✅ **Session is live** — {result.detail}",
-                              user="System", respond=False)
-                elif result.phase is SessionPhase.DOWN:
-                    chat.send(f"✕ **Gateway is not answering** — {result.detail}",
-                              user="System", respond=False)
-                else:
-                    chat.send(
-                        f"⚠️ **{result.phase.value.upper()}** — {result.detail}",
-                        user="System", respond=False,
-                    )
-            except Exception as exc:
-                log.error("Gateway startup failed: %s", exc)
-                chat.send(f"✕ Gateway startup failed: {exc}", user="System", respond=False)
-
-        gw_btn.on_click(_on_start_gateway)
-
-    if tv_offline:
-        tv_btn = pn.widgets.Button(label="Launch TradingView", color="warning")
-        buttons.append(tv_btn)
-
-        async def _on_launch_tv(event: Any) -> None:
-            """Launch TradingView Desktop with CDP debugging, then rebuild the
-            sidecar bridge and merge its tools into this session's agent —
-            Parity with the removed app.py. Every failure path is an honest chat message,
-            never a crash (project-tradingview-robustness memory)."""
-            global _tv_bridge
-            tv_btn.disabled = True
-            try:
-                chat.send("▶ Launching TradingView Desktop with remote debugging…",
-                          user="System", respond=False)
-                launched = await launch_tradingview()
-                if not launched:
-                    chat.send(
-                        "✕ TradingView Desktop did not open its debug port within 30s.\n\n"
-                        "If it's already running without the debug port, it can't be "
-                        "fixed in place — run the one-command quit+relaunch helper:\n"
-                        "```\n./scripts/launch-tradingview-debug.sh\n```",
-                        user="System", respond=False,
-                    )
-                    return
-                chat.send("▶ Connecting tradingview-mcp sidecar…",
-                          user="System", respond=False)
-                async with _tv_bridge_lock:
-                    if _tv_bridge is not None:
-                        await _tv_bridge.stop()
-                        _tv_bridge = None
-                bridge = await _get_tv_bridge()  # creates a fresh bridge under its own lock
-                if _connectivity_checker is not None:
-                    _connectivity_checker.set_tv_bridge(bridge)
-                tv_tools = bridge.get_tools()
-                agent = _session.get("agent")
-                if agent is not None:
-                    agent.set_tv_bridge(bridge, tv_tools)
-                chat.send(
-                    f"✅ TradingView connected ({len(tv_tools)} tools available).",
-                    user="System", respond=False,
-                )
-            except Exception as exc:
-                log.error("TradingView launch failed: %s", exc)
-                chat.send(f"✕ TradingView launch failed: {exc}",
-                          user="System", respond=False)
-
-        tv_btn.on_click(_on_launch_tv)
-
-    chat.send(pn.Row(*buttons), user="System", respond=False)
+    reconnect = {
+        "ibkr": _reconnect_gateway,
+        "tv": _reconnect_tradingview,
+        "gdrive": _reconnect_drive,
+    }
+    assert set(reconnect) == set(SERVICE_LABELS)
+    return ActionBar(
+        reconnect=reconnect,
+        end_session=_end_session,
+        on_error=lambda line: syslog.say(line, "error"),
+        status=_status,
+    )
 
 
 async def _maybe_background_flex_sync(
-    chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, ibkr_offline: bool
+    syslog: SystemLog, toolkit: ClaudeToolkit, ibkr_offline: bool
 ) -> None:
     """Startup Flex sync decision + background sync (parity with the removed app.py).
 
@@ -637,7 +590,7 @@ async def _maybe_background_flex_sync(
         try:
             before = await asyncio.to_thread(dataset_fingerprint, cfg.sqlite_path)
             result, _ = await asyncio.to_thread(toolkit.execute, "sync_flex_trades", {})
-            chat.send(f"✅ {result}", user="System", respond=False)
+            syslog.say(f"✅ {result}")
             after = await asyncio.to_thread(dataset_fingerprint, cfg.sqlite_path)
             # Back up the updated store.db to Drive account_data/.
             # upload_account_sqlite, not upload_account_file: store.db runs in WAL mode, so
@@ -660,11 +613,11 @@ async def _maybe_background_flex_sync(
             validity = await asyncio.to_thread(validate_dataset, cfg.sqlite_path)
             if not validity.ok:
                 log.error("Flex dataset validation FAILED after sync — %s", validity.summary)
-                chat.send(
+                syslog.say(
                     f"⚠ Trade dataset failed validation after the sync — {validity.summary}. "
                     f"The realised P&L figures on the dashboard are computed from these rows; "
                     f"treat them as unverified until this is resolved.",
-                    user="System", respond=False,
+                    "warning",
                 )
         except Exception as exc:
             log.warning("Background Flex sync failed: %s", exc)
@@ -673,14 +626,14 @@ async def _maybe_background_flex_sync(
                 cov_result, _ = await asyncio.to_thread(
                     toolkit.execute, "check_flex_coverage", {}
                 )
-                chat.send(
+                syslog.say(
                     f"⚠ Sync failed: {exc}. Run `sync_flex_trades` manually.\n\n{cov_result}",
-                    user="System", respond=False,
+                    "warning",
                 )
             except Exception:
-                chat.send(
+                syslog.say(
                     f"⚠ Trade data sync failed: {exc}. Run `sync_flex_trades` manually.",
-                    user="System", respond=False,
+                    "warning",
                 )
 
     task = asyncio.get_running_loop().create_task(_background_flex_sync())
@@ -795,6 +748,11 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         "intro_task": None,
     }
     _init_done = asyncio.Event()
+    # Session-level events go to the System log, not the chat; the action bar's reconnect
+    # handlers read `_session` at click time (2026-09-03). Both are composed into the left
+    # column by _build_session_root and handed off like the file input below.
+    syslog = SystemLog()
+    bar = _build_action_bar(syslog, _session, session_id)
 
     def _on_session_destroyed(session_context: Any) -> None:
         """V4 contract: sync, fires 15-32s after disconnect on the shared loop
@@ -999,6 +957,8 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     # _screenshot_file_input — the typed accessor keeps mypy's attr checking
     # everywhere else.
     chat._claudia_file_input = file_input  # type: ignore[attr-defined]
+    chat._claudia_log = syslog  # type: ignore[attr-defined]
+    chat._claudia_bar = bar  # type: ignore[attr-defined]
 
     async def _init_session() -> None:
         """Bring one session fully online, in order, as a background task.
@@ -1058,10 +1018,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 loader.load_system_prompt()  # validate docs exist before proceeding
             except FileNotFoundError as exc:
                 _session["error"] = f"Setup required: {exc}"
-                chat.send(
+                syslog.say(
                     f"**Setup required:** {exc}\n\nCreate the missing file and reload.",
-                    user="System",
-                    respond=False,
+                    "error",
                 )
                 return
 
@@ -1081,11 +1040,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 try:
                     loop.call_soon_threadsafe(
                         partial(
-                            chat.send,
+                            syslog.say,
                             f"**Document updated:** `{filename}` reloaded. "
                             "Principles apply from your next message.",
-                            user="System",
-                            respond=False,
                         )
                     )
                 except RuntimeError:  # loop closed — session gone, alert moot
@@ -1097,7 +1054,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             # ordering invariant in _register_doc_version's docstring).
             current_hash, version_label, warning = _register_doc_version(store, loader)
             if warning is not None:
-                chat.send(warning, user="System", respond=False)
+                syslog.say(warning, "warning")
 
             store.create_session(
                 session_id, context_hash=current_hash, doc_version=version_label
@@ -1130,7 +1087,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 )
             _connectivity_checker.start()
             _session["unsubscribe"] = _connectivity_checker.subscribe(
-                _make_alert_subscriber(chat)
+                _make_alert_subscriber(syslog)
             )
             if _session["closed"]:
                 # Session was destroyed while init was still running — undo the
@@ -1185,16 +1142,14 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 if ibkr_offline
                 else "**ClaudIA is ready** — connected to IBKR."
             )
-            _send_action_buttons(chat, _session, session_id, ibkr_offline, tv_offline)
-            await _maybe_background_flex_sync(chat, toolkit, ibkr_offline)
+            await _maybe_background_flex_sync(syslog, toolkit, ibkr_offline)
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
             _session["error"] = str(exc)
-            _settle_intro("**ClaudIA** — session init failed, see below.")
-            chat.send(
+            _settle_intro("**ClaudIA** — session init failed, see the System log.")
+            syslog.say(
                 f"**Session init failed:** {exc} — check the server logs and reload the page.",
-                user="System",
-                respond=False,
+                "error",
             )
         finally:
             _init_done.set()
@@ -1216,6 +1171,17 @@ def _screenshot_file_input(chat: pn.chat.ChatInterface) -> pn.widgets.FileInput:
     return chat._claudia_file_input  # type: ignore[attr-defined, no-any-return]
 
 
+def _system_log(chat: pn.chat.ChatInterface) -> SystemLog:
+    """Typed accessor for the SystemLog handed off by _build_chat_app (see
+    _screenshot_file_input for why the attribute handoff carries one ignore here)."""
+    return chat._claudia_log  # type: ignore[attr-defined, no-any-return]
+
+
+def _action_bar(chat: pn.chat.ChatInterface) -> ActionBar:
+    """Typed accessor for the ActionBar handed off by _build_chat_app."""
+    return chat._claudia_bar  # type: ignore[attr-defined, no-any-return]
+
+
 def _build_session_root() -> pn.Column:
     """pn.serve target: the KPI strip across the top, chat left, dashboard tabs right.
 
@@ -1223,7 +1189,7 @@ def _build_session_root() -> pn.Column:
     second pn.serve route — all three costed and still available):
 
         Column( KPI strip
-                Row( Column( status dots + screenshot upload, chat ),
+                Row( Column( chat, System log card, screenshot upload, action bar ),
                      Tabs( Chart · Positions · Orders · P&L ) ) )
 
     The KPI strip is a Column, not a Row, at the top level so account state is glanceable
@@ -1237,29 +1203,29 @@ def _build_session_root() -> pn.Column:
 
     Periodic refresh is session-scoped with automatic cleanup
     (pn.state.add_periodic_callback registers against this session's Document —
-    source-verified, see the Phase 6 design note in the migration plan). Both the status
-    dots and the dashboard ride the same 5-second callback: one timer, two synchronous
-    cache reads, no I/O on the session's event loop.
+    source-verified, see the Phase 6 design note in the migration plan). Both the action
+    bar's lights and the dashboard ride the same 5-second callback: one timer, two
+    synchronous cache reads, no I/O on the session's event loop.
     """
     # Anywhere in the factory works — the session Document is current throughout and
     # Panel reads the theme at render time; what matters is that it is set HERE, per
     # session, which is what lets `?theme=` override CLAUDIA_THEME (panel_theme.py).
     apply_session_theme()
     chat = _build_chat_app()
-    indicators = _make_status_indicators()
+    bar = _action_bar(chat)
     dashboard = build_dashboard(chart_pane=build_chart_pane())
 
     def _refresh() -> None:
-        """Repaint the status dots and the dashboard from their cached snapshots.
+        """Repaint the action bar's lights and the dashboard from their cached snapshots.
 
         Both reads are synchronous and I/O-free by construction — the checker and the
         poller each maintain their own background task. `DashboardView.refresh` swallows
         its own exceptions (a repaint that raises inside a periodic callback would take
-        the timer down and freeze the dots too), so this function cannot break the dots
-        by failing on the dashboard.
+        the timer down and freeze the lights too), so this function cannot break the
+        lights by failing on the dashboard.
         """
         if _connectivity_checker is not None:
-            _apply_status(indicators, _connectivity_checker.get_status())
+            bar.repaint(_connectivity_checker.get_status())
         if _dashboard_poller is not None:
             dashboard.refresh(_dashboard_poller.snapshot())
 
@@ -1276,10 +1242,14 @@ def _build_session_root() -> pn.Column:
         dashboard.kpi_strip,
         pn.Row(
             pn.Column(
-                pn.Row(*indicators.values(), _screenshot_file_input(chat)),
                 chat,
-                # stretch_both here and on the chat: the chat pane is bounded by the
-                # viewport, so the feed scrolls inside it and the input stays put.
+                # Everything below the chat is fixed-height — the collapsed System log
+                # card, the screenshot picker, the action bar — and stretch_both here and
+                # on the chat is what bounds the feed to the viewport, so it scrolls
+                # inside and the input stays put (08d5654, 2026-09-03).
+                _system_log(chat).card,
+                _screenshot_file_input(chat),
+                bar.row,
                 sizing_mode="stretch_both",
             ),
             dashboard.tabs,

@@ -55,6 +55,7 @@ import pytest
 from claudia.gateway_session import SessionPhase, SessionState
 from claudia.panel_app import (
     _DOCS_PATH,
+    _action_bar,
     _build_chat_app,
     _connect_tradingview,
     _screenshot_file_input,
@@ -68,6 +69,20 @@ _CALLBACK_TIMEOUT = 5
 def _message_texts(chat) -> list[str]:
     """Every plain-string message sent into a chat feed, in order."""
     return [(m.object if hasattr(m, "object") else str(m)) for m in chat.objects]
+
+
+def _log_texts(chat) -> list[str]:
+    """Every message in the System log attached to a built chat, in order (2026-09-03)."""
+    from claudia.panel_app import _system_log
+
+    return [m.object for m in _system_log(chat).feed.objects]
+
+
+def _bar_button(chat, key: str):
+    """One service button (`ibkr`/`tv`/`gdrive`) of the action bar attached to a built chat."""
+    from claudia.panel_app import _action_bar
+
+    return _action_bar(chat).buttons[key]
 
 
 def _iter_tree(node):
@@ -384,11 +399,12 @@ async def test_init_failure_missing_docs_sends_setup_required_and_callback_answe
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-    texts = _message_texts(chat)
-    # Two 'Setup required' messages: the init-time one AND the callback's honest reply.
-    assert sum("Setup required" in t for t in texts) >= 2
-    # The callback reply must not re-prefix 'Session init failed:' (double label).
-    assert not any("Session init failed" in t for t in texts)
+    # The init-time 'Setup required' is a session event → System log; the callback's honest
+    # reply answers the user's own message → stays in the chat (2026-09-03 routing rule).
+    assert any("Setup required" in t for t in _log_texts(chat))
+    assert any("Setup required" in t for t in _message_texts(chat))
+    # Neither side may re-prefix 'Session init failed:' (double label).
+    assert not any("Session init failed" in t for t in _message_texts(chat) + _log_texts(chat))
     mock_agent_cls.return_value.handle_message.assert_not_called()
 
 
@@ -474,7 +490,7 @@ async def test_init_hash_change_sends_warning():
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-    texts = _message_texts(chat)
+    texts = _log_texts(chat)  # a session event → System log (2026-09-03)
     assert any("WARNING" in t and "v6" in t and "v7" in t for t in texts)
     # Ordering invariant (same technique as the D1 download-before-store test):
     # get_last_context_hash must run BEFORE this session's create_session — the
@@ -663,7 +679,7 @@ async def test_init_starts_doc_watcher_with_alert_callback():
 @pytest.mark.asyncio
 async def test_doc_change_callback_delivers_alert_from_a_plain_thread():
     """The D4-verified loop bridge: the watchdog callback fires in a plain OS
-    thread with no asyncio/Bokeh context; the alert must still land in the chat
+    thread with no asyncio/Bokeh context; the alert must still land in the System log
     via loop.call_soon_threadsafe. The test invokes the REAL registered callback
     from a real thread — if the bridge is replaced with a naive chat.send-only
     callback this still passes (direct sends work too, per the D4 probe), but if
@@ -695,7 +711,7 @@ async def test_doc_change_callback_delivers_alert_from_a_plain_thread():
         # call_soon_threadsafe scheduled the send onto THIS loop — yield to run it.
         await asyncio.sleep(0.05)
 
-    texts = _message_texts(chat)
+    texts = _log_texts(chat)
     assert any("Document updated" in t_ and "context.md" in t_ for t_ in texts)
 
 
@@ -880,7 +896,8 @@ async def test_session_destroy_hook_registered_and_runs_cleanup_once():
 
 @pytest.mark.asyncio
 async def test_end_session_button_always_present_and_runs_cleanup():
-    """End Session is offered in every session and runs cleanup when clicked."""
+    """End Session sits in the action bar of every session and runs cleanup when clicked;
+    the outcome is a System log entry, not a chat message (2026-09-03)."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -902,21 +919,18 @@ async def test_end_session_button_always_present_and_runs_cleanup():
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-        buttons = _find_buttons(chat)
-        end_btns = [b for b in buttons if b.name == "End Session"]
-        assert len(end_btns) == 1
-        assert not [b for b in buttons if "Gateway" in b.name]  # online → no gateway btn
-
+        assert not _find_buttons(chat)  # no button message in the chat feed any more
         # Simulate a real click via the Phase 3 idiom (test_panel_order_flow.py).
-        await _get_click_callback(end_btns[0])(None)
+        await _get_click_callback(_action_bar(chat).end_button)(None)
     mock_cleanup.assert_awaited_once()
-    texts = _message_texts(chat)
-    assert any("Session ended." in t and "7 messages saved" in t for t in texts)
+    assert any("Session ended." in t and "7 messages saved" in t for t in _log_texts(chat))
+    assert not any("Session ended." in t for t in _message_texts(chat))
 
 
 @pytest.mark.asyncio
-async def test_start_gateway_button_present_only_when_ibkr_offline():
-    """The gateway button appears only when IBKR is actually down."""
+async def test_ibkr_button_is_always_in_the_bar_whatever_the_ibkr_state():
+    """Since 2026-09-03 the IBKR button always exists; its colour, not its presence, says
+    whether IBKR is up. Nothing is offered through a chat message any more."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -936,8 +950,8 @@ async def test_start_gateway_button_present_only_when_ibkr_offline():
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-    gateway_btns = [b for b in _find_buttons(chat) if b.name == "Start IBKR Gateway"]
-    assert len(gateway_btns) == 1
+    assert _bar_button(chat, "ibkr").label == "IBKR"
+    assert not _find_buttons(chat)
 
 
 @pytest.mark.asyncio
@@ -1016,15 +1030,17 @@ async def test_start_gateway_click_success_path_streams_and_refreshes_status(mon
 
         checker = MagicMock()
         checker._run_checks = AsyncMock()
+        checker.get_status.return_value = {}
         monkeypatch.setattr("claudia.panel_app._connectivity_checker", checker)
 
-        gw_btn = next(b for b in _find_buttons(chat) if b.name == "Start IBKR Gateway")
+        gw_btn = _bar_button(chat, "ibkr")
         await _get_click_callback(gw_btn)(None)
 
     session.establish.assert_called_once()
     checker._run_checks.assert_awaited_once()
-    assert gw_btn.disabled is True
-    texts = _message_texts(chat)
+    # Re-enabled after the reconnect: the light says what happened, not the button state.
+    assert gw_btn.disabled is False
+    texts = _log_texts(chat)
     assert any("Session is live" in t for t in texts)
 
 
@@ -1057,10 +1073,9 @@ async def test_start_gateway_click_timeout_reports_and_skips_login_page():
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-        gw_btn = next(b for b in _find_buttons(chat) if b.name == "Start IBKR Gateway")
-        await _get_click_callback(gw_btn)(None)
+        await _get_click_callback(_bar_button(chat, "ibkr"))(None)
 
-    texts = _message_texts(chat)
+    texts = _log_texts(chat)
     assert any("Gateway is not answering" in t for t in texts)
     assert not any("Session is live" in t for t in texts)
 
@@ -1162,7 +1177,7 @@ async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
     """Stale and never attempted triggers a sync, then a Drive backup of the store."""
     from claudia.panel_app import _maybe_background_flex_sync
     toolkit = _flex_toolkit(stale=True, attempts=[])
-    chat = MagicMock()
+    syslog = MagicMock()
     # Pinned rather than left to the real fingerprint of the fixture's "/tmp/store.db":
     # that path not existing is what made this pass, which is a filesystem accident, not
     # the behaviour under test. A pull that lands new trades is.
@@ -1170,7 +1185,7 @@ async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
         "claudia.panel_app.dataset_fingerprint",
         side_effect=[(1101, 1101, "2026-08-03"), (1110, 1110, "2026-08-04")],
     ):
-        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        await _maybe_background_flex_sync(syslog, toolkit, ibkr_offline=False)
         await _drain_flex_sync()
     toolkit.execute.assert_called_once_with("sync_flex_trades", {})
     # upload_account_sqlite, not upload_account_file: store.db runs in WAL mode, so a raw
@@ -1179,7 +1194,7 @@ async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
         toolkit._config.sqlite_path, "store.db"
     )
     toolkit._cache.upload_account_file.assert_not_called()
-    sent = [c.args[0] for c in chat.send.call_args_list]
+    sent = [c.args[0] for c in syslog.say.call_args_list]
     assert any(str(s).startswith("✅") for s in sent)
 
 
@@ -1193,11 +1208,11 @@ async def test_flex_sync_failure_sends_coverage_fallback():
         RuntimeError("flex api down"),
         ("coverage: 1129 trades", None),
     ]
-    chat = MagicMock()
-    await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+    syslog = MagicMock()
+    await _maybe_background_flex_sync(syslog, toolkit, ibkr_offline=False)
     await _drain_flex_sync()
     assert toolkit.execute.call_args_list[1].args[0] == "check_flex_coverage"
-    sent = [str(c.args[0]) for c in chat.send.call_args_list]
+    sent = [str(c.args[0]) for c in syslog.say.call_args_list]
     assert any(s.startswith("⚠ Sync failed") and "coverage: 1129 trades" in s for s in sent)
 
 
@@ -1205,7 +1220,7 @@ async def test_flex_sync_failure_sends_coverage_fallback():
 @pytest.mark.asyncio
 async def test_flex_sync_task_death_is_logged_by_done_callback(caplog):
     """I1 (Task 5.7 quality review): if the background sync coroutine itself
-    dies — sync fails AND the fallback chat.send raises too — the done callback
+    dies — sync fails AND the fallback System-log line raises too — the done callback
     must retrieve and log the exception ('Background Flex sync task died',
     exc_info attached) instead of leaving an unretrieved task exception on the
     shared loop."""
@@ -1214,10 +1229,10 @@ async def test_flex_sync_task_death_is_logged_by_done_callback(caplog):
 
     toolkit = _flex_toolkit(stale=True, attempts=[])
     toolkit.execute.side_effect = RuntimeError("flex api down")  # both execute calls fail
-    chat = MagicMock()
-    chat.send.side_effect = RuntimeError("session gone")
+    syslog = MagicMock()
+    syslog.say.side_effect = RuntimeError("session gone")
     with caplog.at_level(logging.WARNING):
-        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        await _maybe_background_flex_sync(syslog, toolkit, ibkr_offline=False)
         # Sturdier drain than the sleep(0) loop: this assertion needs the task
         # fully completed AND its done callback run before we inspect caplog.
         await asyncio.wait_for(
@@ -1247,9 +1262,9 @@ async def test_no_upload_when_the_pull_changed_nothing():
     from claudia.panel_app import _maybe_background_flex_sync
 
     toolkit = _flex_toolkit(stale=True, attempts=[])
-    chat = MagicMock()
+    syslog = MagicMock()
     with patch("claudia.panel_app.dataset_fingerprint", return_value=(1110, 1110, "2026-08-04")):
-        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        await _maybe_background_flex_sync(syslog, toolkit, ibkr_offline=False)
         await _drain_flex_sync()
 
     toolkit.execute.assert_called_once_with("sync_flex_trades", {})
@@ -1303,7 +1318,7 @@ async def test_a_pull_that_breaks_the_dataset_is_reported_not_swallowed(caplog):
     from claudia.panel_app import _maybe_background_flex_sync
 
     toolkit = _flex_toolkit(stale=True, attempts=[])
-    chat = MagicMock()
+    syslog = MagicMock()
     broken = DatasetValidity(
         (DatasetCheck("execution_key is unique", False, "75 duplicated key(s)"),)
     )
@@ -1312,10 +1327,10 @@ async def test_a_pull_that_breaks_the_dataset_is_reported_not_swallowed(caplog):
         patch("claudia.panel_app.validate_dataset", return_value=broken),
         caplog.at_level(logging.ERROR),
     ):
-        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        await _maybe_background_flex_sync(syslog, toolkit, ibkr_offline=False)
         await _drain_flex_sync()
 
-    sent = [str(c.args[0]) for c in chat.send.call_args_list]
+    sent = [str(c.args[0]) for c in syslog.say.call_args_list]
     assert any("75 duplicated key(s)" in s for s in sent)
     assert any("execution_key" in r.message for r in caplog.records)
 
@@ -1328,15 +1343,15 @@ async def test_a_sound_pull_stays_quiet():
     from claudia.panel_app import _maybe_background_flex_sync
 
     toolkit = _flex_toolkit(stale=True, attempts=[])
-    chat = MagicMock()
+    syslog = MagicMock()
     with (
         patch("claudia.panel_app.dataset_fingerprint", return_value=None),
         patch("claudia.panel_app.validate_dataset", return_value=DatasetValidity((), empty=True)),
     ):
-        await _maybe_background_flex_sync(chat, toolkit, ibkr_offline=False)
+        await _maybe_background_flex_sync(syslog, toolkit, ibkr_offline=False)
         await _drain_flex_sync()
 
-    sent = [str(c.args[0]) for c in chat.send.call_args_list]
+    sent = [str(c.args[0]) for c in syslog.say.call_args_list]
     assert len(sent) == 1 and sent[0].startswith("✅")
 
 
@@ -1354,99 +1369,14 @@ async def test_flex_sync_noop_when_offline_or_unconfigured():
     toolkit2._store.get_trade_date_coverage.assert_not_called()
 
 
-# ── Task 6.2: per-session status indicators + alert delivery (Phase 6) ────────
-
-
-def test_apply_status_maps_enum_to_value_and_color():
-    """Each service status maps to its indicator value and colour, with unknown left unlit."""
-    from claudia.panel_app import _apply_status, _make_status_indicators
-    from claudia.status import ServiceStatus
-
-    ind = _make_status_indicators()
-    assert set(ind) == {"ibkr", "gdrive", "tv"}
-    _apply_status(ind, {
-        "ibkr": ServiceStatus.OK,
-        "gdrive": ServiceStatus.ERROR,
-        "tv": ServiceStatus.UNKNOWN,
-    })
-    assert (ind["ibkr"].value, ind["ibkr"].color) == (True, "success")
-    assert (ind["gdrive"].value, ind["gdrive"].color) == (True, "danger")
-    assert (ind["tv"].value, ind["tv"].color) == (False, "dark")
-
-
-def test_indicator_keys_match_real_checker_status_keys():
-    """The dots are keyed like ConnectivityChecker.get_status() — pinned against
-    the REAL checker (constructor only, no network), not a hand-written dict:
-    the spec-review found impl+test sharing the same wrong 'tradingview' key
-    while the checker uses 'tv'."""
-    from pathlib import Path
-
-    from claudia.panel_app import _INDICATOR_LABELS
-    from claudia.status import ConnectivityChecker
-
-    checker = ConnectivityChecker(gateway_url="http://x", gdrive_token_file=Path("/nonexistent"))
-    assert set(_INDICATOR_LABELS) == set(checker.get_status())
-
-
-@pytest.mark.asyncio
-async def test_build_session_root_composes_indicators_above_chat():
-    """The session root places the status indicators above the chat feed."""
-    from claudia.panel_app import _build_session_root
-
-    mock_toolkit = MagicMock()
-    mock_toolkit.tools = []
-    mock_store = _make_mock_store()
-
-    with (
-        patch.dict(os.environ, _NO_GDRIVE),
-        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
-        patch("claudia.panel_app._get_store", return_value=mock_store),
-        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
-        patch("claudia.panel_app._write_version_snapshot"),
-        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
-        # Composition is this test's subject, not the timer — patching the
-        # periodic registration keeps the module's no-real-background-objects
-        # discipline (an unpatched start=False cb would still be onload-started
-        # into a real _async_repeat task on this test's loop).
-        patch.object(pn.state, "add_periodic_callback"),
-    ):
-        _configure_loader(mock_loader_cls)
-        mock_agent_cls.return_value.handle_message = AsyncMock()
-        root = _build_session_root()
-        chat = _find_chat(root)
-        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
-    # Plan sketch said `from panel.indicators import BooleanStatus` — that module
-    # path doesn't exist (pn.indicators is panel/__init__.py's re-export of
-    # panel.widgets.indicators, verified in the venv); the accessor form is the
-    # importable one.
-    from panel.widgets.indicators import BooleanStatus
-
-    # The dashboard (2026-08-04) put a KPI strip above everything, so the root is a
-    # Column and every positional index below it shifted. Located structurally rather
-    # than by index: the next pane added at the top must not silently break this test
-    # into passing against the wrong node.
-    indicator_row = next(
-        n for n in _iter_tree(root)
-        if isinstance(n, pn.Row)
-        and any(isinstance(o, BooleanStatus) for o in getattr(n, "objects", []))
-    )
-    assert len([o for o in indicator_row.objects if isinstance(o, BooleanStatus)]) == 3
-    left_column = next(
-        n for n in _iter_tree(root)
-        if isinstance(n, pn.Column) and chat in getattr(n, "objects", [])
-    )
-    assert indicator_row in left_column.objects  # dots sit directly above the chat
-    # The independent candlestick chart pane is composed into the root beside the chat.
-    # pn.pane.HoloViews, not pn.pane.Bokeh, since claudia/panel_chart.py's build_chart_pane
-    # swapped panes (Task 6, 2026-08-03) -- the pane's `object` is now the declarative
-    # HoloViews Layout, not a raw Bokeh figure.
-    assert any(isinstance(n, pn.pane.HoloViews) for n in _iter_tree(root))
+# ── Task 6.2: periodic refresh + alert delivery (Phase 6). The status dots this section
+# once tested were replaced by the action bar on 2026-09-03 — see test_panel_action_bar.py
+# and the "System log + action bar" section at the end of this file. ──────────────────
 
 
 @pytest.mark.asyncio
 async def test_build_session_root_registers_5s_periodic_refresh():
-    """One 5-second periodic callback drives both the dots and the dashboard."""
+    """One 5-second periodic callback drives both the action bar's lights and the dashboard."""
     from claudia.panel_app import _build_session_root
 
     mock_toolkit = MagicMock()
@@ -1678,7 +1608,7 @@ async def test_opening_bubble_does_not_claim_ready_when_init_fails():
     _chat, _before, after = await _build_chat_with_ibkr(
         ibkr_offline=False, toolkit_raises=RuntimeError("boom")
     )
-    assert after == "**ClaudIA** — session init failed, see below."
+    assert after == "**ClaudIA** — session init failed, see the System log."
 
 
 def _parent_of(root, node):
@@ -1719,10 +1649,11 @@ async def test_chat_pane_is_viewport_bound_so_the_input_stays_at_the_bottom():
     chat_column = _parent_of(root, chat)
     assert isinstance(chat_column, pn.Column)
     assert chat_column.sizing_mode == "stretch_both"
-    # The status-dot row above the chat must NOT stretch, or it would take half the height.
-    dots_row = chat_column.objects[0]
-    assert isinstance(dots_row, pn.Row)
-    assert dots_row.sizing_mode in (None, "stretch_width", "fixed")
+    # Nothing below the chat may stretch in height, or it would take half the column
+    # (the System log card, the file picker and the action bar, since 2026-09-03).
+    assert chat_column.objects[0] is chat
+    for below in chat_column.objects[1:]:
+        assert below.sizing_mode in (None, "stretch_width", "fixed"), below
 
 
 @pytest.mark.asyncio
@@ -1741,13 +1672,13 @@ async def test_opening_bubble_keeps_the_portrait_for_the_minimum_display_time():
 async def test_opening_bubble_failure_after_success_settle_wins():
     """Init can fail AFTER the success settle was scheduled (a later step raises). The
     failure text must be what stays — the earlier deferred settle is cancelled, not raced."""
-    with patch("claudia.panel_app._send_action_buttons", side_effect=RuntimeError("late")):
+    with patch("claudia.panel_app._maybe_background_flex_sync", side_effect=RuntimeError("late")):
         chat, _before, right_after_init = await _build_chat_with_ibkr(
             ibkr_offline=False, min_seconds=1.0, settle_wait=0.0
         )
         assert isinstance(right_after_init, pn.Column)
         await asyncio.sleep(1.2)
-    assert chat.objects[0].object == "**ClaudIA** — session init failed, see below."
+    assert chat.objects[0].object == "**ClaudIA** — session init failed, see the System log."
 
 
 @pytest.mark.asyncio
@@ -1918,9 +1849,10 @@ async def test_init_starts_the_dashboard_poller_on_the_toolkit_client(backend_si
 
 
 @pytest.mark.asyncio
-async def test_init_subscribes_alert_callback_and_it_sends_to_chat(backend_singletons):
+async def test_init_subscribes_alert_callback_and_it_writes_the_system_log(backend_singletons):
     """The singleton block must subscribe an async alert callback; invoking the
-    captured callback sends the pre-formatted alert text into the chat."""
+    captured callback writes the pre-formatted alert text into the System log
+    (not the chat — 2026-09-03 routing rule)."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -1943,7 +1875,8 @@ async def test_init_subscribes_alert_callback_and_it_sends_to_chat(backend_singl
         backend_singletons.checker_cls.return_value.subscribe.assert_called_once()
         alert_cb = backend_singletons.checker_cls.return_value.subscribe.call_args.args[0]
         await alert_cb("⚠️ GDrive disconnected.")
-    assert any("GDrive disconnected" in t for t in _message_texts(chat))
+    assert any("GDrive disconnected" in t for t in _log_texts(chat))
+    assert not any("GDrive disconnected" in t for t in _message_texts(chat))
 
 
 @pytest.mark.asyncio
@@ -2061,8 +1994,7 @@ async def test_end_session_button_unsubscribes_too(backend_singletons):
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-        end_btn = next(b for b in _find_buttons(chat) if b.name == "End Session")
-        await _get_click_callback(end_btn)(None)
+        await _get_click_callback(_action_bar(chat).end_button)(None)
     unsub_mock.assert_called_once()
 
 
@@ -2200,7 +2132,7 @@ async def test_non_image_upload_gets_honest_refusal_no_agent_call():
 async def test_file_widget_configured_and_composed_in_session_root():
     """The upload widget must be an image/*-restricted FileInput, reachable via
     the chat handoff attribute AND actually composed into the session root's
-    top row — a built-but-unplaced widget would pass the other two tests."""
+    left column — a built-but-unplaced widget would pass the other two tests."""
     from claudia.panel_app import _build_session_root
 
     mock_toolkit = MagicMock()
@@ -2232,7 +2164,7 @@ async def test_file_widget_configured_and_composed_in_session_root():
     # Located structurally, not by index: the 2026-08-04 dashboard added a KPI strip
     # above the whole layout and shifted every positional path beneath it.
     assert any(
-        fi in getattr(n, "objects", []) for n in _iter_tree(root) if isinstance(n, pn.Row)
+        fi in getattr(n, "objects", []) for n in _iter_tree(root) if isinstance(n, pn.Column)
     )
 
 
@@ -2361,9 +2293,9 @@ async def test_connect_tradingview_offline_paths_return_true_without_wiring(monk
 
 @pytest.mark.real_tv_connect
 @pytest.mark.asyncio
-async def test_launch_tv_button_present_only_when_tv_offline():
-    """The "Launch TradingView" button renders only when _connect_tradingview
-    reports offline (here: sidecar up, CDP down)."""
+async def test_tradingview_button_is_always_in_the_bar():
+    """Since 2026-09-03 the TradingView button always exists in the action bar; here the
+    init reports offline (sidecar up, CDP down) and the button is the way to reconnect."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -2387,15 +2319,15 @@ async def test_launch_tv_button_present_only_when_tv_offline():
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-    tv_btns = [b for b in _find_buttons(chat) if b.name == "Launch TradingView"]
-    assert len(tv_btns) == 1
+    assert _bar_button(chat, "tv").label == "TradingView"
+    assert not _find_buttons(chat)
 
 
 @pytest.mark.real_tv_connect
 @pytest.mark.asyncio
 async def test_tv_failure_does_not_block_init_and_chat_still_works():
     """A TradingView failure at init is non-fatal: the agent is still built, the
-    chat callback reaches it, and the Launch button is offered (tv_offline)."""
+    chat callback reaches it, and the TradingView button is there to reconnect."""
     mock_toolkit = MagicMock()
     mock_toolkit.tools = []
     mock_store = _make_mock_store()
@@ -2420,8 +2352,7 @@ async def test_tv_failure_does_not_block_init_and_chat_still_works():
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
     handle.assert_awaited_once()  # agent built + reachable despite TV failure
-    tv_btns = [b for b in _find_buttons(chat) if b.name == "Launch TradingView"]
-    assert len(tv_btns) == 1
+    assert _bar_button(chat, "tv").label == "TradingView"
 
 
 @pytest.mark.real_tv_connect
@@ -2466,7 +2397,7 @@ async def test_launch_tv_button_click_success_wires_agent_in_order(monkeypatch):
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hi", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-        tv_btn = next(b for b in _find_buttons(chat) if b.name == "Launch TradingView")
+        tv_btn = _bar_button(chat, "tv")
         # After init: the click rebuilds a fresh bridge. Reset order tracking so the
         # asserted sequence is the click's, not init's.
         order.reset_mock()
@@ -2478,8 +2409,8 @@ async def test_launch_tv_button_click_success_wires_agent_in_order(monkeypatch):
     agent.set_tv_bridge.assert_called_once_with(launched_bridge, [{"name": "tv_a"}, {"name": "tv_b"}])
     call_order = [name for name, _, _ in order.mock_calls if name in ("launch", "get_bridge")]
     assert call_order == ["launch", "get_bridge"]
-    assert tv_btn.disabled is True
-    texts = _message_texts(chat)
+    assert tv_btn.disabled is False  # re-enabled: the light carries the state
+    texts = _log_texts(chat)
     assert any("✅ TradingView connected (2 tools available)." in t for t in texts)
 
 
@@ -2521,7 +2452,7 @@ async def test_launch_tv_click_stops_stale_bridge_before_rebuild(monkeypatch):
         mock_agent_cls.return_value.handle_message = AsyncMock()
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hi", "User", chat), timeout=_CALLBACK_TIMEOUT)
-        tv_btn = next(b for b in _find_buttons(chat) if b.name == "Launch TradingView")
+        tv_btn = _bar_button(chat, "tv")
         # A stale bridge is resident in the module global (init's patched
         # _get_tv_bridge never set the real global); the click must stop it first.
         monkeypatch.setattr("claudia.panel_app._tv_bridge", old_bridge)
@@ -2566,14 +2497,14 @@ async def test_launch_tv_button_click_failure_shows_manual_launch(monkeypatch):
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hi", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-        tv_btn = next(b for b in _find_buttons(chat) if b.name == "Launch TradingView")
+        tv_btn = _bar_button(chat, "tv")
         get_bridge_mock.reset_mock()          # ignore the init-time bridge fetch
         agent.set_tv_bridge.reset_mock()
         await _get_click_callback(tv_btn)(None)
 
     get_bridge_mock.assert_not_awaited()      # no rebuild on failed launch
     agent.set_tv_bridge.assert_not_called()
-    texts = _message_texts(chat)
+    texts = _log_texts(chat)
     # Points at the one-command quit+relaunch helper — the debug port can only be
     # set at launch, so an already-running TV must be relaunched, not patched.
     assert any("./scripts/launch-tradingview-debug.sh" in t for t in texts)
@@ -2762,8 +2693,9 @@ async def test_start_gateway_refuses_to_open_the_login_page_on_a_borrowed_sessio
     including which app holds the session, the field that actually explains a stuck login.
     """
     from claudia import panel_app
+    from claudia.panel_system_log import SystemLog
 
-    chat = MagicMock()
+    syslog = SystemLog()
     session_state = {"closed": False, "unsubscribe": None, "store": None,
                      "loader": None, "agent": None}
     owner = MagicMock()
@@ -2776,13 +2708,10 @@ async def test_start_gateway_refuses_to_open_the_login_page_on_a_borrowed_sessio
         patch("claudia.panel_app.GatewayManager"),
         patch("claudia.panel_app.get_session", return_value=owner),
     ):
-        panel_app._send_action_buttons(chat, session_state, "s1", ibkr_offline=True,
-                                       tv_offline=True)
-        row = chat.send.call_args.args[0]
-        gw_btn = next(b for b in row if getattr(b, "label", "") == "Start IBKR Gateway")
-        await _get_click_callback(gw_btn)(None)
+        bar = panel_app._build_action_bar(syslog, session_state, "s1")
+        await _get_click_callback(bar.buttons["ibkr"])(None)
 
-    texts = " ".join(str(c.args[0]) for c in chat.send.call_args_list if c.args)
+    texts = " ".join(m.object for m in syslog.feed.objects)
     assert "IBKRMOBILE_000.a-000" in texts
     assert "BORROWED" in texts
 
@@ -2791,8 +2720,9 @@ async def test_start_gateway_refuses_to_open_the_login_page_on_a_borrowed_sessio
 async def test_start_gateway_does_not_relogin_a_session_that_already_works():
     """An authenticated session is left alone — re-authenticating it is the harm."""
     from claudia import panel_app
+    from claudia.panel_system_log import SystemLog
 
-    chat = MagicMock()
+    syslog = SystemLog()
     session_state = {"closed": False, "unsubscribe": None, "store": None,
                      "loader": None, "agent": None}
     owner = MagicMock()
@@ -2804,13 +2734,10 @@ async def test_start_gateway_does_not_relogin_a_session_that_already_works():
         patch("claudia.panel_app.GatewayManager"),
         patch("claudia.panel_app.get_session", return_value=owner),
     ):
-        panel_app._send_action_buttons(chat, session_state, "s1", ibkr_offline=True,
-                                       tv_offline=True)
-        row = chat.send.call_args.args[0]
-        gw_btn = next(b for b in row if getattr(b, "label", "") == "Start IBKR Gateway")
-        await _get_click_callback(gw_btn)(None)
+        bar = panel_app._build_action_bar(syslog, session_state, "s1")
+        await _get_click_callback(bar.buttons["ibkr"])(None)
 
-    texts = " ".join(str(c.args[0]) for c in chat.send.call_args_list if c.args)
+    texts = " ".join(m.object for m in syslog.feed.objects)
     assert "Session is live" in texts
 
 
@@ -2855,3 +2782,162 @@ def test_port_is_free_detects_a_bound_port():
         assert _port_is_free(taken) is False
     # released once the with-block closes it
     assert _port_is_free(taken) is True
+
+
+# ── 2026-09-03: System log + action bar ─────────────────────────────────────
+
+
+def test_no_session_level_system_send_reaches_the_chat_feed():
+    """The System log is the ONLY route for session-level events. The per-turn exceptions
+    (tool steps, truncated reply, upload feedback, Pine feedback) live in panel_sink.py,
+    panel_pinescript.py and — in panel_app — the reply to a user action that arrives after a
+    failed init, plus the two upload-feedback lines. Named here, not exempted by pattern:
+    any other `user="System"` send in panel_app is a regression."""
+    import re
+    from pathlib import Path
+
+    src = Path("claudia/panel_app.py").read_text()
+    hits = [m.start() for m in re.finditer(r'user="System"', src)]
+    allowed = (
+        "Only image attachments are supported",
+        "Screenshot upload failed",
+        "check the server logs and reload the page",  # reply to a message/upload after init failed
+    )
+    for pos in hits:
+        window = src[max(0, pos - 400):pos]
+        assert any(a in window for a in allowed), (
+            f"session-level System send at offset {pos} must go through SystemLog.say"
+        )
+    assert len(hits) == 4, f"expected the four per-turn sends, found {len(hits)}"
+
+
+@pytest.mark.asyncio
+async def test_build_chat_app_attaches_a_log_and_a_bar():
+    """The chat carries its SystemLog and ActionBar for _build_session_root to compose."""
+    from claudia.panel_action_bar import ActionBar
+    from claudia.panel_app import _action_bar, _system_log
+    from claudia.panel_system_log import SystemLog
+
+    chat, _, _ = await _build_chat_with_ibkr(ibkr_offline=True)
+    assert isinstance(_system_log(chat), SystemLog)
+    assert isinstance(_action_bar(chat), ActionBar)
+
+
+@pytest.mark.asyncio
+async def test_connectivity_alert_lands_in_the_log_not_the_chat():
+    """The checker's alert subscriber writes to the System log as a warning."""
+    from claudia.panel_app import _make_alert_subscriber
+    from claudia.panel_system_log import SystemLog
+
+    log = SystemLog()
+    chat = pn.chat.ChatInterface()
+    await _make_alert_subscriber(log)(
+        "⚠️ **IBKR Gateway disconnected** — check the Client Portal and log in."
+    )
+    assert len(chat.objects) == 0
+    assert any("IBKR Gateway disconnected" in m.object for m in log.feed.objects)
+
+
+@pytest.mark.asyncio
+async def test_session_root_left_column_is_chat_log_picker_bar():
+    """Left column order: chat (stretch_both), System log card, file picker, action bar —
+    the three below the chat are fixed-height so the pinned layout of 08d5654 holds. No
+    BooleanStatus dot anywhere in the tree any more."""
+    from claudia.panel_app import _action_bar, _build_session_root, _system_log
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "add_periodic_callback"),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = _build_session_root()
+        chat = _find_chat(root)
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+    left = next(n for n in _iter_tree(root) if isinstance(n, pn.Column) and chat in n.objects)
+    assert left.objects[0] is chat
+    assert left.objects[1] is _system_log(chat).card
+    assert isinstance(left.objects[2], pn.widgets.FileInput)
+    assert left.objects[3] is _action_bar(chat).row
+    assert chat.sizing_mode == "stretch_both"
+    assert left.sizing_mode == "stretch_both"
+    assert not any(isinstance(n, pn.indicators.BooleanStatus) for n in _iter_tree(root))
+
+
+@pytest.mark.asyncio
+async def test_refresh_repaints_the_bar_from_the_checker(monkeypatch):
+    """The 5-second timer recolours the buttons from ConnectivityChecker.get_status()."""
+    from claudia.panel_app import _action_bar, _build_session_root
+    from claudia.status import ServiceStatus
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+    checker = MagicMock()
+    checker.get_status.return_value = {
+        "ibkr": ServiceStatus.OK, "tv": ServiceStatus.ERROR, "gdrive": ServiceStatus.UNKNOWN,
+    }
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch.object(pn.state, "add_periodic_callback") as periodic,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        root = _build_session_root()
+        chat = _find_chat(root)
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        monkeypatch.setattr("claudia.panel_app._connectivity_checker", checker)
+        refresh = periodic.call_args.args[0]
+        refresh()
+    bar = _action_bar(chat)
+    assert bar.buttons["ibkr"].color == "success"
+    assert bar.buttons["tv"].color == "danger"
+    assert bar.buttons["gdrive"].color == "light"
+
+
+@pytest.mark.asyncio
+async def test_drive_button_reconnects_the_sync_client_and_repolls(monkeypatch):
+    """Drive click: GDriveSync.reconnect on a thread, outcome in the log, checker re-run."""
+    from claudia import panel_app
+
+    chat, _, _ = await _build_chat_with_ibkr(ibkr_offline=True)
+    sync = MagicMock()
+    sync.reconnect.return_value = True
+    checker = MagicMock()
+    checker._run_checks = AsyncMock()
+    checker.get_status.return_value = {}
+    monkeypatch.setattr(panel_app, "_gdrive_sync", sync)
+    monkeypatch.setattr(panel_app, "_connectivity_checker", checker)
+    await _get_click_callback(_bar_button(chat, "gdrive"))(None)
+    sync.reconnect.assert_called_once()
+    checker._run_checks.assert_awaited_once()
+    assert any("Drive connected" in t for t in _log_texts(chat))
+
+
+@pytest.mark.asyncio
+async def test_drive_button_reports_a_failed_reconnect_as_an_error(monkeypatch):
+    """A False from reconnect() is an error line in the log, not a green light."""
+    from claudia import panel_app
+
+    chat, _, _ = await _build_chat_with_ibkr(ibkr_offline=True)
+    sync = MagicMock()
+    sync.reconnect.return_value = False
+    monkeypatch.setattr(panel_app, "_gdrive_sync", sync)
+    monkeypatch.setattr(panel_app, "_connectivity_checker", None)
+    await _get_click_callback(_bar_button(chat, "gdrive"))(None)
+    assert any("Drive reconnect failed" in t for t in _log_texts(chat))
