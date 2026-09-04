@@ -1,7 +1,9 @@
 """Background WebSocket subscriber that listens for IBKR trade executions (any
-origin — mobile, TWS, web, API) and triggers a one-shot account P&L check per
-settled batch of executions, recording the result into
-SQLiteStore.pnl_snapshots via record_pnl_snapshot().
+origin — mobile, TWS, web, API), reports each one to every subscribed session as an
+`ExecutionReport` (2026-09-04 — the automatic execution report: chat message authored
+IBKR, System-log toast, operator note, decision row; see `panel_app._make_fill_subscriber`),
+and triggers a one-shot account P&L check per settled batch of executions, recording the
+result into SQLiteStore.pnl_snapshots via record_pnl_snapshot().
 
 Runs for the life of the process — one subscription shared across all
 concurrent Panel sessions. Mirrors the background-task shape of
