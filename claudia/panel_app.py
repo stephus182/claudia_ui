@@ -500,6 +500,14 @@ def _build_action_bar(
             return {}
         return _connectivity_checker.get_status()
 
+    def _report_error(line: str) -> None:
+        """A reconnect that raised: one line for the user (System log + toast) AND the
+        server log — the old handlers logged `log.error` too, and 2026-09-04 showed why:
+        a launch that fails inside the browser tab leaves nothing to read on the server
+        side otherwise."""
+        log.error("Action bar: %s", line)
+        syslog.say(line, "error")
+
     reconnect = {
         "ibkr": _reconnect_gateway,
         "tv": _reconnect_tradingview,
@@ -509,7 +517,7 @@ def _build_action_bar(
     return ActionBar(
         reconnect=reconnect,
         end_session=_end_session,
-        on_error=lambda line: syslog.say(line, "error"),
+        on_error=_report_error,
         status=_status,
     )
 

@@ -639,3 +639,111 @@ def test_post_process_keeps_our_own_warning_after_stripping():
     out = json.loads(tv_module._post_process("indicator_set_inputs", raw))
     assert "FORGED" not in out["claudia_warning"]
     assert "NOTHING WAS CHANGED" in out["claudia_warning"]
+
+
+# ── launch_tradingview — 2026-09-04: "never started" is not "no debug port" ───
+#
+# Measured 2026-09-04: `open -a TradingView` from a Claude Code shell returns 0 and launches
+# NOTHING (Calculator as a control did not open either). launch_tradingview() then waited
+# 30 s for a port no process would ever open and told the user the app was "running without
+# the debug port", which sent them to the quit+relaunch helper for an app that was never
+# running. The three outcomes are now told apart.
+
+
+def _fast_waits(monkeypatch):
+    """Collapse both wait windows so the tests do not sleep."""
+    monkeypatch.setattr(tv_module, "_TV_START_WAIT_S", 0.0)
+    monkeypatch.setattr(tv_module, "_TV_CDP_WAIT_S", 0.0)
+
+
+def _open_ok():
+    """A completed `open` process that reported success."""
+    return MagicMock(returncode=0, stderr="", stdout="")
+
+
+@pytest.mark.asyncio
+async def test_launch_returns_true_without_opening_when_cdp_is_already_up():
+    """A running TradingView with the port open needs no launch at all."""
+    with (
+        patch("claudia.tradingview.check_cdp_running", return_value=True),
+        patch("claudia.tradingview.subprocess.run") as run,
+    ):
+        assert await tv_module.launch_tradingview() is True
+    run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_launch_reports_open_failure_with_its_stderr(monkeypatch):
+    """A non-zero `open` is an honest error carrying LaunchServices' own text."""
+    _fast_waits(monkeypatch)
+    failed = MagicMock(returncode=1, stderr="Unable to find application named 'TradingView'", stdout="")
+    with (
+        patch("claudia.tradingview.platform.system", return_value="Darwin"),
+        patch("claudia.tradingview.check_cdp_running", return_value=False),
+        patch("claudia.tradingview._tv_process_running", return_value=False),
+        patch("claudia.tradingview.subprocess.run", return_value=failed),
+        pytest.raises(RuntimeError, match="Unable to find application"),
+    ):
+        await tv_module.launch_tradingview()
+
+
+@pytest.mark.asyncio
+async def test_launch_that_never_starts_a_process_says_so_and_names_the_terminal_route(monkeypatch, caplog):
+    """`open` accepted but no TradingView process appears: 'never started', not 'no debug
+    port' — and the way out is a launch from a real Terminal, not the quit+relaunch helper."""
+    _fast_waits(monkeypatch)
+    with (
+        patch("claudia.tradingview.platform.system", return_value="Darwin"),
+        patch("claudia.tradingview.check_cdp_running", return_value=False),
+        patch("claudia.tradingview._tv_process_running", return_value=False),
+        patch("claudia.tradingview.subprocess.run", return_value=_open_ok()),
+        pytest.raises(RuntimeError, match="never started") as excinfo,
+    ):
+        await tv_module.launch_tradingview()
+    assert "Terminal" in str(excinfo.value)
+    assert "launch-tradingview-debug.sh" in str(excinfo.value)
+    assert "debug port" not in str(excinfo.value).lower().replace("remote-debugging", "")
+    assert any("never started" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_launch_with_a_process_but_no_port_returns_false(monkeypatch):
+    """The app is running but never opens the port: the existing False path (the caller
+    renders the debug-port instructions, which are right in THIS case)."""
+    _fast_waits(monkeypatch)
+    with (
+        patch("claudia.tradingview.platform.system", return_value="Darwin"),
+        patch("claudia.tradingview.check_cdp_running", return_value=False),
+        patch("claudia.tradingview._tv_process_running", side_effect=[False, True]),
+        patch("claudia.tradingview.subprocess.run", return_value=_open_ok()),
+    ):
+        assert await tv_module.launch_tradingview() is False
+
+
+@pytest.mark.asyncio
+async def test_launch_returns_true_once_the_port_opens(monkeypatch):
+    """Not running, launched, process appears, then the port: success."""
+    _fast_waits(monkeypatch)
+    with (
+        patch("claudia.tradingview.platform.system", return_value="Darwin"),
+        # initial probe → False; the one port poll a zero wait makes → True
+        patch("claudia.tradingview.check_cdp_running", side_effect=[False, True]),
+        patch("claudia.tradingview._tv_process_running", side_effect=[False, True]),
+        patch("claudia.tradingview.subprocess.run", return_value=_open_ok()),
+    ):
+        assert await tv_module.launch_tradingview() is True
+
+
+@pytest.mark.asyncio
+async def test_launch_refuses_when_already_running_without_the_port(monkeypatch):
+    """A running app without the port cannot be fixed in place — the helper is the answer."""
+    _fast_waits(monkeypatch)
+    with (
+        patch("claudia.tradingview.platform.system", return_value="Darwin"),
+        patch("claudia.tradingview.check_cdp_running", return_value=False),
+        patch("claudia.tradingview._tv_process_running", return_value=True),
+        patch("claudia.tradingview.subprocess.run") as run,
+        pytest.raises(RuntimeError, match="already running without"),
+    ):
+        await tv_module.launch_tradingview()
+    run.assert_not_called()

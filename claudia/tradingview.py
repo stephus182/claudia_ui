@@ -471,26 +471,67 @@ def check_cdp_running() -> bool:
 _TV_APP_NAME = "TradingView"
 
 
-def _tv_already_running_without_debug() -> bool:
-    """True if TradingView process is running but CDP port is not open."""
+# How long a freshly `open`ed TradingView gets to show up as a process at all, and then to
+# open its CDP port. An Electron process exists within a second or two of `open` accepting
+# the launch; the port follows once the main process is up. Module globals, not defaults,
+# so tests can collapse them.
+_TV_START_WAIT_S = 10.0
+_TV_CDP_WAIT_S = 30.0
+
+
+def _tv_process_running() -> bool:
+    """True if a TradingView Desktop process exists (`pgrep -x`, the app's process name)."""
     try:
         result = subprocess.run(
             ["pgrep", "-x", _TV_APP_NAME],
             capture_output=True, text=True
         )
-        return result.returncode == 0 and not check_cdp_running()
+        return result.returncode == 0
     except OSError:
         return False
+
+
+def _tv_already_running_without_debug() -> bool:
+    """True if TradingView process is running but CDP port is not open."""
+    return _tv_process_running() and not check_cdp_running()
+
+
+async def _wait_for(predicate: Callable[[], bool], timeout_s: float, interval_s: float = 1.0) -> bool:
+    """Poll `predicate` (a blocking, sub-second check) until true or `timeout_s` elapses.
+
+    Checks once before any sleep, so a zero timeout is exactly one check — what the tests
+    use — and never sleeps past the deadline.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while True:
+        if predicate():
+            return True
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(interval_s, remaining))
 
 
 async def launch_tradingview() -> bool:
     """Launch TradingView Desktop with --remote-debugging-port on macOS.
 
-    If TradingView is already running without the debug port, raises RuntimeError
-    with instructions to quit and relaunch — the process cannot be relaunched while
-    running without restarting it from scratch.
+    Three outcomes, kept apart because they need three different answers from the user:
 
-    Returns True if the CDP port becomes available within 30s.
+    - **Already running without the port** → `RuntimeError` pointing at the quit+relaunch
+      helper (the flag can only be set at launch; ClaudIA will not quit the user's app).
+    - **`open` accepted the launch but no TradingView process ever appeared** →
+      `RuntimeError("… never started …")` pointing at a launch from a real Terminal.
+      Measured 2026-09-04: `open -a` from a Claude Code tool shell — sandboxed or not —
+      returns 0 and launches nothing (Calculator as a control did not open either), and a
+      ClaudIA server started from that shell inherits the defect. Until this function
+      checked for the process, that case waited 30 s and was reported as the first one,
+      which sent the user to quit an app that was not running.
+    - **Process up, port never opens** → returns False; the caller renders the debug-port
+      instructions, which are right in this case only.
+
+    Returns True as soon as the CDP port accepts connections. `open`'s own failure (non-zero
+    exit) is raised with its stderr — it used to go to /dev/null.
 
     The official SETUP_GUIDE.md recommends the `tv_launch` MCP tool or the direct
     binary path. ClaudIA uses `open -a "TradingView"` which is equivalent on macOS
@@ -515,19 +556,38 @@ async def launch_tradingview() -> bool:
             f"open -a '{_TV_APP_NAME}' --args --remote-debugging-port={_TV_DEBUG_PORT})"
         )
     log.info("Launching TradingView Desktop with --remote-debugging-port=%d", _TV_DEBUG_PORT)
-    subprocess.Popen(
+    # `open` returns as soon as LaunchServices accepts the request (it does not wait for
+    # the app), so a blocking run on a worker thread costs nothing and keeps its exit code
+    # and stderr — which /dev/null used to throw away.
+    opened = await asyncio.to_thread(
+        subprocess.run,
         ["open", "-a", _TV_APP_NAME, "--args", f"--remote-debugging-port={_TV_DEBUG_PORT}"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True, text=True,
     )
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + 30
-    while loop.time() < deadline:
-        await asyncio.sleep(1.0)
-        if check_cdp_running():
-            log.info("TradingView CDP port %d is ready", _TV_DEBUG_PORT)
-            return True
-    log.warning("TradingView Desktop did not open CDP port %d within 30s", _TV_DEBUG_PORT)
+    if opened.returncode != 0:
+        detail = opened.stderr.strip() or opened.stdout.strip() or "no error text"
+        log.error("`open -a %s` failed (exit %d): %s", _TV_APP_NAME, opened.returncode, detail)
+        raise RuntimeError(f"`open -a {_TV_APP_NAME}` failed (exit {opened.returncode}): {detail}")
+    if not await _wait_for(_tv_process_running, _TV_START_WAIT_S):
+        log.error(
+            "TradingView Desktop never started: `open` accepted the launch but no %s process "
+            "appeared within %.0fs", _TV_APP_NAME, _TV_START_WAIT_S,
+        )
+        raise RuntimeError(
+            "TradingView Desktop never started: `open` accepted the launch but no TradingView "
+            f"process appeared within {_TV_START_WAIT_S:.0f}s. This happens when ClaudIA was "
+            "started from a shell that cannot launch desktop apps (a Claude Code tool shell, "
+            "measured 2026-09-04). Launch it from a real Terminal instead:\n"
+            "  ./scripts/launch-tradingview-debug.sh\n"
+            "then click TradingView again — the sidecar connect needs no launch."
+        )
+    if await _wait_for(check_cdp_running, _TV_CDP_WAIT_S):
+        log.info("TradingView CDP port %d is ready", _TV_DEBUG_PORT)
+        return True
+    log.warning(
+        "TradingView Desktop is running but did not open CDP port %d within %.0fs",
+        _TV_DEBUG_PORT, _TV_CDP_WAIT_S,
+    )
     return False
 
 

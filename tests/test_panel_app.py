@@ -2941,3 +2941,21 @@ async def test_drive_button_reports_a_failed_reconnect_as_an_error(monkeypatch):
     monkeypatch.setattr(panel_app, "_connectivity_checker", None)
     await _get_click_callback(_bar_button(chat, "gdrive"))(None)
     assert any("Drive reconnect failed" in t for t in _log_texts(chat))
+
+
+@pytest.mark.asyncio
+async def test_a_raising_reconnect_reaches_the_server_log_and_the_system_log(monkeypatch, caplog):
+    """2026-09-04: a launch that raises inside the browser tab must also be readable on the
+    server side — the System log alone left nothing to diagnose from."""
+    from claudia import panel_app
+
+    chat, _, _ = await _build_chat_with_ibkr(ibkr_offline=True)
+    monkeypatch.setattr(panel_app, "_connectivity_checker", None)
+    with (
+        patch("claudia.panel_app.launch_tradingview",
+              new=AsyncMock(side_effect=RuntimeError("TradingView Desktop never started"))),
+        caplog.at_level(logging.ERROR, logger="claudia.panel_app"),
+    ):
+        await _get_click_callback(_bar_button(chat, "tv"))(None)
+    assert any("never started" in t for t in _log_texts(chat))
+    assert any("never started" in r.message for r in caplog.records)
