@@ -456,3 +456,30 @@ def test_download_db_removes_stale_wal_shm_sidecars(sync, tmp_path):
     assert result is True
     assert not (tmp_path / "claudia.db-wal").exists()
     assert not (tmp_path / "claudia.db-shm").exists()
+
+
+# ── reconnect (2026-09-03, the Drive action button) ───────────────────────────
+
+def test_reconnect_drops_the_cached_service_and_authenticates_again(sync):
+    """reconnect() must not reuse the cached service: a stale token is the whole reason
+    to click. It rebuilds the service and returns ping()'s verdict."""
+    stale = MagicMock(name="stale-service")
+    sync._service = stale
+    fresh = MagicMock(name="fresh-service")
+    with (
+        patch("claudia.gdrive_sync.load_or_refresh_credentials", return_value=MagicMock()) as creds,
+        patch("claudia.gdrive_sync.build", return_value=fresh),
+    ):
+        assert sync.reconnect() is True
+    creds.assert_called_once()
+    assert sync._service is fresh
+    fresh.files.return_value.list.return_value.execute.assert_called_once()
+    stale.files.assert_not_called()
+
+
+def test_reconnect_reports_false_when_the_token_is_gone(sync):
+    """No valid token → False, no raise — the button reports it, the app keeps running."""
+    sync._service = MagicMock()
+    with patch("claudia.gdrive_sync.load_or_refresh_credentials", return_value=None):
+        assert sync.reconnect() is False
+    assert sync._service is None

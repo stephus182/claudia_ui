@@ -154,6 +154,18 @@ class GDriveSync:
         except Exception:
             return False
 
+    def reconnect(self) -> bool:
+        """Drop the cached service, re-authenticate, and return `ping()`'s verdict.
+
+        The Drive button's click (panel_action_bar) — a reconnect, not a check: the cached
+        service is exactly what a stale or revoked token lives in, so `ping()` alone would
+        keep failing for the same reason. `load_or_refresh_credentials` refreshes an
+        expired token in place; it never opens a browser (see `_get_service`).
+        """
+        with self._lock:
+            self._service = None
+        return self.ping()
+
     def download_db(self, local_path: Path) -> bool:
         """Download claudia.db from Drive to local_path.
 
