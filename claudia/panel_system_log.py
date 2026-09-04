@@ -15,6 +15,8 @@ from typing import Literal
 
 import panel as pn
 
+from claudia.panel_markdown import safe_markdown
+
 Level = Literal["info", "warning", "error"]
 
 # Warnings stay 8s; errors stay until dismissed — a failed sync or a lost gateway is the
@@ -44,6 +46,10 @@ class SystemLog:
         self._title = title
         self._count = 0
         self.feed = pn.chat.ChatFeed(
+            # Same renderer as the chat (security-audit-2026-07-25, H-1): tool results,
+            # gateway details and exception text land here verbatim, and Panel's default
+            # Markdown pane renders raw HTML. Review 2026-09-04 caught this feed without it.
+            renderers=[safe_markdown],
             message_params={"show_reaction_icons": False, "show_copy_icon": False},
             show_activity_dot=False,
             height=_FEED_HEIGHT,

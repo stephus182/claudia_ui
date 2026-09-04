@@ -66,6 +66,7 @@ class ActionBar:
         self._on_error = on_error
         self._status = status
         self._busy: set[str] = set()
+        self._ended = False
         self.buttons: dict[str, pn.widgets.Button] = {
             key: pn.widgets.Button(label=label, color="default", description=_RECONNECT_HINT)
             for key, label in SERVICE_LABELS.items()
@@ -82,8 +83,13 @@ class ActionBar:
         Drive alone is disabled on UNKNOWN: for Drive that state means "no credentials",
         and a click cannot reconnect what was never configured. For IBKR and TradingView
         UNKNOWN is "not checked yet", and a click may well be what brings them up.
-        A button whose reconnect is in flight keeps its disable-first state.
+        A button whose reconnect is in flight keeps its disable-first state, and after
+        End Session nothing is repainted at all — the 5-second timer keeps firing on the
+        still-open page, and without this guard it re-enabled the three service buttons
+        on a session that had already been saved (review 2026-09-04).
         """
+        if self._ended:
+            return
         for key, button in self.buttons.items():
             if key not in status:
                 continue
@@ -95,7 +101,8 @@ class ActionBar:
             button.description = _DRIVE_UNCONFIGURED_HINT if unconfigured else _RECONNECT_HINT
 
     def disable_all(self) -> None:
-        """Leave the whole bar inert (after End Session)."""
+        """Leave the whole bar inert (after End Session) — and keep it so across repaints."""
+        self._ended = True
         for button in self.row.objects:
             button.disabled = True
 

@@ -74,7 +74,12 @@ from claudia.panel_theme import (
 )
 from claudia.session_reporter import generate_session_report
 from claudia.status import ConnectivityChecker, ServiceStatus
-from claudia.tradingview import TradingViewBridge, check_cdp_running, launch_tradingview
+from claudia.tradingview import (
+    _TV_CDP_WAIT_S,
+    TradingViewBridge,
+    check_cdp_running,
+    launch_tradingview,
+)
 
 log = logging.getLogger(__name__)
 
@@ -420,7 +425,16 @@ def _build_action_bar(
             _session["unsubscribe"] = None
         _session["closed"] = True
         syslog.say("Saving session…")
-        status = await _run_session_cleanup(session_id, _session["store"], _session["loader"])
+        try:
+            status = await _run_session_cleanup(
+                session_id, _session["store"], _session["loader"]
+            )
+        except Exception as exc:
+            # `closed` is already True (the destroy hook must not run cleanup twice), so
+            # this line is the only trace the user gets — say it (review 2026-09-04).
+            log.exception("End Session cleanup failed (session %s)", session_id)
+            syslog.say(f"✕ Session cleanup failed: {exc} — check the server log.", "error")
+            return
         syslog.say(f"**Session ended.** {status}\n\nSafe to close this tab.")
 
     async def _reconnect_gateway() -> None:
@@ -433,8 +447,12 @@ def _build_action_bar(
         alone (re-authenticating it is the harm), and the blocking work runs on a worker
         thread with its progress lines streamed into the System log.
         """
+        # `establish` calls `emit` from the worker thread; hop each line back onto the
+        # session's loop rather than touching Panel objects off-loop (review 2026-09-04).
+        loop = asyncio.get_running_loop()
         result = await asyncio.to_thread(
-            get_session().establish, GatewayManager(), emit=syslog.say
+            get_session().establish, GatewayManager(),
+            emit=lambda line: loop.call_soon_threadsafe(syslog.say, line),
         )
         if result.phase is SessionPhase.LIVE:
             if _connectivity_checker is not None:
@@ -456,7 +474,8 @@ def _build_action_bar(
         launched = await launch_tradingview(emit=syslog.say)
         if not launched:
             syslog.say(
-                "✕ TradingView Desktop is running but did not open its debug port within 30s.\n\n"
+                "✕ TradingView Desktop is running but did not open its debug port within "
+                f"{_TV_CDP_WAIT_S:.0f}s.\n\n"
                 "Try once more, or from a Terminal:\n"
                 "```\n./scripts/launch-tradingview-debug.sh\n```",
                 "error",

@@ -410,3 +410,27 @@ async def test_stop_cancels_task(checker):
         checker.start()
         assert not checker._task.done()
         checker.stop()
+
+
+# ── 2026-09-04 review: Drive UNKNOWN when unconfigured ──
+
+
+@pytest.mark.asyncio
+async def test_run_checks_reports_an_unconfigured_drive_as_unknown_not_error(checker):
+    """No sync client and no token file is 'not configured', which ServiceStatus documents
+    as UNKNOWN — the checker used to publish ERROR, turning the action bar's Drive button
+    red with a 'click to reconnect' hint for something that was never set up."""
+    with _ibkr_down(checker):
+        await checker._run_checks()
+    assert checker.get_status()["gdrive"] == ServiceStatus.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_run_checks_reports_a_configured_but_failing_drive_as_error(checker_with_token):
+    """A token file that exists but a ping that fails is a real ERROR, not 'unconfigured'."""
+    sync = MagicMock()
+    sync.ping.return_value = False
+    checker_with_token._gdrive_sync = sync
+    with _ibkr_up(checker_with_token):
+        await checker_with_token._run_checks()
+    assert checker_with_token.get_status()["gdrive"] == ServiceStatus.ERROR

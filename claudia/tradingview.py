@@ -509,7 +509,8 @@ async def _wait_for(predicate: Callable[[], bool], timeout_s: float, interval_s:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
     while True:
-        if predicate():
+        # Off the loop: every predicate here forks a process or opens a socket.
+        if await asyncio.to_thread(predicate):
             return True
         remaining = deadline - loop.time()
         if remaining <= 0:
@@ -524,16 +525,26 @@ async def _quit_tradingview() -> bool:
     chart layouts to the account, so the quit loses no workspace (the script's header,
     sourced to the sidecar's SETUP_GUIDE). Returns True when no process remains.
     """
-    subprocess.run(
-        ["osascript", "-e", f'quit app "{_TV_APP_NAME}"'],
-        capture_output=True, text=True,
-    )
+    # Both commands run on a worker thread with a timeout: `osascript quit` waits for the
+    # app's reply, and a hung or modal-blocked TradingView — the case the forced kill is
+    # for — would otherwise freeze the process-wide event loop (review 2026-09-04).
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["osascript", "-e", f'quit app "{_TV_APP_NAME}"'],
+            capture_output=True, text=True, timeout=_TV_QUIT_WAIT_S,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("`osascript quit` did not return within %.0fs", _TV_QUIT_WAIT_S)
     if await _wait_for(lambda: not _tv_process_running(), _TV_QUIT_WAIT_S):
         return True
     log.warning("TradingView did not quit gracefully within %.0fs — forcing", _TV_QUIT_WAIT_S)
-    subprocess.run(["pkill", "-x", _TV_APP_NAME], capture_output=True, text=True)
+    await asyncio.to_thread(
+        subprocess.run, ["pkill", "-x", _TV_APP_NAME],
+        capture_output=True, text=True, timeout=_TV_KILL_SETTLE_S,
+    )
     await asyncio.sleep(_TV_KILL_SETTLE_S)
-    return not _tv_process_running()
+    return not await asyncio.to_thread(_tv_process_running)
 
 
 async def launch_tradingview(emit: Callable[[str], None] | None = None) -> bool:

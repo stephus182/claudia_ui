@@ -792,6 +792,8 @@ async def test_quit_asks_nicely_first_and_returns_true_when_the_process_goes(mon
         assert await tv_module._quit_tradingview() is True
     cmds = [c.args[0][0] for c in run.call_args_list]
     assert cmds == ["osascript"]
+    # Bounded: a hung app must not hold the event loop (review 2026-09-04).
+    assert run.call_args_list[0].kwargs["timeout"] == tv_module._TV_QUIT_WAIT_S
 
 
 @pytest.mark.asyncio
@@ -807,3 +809,26 @@ async def test_quit_falls_back_to_pkill_when_the_app_ignores_the_quit(monkeypatc
         assert await tv_module._quit_tradingview() is True
     cmds = [c.args[0][0] for c in run.call_args_list]
     assert cmds == ["osascript", "pkill"]
+
+
+@pytest.mark.asyncio
+async def test_quit_treats_a_hung_osascript_as_not_quit_and_falls_back(monkeypatch):
+    """osascript blocking past its timeout is the hung-app case: swallow the TimeoutExpired
+    and go on to the forced kill instead of failing the reconnect."""
+    import subprocess
+
+    monkeypatch.setattr(tv_module, "_TV_QUIT_WAIT_S", 0.0)
+    monkeypatch.setattr(tv_module, "_TV_KILL_SETTLE_S", 0.0)
+
+    def run(cmd, **kwargs):
+        """osascript hangs (raises TimeoutExpired); pkill succeeds."""
+        if cmd[0] == "osascript":
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
+        return MagicMock(returncode=0)
+
+    with (
+        patch("claudia.tradingview._tv_process_running", side_effect=[True, False]),
+        patch("claudia.tradingview.subprocess.run", side_effect=run) as run_mock,
+    ):
+        assert await tv_module._quit_tradingview() is True
+    assert [c.args[0][0] for c in run_mock.call_args_list] == ["osascript", "pkill"]

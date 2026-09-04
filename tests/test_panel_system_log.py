@@ -61,3 +61,34 @@ def test_say_never_raises_without_a_served_session(monkeypatch):
     log = SystemLog()
     log.say("x", "error")
     assert len(log.feed.objects) == 1
+
+
+def test_feed_installs_the_safe_markdown_renderer():
+    """Security (2026-07-25 audit H-1, re-found by review 2026-09-04): the log feed shows
+    tool results, gateway details and exception text verbatim, so it needs the same
+    HTML-off renderer as the chat — Panel's default Markdown pane renders raw HTML."""
+    from claudia.panel_markdown import safe_markdown
+
+    log = SystemLog()
+    assert safe_markdown in log.feed.renderers
+    log.say("<img src=x onerror=alert(1)>")
+    pane = log.feed.objects[0]._object_panel
+    assert type(pane).__name__ == "Markdown"
+    assert pane.renderer_options == {"html": False}
+
+
+def test_every_chat_feed_in_the_package_installs_the_safe_renderer():
+    """Structural guard: any ChatFeed/ChatInterface constructed in claudia/*.py must pass
+    renderers=[safe_markdown] — the chat had it, the log did not, and only a per-widget
+    test caught the gap. Control the class, not the instance."""
+    import re
+    from pathlib import Path
+
+    misses = []
+    for path in sorted(Path("claudia").glob("*.py")):
+        src = path.read_text()
+        for m in re.finditer(r"pn\.chat\.(ChatFeed|ChatInterface)\(", src):
+            window = src[m.end():m.end() + 800]
+            if "renderers=[safe_markdown]" not in window:
+                misses.append(f"{path}:{src[:m.start()].count(chr(10)) + 1}")
+    assert not misses, f"ChatFeed/ChatInterface without renderers=[safe_markdown]: {misses}"

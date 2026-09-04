@@ -98,6 +98,7 @@ class ConnectivityChecker:
             "gdrive": ServiceStatus.UNKNOWN,
             "tv":     ServiceStatus.UNKNOWN,
         }
+
         self._last_ibkr_auth_status: dict = {}
         self._task: asyncio.Task | None = None
         self._subscribers: list[Callable[[str], Awaitable[None]]] = []
@@ -142,6 +143,13 @@ class ConnectivityChecker:
         if self._gdrive_sync is not None:
             return self._gdrive_sync.ping()
         return self._gdrive_token_file.exists()
+
+    def gdrive_configured(self) -> bool:
+        """Whether there is anything to check for Drive at all: a sync client, or at least
+        a token file. Neither → `UNKNOWN` (not configured), never `ERROR` — which is what
+        `ServiceStatus`'s docstring promised and `_run_checks` did not deliver for Drive
+        until 2026-09-04 (the action bar's "not configured" state depends on it)."""
+        return self._gdrive_sync is not None or self._gdrive_token_file.exists()
 
     def check_tradingview(self) -> bool:
         """TCP connect to TradingView Desktop's CDP port — more reliable than proc.poll().
@@ -221,15 +229,27 @@ class ConnectivityChecker:
         moved to `gateway_session.GatewaySession._poll_once` on 2026-08-06, along with the
         read itself. `check_ibkr` is now a cached lookup, so this poll makes two network
         calls rather than three. TradingView maps a closed CDP port to `UNKNOWN` (not
-        launched) rather than `ERROR`. Alerts fire only on a state change.
+        launched) rather than `ERROR`; so does Drive when nothing is configured
+        (`gdrive_configured`). Alerts fire only on a state change.
+
+        Re-entrant by construction, no lock: the action bar's reconnects call this while
+        the poll task may be mid-run, but `_status[service]` is written *before* the
+        alert is awaited, so a second run can never observe the stale state and alert
+        twice (a lock was added and removed on 2026-09-04 when a mutation test showed it
+        guarded nothing).
         """
         ibkr_ok = await asyncio.to_thread(self.check_ibkr)
-        gdrive_ok = await asyncio.to_thread(self.check_gdrive)
+        gdrive_configured = await asyncio.to_thread(self.gdrive_configured)
+        gdrive_ok = gdrive_configured and await asyncio.to_thread(self.check_gdrive)
         tv_ok = await asyncio.to_thread(self.check_tradingview)
         new = {
             "ibkr":   ServiceStatus.OK if ibkr_ok else ServiceStatus.ERROR,
-            "gdrive": ServiceStatus.OK if gdrive_ok else ServiceStatus.ERROR,
-            # Not configured → UNKNOWN (gray dot), not ERROR (red dot)
+            # Not configured → UNKNOWN (neutral), not ERROR (red) — for Drive and TV alike
+            "gdrive": (
+                ServiceStatus.OK if gdrive_ok
+                else ServiceStatus.UNKNOWN if not gdrive_configured
+                else ServiceStatus.ERROR
+            ),
             "tv": (
                 ServiceStatus.OK if tv_ok
                 else ServiceStatus.UNKNOWN if self._tv_bridge is None

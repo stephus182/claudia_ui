@@ -159,3 +159,34 @@ async def test_repaint_does_not_re_enable_a_button_mid_reconnect():
     gate.set()
     await task
     assert bar.buttons["gdrive"].disabled is False
+
+
+def test_repaint_after_end_session_leaves_every_button_disabled():
+    """Review 2026-09-04: the 5-second repaint kept firing after End Session and re-enabled
+    the three service buttons on a saved session. disable_all() must be final."""
+    bar, _ = _bar()
+    bar.disable_all()
+    bar.repaint(dict.fromkeys(SERVICE_LABELS, ServiceStatus.OK))
+    assert all(b.disabled for b in bar.row.objects)
+
+
+def test_drive_disabled_rule_matches_the_real_checker_when_unconfigured(tmp_path):
+    """Drive's disabled state is driven by what the REAL checker publishes for an
+    unconfigured Drive (no sync client, no token file): UNKNOWN. Pinned against the checker,
+    not a hand-written dict — review 2026-09-04 found the checker never emitted UNKNOWN for
+    Drive after its first poll, so the rule was dead code."""
+    import asyncio
+    from unittest.mock import patch
+
+    checker = ConnectivityChecker(
+        gateway_url="http://x", gdrive_token_file=tmp_path / "missing.json", session=MagicMock()
+    )
+    with (
+        patch.object(checker, "check_ibkr", return_value=False),
+        patch.object(checker, "check_tradingview", return_value=False),
+    ):
+        asyncio.run(checker._run_checks())
+    bar, _ = _bar()
+    bar.repaint(checker.get_status())
+    assert bar.buttons["gdrive"].disabled is True
+    assert "GOOGLE_DRIVE_FOLDER_ID" in bar.buttons["gdrive"].description

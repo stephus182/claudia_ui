@@ -2974,3 +2974,58 @@ async def test_tradingview_click_streams_launch_progress_into_the_system_log(mon
     with patch("claudia.panel_app.launch_tradingview", new=launch):
         await _get_click_callback(_bar_button(chat, "tv"))(None)
     assert launch.call_args.kwargs["emit"] == _system_log(chat).say
+
+
+@pytest.mark.asyncio
+async def test_gateway_progress_lines_emitted_from_the_worker_thread_reach_the_log():
+    """`establish` calls `emit` on its worker thread; each line must land in the System log
+    via the loop (review 2026-09-04: no Panel object is touched off-loop)."""
+    import threading
+
+    from claudia import panel_app
+    from claudia.panel_system_log import SystemLog
+
+    syslog = SystemLog()
+    session_state = {"closed": False, "unsubscribe": None, "store": None,
+                     "loader": None, "agent": None}
+    owner = MagicMock()
+    seen_thread: dict[str, str] = {}
+
+    def establish(manager, emit):
+        """Emit one progress line from this (worker) thread, then report DOWN."""
+        seen_thread["name"] = threading.current_thread().name
+        emit("▶ progress from the worker")
+        return SessionState(phase=SessionPhase.DOWN, as_of=datetime.now(UTC), detail="no answer")
+
+    owner.establish.side_effect = establish
+    with (
+        patch("claudia.panel_app.GatewayManager"),
+        patch("claudia.panel_app.get_session", return_value=owner),
+    ):
+        bar = panel_app._build_action_bar(syslog, session_state, "s1")
+        await _get_click_callback(bar.buttons["ibkr"])(None)
+        await asyncio.sleep(0)  # let the call_soon_threadsafe callback run
+    assert seen_thread["name"] != threading.main_thread().name
+    texts = [m.object for m in syslog.feed.objects]
+    assert "▶ progress from the worker" in texts
+    assert any("Gateway is not answering" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_end_session_reports_a_failed_cleanup_instead_of_vanishing():
+    """A cleanup that raises leaves `closed` True (no double cleanup) and says so in the
+    log as an error — the bar has no try of its own (review 2026-09-04)."""
+    from claudia import panel_app
+    from claudia.panel_system_log import SystemLog
+
+    syslog = SystemLog()
+    session_state = {"closed": False, "unsubscribe": None, "store": None,
+                     "loader": None, "agent": None}
+    with patch("claudia.panel_app._run_session_cleanup",
+               new=AsyncMock(side_effect=RuntimeError("drive upload exploded"))):
+        bar = panel_app._build_action_bar(syslog, session_state, "s1")
+        await _get_click_callback(bar.end_button)(None)
+    assert session_state["closed"] is True
+    texts = [m.object for m in syslog.feed.objects]
+    assert any("Session cleanup failed" in t and "drive upload exploded" in t for t in texts)
+    assert not any("Session ended." in t for t in texts)
