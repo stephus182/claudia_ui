@@ -16,7 +16,7 @@ owns a question. Within each group, the file that answers "where do I start" is 
 | File | Description |
 | --- | --- |
 | [`ibkr-gateway.md`](ibkr-gateway.md) | **The gateway session, start here for anything IBKR-connection.** Phases, who may touch the session and from which runtime, the login runbook, borrowed-session and IB Key failures, the container image trap, and the incident record |
-| [`order-api-reference.md`](order-api-reference.md) | Full order-staging spec — Gate 1/2, the parameter-immutability rule, the `conid` requirement |
+| [`order-api-reference.md`](order-api-reference.md) | Full order-staging spec — Gate 1/2, the parameter-immutability rule, the `conid` requirement, stops on US futures, attached profit taker / bracket orders (API-supported, not yet expressible — 2026-09-06) |
 | [`trading-data-reference.md`](trading-data-reference.md) | Trade data architecture, Flex vs live API, P&L and the execution listener |
 | [`flex-query-setup.md`](flex-query-setup.md) | IBKR Flex Query setup: token, query config, backfill, ongoing sync |
 | [`market-calendar-reference.md`](market-calendar-reference.md) | 20-exchange market calendar and futures schedules |

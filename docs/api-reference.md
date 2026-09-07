@@ -40,6 +40,10 @@ guessing paths.
 | Orders / modify (two-call pattern) | <https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/> |
 | Orders / place — Web API lesson (`STP` uses `price`) | <https://www.interactivebrokers.com/campus/trading-lessons/placing-orders/> |
 | Stop orders on US futures — simulated, RTH-only unless `outsideRTH` | <https://www.interactivebrokers.com/en/trading/us-futures-stop-order.php> |
+| `POST /iserver/account/{accountId}/orders` — the `orders` array, `cOID` / `parentId` / `isSingleGroup` (bracket rules verbatim) | <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md> |
+| Bracket / OCA request bodies (parent `cOID`, child `parentId`) | <https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/bracket-orders-oca-groups.md> and <https://ibkrcampus.com/docs/web-api/trading/orders/submitting-bracket-orders.md> |
+| `POST …/orders/whatif` — previews "an order ticket or bracket of orders" | <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/preview-margin-impact.md> |
+| Profit Taker / Stop Loss / Bracket — IBKR's product definitions (held until the parent fills) | <https://www.ibkrguides.com/ipad/attached.htm> and <https://www.ibkrguides.com/traderworkstation/advanced-button.htm> |
 | Outside-RTH attribute — eligibility by product (CME MKT/LMT need none, stops do) | <https://www.interactivebrokers.com/campus/trading-lessons/trading-outside-regular-trading-hours-rth/> |
 | IBKR Campus (general) | <https://www.interactivebrokers.com/campus/ibkr-api-page/> |
 | Competing-session / gateway launch walkthrough | <https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/> |

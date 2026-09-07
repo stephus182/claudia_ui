@@ -209,6 +209,14 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   `propose_modify` too, and it is shown in the approval text, the Gate 2 dialog and the Orders
   tab (`—` there = not reported by IBKR, never "No"). Sources: `docs/order-api-reference.md`
   § Stop orders on US futures.
+- **Attached profit taker / bracket orders (2026-09-06): supported by the Web API, not yet
+  expressible here.** IBKR takes a bracket as one request — an `orders` array where the parent
+  carries `cOID` and each child `parentId` equal to it — and holds the child until the parent
+  fills. Every layer of this stack carries one ticket (proposal schema, order body, the
+  ibkr_core_mcp client, Gate 2, read-back), so it is Known Gaps #36 with a plan in
+  `docs/plans/`. **Never approximate it with two independent proposals** (user rule
+  2026-09-07): a standalone opposite-side limit is live immediately and can open the wrong
+  position. Finding and sources: `docs/order-api-reference.md` § Attached profit taker.
 - Modify requests require the **full original order**, not a diff (IBKR API requirement).
   `propose_modify` carries the replacement order in its top-level fields plus a `changes`
   array of `{field, previous_value}` objects, used only to render the before/after diff.

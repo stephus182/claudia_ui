@@ -77,9 +77,10 @@ than silently truncated by `int(qty)` in `order_flow.py`. Positivity is *not* sc
 `order_flow.py`, not by the schema; accepted as an override for any `sec_type`, and when set
 it skips `search_contract()`/`get_futures()` resolution entirely.
 
-## Order body field spec (from IBKR CP API docs, verified 2026-07-02)
+## Order body field spec (from IBKR CP API docs, verified 2026-07-02; bracket rows 2026-09-06)
 
 Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md
+Bracket fields (`parentId`, `isSingleGroup`, verbatim rules): https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md
 
 | Field | Type | Required? | Notes |
 |---|---|---|---|
@@ -93,6 +94,8 @@ Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md
 | `acctId` | str | no | defaults to first account |
 | `ticker` | str | no | underlying symbol — valid IBKR field, not stripped |
 | `cOID` | str | no | customer order ID; max 64 chars; unique per 24h |
+| `parentId` | str | bracket child only | must equal the parent's `cOID`; the child is held by IBKR and submitted only when the parent fills — see § Attached profit taker (scraped 2026-09-06). **Not sent by ClaudIA**: nothing in the stack can carry a second ticket |
+| `isSingleGroup` | bool | OCA only | marks every ticket in the array as one OCA group. **Not** part of a bracket — the bracket example omits it; only the OCA variant sets it |
 | `listingExchange` | str | no | default: SMART routing |
 | `outsideRTH` | bool | no | allow execution outside regular trading hours — sent when the proposal's `outside_rth` is not `null` (2026-09-04) |
 | `manualIndicator` | bool | **FUT/FOP** | CME Rule 536-B — required since May 1, 2025 |
@@ -199,6 +202,125 @@ Established before a live ES buy-stop test, from IBKR's own pages (local copies 
   as for FUT — an FOP has never been placed live through ClaudIA, so that path is code-verified only.
 
 Source (536-B requirement): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
+
+## Attached profit taker (parent → child) orders — API support (scraped 2026-09-06)
+
+The question: *sell ES at 7725 with a "profit taker" buy at 7700 that only comes live when the
+sell fills* — a one-child bracket. **The Web API supports it. ClaudIA cannot send it today.**
+Local copies of every page cited here are in `.firecrawl/ibkr/*-2026-09-06.md` (git-ignored).
+
+### What IBKR calls it
+
+- **Profit Taker** is *"an opposite side limit order designed to close a position while it is
+  profitable"*; *"For a SELL parent order, it's a low-side buy order"* with *"the same order
+  quantity as the parent"*, and *"the order will be created, but will not be submitted until the
+  parent order fills."* Profit Taker + Stop Loss = **Bracket**; either child can be attached on
+  its own (TWS: *"Check the 'Profit Taker' box"*; the type is *"limit or relative"*).
+  Sources: <https://www.ibkrguides.com/ipad/attached.htm> (updated 2026-01-27),
+  <https://www.ibkrguides.com/traderworkstation/advanced-button.htm>.
+- The order-types catalogue lists **Bracket** as *Platforms: Select · Regions: US & Non-US ·
+  Routing: Smart, Directed* — no futures exclusion.
+  Source: <https://www.interactivebrokers.com/en/trading/ordertypes.php>.
+
+### How the Web API expresses it
+
+`POST /iserver/account/{accountId}/orders` takes an `orders` **array**: *"Only one order ticket
+object may be submitted per request, unless constructing a bracket."* The link is two fields
+(both in the field table above):
+
+| Ticket | Field | IBKR's rule (verbatim) |
+|---|---|---|
+| parent | `cOID` | *"Client-configurable order identifier … Should not be set for the child of a bracket order."* |
+| child | `parentId` | *"If the order ticket is a child order in a bracket, the parentId field must be set equal to the cOID provided for the parent order."* |
+
+`isSingleGroup` is **not** involved: the bracket example omits it, and IBKR adds it only for the
+OCA variant (*"in addition to the standard bracket, each order will include isSingleGroup: true"*).
+A bracket is therefore *one* request. The narrative page also allows a sequential form — *"Bracket
+orders can be submitted sequentially using the default order_id created by Interactive Brokers"* —
+with no example; the one-request form is the documented one. The whatif endpoint accepts the
+same array (*"Preview the projected effects of an order ticket or bracket of orders"*), so a
+bracket can be margin-previewed before the gates.
+Sources: <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md>,
+<https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/bracket-orders-oca-groups.md>,
+<https://ibkrcampus.com/docs/web-api/trading/orders/submitting-bracket-orders.md>,
+<https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/preview-margin-impact.md>.
+
+The user's example, in IBKR's documented shape (ES Sep-2026 conid 649180671 as measured
+2026-09-04 — pick the contract deliberately, § Instrument-specific paths rule 5):
+
+```json
+{
+  "orders": [
+    {
+      "acctId": "U…", "conid": 649180671, "cOID": "CLAUDIA-<ms>",
+      "orderType": "LMT", "price": 7725.00, "side": "SELL", "quantity": 1, "tif": "GTC",
+      "manualIndicator": true
+    },
+    {
+      "acctId": "U…", "conid": 649180671, "parentId": "CLAUDIA-<ms>",
+      "orderType": "LMT", "price": 7700.00, "side": "BUY", "quantity": 1, "tif": "GTC",
+      "manualIndicator": true
+    }
+  ]
+}
+```
+
+`manualIndicator` on **both** tickets is an inference, not a documented rule: IBKR says *"Orders
+for USFUT products that do not include this field will be rejected"* per ticket and never
+mentions children. Probe it on `whatif` before the first live send.
+
+### What the pages do not say — measure, do not assume
+
+1. **A one-child bracket.** Every Web API example has two children. The product definition
+   (a Profit Taker attachable alone in TWS/Mobile) says the order model allows one; the API pages
+   neither show nor forbid it.
+2. **Mixed time-in-force** (parent `DAY`, child `GTC`, or the reverse): undocumented.
+3. **The held child on the read side.** Neither `/iserver/account/orders` nor
+   `/iserver/account/order/status/{id}` documents a parent-link field. `child_order_type` on the
+   status endpoint is about *hedges* (`0` none, `A` attached child hedge, `B` beta hedge), not
+   brackets. So the Orders tab cannot label a child as a child from documented fields, and the
+   status a held child reports before the parent fills is undocumented.
+   Sources: <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/get-open-orders.md>,
+   <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/get-order-status.md>.
+4. **Modify / cancel of one leg** by its own order id, and whether cancelling the parent cancels
+   the child: the product pages imply the child dies with the parent; the API pages are silent.
+5. **Partial fill of the parent**: the product page says the child *"uses the same order quantity
+   as the parent"*; the API child carries its own `quantity`. What IBKR does when 1 of 2 fills is
+   undocumented.
+6. **Response shape**: the success example is one `order_id`; whether a bracket returns one entry
+   per ticket, and whether the reply chain (`/iserver/reply/{id}`) fires once or per ticket, is
+   undocumented. Our `place_order_and_confirm` loop keys on `response[0]` only.
+
+After the parent fills, the child is an ordinary order: a **LMT** profit taker on ES is native to
+Globex and rests around the clock; a **STP** child is IBKR-simulated and RTH-only by default —
+§ Stop orders on US futures applies to the child too, so a stop-loss leg needs `outsideRTH`.
+
+### Why ClaudIA cannot send it today (2026-09-06)
+
+Every layer carries exactly one ticket:
+
+| Layer | Where | The one-ticket assumption |
+|---|---|---|
+| Proposal schema | `claudia/proposal_tools.py` | `propose_order` is 11 closed keys, no child; a strict-schema change needs the live-API probe (`live_api` marker) |
+| Order body | `claudia/order_flow.py` (`order_body`) | one dict; `cOID` is set, `parentId` never |
+| Client | `ibkr_core_mcp/client.py` `place_order(account_id, order: dict)` and `get_order_preview` | both wrap the single dict as `{"orders": [api_order]}` — a caller cannot pass two tickets |
+| Gate 2 | `ibkr_core_mcp/order_confirm.py` | renders one order; the human must see **both** legs before **SEND TO IBKR** |
+| Read-back | `order_flow._read_back` | one order id |
+| Orders tab | `claudia/panel_dashboard.py` | no parent column (and no documented field to fill one — item 3) |
+| Execution reports | `claudia/execution_listener.py` | already correct: both legs of a bracket are reported since the 2026-09-04 fix |
+
+Hard Rule 1 is unaffected by any of this: a bracket is still one physical click on a request the
+human sees whole. Known Gaps #36 in `docs/project-status.md` tracks it.
+
+**Two independent orders are NOT a substitute and must never be proposed as one — user
+rule, 2026-09-07.** A standalone opposite-side limit placed *before* the parent fills is a live
+order on its own: at 7700 it fills first and opens a long, the opposite of the intent, with
+the "parent" still resting to double the exposure on the way back. The conditional link
+(`parentId`) *is* the order type; without it there is no profit taker, only two unrelated
+orders. Until the bracket path exists, the profit taker is either attached in TWS/IBKR Mobile
+by hand, or proposed through ClaudIA **only after** the parent's fill has been reported by
+IBKR (§ Automatic execution reports). This rule belongs in ClaudIA's safety block when the
+feature is built, so the model can never "help" by splitting a bracket into two proposals.
 
 ## Order Cancellation
 
