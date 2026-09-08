@@ -29,6 +29,7 @@ import re
 from typing import TYPE_CHECKING
 
 import panel as pn
+from param.parameterized import Event
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -151,7 +152,7 @@ def _render_pine_block(
 
     inject_btn = pn.widgets.Button(label="Inject into TradingView", color="primary")
 
-    async def _on_inject(event) -> None:
+    async def _on_inject(event: Event) -> None:
         """Inject the pine source into TradingView's editor via the sidecar bridge.
 
         Two invariants:

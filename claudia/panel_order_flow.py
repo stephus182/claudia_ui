@@ -10,9 +10,10 @@ chat message) and the send_status wiring are Panel-specific.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import panel as pn
+from param.parameterized import Event
 
 from claudia.order_flow import (
     SendStatus,
@@ -46,7 +47,7 @@ def _make_send_status(chat: pn.chat.ChatInterface) -> SendStatus:
 
 async def render_order_proposal(
     chat: pn.chat.ChatInterface,
-    proposal: dict,
+    proposal: dict[str, Any],
     session_id: str | None = None,
     store: ConversationStore | None = None,
 ) -> None:
@@ -68,7 +69,7 @@ async def render_order_proposal(
     cancel_btn = pn.widgets.Button(label="Cancel", color="light")
     send_status = _make_send_status(chat)
 
-    async def _on_stage(event) -> None:
+    async def _on_stage(event: Event) -> None:
         """Stage the order — the click that initiates a live IBKR order.
 
         One-shot: both buttons are disabled before the core runs and are never re-enabled,
@@ -92,7 +93,7 @@ async def render_order_proposal(
             log.exception("Order staging failed (session %s)", session_id)
             raise
 
-    async def _on_cancel(event) -> None:
+    async def _on_cancel(event: Event) -> None:
         """Dismiss the proposal without contacting IBKR. Disables both buttons first."""
         stage_btn.disabled = True
         cancel_btn.disabled = True
@@ -116,7 +117,7 @@ async def render_order_proposal(
 
 async def render_cancel_proposal(
     chat: pn.chat.ChatInterface,
-    proposal: dict,
+    proposal: dict[str, Any],
     session_id: str | None = None,
     store: ConversationStore | None = None,
 ) -> None:
@@ -134,7 +135,7 @@ async def render_cancel_proposal(
     keep_btn = pn.widgets.Button(label="Keep order", color="light")
     send_status = _make_send_status(chat)
 
-    async def _on_cancel_click(event) -> None:
+    async def _on_cancel_click(event: Event) -> None:
         """Cancel the live order — same one-shot and Gate 1/Gate 2 contract as `_on_stage`."""
         cancel_btn.disabled = True
         keep_btn.disabled = True
@@ -144,7 +145,7 @@ async def render_cancel_proposal(
             log.exception("Order cancellation failed (session %s)", session_id)
             raise
 
-    async def _on_keep_click(event) -> None:
+    async def _on_keep_click(event: Event) -> None:
         """Dismiss the proposal, leaving the order untouched. No IBKR call."""
         cancel_btn.disabled = True
         keep_btn.disabled = True
@@ -170,7 +171,7 @@ async def render_cancel_proposal(
 
 async def render_modify_proposal(
     chat: pn.chat.ChatInterface,
-    proposal: dict,
+    proposal: dict[str, Any],
     session_id: str | None = None,
     store: ConversationStore | None = None,
 ) -> None:
@@ -194,7 +195,7 @@ async def render_modify_proposal(
     discard_btn = pn.widgets.Button(label="Discard", color="light")
     send_status = _make_send_status(chat)
 
-    async def _on_modify_click(event) -> None:
+    async def _on_modify_click(event: Event) -> None:
         """Modify the live order — same one-shot and Gate 1/Gate 2 contract as `_on_stage`."""
         modify_btn.disabled = True
         discard_btn.disabled = True
@@ -204,7 +205,7 @@ async def render_modify_proposal(
             log.exception("Order modification failed (session %s)", session_id)
             raise
 
-    async def _on_discard_click(event) -> None:
+    async def _on_discard_click(event: Event) -> None:
         """Discard the proposal, leaving the order untouched. No IBKR call."""
         modify_btn.disabled = True
         discard_btn.disabled = True

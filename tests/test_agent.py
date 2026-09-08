@@ -9,6 +9,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from anthropic.types import MessageDeltaUsage, OutputTokensDetails, Usage
 
 from claudia.agent import (
     _LOCAL_TOOL_NAMES,
@@ -637,10 +638,11 @@ def test_system_prompt_rebuilt_after_reload():
 
 def test_log_cache_usage_reports_all_three_fields(caplog):
     """Created, read, and uncached token counts all reach the log line."""
-    usage = SimpleNamespace(
+    usage = Usage(
         cache_creation_input_tokens=12000,
         cache_read_input_tokens=0,
         input_tokens=450,
+        output_tokens=0,
     )
     with caplog.at_level(logging.INFO, logger="claudia.agent"):
         _log_cache_usage(usage)
@@ -652,10 +654,11 @@ def test_log_cache_usage_reports_all_three_fields(caplog):
 def test_log_cache_usage_warns_when_cache_inactive(caplog):
     # Both cache fields zero = caching silently failed (note: "Verification — do not skip")
     """Both counters at zero means caching silently failed, and must warn rather than pass."""
-    usage = SimpleNamespace(
+    usage = Usage(
         cache_creation_input_tokens=0,
         cache_read_input_tokens=0,
         input_tokens=30000,
+        output_tokens=0,
     )
     with caplog.at_level(logging.WARNING, logger="claudia.agent"):
         _log_cache_usage(usage)
@@ -665,7 +668,7 @@ def test_log_cache_usage_warns_when_cache_inactive(caplog):
 def test_log_cache_usage_handles_missing_fields(caplog):
     # SDK may omit the fields on models/paths without caching — must not raise
     """A usage object without the cache fields logs zeros instead of raising."""
-    usage = SimpleNamespace(input_tokens=100)
+    usage = Usage(input_tokens=100, output_tokens=0)  # the cache fields default to None
     with caplog.at_level(logging.INFO, logger="claudia.agent"):
         _log_cache_usage(usage)
     assert "created=0" in caplog.text
@@ -1134,9 +1137,9 @@ def test_log_thinking_usage_reports_thinking_share_of_output(caplog):
     # thinking_tokens is the only proof reasoning actually engaged — without it the
     # effect of enabling adaptive thinking cannot be measured against the baseline.
     """Thinking tokens are logged against total output — the only proof reasoning engaged."""
-    usage = SimpleNamespace(
+    usage = MessageDeltaUsage(
         output_tokens=1400,
-        output_tokens_details=SimpleNamespace(thinking_tokens=900),
+        output_tokens_details=OutputTokensDetails(thinking_tokens=900),
     )
     with caplog.at_level(logging.INFO, logger="claudia.agent"):
         _log_thinking_usage(usage)
@@ -1164,7 +1167,7 @@ def test_log_thinking_usage_silent_when_details_absent(caplog):
     # neither raise nor claim zero thinking happened.
     """A usage object without the breakdown logs nothing, rather than a misleading zero."""
     with caplog.at_level(logging.INFO, logger="claudia.agent"):
-        _log_thinking_usage(SimpleNamespace(output_tokens=1400))
+        _log_thinking_usage(MessageDeltaUsage(output_tokens=1400))
     assert caplog.text == ""
 
 
@@ -2646,7 +2649,8 @@ def test_tool_ledger_never_names_a_proposal_tool():
 def test_tool_ledger_exclusion_covers_exactly_the_proposal_tools():
     """Drift guard: a fourth proposal tool must not land in the ledger by default, and one
     removed from `proposal_tools` must not stay excluded here by a hardcoded name."""
-    from claudia.agent import _PROPOSAL_KINDS, PROPOSAL_TOOL_NAMES
+    from claudia.agent import _PROPOSAL_KINDS
+    from claudia.proposal_tools import PROPOSAL_TOOL_NAMES
 
     assert frozenset(_PROPOSAL_KINDS) == PROPOSAL_TOOL_NAMES
 

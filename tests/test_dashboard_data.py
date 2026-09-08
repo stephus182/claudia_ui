@@ -16,6 +16,7 @@ during the 2026-08-04 dataset rebuild.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -878,7 +879,7 @@ def test_multiplier_stays_unknown_when_it_cannot_be_established():
         [{"conid": 9, "ticker": "CL", "assetClass": "FUT", "position": 2.0, "currency": "USD"}]
     )
     assert position.multiplier is None
-    assert dd.replace(position, economic_entry=80.0).basis_delta_value is None
+    assert replace(position, economic_entry=80.0).basis_delta_value is None
 
 
 def test_stock_multiplier_derives_to_one():

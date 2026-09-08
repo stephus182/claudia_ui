@@ -7,7 +7,8 @@ pattern to Panel on top of the framework-agnostic _execute_*_core functions.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from types import TracebackType
+from typing import TYPE_CHECKING, Any
 
 import panel as pn
 
@@ -95,7 +96,12 @@ class _PanelToolStepHandle:
         self._chat_step.__enter__()
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         """Close the step, letting ChatStep set success/failure status and format errors.
 
         Returns whatever ChatStep returns, so exception suppression stays ChatStep's
@@ -120,7 +126,7 @@ class PanelMessageSink:
 
     def __init__(
         self,
-        chat,
+        chat: pn.chat.ChatInterface,
         session_id: str,
         store: ConversationStore | None = None,
         tv_bridge_getter: Callable[[], TradingViewBridge | None] | None = None,
@@ -191,7 +197,7 @@ class PanelMessageSink:
             respond=False,
         )
 
-    async def send_order_proposal(self, proposal: dict) -> None:
+    async def send_order_proposal(self, proposal: dict[str, Any]) -> None:
         """Render the staging button for a new order. Places nothing — see MessageSink."""
         from claudia.panel_order_flow import render_order_proposal
 
@@ -199,7 +205,7 @@ class PanelMessageSink:
             self._chat, proposal, session_id=self._session_id, store=self._store
         )
 
-    async def send_cancel_proposal(self, proposal: dict) -> None:
+    async def send_cancel_proposal(self, proposal: dict[str, Any]) -> None:
         """Render the cancel button for a live order. Cancels nothing — see MessageSink."""
         from claudia.panel_order_flow import render_cancel_proposal
 
@@ -207,7 +213,7 @@ class PanelMessageSink:
             self._chat, proposal, session_id=self._session_id, store=self._store
         )
 
-    async def send_modify_proposal(self, proposal: dict) -> None:
+    async def send_modify_proposal(self, proposal: dict[str, Any]) -> None:
         """Render the modify button for a live order. Modifies nothing — see MessageSink."""
         from claudia.panel_order_flow import render_modify_proposal
 

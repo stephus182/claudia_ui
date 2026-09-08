@@ -10,7 +10,8 @@ claudia/panel_sink.py's PanelMessageSink, which duck-types this protocol.
 
 from __future__ import annotations
 
-from typing import Protocol
+from types import TracebackType
+from typing import Any, Protocol
 
 
 class ToolStepHandle(Protocol):
@@ -23,7 +24,12 @@ class ToolStepHandle(Protocol):
         """Open the step indicator and return the handle to write input/output on."""
         ...
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool | None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None:
         """Close the step, marking it success or failure from `exc_type`.
 
         The return value governs **exception suppression**: a truthy value swallows an
@@ -61,7 +67,7 @@ class MessageSink(Protocol):
     # schema cannot express. A sink must still never repair or normalise its values, since
     # order parameters are immutable.
 
-    async def send_order_proposal(self, proposal: dict) -> None:
+    async def send_order_proposal(self, proposal: dict[str, Any]) -> None:
         """Render a new-order proposal for human approval. Never places the order.
 
         Args:
@@ -71,7 +77,7 @@ class MessageSink(Protocol):
         """
         ...
 
-    async def send_cancel_proposal(self, proposal: dict) -> None:
+    async def send_cancel_proposal(self, proposal: dict[str, Any]) -> None:
         """Render an order-cancellation proposal for human approval. Never cancels.
 
         Args:
@@ -81,7 +87,7 @@ class MessageSink(Protocol):
         """
         ...
 
-    async def send_modify_proposal(self, proposal: dict) -> None:
+    async def send_modify_proposal(self, proposal: dict[str, Any]) -> None:
         """Render an order-modification proposal for human approval. Never modifies.
 
         Args:

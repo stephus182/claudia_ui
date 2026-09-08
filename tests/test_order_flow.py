@@ -4,6 +4,7 @@ IBKR rejection handling, decision logging), driven through a send_status recorde
 
 # ── Imports ──────────────────────────────────────────────────────────────────
 import ast
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1799,7 +1800,7 @@ async def test_read_back_waits_before_reading():
 
     client = MagicMock()
     client.get_order_status.side_effect = _status
-    with patch.object(order_flow.asyncio, "sleep", _fake_sleep):
+    with patch.object(asyncio, "sleep", _fake_sleep):
         confirmed, line, status = await _read_back(client, "555", "place")
 
     assert seen == [("sleep", _READBACK_DELAY_S), ("read", "555")]
@@ -2052,7 +2053,7 @@ async def test_the_live_book_is_read_after_the_wait_and_after_the_dispatch():
     proposal = json.loads(_make_action().payload["order"])
     with (
         patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
-        patch.object(order_flow.asyncio, "sleep", _fake_sleep),
+        patch.object(asyncio, "sleep", _fake_sleep),
     ):
         await _execute_staged_order_core(proposal, send_status)
 

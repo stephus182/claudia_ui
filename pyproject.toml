@@ -193,6 +193,28 @@ show_error_codes = true
 #                     reached through .hvplot.* is Any, so even a call to a method that
 #                     does not exist raises no error (measured 2026-08-03). Keep the
 #                     function that touches hvplot small and keep logic out of it.
+# Panel's own typing gaps, closed here rather than at ~40 call sites (measured 2026-09-08
+# under --strict, before strict was turned on; both re-verified the same way):
+#   - `panel.pane` re-exports Image (and others) without `__all__`, so a strict import reads
+#     as "not explicitly exported" — the RestrictedPython quirk ibkr_core_mcp answers the
+#     same way.
+#   - Panel's widget/pane constructors and ChatStep's context manager carry no annotations,
+#     so every `pn.widgets.Button(...)` is an "untyped call" in the modules that build UI.
+#     Nothing of ours is untyped to call (no-untyped-def is zero in the package), so this
+#     override cannot hide a call into our own code — only calls into Panel.
+[[tool.mypy.overrides]]
+module = ["panel", "panel.*"]
+implicit_reexport = true
+
+[[tool.mypy.overrides]]
+module = [
+    "claudia.panel_action_bar", "claudia.panel_app", "claudia.panel_chart",
+    "claudia.panel_dashboard", "claudia.panel_markdown", "claudia.panel_order_flow",
+    "claudia.panel_pinescript", "claudia.panel_sink", "claudia.panel_system_log",
+    "claudia.panel_theme",
+]
+disallow_untyped_calls = false
+
 [[tool.mypy.overrides]]
 module = [
     "googleapiclient.*", "pandas", "pandas.*", "jsonschema", "jsonschema.*",

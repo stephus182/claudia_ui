@@ -48,7 +48,7 @@ import re
 from typing import TYPE_CHECKING
 
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam
+from anthropic.types import MessageDeltaUsage, MessageParam, Usage
 
 # Declaration-only tool schemas. Importing them does not couple agent.py to the
 # order-execution layer — that module reaches nothing (CLAUDE.md Hard Rule 1).
@@ -1341,7 +1341,7 @@ def _system_blocks(system_prompt: str) -> list[dict]:
     ]
 
 
-def _log_cache_usage(usage) -> None:
+def _log_cache_usage(usage: Usage) -> None:
     """Log prompt-cache health from a message_start usage object.
 
     created > 0  -> prefix written this call (1.25x input price)
@@ -1358,7 +1358,7 @@ def _log_cache_usage(usage) -> None:
         log.warning("prompt cache inactive (created=0, read=0) — check cache_control placement")
 
 
-def _log_thinking_usage(usage) -> None:
+def _log_thinking_usage(usage: MessageDeltaUsage) -> None:
     """Log the thinking share of output tokens from a message_delta usage object.
 
     `output_tokens_details.thinking_tokens` is the only signal that proves reasoning
