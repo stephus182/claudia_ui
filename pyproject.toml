@@ -138,7 +138,12 @@ ignore = [
 "tests/*" = ["D"]
 
 [tool.mypy]
-python_version = "3.11"
+# No python_version pin: mypy then targets the interpreter it runs under ("The default is
+# the version of the Python interpreter used to run mypy" —
+# https://mypy.readthedocs.io/en/stable/config_file.html), which is what the CI matrix
+# needs. Pinned to 3.11, the Python 3.12 job failed on numpy 2.5.3's stubs (`type`
+# statements, rejected for a <3.12 target) while the 3.11 job, which resolves numpy 2.4.6,
+# passed (run 34244032164, 2026-09-08).
 files = ["claudia", "tests"]
 warn_return_any = true
 warn_unused_ignores = true

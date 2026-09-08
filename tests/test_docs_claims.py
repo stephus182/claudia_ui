@@ -31,7 +31,8 @@ pointer rather than a `@import`; those are the paths a reader will actually try 
 
 The audit's own checker flagged 18 paths of which only 4 were real defects. A gate that
 failed on all 18 would be a gate nobody could keep green, so the exemptions below are
-explicit and each one names why it is not a defect — see `_EXEMPT`.
+explicit and each one names why it is not a defect — see `_EXEMPT`, and
+`_ignored_by_git` for the one class-level rule: a git-ignored path is a local pointer.
 """
 
 from __future__ import annotations
@@ -57,9 +58,32 @@ _EXEMPT = {
     "docs/foo.md",
 }
 
-# `docs/plans/` is git-ignored by design: those paths are pointers into the local +
-# Drive archive, not repo files (user rule 2026-07-24).
-_EXEMPT_PREFIXES = ("docs/plans/",)
+
+def _ignored_by_git(paths: list[str]) -> set[str]:
+    """The subset of repo-relative `paths` that `.gitignore` covers — ignored by design.
+
+    A git-ignored path a living doc points at is a pointer into the local + Drive archive,
+    not a claim about a repo file: `docs/plans/**` (user rule 2026-07-24), the personal
+    `docs/context.md` and `docs/principles.md`, and `docs/project-status.md`, which carries
+    the live test log. All of them exist on every developer's disk and on none of CI's — a
+    fresh clone is what found this (run 34244032164, 2026-09-08: 14 failures, every one a
+    pointer at one of those three files). Ask git rather than keep a list of names, so a
+    newly ignored file follows the rule and a file that stops being ignored stops being
+    exempt.
+
+    `git check-ignore` exits 0 when at least one path is ignored, 1 when none is, and
+    prints the ignored ones; both exit codes are answers, not errors (verified by running
+    it, 2026-09-08).
+    """
+    if not paths:
+        return set()
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "check-ignore", *paths],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    return set(result.stdout.split())
 
 
 def _living_docs() -> list[Path]:
@@ -88,11 +112,7 @@ def _claimed_paths(doc: Path) -> set[str]:
     Returns a set: the same path cited five times in one document is one claim, and
     reporting it five times would push a reader toward silencing the check.
     """
-    return {
-        target
-        for target in _BACKTICK_PATH.findall(doc.read_text())
-        if target not in _EXEMPT and not target.startswith(_EXEMPT_PREFIXES)
-    }
+    return {target for target in _BACKTICK_PATH.findall(doc.read_text()) if target not in _EXEMPT}
 
 
 def test_living_docs_are_discovered():
@@ -109,6 +129,35 @@ def test_living_docs_are_discovered():
     assert "order-api-reference.md" in names
 
 
+def test_git_ignored_pointers_are_exempt_and_nothing_else_is():
+    """Guard the exemption: it must be live, and it must be narrow.
+
+    Live — the three personal files and a plan are what CI's fresh clone lacks, and if git
+    stops reporting them ignored the docs gate goes red on every push. Narrow — a tracked
+    file and a path nothing ignores must come back unexempt, or a genuinely dangling
+    pointer would be parked behind this rule (`feedback-corpus-precision-is-not-safety`:
+    a veto can be dead on arrival — give it its own test).
+    """
+    ignored = _ignored_by_git(
+        [
+            "docs/plans/2099-01-01-never-written.md",
+            "docs/context.md",
+            "docs/principles.md",
+            "docs/project-status.md",
+            "docs/README.md",
+            "docs/no-such-document.md",
+        ]
+    )
+    assert ignored == {
+        "docs/plans/2099-01-01-never-written.md",
+        "docs/context.md",
+        "docs/principles.md",
+        "docs/project-status.md",
+    }
+    assert _ignored_by_git(["docs/no-such-document.md"]) == set()
+    assert _ignored_by_git([]) == set()
+
+
 @pytest.mark.parametrize("doc", _living_docs(), ids=lambda d: d.relative_to(REPO).as_posix())
 def test_living_doc_repo_paths_exist(doc: Path):
     """Every backticked repo path in a living doc must resolve to a real file.
@@ -118,6 +167,7 @@ def test_living_doc_repo_paths_exist(doc: Path):
     names for diagnosing startup failures, sending readers to a file that is not there.
     """
     missing = sorted(p for p in _claimed_paths(doc) if not (REPO / p).exists())
+    missing = sorted(set(missing) - _ignored_by_git(missing))
     assert not missing, (
         f"{doc.relative_to(REPO)} points at {len(missing)} path(s) that do not exist: "
         f"{missing}. Either fix the path, or — if the file was deliberately removed and "
@@ -173,6 +223,8 @@ def test_the_docs_index_does_not_link_a_document_that_was_deleted():
         for target in re.findall(r"\]\(([^)#:]+\.md)\)", index)
         if not (docs / target).exists()
     )
+    ignored = _ignored_by_git([f"docs/{t}" for t in dangling])
+    dangling = [t for t in dangling if f"docs/{t}" not in ignored]
     assert not dangling, "docs/README.md links documents that do not exist:\n  " + "\n  ".join(
         dangling
     )
