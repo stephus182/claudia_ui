@@ -275,8 +275,7 @@ class ConversationStore:
                 count = conn.execute("SELECT COUNT(*) FROM relationships").fetchone()[0]
                 if count == 0:
                     conn.executescript(
-                        "DROP INDEX IF EXISTS idx_relationships_symbol;"
-                        "DROP TABLE relationships;"
+                        "DROP INDEX IF EXISTS idx_relationships_symbol;DROP TABLE relationships;"
                     )
                 else:
                     log.warning(
@@ -310,8 +309,7 @@ class ConversationStore:
         """Return context_hash from the most recently started session, or None."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT context_hash FROM sessions "
-                "ORDER BY started_at DESC LIMIT 1"
+                "SELECT context_hash FROM sessions ORDER BY started_at DESC LIMIT 1"
             ).fetchone()
         return row["context_hash"] if row else None
 
@@ -358,17 +356,14 @@ class ConversationStore:
         """Return all registered versions ordered oldest first."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT version, context_hash, created_at FROM doc_versions "
-                "ORDER BY created_at ASC"
+                "SELECT version, context_hash, created_at FROM doc_versions ORDER BY created_at ASC"
             ).fetchall()
             return [dict(r) for r in rows]
 
     def get_session(self, session_id: str) -> dict | None:
         """Return a single session row as a dict, or None if the id is unknown."""
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM sessions WHERE id=?", (session_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
             return dict(row) if row else None
 
     def list_sessions(self, limit: int = 20) -> list[dict]:
@@ -436,7 +431,9 @@ class ConversationStore:
             ).fetchone()
             return row[0] if row else 0
 
-    def search_messages(self, query: str, max_results: int = 10, max_tokens: int = 2000) -> list[dict]:
+    def search_messages(
+        self, query: str, max_results: int = 10, max_tokens: int = 2000
+    ) -> list[dict]:
         """FTS5 full-text search across all conversation history.
 
         `query` is arbitrary user/model text and is converted by `_fts_query` before it
@@ -592,7 +589,9 @@ class ConversationStore:
             `_decisions_of_types`'.
         """
         return self._decisions_of_types(
-            session_id, RENDERED_PROPOSAL_TYPES, require_message_id=True,
+            session_id,
+            RENDERED_PROPOSAL_TYPES,
+            require_message_id=True,
         )
 
     def get_completed_order_actions(self, session_id: str) -> list[dict]:
@@ -620,7 +619,9 @@ class ConversationStore:
             `["readback_order_status"]`.
         """
         return self._decisions_of_types(
-            session_id, COMPLETED_ORDER_ACTION_TYPES, require_message_id=False,
+            session_id,
+            COMPLETED_ORDER_ACTION_TYPES,
+            require_message_id=False,
         )
 
     def get_called_tool_names(self, session_id: str) -> list[str]:
@@ -675,7 +676,11 @@ class ConversationStore:
         return [row["tool_name"] for row in rows]
 
     def _decisions_of_types(
-        self, session_id: str, types: tuple[str, ...], *, require_message_id: bool,
+        self,
+        session_id: str,
+        types: tuple[str, ...],
+        *,
+        require_message_id: bool,
     ) -> list[dict]:
         """Decision rows of the given types for one session, oldest first, metadata decoded.
 
@@ -709,7 +714,8 @@ class ConversationStore:
             except (TypeError, ValueError):
                 log.warning(
                     "decision %s has unparseable metadata_json; operator-channel record "
-                    "will carry no order id", record.get("id"),
+                    "will carry no order id",
+                    record.get("id"),
                 )
                 parsed = {}
             record["metadata"] = parsed if isinstance(parsed, dict) else {}
@@ -727,4 +733,3 @@ class ConversationStore:
                 (symbol, limit),
             ).fetchall()
             return [dict(r) for r in rows]
-

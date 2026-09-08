@@ -65,6 +65,7 @@ def test_build_system_prompt_contains_context():
 
 # ── Hard Rule 1 regression (CLAUDE.md) ───────────────────────────────────────
 
+
 def test_local_tool_names_excludes_order_write_tools():
     """CLAUDE.md Hard Rule 1: the LLM must never receive a callable tool for
     place_order/modify_order/cancel_order/reply_order — order execution is a
@@ -74,6 +75,7 @@ def test_local_tool_names_excludes_order_write_tools():
 
 
 # ── Safety block: order cancel/modify rules ──────────────────────────────────
+
 
 def test_safety_block_documents_cancel_and_modify_proposal_tools():
     """Cancel and modify are named as tools, so the model cannot fall back to prose for either."""
@@ -222,6 +224,7 @@ def _make_agent():
 
 # ── _history_to_messages ──────────────────────────────────────────────────────
 
+
 def test_history_to_messages_user_and_assistant():
     """User and assistant rows convert to Anthropic message dicts in order."""
     history = [
@@ -263,6 +266,7 @@ def test_history_to_messages_none_content_becomes_empty_string():
 
 # ── _build_version_note ───────────────────────────────────────────────────────
 
+
 def test_build_version_note_no_version():
     """No active version means no header line at all, not an empty-looking one."""
     assert _build_version_note(None, None) == ""
@@ -295,6 +299,7 @@ def test_build_version_note_second_version_shows_prev():
 
 
 # ── ClaudIAAgent._handle_local_tool ──────────────────────────────────────────
+
 
 def test_handle_local_tool_list_versions_empty():
     """An unversioned store says so plainly instead of returning an empty list."""
@@ -355,8 +360,12 @@ def test_handle_local_tool_get_live_pnl_populated():
     """A cached execution-triggered snapshot is rendered with signs and the account id."""
     agent = _make_agent()
     agent._toolkit._store.get_latest_pnl.return_value = {
-        "account": "DU1234567.Core", "dpl": 12.5, "nl": 10000.0,
-        "upl": 3.0, "uel": 9000.0, "mv": 5000.0,
+        "account": "DU1234567.Core",
+        "dpl": 12.5,
+        "nl": 10000.0,
+        "upl": 3.0,
+        "uel": 9000.0,
+        "mv": 5000.0,
     }
     result = agent._handle_local_tool("get_live_pnl", {})
     assert "DU1234567.Core" in result
@@ -379,8 +388,12 @@ def test_handle_local_tool_get_live_pnl_partial_fields_format_as_na():
     those fields as 'n/a' rather than raising a format-spec TypeError."""
     agent = _make_agent()
     agent._toolkit._store.get_latest_pnl.return_value = {
-        "account": "DU1234567.Core", "dpl": None, "nl": 10000.0,
-        "upl": None, "uel": None, "mv": None,
+        "account": "DU1234567.Core",
+        "dpl": None,
+        "nl": 10000.0,
+        "upl": None,
+        "uel": None,
+        "mv": None,
     }
     result = agent._handle_local_tool("get_live_pnl", {})
     assert "n/a" in result
@@ -388,6 +401,7 @@ def test_handle_local_tool_get_live_pnl_partial_fields_format_as_na():
 
 
 # ── ClaudIAAgent._extract_decisions ──────────────────────────────────────────
+
 
 def test_log_proposal_with_order_proposal():
     """A rendered proposal writes one `trade_proposed` decision carrying its parameters."""
@@ -432,7 +446,12 @@ def test_log_proposal_with_cancel_proposal():
 def test_log_proposal_with_modify_proposal():
     """A modify proposal is recorded under its own type with the order id in the summary."""
     agent = _make_agent()
-    modify_proposal = {"order_id": "242538143", "conid": 265598, "symbol": "AAPL", "reason": "Bumping limit"}
+    modify_proposal = {
+        "order_id": "242538143",
+        "conid": 265598,
+        "symbol": "AAPL",
+        "reason": "Bumping limit",
+    }
     agent._log_proposal("Some text", None, msg_id=8, modify_proposal=modify_proposal)
     agent._store.add_decision.assert_called_once()
     kwargs = agent._store.add_decision.call_args.kwargs
@@ -456,6 +475,7 @@ def test_log_proposal_order_proposal_takes_priority_over_others():
 
 # ── ClaudIAAgent.set_tv_bridge ────────────────────────────────────────────────
 
+
 def test_set_tv_bridge_updates_tool_names():
     """A mid-session TradingView launch registers its tool names so calls route to the bridge."""
     agent = _make_agent()
@@ -476,6 +496,7 @@ def test_set_tv_bridge_updates_tool_names():
 
 # ── ClaudIAAgent._all_tools property ─────────────────────────────────────────
 
+
 def test_all_tools_includes_toolkit_extra_and_local():
     """The tool list is the union of toolkit, TradingView extras, and the local utilities."""
     agent = _make_agent()
@@ -483,13 +504,14 @@ def test_all_tools_includes_toolkit_extra_and_local():
     agent._extra_tools = [{"name": "chart_get_state", "description": "", "input_schema": {}}]
 
     names = {t["name"] for t in agent._all_tools}
-    assert "get_positions" in names       # from toolkit
-    assert "chart_get_state" in names     # from extra_tools (TV)
-    assert "list_doc_versions" in names   # local
-    assert "get_doc_version" in names     # local
+    assert "get_positions" in names  # from toolkit
+    assert "chart_get_state" in names  # from extra_tools (TV)
+    assert "list_doc_versions" in names  # local
+    assert "get_doc_version" in names  # local
 
 
 # ── Prompt caching: _with_cache_marker (tools breakpoint) ────────────────────
+
 
 def test_with_cache_marker_marks_only_last_tool():
     """Exactly one breakpoint is set, on the final entry — that caches the whole array."""
@@ -537,6 +559,7 @@ def test_all_tools_last_entry_carries_cache_marker():
 
 # ── Prompt caching: _system_blocks (system breakpoint) ───────────────────────
 
+
 def test_system_blocks_shape():
     """The system prompt is wrapped as one cache-marked text block."""
     blocks = _system_blocks("You are ClaudIA.")
@@ -558,6 +581,7 @@ def test_system_blocks_preserves_full_prompt():
 
 
 # ── Prompt caching: system prompt built once per session (Task 3) ────────────
+
 
 class _StubLoader:
     """Loader stub counting document reads; reload_count mimics the watchdog."""
@@ -593,7 +617,7 @@ def test_system_prompt_built_once_per_session():
     agent = _make_agent_with_loader(loader)
     b1 = agent._get_system_blocks()
     b2 = agent._get_system_blocks()
-    assert b1 is b2           # same cached object — no rebuild between messages
+    assert b1 is b2  # same cached object — no rebuild between messages
     assert loader.calls == 1  # documents read exactly once per session
     assert b1[0]["cache_control"] == {"type": "ephemeral"}
 
@@ -609,6 +633,7 @@ def test_system_prompt_rebuilt_after_reload():
 
 
 # ── Prompt caching: _log_cache_usage (message_start telemetry) ───────────────
+
 
 def test_log_cache_usage_reports_all_three_fields(caplog):
     """Created, read, and uncached token counts all reach the log line."""
@@ -695,8 +720,10 @@ def test_history_marker_empty_string_content_left_alone():
 
 # ── SSRF: fetch_web_page redirect handling (finding S1) ──────────────────────
 
+
 class _FakeResp:
     """The subset of `requests.Response` that `_fetch_web_page` reads."""
+
     def __init__(self, status_code, headers=None, text="", url=""):
         """Record the response fields `_fetch_web_page` actually reads."""
         self.status_code = status_code
@@ -714,7 +741,9 @@ def test_fetch_web_page_blocks_redirect_to_private_address():
     """A public URL that 302s to localhost must be blocked — the H-1 SSRF
     attack one hop removed (review finding S1)."""
     agent = _make_agent()
-    redirect = _FakeResp(302, headers={"location": "http://localhost:5055/v1/api/portfolio/accounts"})
+    redirect = _FakeResp(
+        302, headers={"location": "http://localhost:5055/v1/api/portfolio/accounts"}
+    )
     secret = _FakeResp(200, text="ACCOUNT DATA")
     with patch("requests.get", side_effect=[redirect, secret]) as mock_get:
         result = agent._fetch_web_page({"url": "https://example.com/page"})
@@ -744,6 +773,7 @@ def test_fetch_web_page_blocks_redirect_loop():
 
 
 # ── handle_message() → MessageSink (Task 1.3) ───────────────────────────────
+
 
 class _FakeStream:
     """Fakes AsyncAnthropic().messages.stream()'s async-context-manager + async-iterator
@@ -821,8 +851,11 @@ def _make_agent_with_sink(sink=None):
     loader.load_system_prompt.return_value = "# Role\nStub.\n\n# Principles\nStub."
     with patch("claudia.agent.AsyncAnthropic"):
         agent = ClaudIAAgent(
-            toolkit=toolkit, store=store, context_loader=loader,
-            session_id="test-session", sink=sink,
+            toolkit=toolkit,
+            store=store,
+            context_loader=loader,
+            session_id="test-session",
+            sink=sink,
         )
     return agent, sink
 
@@ -887,6 +920,7 @@ async def test_handle_message_tool_call_uses_sink_tool_step():
 
 
 # ── Adaptive thinking: request config + thinking-block round trip (G2) ───────
+
 
 def _thinking_then_tool_events(thinking: str, signature: str, tool_id: str):
     """Stream events for a turn that reasons first, then calls a tool.
@@ -953,10 +987,12 @@ def agent_with_thinking_then_tool():
     """
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    stream = MagicMock(side_effect=[
-        _FakeStream(_thinking_then_tool_events("Check positions first.", "sig-abc", "t1")),
-        _FakeStream(_text_response_events("You hold 100 AAPL.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_thinking_then_tool_events("Check positions first.", "sig-abc", "t1")),
+            _FakeStream(_text_response_events("You hold 100 AAPL.")),
+        ]
+    )
     agent._client.messages.stream = stream
     asyncio.run(agent.handle_message("What are my positions?"))
     return SimpleNamespace(agent=agent, messages_sent=stream.call_args_list[-1].kwargs["messages"])
@@ -984,7 +1020,7 @@ def test_thinking_blocks_are_echoed_back_in_the_tool_loop(agent_with_thinking_th
 def test_echoed_thinking_block_carries_text_and_signature_unmodified(
     agent_with_thinking_then_tool,
 ):
-    """"Unmodified" means the accumulated deltas, signature included — the signature is
+    """ "Unmodified" means the accumulated deltas, signature included — the signature is
     what the API verifies the reasoning against, so an empty one is worse than useless."""
     block = agent_with_thinking_then_tool.messages_sent[-2]["content"][0]
     assert block == {
@@ -1008,9 +1044,7 @@ def test_signature_only_thinking_block_is_echoed_with_empty_text():
     _wire_tool_execution(agent, sink)
     events = [
         SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
-        SimpleNamespace(
-            type="content_block_start", content_block=SimpleNamespace(type="thinking")
-        ),
+        SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="thinking")),
         # no thinking_delta: the server skips streaming thinking tokens entirely
         SimpleNamespace(
             type="content_block_delta",
@@ -1026,10 +1060,12 @@ def test_signature_only_thinking_block_is_echoed_with_empty_text():
         ),
         _message_delta("tool_use", thinking_tokens=900),
     ]
-    agent._client.messages.stream = MagicMock(side_effect=[
-        _FakeStream(events),
-        _FakeStream(_text_response_events("You hold 100 AAPL.")),
-    ])
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(events),
+            _FakeStream(_text_response_events("You hold 100 AAPL.")),
+        ]
+    )
     asyncio.run(agent.handle_message("What are my positions?"))
 
     content = agent._client.messages.stream.call_args_list[-1].kwargs["messages"][-2]["content"]
@@ -1044,11 +1080,13 @@ def test_thinking_blocks_reset_between_tool_loop_iterations():
     """
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    stream = MagicMock(side_effect=[
-        _FakeStream(_thinking_then_tool_events("First.", "sig-1", "t1")),
-        _FakeStream(_thinking_then_tool_events("Second.", "sig-2", "t2")),
-        _FakeStream(_text_response_events("Done.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_thinking_then_tool_events("First.", "sig-1", "t1")),
+            _FakeStream(_thinking_then_tool_events("Second.", "sig-2", "t2")),
+            _FakeStream(_text_response_events("Done.")),
+        ]
+    )
     agent._client.messages.stream = stream
     asyncio.run(agent.handle_message("What are my positions?"))
 
@@ -1070,14 +1108,19 @@ def test_redacted_thinking_blocks_survive_the_echo():
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
     events = _thinking_then_tool_events("Check positions first.", "sig-abc", "t1")
-    events.insert(4, SimpleNamespace(
-        type="content_block_start",
-        content_block=SimpleNamespace(type="redacted_thinking", data="EncRypTed=="),
-    ))
-    agent._client.messages.stream = MagicMock(side_effect=[
-        _FakeStream(events),
-        _FakeStream(_text_response_events("You hold 100 AAPL.")),
-    ])
+    events.insert(
+        4,
+        SimpleNamespace(
+            type="content_block_start",
+            content_block=SimpleNamespace(type="redacted_thinking", data="EncRypTed=="),
+        ),
+    )
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(events),
+            _FakeStream(_text_response_events("You hold 100 AAPL.")),
+        ]
+    )
     asyncio.run(agent.handle_message("What are my positions?"))
 
     content = agent._client.messages.stream.call_args_list[-1].kwargs["messages"][-2]["content"]
@@ -1105,10 +1148,12 @@ def test_thinking_token_spend_is_logged_from_the_stream(caplog):
     """The measurement hook has to actually run inside the loop, not merely exist."""
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    agent._client.messages.stream = MagicMock(side_effect=[
-        _FakeStream(_thinking_then_tool_events("Check positions first.", "sig-abc", "t1")),
-        _FakeStream(_text_response_events("You hold 100 AAPL.")),
-    ])
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(_thinking_then_tool_events("Check positions first.", "sig-abc", "t1")),
+            _FakeStream(_text_response_events("You hold 100 AAPL.")),
+        ]
+    )
     with caplog.at_level(logging.INFO, logger="claudia.agent"):
         asyncio.run(agent.handle_message("What are my positions?"))
     assert "thinking tokens: 900 of 1400" in caplog.text
@@ -1131,21 +1176,43 @@ def test_log_thinking_usage_silent_when_details_absent(caplog):
 # and the per-turn lifecycle of the recorded proposal.
 
 VALID_ORDER = {
-    "symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "LMT",
-    "limit_price": 185.0, "stop_price": None, "tif": "DAY", "sec_type": "STK",
-    "conid": None, "outside_rth": None, "reason": "Breakout above resistance",
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 10,
+    "order_type": "LMT",
+    "limit_price": 185.0,
+    "stop_price": None,
+    "tif": "DAY",
+    "sec_type": "STK",
+    "conid": None,
+    "outside_rth": None,
+    "reason": "Breakout above resistance",
 }
 
 VALID_CANCEL = {
-    "order_id": "242538143", "symbol": "AAPL", "action": "BUY", "quantity": 1,
-    "order_type": "LMT", "limit_price": 100.0, "stop_price": None, "tif": "GTC",
+    "order_id": "242538143",
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LMT",
+    "limit_price": 100.0,
+    "stop_price": None,
+    "tif": "GTC",
     "reason": "Closing the test order",
 }
 
 VALID_MODIFY = {
-    "order_id": "242538143", "conid": 265598, "symbol": "AAPL", "action": "BUY",
-    "quantity": 1, "order_type": "LMT", "limit_price": 105.0, "stop_price": None,
-    "tif": "GTC", "sec_type": "STK", "reason": "Bumping the limit",
+    "order_id": "242538143",
+    "conid": 265598,
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LMT",
+    "limit_price": 105.0,
+    "stop_price": None,
+    "tif": "GTC",
+    "sec_type": "STK",
+    "reason": "Bumping the limit",
     "changes": [{"field": "limit_price", "previous_value": 100.0}],
 }
 
@@ -1186,6 +1253,7 @@ def test_proposal_handlers_cannot_reach_execution(agent):
     from pathlib import Path
 
     import claudia.proposal_tools as pt
+
     src = Path(pt.__file__).read_text()
     for forbidden in ("IBKRClient", "ClaudeToolkit", "place_order", "cancel_order"):
         assert forbidden not in src
@@ -1194,6 +1262,7 @@ def test_proposal_handlers_cannot_reach_execution(agent):
 def test_block_stripper_is_gone():
     """The retired text-block parser stays retired — proposals are tool calls, with no text form."""
     import claudia.agent as a
+
     assert not hasattr(a, "_strip_order_proposal")
     assert not hasattr(a, "_make_block_stripper")
 
@@ -1216,10 +1285,17 @@ def test_locally_handled_tools_exclude_order_write_tools():
     """Hard Rule 1 again, over the full set the agent dispatches locally — the proposal
     tools widen that set, so the guard must widen with it."""
     from claudia.agent import _LOCALLY_HANDLED
-    assert {"place_order", "modify_order", "cancel_order", "reply_order"} & _LOCALLY_HANDLED == set()
+
+    assert {
+        "place_order",
+        "modify_order",
+        "cancel_order",
+        "reply_order",
+    } & _LOCALLY_HANDLED == set()
 
 
 # ── The four guarantees strict mode cannot express (proposal_tools.py) ───────
+
 
 @pytest.mark.parametrize("quantity", [0, -5])
 def test_non_positive_quantity_is_rejected(agent, quantity):
@@ -1238,10 +1314,13 @@ def test_blank_symbol_is_rejected(agent, symbol):
     assert "rejected" in result.lower()
 
 
-@pytest.mark.parametrize("tool,payload", [
-    ("propose_cancel", VALID_CANCEL),
-    ("propose_modify", VALID_MODIFY),
-])
+@pytest.mark.parametrize(
+    "tool,payload",
+    [
+        ("propose_cancel", VALID_CANCEL),
+        ("propose_modify", VALID_MODIFY),
+    ],
+)
 @pytest.mark.parametrize("order_id", ["", "   "])
 def test_blank_order_id_is_rejected(agent, tool, payload, order_id):
     """Acting on the wrong (or no) order is the failure mode for cancel and modify."""
@@ -1252,10 +1331,16 @@ def test_blank_order_id_is_rejected(agent, tool, payload, order_id):
 
 def test_duplicate_changes_entries_are_rejected(agent):
     """uniqueItems is unsupported, so two entries for one field are schema-valid."""
-    result = agent._handle_local_tool("propose_modify", {**VALID_MODIFY, "changes": [
-        {"field": "limit_price", "previous_value": 100.0},
-        {"field": "limit_price", "previous_value": 99.0},
-    ]})
+    result = agent._handle_local_tool(
+        "propose_modify",
+        {
+            **VALID_MODIFY,
+            "changes": [
+                {"field": "limit_price", "previous_value": 100.0},
+                {"field": "limit_price", "previous_value": 99.0},
+            ],
+        },
+    )
     assert agent._pending_proposal is None
     assert "rejected" in result.lower()
     assert "limit_price" in result
@@ -1291,6 +1376,7 @@ def test_rejection_never_repairs_the_proposal(agent):
 
 # ── One proposal per turn ────────────────────────────────────────────────────
 
+
 def test_second_proposal_in_one_turn_is_refused_and_the_first_survives(agent):
     """Only one proposal may be pending per turn; the second is refused and the first is kept."""
     agent._handle_local_tool("propose_order", VALID_ORDER)
@@ -1300,6 +1386,7 @@ def test_second_proposal_in_one_turn_is_refused_and_the_first_survives(agent):
 
 
 # ── Per-turn lifecycle ───────────────────────────────────────────────────────
+
 
 def _proposal_tool_events(name: str, payload: dict, tool_id: str = "p1"):
     """Stream events for a turn whose only content block is a proposal tool call."""
@@ -1321,10 +1408,12 @@ async def test_handle_message_order_proposal_dispatches_to_sink():
     """A recorded order proposal is handed to the sink unmodified."""
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    agent._client.messages.stream = MagicMock(side_effect=[
-        _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
-        _FakeStream(_text_response_events("Ready when you are.")),
-    ])
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
+            _FakeStream(_text_response_events("Ready when you are.")),
+        ]
+    )
     await agent.handle_message("Buy 10 AAPL at 185")
     sink.send_order_proposal.assert_awaited_once_with(VALID_ORDER)
 
@@ -1333,10 +1422,12 @@ async def test_handle_message_cancel_proposal_dispatches_to_sink():
     """A recorded cancel proposal is handed to the sink unmodified."""
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    agent._client.messages.stream = MagicMock(side_effect=[
-        _FakeStream(_proposal_tool_events("propose_cancel", VALID_CANCEL)),
-        _FakeStream(_text_response_events("Ready when you are.")),
-    ])
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(_proposal_tool_events("propose_cancel", VALID_CANCEL)),
+            _FakeStream(_text_response_events("Ready when you are.")),
+        ]
+    )
     await agent.handle_message("Cancel it")
     sink.send_cancel_proposal.assert_awaited_once_with(VALID_CANCEL)
 
@@ -1345,10 +1436,12 @@ async def test_handle_message_modify_proposal_dispatches_to_sink():
     """A recorded modify proposal is handed to the sink unmodified."""
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    agent._client.messages.stream = MagicMock(side_effect=[
-        _FakeStream(_proposal_tool_events("propose_modify", VALID_MODIFY)),
-        _FakeStream(_text_response_events("Ready when you are.")),
-    ])
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(_proposal_tool_events("propose_modify", VALID_MODIFY)),
+            _FakeStream(_text_response_events("Ready when you are.")),
+        ]
+    )
     await agent.handle_message("Move the limit to 105")
     sink.send_modify_proposal.assert_awaited_once_with(VALID_MODIFY)
 
@@ -1358,10 +1451,12 @@ async def test_proposal_tool_result_is_fed_back_to_the_model():
     it defend a claim that a button existed when none did."""
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    stream = MagicMock(side_effect=[
-        _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
-        _FakeStream(_text_response_events("Ready when you are.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
+            _FakeStream(_text_response_events("Ready when you are.")),
+        ]
+    )
     agent._client.messages.stream = stream
     await agent.handle_message("Buy 10 AAPL at 185")
     tool_results = stream.call_args_list[-1].kwargs["messages"][-1]["content"]
@@ -1373,10 +1468,12 @@ async def test_rejected_proposal_renders_no_button_and_tells_the_model_why():
     """A defective proposal renders nothing and returns an honest refusal the model can act on."""
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    stream = MagicMock(side_effect=[
-        _FakeStream(_proposal_tool_events("propose_order", {**VALID_ORDER, "quantity": 0})),
-        _FakeStream(_text_response_events("That quantity is not valid.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_proposal_tool_events("propose_order", {**VALID_ORDER, "quantity": 0})),
+            _FakeStream(_text_response_events("That quantity is not valid.")),
+        ]
+    )
     agent._client.messages.stream = stream
     await agent.handle_message("Buy 0 AAPL")
     sink.send_order_proposal.assert_not_awaited()
@@ -1401,11 +1498,13 @@ async def test_a_turn_that_raises_does_not_leak_its_proposal_into_the_next_turn(
     """A proposal from a turn that died is cleared before the next turn can render it."""
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    agent._client.messages.stream = MagicMock(side_effect=[
-        _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
-        RuntimeError("stream blew up after the proposal was recorded"),
-        _FakeStream(_text_response_events("Hello again.")),
-    ])
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
+            RuntimeError("stream blew up after the proposal was recorded"),
+            _FakeStream(_text_response_events("Hello again.")),
+        ]
+    )
     with pytest.raises(RuntimeError):
         await agent.handle_message("Buy 10 AAPL at 185")
     assert agent._pending_proposal == ("order", VALID_ORDER)  # leaked from the failed turn
@@ -1418,16 +1517,19 @@ async def test_proposal_is_logged_as_a_decision():
     """A rendered proposal writes exactly one `trade_proposed` decision, not one per loop pass."""
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
-    agent._client.messages.stream = MagicMock(side_effect=[
-        _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
-        _FakeStream(_text_response_events("Ready when you are.")),
-    ])
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(_proposal_tool_events("propose_order", VALID_ORDER)),
+            _FakeStream(_text_response_events("Ready when you are.")),
+        ]
+    )
     await agent.handle_message("Buy 10 AAPL at 185")
     kinds = [c.kwargs["decision_type"] for c in agent._store.add_decision.call_args_list]
     assert kinds == ["trade_proposed"]
 
 
 # ── The system prompt points at the tools, not a text format ─────────────────
+
 
 def test_safety_block_names_the_proposal_tools():
     """All three tool names appear, so the model has no reason to invent a text format."""
@@ -1547,10 +1649,14 @@ class _FakeStore:
         `tool_name` is kept because the called-tool ledger is built from it; a double that
         dropped it would keep an empty ledger green forever.
         """
-        self.messages.append({
-            "session_id": session_id, "role": role, "content": content,
-            "tool_name": kwargs.get("tool_name"),
-        })
+        self.messages.append(
+            {
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+                "tool_name": kwargs.get("tool_name"),
+            }
+        )
         return len(self.messages)
 
     def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
@@ -1574,7 +1680,8 @@ class _FakeStore:
         """Mirrors the real query's two filters — allowlist + message_id. The SQL itself is
         pinned in tests/test_conversation_store.py; this double must not drift from it."""
         return [
-            d for d in self.decisions
+            d
+            for d in self.decisions
             if d["session_id"] == session_id
             and d.get("decision_type") in RENDERED_PROPOSAL_TYPES
             and d.get("message_id") is not None
@@ -1585,7 +1692,8 @@ class _FakeStore:
         filter — `order_flow` writes these rows without one, because a button click belongs
         to no assistant turn."""
         return [
-            d for d in self.decisions
+            d
+            for d in self.decisions
             if d["session_id"] == session_id
             and d.get("decision_type") in COMPLETED_ORDER_ACTION_TYPES
         ]
@@ -1594,12 +1702,15 @@ class _FakeStore:
         """Mirrors the real query: `role='tool'` rows only, blank names dropped, distinct,
         sorted alphabetically. The SQL itself is pinned in tests/test_conversation_store.py;
         this double must not drift from it."""
-        return sorted({
-            m["tool_name"] for m in self.messages
-            if m["session_id"] == session_id
-            and m["role"] == "tool"
-            and (m.get("tool_name") or "").strip()
-        })
+        return sorted(
+            {
+                m["tool_name"]
+                for m in self.messages
+                if m["session_id"] == session_id
+                and m["role"] == "tool"
+                and (m.get("tool_name") or "").strip()
+            }
+        )
 
     def list_doc_versions(self) -> list[dict]:
         """No versions are registered — these tests never exercise the version note."""
@@ -1621,8 +1732,11 @@ def _make_agent_recording(proposal_error: Exception | None = None, *, store: Any
     loader.load_system_prompt.return_value = "# Role\nStub.\n\n# Principles\nStub."
     with patch("claudia.agent.AsyncAnthropic"):
         agent = ClaudIAAgent(
-            toolkit=toolkit, store=store if store is not None else _FakeStore(),
-            context_loader=loader, session_id="test-session", sink=sink,
+            toolkit=toolkit,
+            store=store if store is not None else _FakeStore(),
+            context_loader=loader,
+            session_id="test-session",
+            sink=sink,
         )
     return agent, sink
 
@@ -1716,14 +1830,16 @@ async def test_silent_skip_also_trips_the_invariant():
 async def test_notice_uses_the_operator_channel():
     """A model-authored look-alike would be indistinguishable; role:"system" cannot be forged."""
     agent, _sink = _make_agent_recording(RuntimeError("boom"))
-    stream = MagicMock(side_effect=[
-        *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
-        _FakeStream(_text_response_events("Nothing is staged.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
+            _FakeStream(_text_response_events("Nothing is staged.")),
+        ]
+    )
     agent._client.messages.stream = stream
 
-    await agent.handle_message("stage it")          # render fails, note queued
-    await agent.handle_message("is it staged?")     # note delivered to the model
+    await agent.handle_message("stage it")  # render fails, note queued
+    await agent.handle_message("is it staged?")  # note delivered to the model
 
     messages = stream.call_args_list[-1].kwargs["messages"]
     notes = _system_texts(messages)
@@ -1735,10 +1851,12 @@ async def test_notice_uses_the_operator_channel():
 async def test_operator_note_placement_satisfies_the_api_rule():
     """A system message may not be messages[0]; it must follow a user turn."""
     agent, _sink = _make_agent_recording(RuntimeError("boom"))
-    stream = MagicMock(side_effect=[
-        *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
-        _FakeStream(_text_response_events("Nothing is staged.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
+            _FakeStream(_text_response_events("Nothing is staged.")),
+        ]
+    )
     agent._client.messages.stream = stream
 
     await agent.handle_message("stage it")
@@ -1753,11 +1871,13 @@ async def test_operator_note_placement_satisfies_the_api_rule():
 async def test_operator_note_is_sent_once_then_cleared():
     """Otherwise every later turn would keep re-announcing a failure already handled."""
     agent, _sink = _make_agent_recording(RuntimeError("boom"))
-    stream = MagicMock(side_effect=[
-        *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
-        _FakeStream(_text_response_events("Nothing is staged.")),
-        _FakeStream(_text_response_events("Understood.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
+            _FakeStream(_text_response_events("Nothing is staged.")),
+            _FakeStream(_text_response_events("Understood.")),
+        ]
+    )
     agent._client.messages.stream = stream
 
     await agent.handle_message("stage it")
@@ -1783,10 +1903,13 @@ async def test_successful_render_still_logs_trade_proposed():
     assert agent._pending_operator_notes == []
 
 
-@pytest.mark.parametrize("kind,tool,payload", [
-    ("cancel", "propose_cancel", VALID_CANCEL),
-    ("modify", "propose_modify", VALID_MODIFY),
-])
+@pytest.mark.parametrize(
+    "kind,tool,payload",
+    [
+        ("cancel", "propose_cancel", VALID_CANCEL),
+        ("modify", "propose_modify", VALID_MODIFY),
+    ],
+)
 async def test_cancel_and_modify_render_failures_trip_the_invariant(kind, tool, payload):
     """A render failure on any kind contradicts the claim, records it, and names the kind."""
     agent, sink = _make_agent_recording(RuntimeError("boom"))
@@ -1807,9 +1930,7 @@ async def test_innocent_messages_never_trip_the_guardrail(text):
     the recorded proposal, never on prose (the dropped prose detector was 81% false
     positives)."""
     agent, sink = _make_agent_recording()
-    agent._client.messages.stream = MagicMock(
-        return_value=_FakeStream(_text_response_events(text))
-    )
+    agent._client.messages.stream = MagicMock(return_value=_FakeStream(_text_response_events(text)))
     await agent.handle_message("what's the status?")
 
     assert sink.messages == [text]
@@ -1866,10 +1987,12 @@ def test_cache_breakpoint_lands_on_the_operator_note_when_it_is_last():
     therefore has to be accepted by the API — see
     test_live_api_accepts_mid_conversation_system_message, shape 2.
     """
-    marked = _with_history_cache_marker([
-        {"role": "user", "content": "stage it"},
-        {"role": "system", "content": "note"},
-    ])
+    marked = _with_history_cache_marker(
+        [
+            {"role": "user", "content": "stage it"},
+            {"role": "system", "content": "note"},
+        ]
+    )
     assert marked[-1]["role"] == "system"
     assert marked[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
 
@@ -1912,19 +2035,41 @@ def test_guardrail_notice_never_claims_something_was_staged():
 # order ids, and deliberately distinctive numbers so "did a price leak into the record?"
 # is decidable by substring.
 SYNTHETIC_ORDER = {
-    "symbol": "ZZZ", "action": "BUY", "quantity": 7, "order_type": "LMT",
-    "limit_price": 333.25, "stop_price": None, "tif": "DAY", "sec_type": "STK",
-    "conid": None, "outside_rth": None, "reason": "synthetic breakout",
+    "symbol": "ZZZ",
+    "action": "BUY",
+    "quantity": 7,
+    "order_type": "LMT",
+    "limit_price": 333.25,
+    "stop_price": None,
+    "tif": "DAY",
+    "sec_type": "STK",
+    "conid": None,
+    "outside_rth": None,
+    "reason": "synthetic breakout",
 }
 SYNTHETIC_CANCEL = {
-    "order_id": "9990001111", "symbol": "YYY", "action": "SELL", "quantity": 8,
-    "order_type": "LMT", "limit_price": 444.5, "stop_price": None, "tif": "GTC",
+    "order_id": "9990001111",
+    "symbol": "YYY",
+    "action": "SELL",
+    "quantity": 8,
+    "order_type": "LMT",
+    "limit_price": 444.5,
+    "stop_price": None,
+    "tif": "GTC",
     "reason": "synthetic cleanup",
 }
 SYNTHETIC_MODIFY = {
-    "order_id": "8880002222", "conid": 111222, "symbol": "XXX", "action": "BUY",
-    "quantity": 9, "order_type": "LMT", "limit_price": 555.75, "stop_price": None,
-    "tif": "GTC", "sec_type": "STK", "reason": "synthetic bump",
+    "order_id": "8880002222",
+    "conid": 111222,
+    "symbol": "XXX",
+    "action": "BUY",
+    "quantity": 9,
+    "order_type": "LMT",
+    "limit_price": 555.75,
+    "stop_price": None,
+    "tif": "GTC",
+    "sec_type": "STK",
+    "reason": "synthetic bump",
     "changes": [{"field": "limit_price", "previous_value": 550.0}],
 }
 
@@ -1932,8 +2077,12 @@ SYNTHETIC_MODIFY = {
 def _seed_rendered(agent, decision_type: str, payload: dict) -> None:
     """Record a proposal exactly as a *successful* render does — via _log_proposal's shape."""
     agent._store.add_decision(
-        session_id="test-session", decision_type=decision_type, summary_text="seeded",
-        symbol=payload.get("symbol"), message_id=1, metadata={"order": payload},
+        session_id="test-session",
+        decision_type=decision_type,
+        summary_text="seeded",
+        symbol=payload.get("symbol"),
+        message_id=1,
+        metadata={"order": payload},
     )
 
 
@@ -2009,10 +2158,12 @@ async def test_render_failure_is_never_replayed_as_an_emission_record():
     replaying it as an emission record would re-state, on the non-spoofable channel, the
     precise false claim this whole guardrail was built to delete."""
     agent, _sink = _make_agent_recording(RuntimeError("boom"))
-    stream = MagicMock(side_effect=[
-        *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
-        _FakeStream(_text_response_events("Nothing is staged.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            *_proposal_turn("propose_order", VALID_ORDER, FAILED_437),
+            _FakeStream(_text_response_events("Nothing is staged.")),
+        ]
+    )
     agent._client.messages.stream = stream
 
     await agent.handle_message("stage it")
@@ -2021,18 +2172,20 @@ async def test_render_failure_is_never_replayed_as_an_emission_record():
     types = [d["decision_type"] for d in agent._store.get_decisions("test-session")]
     assert types == ["proposal_render_failed"]
     body = "".join(_system_texts(stream.call_args_list[-1].kwargs["messages"]))
-    assert "failed to render" in body            # the Task 5 note is there
-    assert "propose_order" not in body           # but no emission record is
+    assert "failed to render" in body  # the Task 5 note is there
+    assert "propose_order" not in body  # but no emission record is
     assert "already emitted" not in body
 
 
 async def test_rendered_proposal_reappears_as_an_emission_record_next_turn():
     """The behaviour the task exists for: turn N's proposal is visible on turn N+1."""
     agent, _sink = _make_agent_recording()
-    stream = MagicMock(side_effect=[
-        *_proposal_turn("propose_cancel", VALID_CANCEL, "Button's up."),
-        _FakeStream(_text_response_events("Still waiting on you.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            *_proposal_turn("propose_cancel", VALID_CANCEL, "Button's up."),
+            _FakeStream(_text_response_events("Still waiting on you.")),
+        ]
+    )
     agent._client.messages.stream = stream
 
     await agent.handle_message("cancel it")
@@ -2063,11 +2216,13 @@ def test_emission_record_message_follows_a_user_turn_and_is_not_first():
     user turn. The plan's original design (one record after each assistant turn) is a 400."""
     agent, _sink = _make_agent_recording()
     _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
-    messages = _history_to_messages([
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi"},
-        {"role": "user", "content": "and now?"},
-    ])
+    messages = _history_to_messages(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "and now?"},
+        ]
+    )
     agent._append_operator_message(messages)
 
     idx = next(i for i, m in enumerate(messages) if m["role"] == "system")
@@ -2098,11 +2253,13 @@ async def test_a_note_and_records_share_one_system_message():
     """Two consecutive system messages would put the second after a system turn rather
     than a user turn — outside the probed placement rule. One message, both payloads."""
     agent, sink = _make_agent_recording()
-    stream = MagicMock(side_effect=[
-        *_proposal_turn("propose_order", VALID_ORDER, "Button's up."),      # renders
-        *_proposal_turn("propose_cancel", VALID_CANCEL, DEFENDED_CLAIM_588),  # fails
-        _FakeStream(_text_response_events("Understood.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            *_proposal_turn("propose_order", VALID_ORDER, "Button's up."),  # renders
+            *_proposal_turn("propose_cancel", VALID_CANCEL, DEFENDED_CLAIM_588),  # fails
+            _FakeStream(_text_response_events("Understood.")),
+        ]
+    )
     agent._client.messages.stream = stream
 
     await agent.handle_message("buy it")
@@ -2112,9 +2269,9 @@ async def test_a_note_and_records_share_one_system_message():
 
     texts = _system_texts(stream.call_args_list[-1].kwargs["messages"])
     assert len(texts) == 1
-    assert "propose_order for AAPL" in texts[0]   # the rendered one
-    assert "failed to render" in texts[0]         # the Task 5 note
-    assert "propose_cancel" not in texts[0]       # the failed one is not an emission
+    assert "propose_order for AAPL" in texts[0]  # the rendered one
+    assert "failed to render" in texts[0]  # the Task 5 note
+    assert "propose_cancel" not in texts[0]  # the failed one is not an emission
 
 
 # ── completed order actions in the operator channel ──────────────────────────
@@ -2129,15 +2286,24 @@ async def test_a_note_and_records_share_one_system_message():
 SYNTHETIC_STAGED_ID = "1230000456"
 
 
-def _seed_completed(agent, decision_type: str, *, confirmed: bool, state: str | None,
-                    order_id: str | None = SYNTHETIC_STAGED_ID, symbol: str = "ZZZ") -> None:
+def _seed_completed(
+    agent,
+    decision_type: str,
+    *,
+    confirmed: bool,
+    state: str | None,
+    order_id: str | None = SYNTHETIC_STAGED_ID,
+    symbol: str = "ZZZ",
+) -> None:
     """Record a completed action exactly as `order_flow` does after both gates pass.
 
     Same metadata shape as `_execute_staged_order_core`'s decision row, including the
     `proposal` key — whose prices and quantities must never reach the record.
     """
     agent._store.add_decision(
-        session_id="test-session", decision_type=decision_type, summary_text="seeded",
+        session_id="test-session",
+        decision_type=decision_type,
+        summary_text="seeded",
         symbol=symbol,
         metadata={
             "proposal": SYNTHETIC_ORDER,
@@ -2303,14 +2469,19 @@ def test_unmapped_completed_type_is_dropped_not_guessed(caplog):
     model — the failure class itself."""
     agent, _sink = _make_agent_recording()
     agent._store.add_decision(
-        session_id="test-session", decision_type="trade_teleported",
-        summary_text="seeded", metadata={"ibkr_order_id": SYNTHETIC_STAGED_ID},
+        session_id="test-session",
+        decision_type="trade_teleported",
+        summary_text="seeded",
+        metadata={"ibkr_order_id": SYNTHETIC_STAGED_ID},
     )
     with caplog.at_level(logging.WARNING, logger="claudia.agent"):
         # Reach the mapping directly: the store's allowlist would filter this row out.
         agent._store.get_completed_order_actions = lambda _sid: [  # type: ignore[method-assign]
-            {"decision_type": "trade_teleported", "symbol": "ZZZ",
-             "metadata": {"ibkr_order_id": SYNTHETIC_STAGED_ID}},
+            {
+                "decision_type": "trade_teleported",
+                "symbol": "ZZZ",
+                "metadata": {"ibkr_order_id": SYNTHETIC_STAGED_ID},
+            },
         ]
         assert agent._completed_order_records() == ""
     assert "Unmapped completed order action" in caplog.text
@@ -2323,7 +2494,7 @@ def test_completed_record_header_forbids_stating_current_state():
 
     lowered = _COMPLETED_ORDER_HEADER.lower()
     assert "current state" in lowered
-    assert "does not exist" in lowered      # the denial it must forbid
+    assert "does not exist" in lowered  # the denial it must forbid
     assert "call a tool" in lowered
     assert "button click" in lowered
 
@@ -2370,9 +2541,13 @@ def test_tool_ledger_names_each_tool_once_sorted():
 
     from claudia.agent import _TOOL_LEDGER_HEADER
 
-    assert body == "\n".join([
-        _TOOL_LEDGER_HEADER, "  - chart_get_studies", "  - get_market_snapshot",
-    ])
+    assert body == "\n".join(
+        [
+            _TOOL_LEDGER_HEADER,
+            "  - chart_get_studies",
+            "  - get_market_snapshot",
+        ]
+    )
 
 
 def test_tool_ledger_comes_before_the_emission_records():
@@ -2396,11 +2571,13 @@ def test_tool_ledger_is_one_system_message_after_the_user_turn():
     message, never messages[0], immediately after the user turn."""
     agent, _sink = _make_agent_recording()
     _seed_tool_call(agent, "get_live_orders")
-    messages = _history_to_messages([
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi"},
-        {"role": "user", "content": "and now?"},
-    ])
+    messages = _history_to_messages(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "and now?"},
+        ]
+    )
     agent._append_operator_message(messages)
 
     assert len(_system_texts(messages)) == 1
@@ -2434,7 +2611,9 @@ def test_tool_ledger_carries_no_tool_input_or_result(tmp_path):
     store.create_session("test-session")
     agent, _sink = _make_agent_recording(store=store)
     store.add_message(
-        "test-session", "tool", tool_name="get_market_snapshot",
+        "test-session",
+        "tool",
+        tool_name="get_market_snapshot",
         tool_input={"conid": "SENTINEL-INPUT-4242"},
         tool_result={"last": "SENTINEL-RESULT-9999"},
     )
@@ -2595,14 +2774,22 @@ def test_replayed_record_lines_never_trip_the_detector():
     agent, _sink = _make_agent_recording()
     for decision_type in RENDERED_PROPOSAL_TYPES:
         agent._store.add_decision(
-            session_id="test-session", decision_type=decision_type, symbol="ZZZ",
-            message_id=1, metadata={"order": {"order_id": "9000001"}},
+            session_id="test-session",
+            decision_type=decision_type,
+            symbol="ZZZ",
+            message_id=1,
+            metadata={"order": {"order_id": "9000001"}},
         )
     for decision_type in COMPLETED_ORDER_ACTION_TYPES:
         agent._store.add_decision(
-            session_id="test-session", decision_type=decision_type, symbol="ZZZ",
-            metadata={"ibkr_order_id": "9000001", "readback_confirmed": True,
-                      "readback_order_status": "Submitted"},
+            session_id="test-session",
+            decision_type=decision_type,
+            symbol="ZZZ",
+            metadata={
+                "ibkr_order_id": "9000001",
+                "readback_confirmed": True,
+                "readback_order_status": "Submitted",
+            },
         )
     # The ledger names order-book tools by name, which is the closest a line here gets to
     # the book detector's own vocabulary.
@@ -2671,10 +2858,12 @@ async def test_narrated_staging_uses_the_operator_channel():
     """The model must not carry the claim into the next turn and defend it — the 2026-07-24
     failure. A model-authored correction would be forgeable; `role: "system"` is not."""
     agent, _sink = _make_agent_recording()
-    stream = MagicMock(side_effect=[
-        _FakeStream(_text_response_events(NARRATED_STAGING[0])),
-        _FakeStream(_text_response_events("Understood — nothing was staged.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_response_events(NARRATED_STAGING[0])),
+            _FakeStream(_text_response_events("Understood — nothing was staged.")),
+        ]
+    )
     agent._client.messages.stream = stream
 
     await agent.handle_message("cancel that one")
@@ -2747,20 +2936,22 @@ async def test_a_rejected_proposal_still_reaches_the_claim_detector():
 def _tool_then_text(tool_name: str, reply: str, tool_result: str = "{}") -> list:
     """The two streams of one turn: a real tool call, then the reply text."""
     return [
-        _FakeStream([
-            SimpleNamespace(
-                type="message_start", message=SimpleNamespace(usage=SimpleNamespace())
-            ),
-            SimpleNamespace(
-                type="content_block_start",
-                content_block=SimpleNamespace(type="tool_use", id="t1", name=tool_name),
-            ),
-            SimpleNamespace(
-                type="content_block_delta",
-                delta=SimpleNamespace(type="input_json_delta", partial_json="{}"),
-            ),
-            _message_delta("tool_use"),
-        ]),
+        _FakeStream(
+            [
+                SimpleNamespace(
+                    type="message_start", message=SimpleNamespace(usage=SimpleNamespace())
+                ),
+                SimpleNamespace(
+                    type="content_block_start",
+                    content_block=SimpleNamespace(type="tool_use", id="t1", name=tool_name),
+                ),
+                SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="input_json_delta", partial_json="{}"),
+                ),
+                _message_delta("tool_use"),
+            ]
+        ),
         _FakeStream(_text_response_events(reply)),
     ]
 
@@ -2863,11 +3054,13 @@ async def test_a_lookup_in_an_earlier_round_of_the_same_turn_still_counts():
     more tool rounds must still count as evidence. Accumulating per-turn is the whole point
     of `called_tools`."""
     agent, sink = _make_agent_recording()
-    agent._client.messages.stream = MagicMock(side_effect=[
-        _tool_then_text("get_live_orders", "")[0],
-        _tool_then_text("get_positions", "")[0],
-        _FakeStream(_text_response_events(NARRATED_BOOK_CHECK[0])),
-    ])
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _tool_then_text("get_live_orders", "")[0],
+            _tool_then_text("get_positions", "")[0],
+            _FakeStream(_text_response_events(NARRATED_BOOK_CHECK[0])),
+        ]
+    )
     agent._toolkit.execute = MagicMock(return_value=("[]", None))
 
     await agent.handle_message("what's working?")
@@ -2878,10 +3071,12 @@ async def test_a_lookup_in_an_earlier_round_of_the_same_turn_still_counts():
 async def test_narrated_book_check_uses_the_operator_channel():
     """The model must not carry an unverified order state into the next turn."""
     agent, _sink = _make_agent_recording()
-    stream = MagicMock(side_effect=[
-        _FakeStream(_text_response_events(NARRATED_BOOK_CHECK[0])),
-        _FakeStream(_text_response_events("Understood — I will check for real.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_response_events(NARRATED_BOOK_CHECK[0])),
+            _FakeStream(_text_response_events("Understood — I will check for real.")),
+        ]
+    )
     agent._client.messages.stream = stream
 
     await agent.handle_message("what's working?")
@@ -2898,9 +3093,9 @@ async def test_one_message_can_earn_both_corrections():
     real. Unlike L1 and L4 these two are not mutually exclusive, so the user is owed both."""
     agent, _sink = _make_agent_recording()
     agent._client.messages.stream = MagicMock(
-        return_value=_FakeStream(_text_response_events(
-            f"{NARRATED_BOOK_CHECK[0]}\n\n{NARRATED_STAGING[0]}"
-        ))
+        return_value=_FakeStream(
+            _text_response_events(f"{NARRATED_BOOK_CHECK[0]}\n\n{NARRATED_STAGING[0]}")
+        )
     )
     await agent.handle_message("check the book and cancel it")
 
@@ -2987,12 +3182,27 @@ def test_live_api_accepts_mid_conversation_system_message():
         {"role": "user", "content": "Is it staged?"},
     ]
     tool_round_trip = [
-        {"role": "assistant", "content": [
-            {"type": "tool_use", "id": "toolu_probe1", "name": "propose_order", "input": VALID_ORDER},
-        ]},
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "toolu_probe1", "content": "Proposal accepted."},
-        ]},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_probe1",
+                    "name": "propose_order",
+                    "input": VALID_ORDER,
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_probe1",
+                    "content": "Proposal accepted.",
+                },
+            ],
+        },
     ]
     shapes = {
         "note last": [*two_turns, note],
@@ -3142,13 +3352,27 @@ def test_live_api_accepts_the_emission_record_channel():
         {"role": "user", "content": "So what have you actually proposed so far?"},
     ]
     tool_round_trip = [
-        {"role": "assistant", "content": [
-            {"type": "tool_use", "id": "toolu_probe2", "name": "propose_order",
-             "input": SYNTHETIC_ORDER},
-        ]},
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "toolu_probe2", "content": "Proposal accepted."},
-        ]},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_probe2",
+                    "name": "propose_order",
+                    "input": SYNTHETIC_ORDER,
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_probe2",
+                    "content": "Proposal accepted.",
+                },
+            ],
+        },
     ]
     shapes = {
         "records+note last": [*three_turns, combined],
@@ -3165,7 +3389,9 @@ def test_live_api_accepts_the_emission_record_channel():
                 tools=_with_cache_marker(PROPOSAL_TOOLS),  # type: ignore[arg-type]
             )
         except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
-            pytest.fail(f"live API rejected the emission-record channel ({label}) on {model}: {exc}")
+            pytest.fail(
+                f"live API rejected the emission-record channel ({label}) on {model}: {exc}"
+            )
 
 
 # ── Safety block: derived figures (2026-08-03 live finding) ───────────────────
@@ -3235,9 +3461,9 @@ def test_a_model_without_the_operator_channel_is_reported_with_the_symptom(model
     with caplog.at_level(logging.ERROR, logger="claudia.agent"):
         assert warn_if_model_lacks_operator_channel(model) == model
     assert model in caplog.text
-    assert "400" in caplog.text           # names the failure
-    assert "tool call" in caplog.text     # names the EARLIEST trigger
-    assert "proposal" in caplog.text      # and still names the later ones
+    assert "400" in caplog.text  # names the failure
+    assert "tool call" in caplog.text  # names the EARLIEST trigger
+    assert "proposal" in caplog.text  # and still names the later ones
 
 
 def test_the_operator_channel_allowlist_excludes_the_sonnet_line():
@@ -3306,6 +3532,7 @@ def test_an_empty_result_is_reported_as_no_match_not_as_a_failure():
 def _suspended_state():
     """A session mid-login: total suspension, per plan §8.1."""
     from claudia.gateway_session import SessionPhase, declare
+
     return declare(SessionPhase.AUTHENTICATING)
 
 
@@ -3314,6 +3541,7 @@ def _live_state():
     from datetime import UTC, datetime
 
     from claudia.gateway_session import SessionPhase, SessionState
+
     return SessionState(phase=SessionPhase.LIVE, as_of=datetime.now(UTC), detail="ok")
 
 
@@ -3374,9 +3602,7 @@ def test_a_free_or_down_gateway_is_not_blocked_here():
 
     for phase in (SessionPhase.FREE, SessionPhase.DOWN, SessionPhase.DEGRADED):
         owner = MagicMock()
-        owner.state.return_value = SessionState(
-            phase=phase, as_of=datetime.now(UTC), detail="x"
-        )
+        owner.state.return_value = SessionState(phase=phase, as_of=datetime.now(UTC), detail="x")
         with patch("claudia.gateway_session.get_session", return_value=owner):
             assert _ibkr_unavailable() is None, f"{phase} must not be blocked"
 
@@ -3426,20 +3652,26 @@ def test_action_detector_ignores_the_models_own_composition():
     tool result — the one false positive the corpus actually contains (msg 347)."""
     from claudia.agent import _claims_completed_action
 
-    assert _claims_completed_action(
-        "I'll check the level first. You flagged this as a test, so here's the "
-        "proposal exactly as specified:"
-    ) is None
+    assert (
+        _claims_completed_action(
+            "I'll check the level first. You flagged this as a test, so here's the "
+            "proposal exactly as specified:"
+        )
+        is None
+    )
 
 
 def test_action_detector_requires_the_report_to_follow_the_intent():
     """Report before intent is a recap plus a new announcement, not a claim."""
     from claudia.agent import _claims_completed_action
 
-    assert _claims_completed_action(
-        "Here's the chart from our last session. Let me capture a fresh screenshot "
-        "once you confirm the symbol."
-    ) is None
+    assert (
+        _claims_completed_action(
+            "Here's the chart from our last session. Let me capture a fresh screenshot "
+            "once you confirm the symbol."
+        )
+        is None
+    )
 
 
 def test_a_report_of_no_errors_is_still_a_report():
@@ -3448,10 +3680,13 @@ def test_a_report_of_no_errors_is_still_a_report():
     negation."""
     from claudia.agent import _claims_completed_action
 
-    assert _claims_completed_action(
-        "I'll load it into the Pine editor and compile it.Loaded and compiled — no "
-        "errors. Clean compile, no warnings."
-    ) is not None
+    assert (
+        _claims_completed_action(
+            "I'll load it into the Pine editor and compile it.Loaded and compiled — no "
+            "errors. Clean compile, no warnings."
+        )
+        is not None
+    )
 
 
 @pytest.mark.parametrize("text", NARRATED_TOOL_RESULT)
@@ -3505,10 +3740,12 @@ async def test_narrated_action_uses_the_operator_channel():
     """The correction must reach the model on the channel it cannot forge, before the
     next turn — an uncorrected false claim becomes in-context precedent."""
     agent, _sink = _make_agent_recording()
-    stream = MagicMock(side_effect=[
-        _FakeStream(_text_response_events(NARRATED_ACTION[0])),
-        _FakeStream(_text_response_events("Understood — I will call the tool for real.")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_response_events(NARRATED_ACTION[0])),
+            _FakeStream(_text_response_events("Understood — I will call the tool for real.")),
+        ]
+    )
     agent._client.messages.stream = stream
 
     await agent.handle_message("switch to ZZZ and screenshot it")
@@ -3546,10 +3783,12 @@ async def test_an_uploaded_image_clears_the_action_claim():
     describing it needs no tool, so the evidence veto is the image itself."""
     agent, sink = _make_agent_recording()
     agent._client.messages.stream = MagicMock(
-        return_value=_FakeStream(_text_response_events(
-            "Let me read the chart image.Here's the chart — ZZZ 1H, RSI at 62, price "
-            "pressing the upper band."
-        ))
+        return_value=_FakeStream(
+            _text_response_events(
+                "Let me read the chart image.Here's the chart — ZZZ 1H, RSI at 62, price "
+                "pressing the upper band."
+            )
+        )
     )
     await agent.handle_message(
         "analyse this chart",
@@ -3567,10 +3806,12 @@ async def test_a_sibling_correction_suppresses_the_general_one():
     turn."""
     agent, _sink = _make_agent_recording()
     agent._client.messages.stream = MagicMock(
-        return_value=_FakeStream(_text_response_events(
-            "I'll check the live book first, then stage the cancel.Confirmed against "
-            "the live book — both ZZZ orders are working:"
-        ))
+        return_value=_FakeStream(
+            _text_response_events(
+                "I'll check the live book first, then stage the cancel.Confirmed against "
+                "the live book — both ZZZ orders are working:"
+            )
+        )
     )
     await agent.handle_message("check the book and cancel one")
 
@@ -3735,8 +3976,9 @@ async def test_every_correction_persists_before_it_displays():
         assert notice in agent._store.get_history("test-session")[-1]["content"], method
         assert agent._pending_operator_notes, method
         # The offending sentence is logged only — never persisted anywhere.
-        assert not any("some claimed sentence" in (d.get("summary_text") or "")
-                       for d in decisions), method
+        assert not any(
+            "some claimed sentence" in (d.get("summary_text") or "") for d in decisions
+        ), method
 
 
 async def test_the_render_failure_notice_persists_before_it_displays():
@@ -3792,10 +4034,12 @@ async def test_execution_note_reaches_the_model_once_on_the_next_turn():
     """Delivered in the next turn's system message, then cleared — same lifecycle as the
     render-failure notes it shares the channel with."""
     agent, _sink = _make_agent_recording()
-    stream = MagicMock(side_effect=[
-        _FakeStream(_text_response_events("Noted, you are flat.")),
-        _FakeStream(_text_response_events("Anything else?")),
-    ])
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_response_events("Noted, you are flat.")),
+            _FakeStream(_text_response_events("Anything else?")),
+        ]
+    )
     agent._client.messages.stream = stream
 
     agent.note_execution("**FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00** · 12:47:05 ET · CME")
@@ -3804,4 +4048,7 @@ async def test_execution_note_reaches_the_model_once_on_the_next_turn():
     assert any("IBKR reported an execution" in t and "7,732.00" in t for t in first)
 
     await agent.handle_message("thanks")
-    assert not any("IBKR reported an execution" in t for t in _system_texts(stream.call_args_list[1].kwargs["messages"]))
+    assert not any(
+        "IBKR reported an execution" in t
+        for t in _system_texts(stream.call_args_list[1].kwargs["messages"])
+    )

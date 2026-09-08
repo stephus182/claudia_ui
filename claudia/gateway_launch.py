@@ -62,9 +62,17 @@ def gateway_log_tail(
 
     try:
         result = subprocess.run(
-            ["docker", "exec", container, "sh", "-c",
-             f'tail -{int(lines)} {GATEWAY_LOG_DIR}/gw.$(date +%Y-%m-%d).log'],
-            capture_output=True, text=True, timeout=15,
+            [
+                "docker",
+                "exec",
+                container,
+                "sh",
+                "-c",
+                f"tail -{int(lines)} {GATEWAY_LOG_DIR}/gw.$(date +%Y-%m-%d).log",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except Exception as exc:
         return f"(could not read the gateway log: {type(exc).__name__}: {exc})"
@@ -86,21 +94,25 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--wait-timeout", type=float, default=300.0,
+        "--wait-timeout",
+        type=float,
+        default=300.0,
         help="Seconds to wait for a login to complete (default 300). There is no "
-             "--no-wait: opening the login page suspends every tickler in the system, "
-             "and a suspension has to be bounded by whoever declared it. Returning early "
-             "would leave the session in AUTHENTICATING with nothing left to end it.",
+        "--no-wait: opening the login page suspends every tickler in the system, "
+        "and a suspension has to be bounded by whoever declared it. Returning early "
+        "would leave the session in AUTHENTICATING with nothing left to end it.",
     )
     parser.add_argument(
-        "--allow-restart", action="store_true",
+        "--allow-restart",
+        action="store_true",
         help="Recreate the container if it holds a session borrowed from another IBKR "
-             "app. Off by default: a restart destroys a live session.",
+        "app. Off by default: a restart destroys a live session.",
     )
     parser.add_argument(
-        "--diagnose", action="store_true",
-        help="Print the session state and the gateway\'s INTERNAL log, then exit without "
-             "touching anything.",
+        "--diagnose",
+        action="store_true",
+        help="Print the session state and the gateway's INTERNAL log, then exit without "
+        "touching anything.",
     )
     args = parser.parse_args(argv)
 

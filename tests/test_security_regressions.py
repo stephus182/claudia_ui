@@ -15,6 +15,7 @@ import pytest
 
 # ── Fix #1 + #3 — env allowlist: secrets not in subprocess, CDP port present ──
 
+
 @pytest.mark.asyncio
 async def test_sidecar_subprocess_env_excludes_secrets(tmp_path, monkeypatch):
     """ANTHROPIC_API_KEY and IBKR_FLEX_TOKEN must not appear in the sidecar env (Fix #1)."""
@@ -34,9 +35,11 @@ async def test_sidecar_subprocess_env_excludes_secrets(tmp_path, monkeypatch):
 
     class FakeCM:
         """A stand-in for the sidecar's stdio context manager."""
+
         async def __aenter__(self):
             """Hand back a read/write pair, as the real stdio client does."""
             return (AsyncMock(), AsyncMock())
+
         async def __aexit__(self, *a):
             """Nothing to tear down for the stub."""
             pass
@@ -48,20 +51,26 @@ async def test_sidecar_subprocess_env_excludes_secrets(tmp_path, monkeypatch):
     fake_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
 
     from claudia.tradingview import TradingViewBridge
-    with patch("claudia.tradingview.StdioServerParameters", side_effect=fake_params), \
-         patch("claudia.tradingview.stdio_client", return_value=FakeCM()), \
-         patch("claudia.tradingview.ClientSession", return_value=fake_session), \
-         patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)):
+
+    with (
+        patch("claudia.tradingview.StdioServerParameters", side_effect=fake_params),
+        patch("claudia.tradingview.stdio_client", return_value=FakeCM()),
+        patch("claudia.tradingview.ClientSession", return_value=fake_session),
+        patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)),
+    ):
         await TradingViewBridge().start()
 
     assert captured_env, "StdioServerParameters was never called — env not captured"
     assert "ANTHROPIC_API_KEY" not in captured_env, "ANTHROPIC_API_KEY leaked to subprocess!"
     assert "IBKR_FLEX_TOKEN" not in captured_env, "IBKR_FLEX_TOKEN leaked to subprocess!"
     assert "GDRIVE_TOKEN_FILE" not in captured_env, "GDRIVE_TOKEN_FILE leaked to subprocess!"
-    assert "CHROME_REMOTE_DEBUG_PORT" in captured_env, "CHROME_REMOTE_DEBUG_PORT missing from env (Fix #3)!"
+    assert "CHROME_REMOTE_DEBUG_PORT" in captured_env, (
+        "CHROME_REMOTE_DEBUG_PORT missing from env (Fix #3)!"
+    )
 
 
 # ── Fix #4 — os.chmod called after token file refresh ────────────────────────
+
 
 def test_gdrive_token_file_chmod_after_refresh(tmp_path):
     """Token file must be chmod 0o600 after every credential refresh (Fix #4)."""
@@ -83,9 +92,14 @@ def test_gdrive_token_file_chmod_after_refresh(tmp_path):
     mock_creds.refresh_token = "rt"
     mock_creds.to_json.return_value = '{"access_token": "new"}'
 
-    with patch("ibkr_core_mcp.gdrive_auth.Credentials.from_authorized_user_file", return_value=mock_creds), \
-         patch("ibkr_core_mcp.gdrive_auth.Request"), \
-         patch("claudia.gdrive_sync.build"):
+    with (
+        patch(
+            "ibkr_core_mcp.gdrive_auth.Credentials.from_authorized_user_file",
+            return_value=mock_creds,
+        ),
+        patch("ibkr_core_mcp.gdrive_auth.Request"),
+        patch("claudia.gdrive_sync.build"),
+    ):
         sync._get_service()
 
     mode = oct(token_file.stat().st_mode & 0o777)
@@ -93,6 +107,7 @@ def test_gdrive_token_file_chmod_after_refresh(tmp_path):
 
 
 # ── Fix #5 — read_text() size guard ──────────────────────────────────────────
+
 
 def test_read_text_rejects_oversized_file():
     """Files > 1 MB must be rejected without downloading (Fix #5)."""
@@ -107,8 +122,10 @@ def test_read_text_rejects_oversized_file():
     svc = MagicMock()
     svc.files.return_value.get.return_value.execute.return_value = {"size": str(large_size)}
 
-    with patch.object(sync, "_find_file", return_value="file-id"), \
-         patch.object(sync, "_get_service", return_value=svc):
+    with (
+        patch.object(sync, "_find_file", return_value="file-id"),
+        patch.object(sync, "_get_service", return_value=svc),
+    ):
         result = sync.read_text("context.md")
 
     assert result is None
@@ -129,9 +146,11 @@ def test_read_text_accepts_file_under_limit():
 
     class FakeDownloader:
         """A downloader that yields the prepared document text in one chunk."""
+
         def __init__(self, buf, _req):
             """Write the encoded document into the caller's buffer."""
             buf.write(content.encode())
+
         def next_chunk(self):
             """Report the single chunk as complete."""
             return None, True
@@ -139,9 +158,11 @@ def test_read_text_accepts_file_under_limit():
     svc = MagicMock()
     svc.files.return_value.get.return_value.execute.return_value = {"size": str(small_size)}
 
-    with patch.object(sync, "_find_file", return_value="file-id"), \
-         patch.object(sync, "_get_service", return_value=svc), \
-         patch("claudia.gdrive_sync.MediaIoBaseDownload", FakeDownloader):
+    with (
+        patch.object(sync, "_find_file", return_value="file-id"),
+        patch.object(sync, "_get_service", return_value=svc),
+        patch("claudia.gdrive_sync.MediaIoBaseDownload", FakeDownloader),
+    ):
         result = sync.read_text("context.md")
 
     assert result == content
@@ -150,15 +171,18 @@ def test_read_text_accepts_file_under_limit():
 
 # ── Fix #6 — GDriveSync has threading.Lock ───────────────────────────────────
 
+
 def test_gdrive_sync_has_lock():
     """GDriveSync must have a _lock attribute for thread safety (Fix #6)."""
     from claudia.gdrive_sync import GDriveSync
+
     cfg = MagicMock()
     cfg.gdrive_token_file = Path("/fake/token.json")
     sync = GDriveSync(cfg)
     assert hasattr(sync, "_lock"), "GDriveSync missing _lock — thread safety removed"
-    assert hasattr(sync._lock, "__enter__") and hasattr(sync._lock, "__exit__"), \
+    assert hasattr(sync._lock, "__enter__") and hasattr(sync._lock, "__exit__"), (
         "_lock must be a context manager (threading.Lock)"
+    )
 
 
 def test_upload_db_is_protected_by_lock(tmp_path):
@@ -184,6 +208,7 @@ def test_upload_db_is_protected_by_lock(tmp_path):
 
     class TrackingLock:
         """A lock recording every acquisition, so serialisation is asserted not assumed."""
+
         def acquire(self, *args, **kwargs):
             """Record the acquisition and take the real lock."""
             lock_acquired.append(True)
@@ -209,16 +234,19 @@ def test_upload_db_is_protected_by_lock(tmp_path):
     svc = MagicMock()
     svc.files.return_value.update.return_value.execute.return_value = {}
 
-    with patch.object(sync, "_find_file", return_value="existing-file-id"), \
-         patch.object(sync, "_get_service", return_value=svc), \
-         patch("claudia.gdrive_sync.MediaFileUpload"), \
-         patch.object(sync, "_resolve_db_folder", return_value="db-folder-id"):
+    with (
+        patch.object(sync, "_find_file", return_value="existing-file-id"),
+        patch.object(sync, "_get_service", return_value=svc),
+        patch("claudia.gdrive_sync.MediaFileUpload"),
+        patch.object(sync, "_resolve_db_folder", return_value="db-folder-id"),
+    ):
         sync.upload_db(db)
 
     assert lock_acquired, "upload_db() never acquired _lock — race condition possible"
 
 
 # ── Fix #7 — TRADINGVIEW_MCP_PATH validation ─────────────────────────────────
+
 
 def test_tradingview_mcp_path_non_js_ignored(tmp_path, monkeypatch):
     """TRADINGVIEW_MCP_PATH with a .sh extension must be rejected (Fix #7)."""
@@ -231,8 +259,11 @@ def test_tradingview_mcp_path_non_js_ignored(tmp_path, monkeypatch):
 
     import claudia.tradingview as tv_module
     from claudia.tradingview import _find_tv_mcp_bin
-    with patch("claudia.tradingview.shutil.which", return_value=None), \
-         patch.object(tv_module, "__file__", str(tmp_path / "claudia" / "tradingview.py")):
+
+    with (
+        patch("claudia.tradingview.shutil.which", return_value=None),
+        patch.object(tv_module, "__file__", str(tmp_path / "claudia" / "tradingview.py")),
+    ):
         result = _find_tv_mcp_bin()
     assert result is None, ".sh path must be rejected — only .js paths are valid"
 
@@ -246,27 +277,34 @@ def test_tradingview_mcp_path_nonexistent_ignored(tmp_path, monkeypatch):
 
     import claudia.tradingview as tv_module
     from claudia.tradingview import _find_tv_mcp_bin
-    with patch("claudia.tradingview.shutil.which", return_value=None), \
-         patch.object(tv_module, "__file__", str(tmp_path / "claudia" / "tradingview.py")):
+
+    with (
+        patch("claudia.tradingview.shutil.which", return_value=None),
+        patch.object(tv_module, "__file__", str(tmp_path / "claudia" / "tradingview.py")),
+    ):
         result = _find_tv_mcp_bin()
     assert result is None, "Nonexistent path must be rejected"
 
 
 # ── Fix #8 — Binary path is logged at INFO on start ─────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_start_logs_selected_binary_path(tmp_path, monkeypatch, caplog):
     """Selected binary path must be logged at INFO level on start (Fix #8)."""
     import logging
+
     fake_bin = tmp_path / "server.js"
     fake_bin.write_text("// fake")
     monkeypatch.setenv("TRADINGVIEW_MCP_PATH", str(fake_bin))
 
     class FakeCM:
         """A stand-in for the sidecar's stdio context manager."""
+
         async def __aenter__(self):
             """Hand back a read/write pair, as the real stdio client does."""
             return (AsyncMock(), AsyncMock())
+
         async def __aexit__(self, *a):
             """Nothing to tear down for the stub."""
             pass
@@ -278,11 +316,14 @@ async def test_start_logs_selected_binary_path(tmp_path, monkeypatch, caplog):
     fake_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
 
     from claudia.tradingview import TradingViewBridge
-    with caplog.at_level(logging.INFO, logger="claudia.tradingview"), \
-         patch("claudia.tradingview.StdioServerParameters", return_value=MagicMock()), \
-         patch("claudia.tradingview.stdio_client", return_value=FakeCM()), \
-         patch("claudia.tradingview.ClientSession", return_value=fake_session), \
-         patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)):
+
+    with (
+        caplog.at_level(logging.INFO, logger="claudia.tradingview"),
+        patch("claudia.tradingview.StdioServerParameters", return_value=MagicMock()),
+        patch("claudia.tradingview.stdio_client", return_value=FakeCM()),
+        patch("claudia.tradingview.ClientSession", return_value=fake_session),
+        patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)),
+    ):
         await TradingViewBridge().start()
 
     logged_messages = " ".join(r.message for r in caplog.records)
@@ -291,11 +332,13 @@ async def test_start_logs_selected_binary_path(tmp_path, monkeypatch, caplog):
 
 # ── 2026-06-25 audit — Fix H-1: SSRF guard in fetch_web_page ─────────────────
 
+
 def _make_agent():
     """Build a minimal ClaudIAAgent for testing _fetch_web_page."""
     from unittest.mock import MagicMock
 
     from claudia.agent import ClaudIAAgent
+
     toolkit = MagicMock()
     toolkit.tools = []
     store = MagicMock()
@@ -303,35 +346,40 @@ def _make_agent():
     loader = MagicMock()
     loader.load_system_prompt.return_value = ""
     return ClaudIAAgent(
-        toolkit=toolkit, store=store, context_loader=loader, session_id="test",
+        toolkit=toolkit,
+        store=store,
+        context_loader=loader,
+        session_id="test",
         sink=MagicMock(),
     )
 
 
-@pytest.mark.parametrize("url,expected_fragment", [
-    ("file:///etc/passwd",         "only http/https"),
-    ("ftp://example.com/file",     "only http/https"),
-    ("http://localhost/path",      "cannot fetch from localhost"),
-    ("http://localhost:5055/tickle","cannot fetch from localhost"),
-    ("http://127.0.0.1/anything",  "cannot fetch from localhost"),
-    ("http://0.0.0.0/anything",    "cannot fetch from localhost"),
-    ("http://169.254.0.1/meta",    "cannot fetch from localhost"),
-    ("http://10.0.0.1/internal",   "cannot fetch from private"),
-    ("http://192.168.1.1/router",  "cannot fetch from private"),
-    ("http://172.16.0.1/service",  "cannot fetch from private"),
-])
+@pytest.mark.parametrize(
+    "url,expected_fragment",
+    [
+        ("file:///etc/passwd", "only http/https"),
+        ("ftp://example.com/file", "only http/https"),
+        ("http://localhost/path", "cannot fetch from localhost"),
+        ("http://localhost:5055/tickle", "cannot fetch from localhost"),
+        ("http://127.0.0.1/anything", "cannot fetch from localhost"),
+        ("http://0.0.0.0/anything", "cannot fetch from localhost"),
+        ("http://169.254.0.1/meta", "cannot fetch from localhost"),
+        ("http://10.0.0.1/internal", "cannot fetch from private"),
+        ("http://192.168.1.1/router", "cannot fetch from private"),
+        ("http://172.16.0.1/service", "cannot fetch from private"),
+    ],
+)
 def test_fetch_web_page_ssrf_guard_blocks_internal(url, expected_fragment):
     """SSRF guard (Fix H-1 / 2026-06-25) must block localhost and private IP ranges."""
     agent = _make_agent()
     result = agent._fetch_web_page({"url": url})
-    assert expected_fragment in result, (
-        f"SSRF guard did not block {url!r}: got {result!r}"
-    )
+    assert expected_fragment in result, f"SSRF guard did not block {url!r}: got {result!r}"
 
 
 def test_fetch_web_page_ssrf_guard_allows_public(monkeypatch):
     """SSRF guard must pass through public https:// URLs to the actual fetch."""
     from unittest.mock import MagicMock, patch
+
     agent = _make_agent()
 
     fake_resp = MagicMock()
@@ -347,6 +395,7 @@ def test_fetch_web_page_ssrf_guard_allows_public(monkeypatch):
 
 
 # ── SSRF decimal/hex IP bypass (v1.0 audit port, 2026-06-27) ─────────────────────────────────
+
 
 def test_fetch_web_page_ssrf_guard_blocks_decimal_ip(monkeypatch):
     """Decimal-encoded IP (2130706433 = 127.0.0.1) must be blocked via DNS resolve-then-check.
@@ -454,6 +503,7 @@ def test_no_unguarded_markdown_panes_in_package():
 
 # ── H-3 — the Panel server must bind loopback only ───────────────────────────────────────
 
+
 def test_pn_serve_binds_loopback_only():
     """main() must pass address="127.0.0.1" to pn.serve (H-3).
 
@@ -467,10 +517,12 @@ def test_pn_serve_binds_loopback_only():
     # `_port_is_free` is patched only so this test does not depend on whether 8001 happens
     # to be free on the machine running it — main() now returns early on a taken port,
     # which would skip pn.serve entirely and make this security assertion vacuous.
-    with patch("claudia.panel_app.pn.serve") as mock_serve, \
-         patch("claudia.panel_app._port_is_free", return_value=True), \
-         patch("claudia.panel_app.signal.signal"), \
-         patch.object(panel_app, "_gdrive_sync", None):
+    with (
+        patch("claudia.panel_app.pn.serve") as mock_serve,
+        patch("claudia.panel_app._port_is_free", return_value=True),
+        patch("claudia.panel_app.signal.signal"),
+        patch.object(panel_app, "_gdrive_sync", None),
+    ):
         panel_app.main()
 
     assert mock_serve.called, "pn.serve was never called"
@@ -485,13 +537,13 @@ def test_pn_serve_binds_loopback_only():
 # Every class of content the project has decided must never enter git. Standing rule
 # (user, 2026-07-25): "keep private data and all plans out of git."
 _MUST_NEVER_BE_TRACKED = [
-    ".env",                     # ANTHROPIC_API_KEY, IBKR_FLEX_TOKEN
-    "docs/context.md",          # ClaudIA persona
-    "docs/principles.md",       # personal trading rules
-    "docs/versions",            # verbatim snapshots of both of the above (H-2)
-    "docs/plans",               # personal working documents — local + Drive only
-    "docs/panel/screenshots",   # UI smokes carry live account data, balances, order IDs
-    "data",                     # claudia.db, Flex archive, session reports
+    ".env",  # ANTHROPIC_API_KEY, IBKR_FLEX_TOKEN
+    "docs/context.md",  # ClaudIA persona
+    "docs/principles.md",  # personal trading rules
+    "docs/versions",  # verbatim snapshots of both of the above (H-2)
+    "docs/plans",  # personal working documents — local + Drive only
+    "docs/panel/screenshots",  # UI smokes carry live account data, balances, order IDs
+    "data",  # claudia.db, Flex archive, session reports
     # Browser artifacts. `.playwright-mcp/` was already ignored, but an artifact written
     # to the repo ROOT under any name was not, and `git add -A` swept two into commits on
     # 2026-08-07: a .yml dump carrying net liquidation, cash, positions and P&L, and a
@@ -528,10 +580,14 @@ def test_no_browser_artifact_is_tracked_at_the_repo_root():
     repo = Path(__file__).resolve().parent.parent
     out = subprocess.run(
         ["git", "ls-files", "--", ":(top)*"],
-        cwd=repo, capture_output=True, text=True, check=False,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     offenders = [
-        line for line in out.stdout.splitlines()
+        line
+        for line in out.stdout.splitlines()
         if "/" not in line and Path(line).suffix.lower() in _BROWSER_ARTIFACT_SUFFIXES
     ]
     assert not offenders, (
@@ -556,7 +612,10 @@ def test_private_content_is_not_git_tracked(path):
     repo = Path(__file__).resolve().parent.parent
     out = subprocess.run(
         ["git", "ls-files", "--", path],
-        cwd=repo, capture_output=True, text=True, check=False,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     tracked = [line for line in out.stdout.splitlines() if line.strip()]
     assert not tracked, f"{path!r} is git-tracked and must not be: {tracked}"
@@ -576,7 +635,9 @@ def test_every_private_path_is_gitignored():
         probe = path if Path(repo / path).is_file() else f"{path}/probe.md"
         result = subprocess.run(
             ["git", "check-ignore", "-q", "--no-index", "--", probe],
-            cwd=repo, capture_output=True, check=False,
+            cwd=repo,
+            capture_output=True,
+            check=False,
         )
         if result.returncode != 0:
             unignored.append(path)
@@ -590,13 +651,17 @@ def test_no_tracked_but_ignored_files():
     repo = Path(__file__).resolve().parent.parent
     out = subprocess.run(
         ["git", "ls-files", "-i", "-c", "--exclude-standard"],
-        cwd=repo, capture_output=True, text=True, check=False,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     offenders = [line for line in out.stdout.splitlines() if line.strip()]
     assert not offenders, f"Tracked files matched by .gitignore: {offenders}"
 
 
 # ── M-2 — version snapshots of the private docs must be chmod 0600 ───────────────────────
+
 
 def test_version_snapshot_is_chmod_600(tmp_path, monkeypatch):
     """_write_version_snapshot must chmod both files to 0600 (M-2).
@@ -630,14 +695,29 @@ def test_version_snapshot_is_chmod_600(tmp_path, monkeypatch):
 # asserted against the schema in tests/test_proposal_tools.py, not here.
 
 _M1_ORDER = {
-    "symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "LMT",
-    "limit_price": 185.0, "stop_price": None, "tif": "DAY", "sec_type": "STK",
-    "conid": None, "reason": "M-1 regression fixture",
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 10,
+    "order_type": "LMT",
+    "limit_price": 185.0,
+    "stop_price": None,
+    "tif": "DAY",
+    "sec_type": "STK",
+    "conid": None,
+    "reason": "M-1 regression fixture",
 }
 _M1_MODIFY = {
-    "order_id": "242538143", "conid": 265598, "symbol": "AAPL", "action": "BUY",
-    "quantity": 1, "order_type": "LMT", "limit_price": 105.0, "stop_price": None,
-    "tif": "GTC", "sec_type": "STK", "reason": "M-1 regression fixture",
+    "order_id": "242538143",
+    "conid": 265598,
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LMT",
+    "limit_price": 105.0,
+    "stop_price": None,
+    "tif": "GTC",
+    "sec_type": "STK",
+    "reason": "M-1 regression fixture",
     "changes": [{"field": "limit_price", "previous_value": 100.0}],
 }
 
@@ -652,24 +732,37 @@ def _m1_agent():
     toolkit.tools = []
     with patch("claudia.agent.AsyncAnthropic"):
         return ClaudIAAgent(
-            toolkit=toolkit, store=MagicMock(), context_loader=MagicMock(),
-            session_id="m1", sink=MagicMock(),
+            toolkit=toolkit,
+            store=MagicMock(),
+            context_loader=MagicMock(),
+            session_id="m1",
+            sink=MagicMock(),
         )
 
 
-@pytest.mark.parametrize("tool,payload,reason", [
-    ("propose_order", {**_M1_ORDER, "quantity": -5}, "negative quantity"),
-    ("propose_order", {**_M1_ORDER, "quantity": 0}, "zero quantity"),
-    ("propose_order", {**_M1_ORDER, "quantity": True}, "bool quantity"),
-    ("propose_order", {**_M1_ORDER, "quantity": "10"}, "string quantity"),
-    ("propose_order", {**_M1_ORDER, "symbol": "   "}, "blank symbol"),
-    ("propose_order", {k: v for k, v in _M1_ORDER.items() if k != "symbol"}, "missing symbol"),
-    ("propose_modify", {**_M1_MODIFY, "order_id": "  "}, "blank order_id"),
-    ("propose_modify", {**_M1_MODIFY, "changes": [
-        {"field": "limit_price", "previous_value": 100.0},
-        {"field": "limit_price", "previous_value": 99.0},
-    ]}, "duplicate changes entries"),
-])
+@pytest.mark.parametrize(
+    "tool,payload,reason",
+    [
+        ("propose_order", {**_M1_ORDER, "quantity": -5}, "negative quantity"),
+        ("propose_order", {**_M1_ORDER, "quantity": 0}, "zero quantity"),
+        ("propose_order", {**_M1_ORDER, "quantity": True}, "bool quantity"),
+        ("propose_order", {**_M1_ORDER, "quantity": "10"}, "string quantity"),
+        ("propose_order", {**_M1_ORDER, "symbol": "   "}, "blank symbol"),
+        ("propose_order", {k: v for k, v in _M1_ORDER.items() if k != "symbol"}, "missing symbol"),
+        ("propose_modify", {**_M1_MODIFY, "order_id": "  "}, "blank order_id"),
+        (
+            "propose_modify",
+            {
+                **_M1_MODIFY,
+                "changes": [
+                    {"field": "limit_price", "previous_value": 100.0},
+                    {"field": "limit_price", "previous_value": 99.0},
+                ],
+            },
+            "duplicate changes entries",
+        ),
+    ],
+)
 def test_malformed_order_proposal_is_rejected(tool, payload, reason):
     """A proposal the model was not permitted to emit must never reach the staging button (M-1)."""
     agent = _m1_agent()
@@ -679,13 +772,25 @@ def test_malformed_order_proposal_is_rejected(tool, payload, reason):
     assert "no staging button" in result.lower()
 
 
-@pytest.mark.parametrize("payload", [
-    _M1_ORDER,
-    # The live-proven ES order (716373691) that cleared the full gate chain on 2026-07-24.
-    {"symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "LMT",
-     "limit_price": 6100.0, "stop_price": None, "sec_type": "FUT", "conid": 730283085,
-     "tif": "GTC", "reason": "Live-proven shape"},
-])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _M1_ORDER,
+        # The live-proven ES order (716373691) that cleared the full gate chain on 2026-07-24.
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 6100.0,
+            "stop_price": None,
+            "sec_type": "FUT",
+            "conid": 730283085,
+            "tif": "GTC",
+            "reason": "Live-proven shape",
+        },
+    ],
+)
 def test_valid_order_proposal_is_accepted(payload):
     """Real proposal shapes must still pass — validation rejects, it must not over-reject (M-1)."""
     agent = _m1_agent()

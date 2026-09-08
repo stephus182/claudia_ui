@@ -152,6 +152,7 @@ def test_get_last_context_hash_includes_open_session(tmp_path):
 
 # ── Doc versions ──────────────────────────────────────────────────────────────
 
+
 def test_register_doc_version_first_time_is_v1(store):
     """The first registration is labelled v1."""
     label = store.register_doc_version_if_new("hash-a", "context text", "principles text")
@@ -298,7 +299,7 @@ def test_migration_drops_dead_schema_and_preserves_decisions(tmp_path):
 
     store = ConversationStore(db)
     names = _schema_names(db)
-    assert "relationships" not in names        # empty — dropped
+    assert "relationships" not in names  # empty — dropped
     assert "decisions_fts" not in names
     assert "decisions_ai" not in names and "decisions_ad" not in names
     # Live data preserved; decisions writes still work (no orphaned trigger)
@@ -338,8 +339,14 @@ def test_migration_keeps_relationships_table_with_data(tmp_path):
 # false claim the guardrail exists to remove.
 
 _SYNTHETIC_CANCEL = {
-    "order_id": "9990001111", "symbol": "ZZZ", "action": "BUY", "quantity": 7,
-    "order_type": "LMT", "limit_price": 333.25, "tif": "GTC", "reason": "synthetic",
+    "order_id": "9990001111",
+    "symbol": "ZZZ",
+    "action": "BUY",
+    "quantity": 7,
+    "order_type": "LMT",
+    "limit_price": 333.25,
+    "tif": "GTC",
+    "reason": "synthetic",
 }
 
 
@@ -349,12 +356,18 @@ def test_get_rendered_proposals_returns_the_three_rendered_types_oldest_first(st
     msg = store.add_message("sess-l3", "assistant", "proposed")
     for dtype in ("trade_proposed", "trade_cancel_proposed", "trade_modify_proposed"):
         store.add_decision(
-            session_id="sess-l3", decision_type=dtype, summary_text=dtype,
-            symbol="ZZZ", message_id=msg, metadata={"order": _SYNTHETIC_CANCEL},
+            session_id="sess-l3",
+            decision_type=dtype,
+            summary_text=dtype,
+            symbol="ZZZ",
+            message_id=msg,
+            metadata={"order": _SYNTHETIC_CANCEL},
         )
     rows = store.get_rendered_proposals("sess-l3")
     assert [r["decision_type"] for r in rows] == [
-        "trade_proposed", "trade_cancel_proposed", "trade_modify_proposed",
+        "trade_proposed",
+        "trade_cancel_proposed",
+        "trade_modify_proposed",
     ]
     assert rows[0]["metadata"] == {"order": _SYNTHETIC_CANCEL}  # decoded, not raw JSON
 
@@ -366,9 +379,11 @@ def test_get_rendered_proposals_never_returns_a_render_failure(store):
     store.create_session("sess-l3-fail")
     msg = store.add_message("sess-l3-fail", "assistant", "claimed a button")
     store.add_decision(
-        session_id="sess-l3-fail", decision_type="proposal_render_failed",
+        session_id="sess-l3-fail",
+        decision_type="proposal_render_failed",
         summary_text="order proposal accepted but not rendered — nothing staged",
-        message_id=msg, metadata={"kind": "order"},
+        message_id=msg,
+        metadata={"kind": "order"},
     )
     assert store.get_rendered_proposals("sess-l3-fail") == []
 
@@ -380,7 +395,8 @@ def test_get_rendered_proposals_never_returns_an_unbacked_claim(store):
     store.create_session("sess-l4-claim")
     msg = store.add_message("sess-l4-claim", "assistant", "narrated a button")
     store.add_decision(
-        session_id="sess-l4-claim", decision_type="proposal_claim_unbacked",
+        session_id="sess-l4-claim",
+        decision_type="proposal_claim_unbacked",
         summary_text="claimed a completed order action but no proposal tool was called",
         message_id=msg,
     )
@@ -394,7 +410,10 @@ def test_get_rendered_proposals_excludes_post_click_and_unrelated_types(store):
     msg = store.add_message("sess-l3-mix", "assistant", "text")
     for dtype in ("trade_staged", "trade_cancelled", "trade_modified", "backtest_run"):
         store.add_decision(
-            session_id="sess-l3-mix", decision_type=dtype, summary_text=dtype, message_id=msg,
+            session_id="sess-l3-mix",
+            decision_type=dtype,
+            summary_text=dtype,
+            message_id=msg,
         )
     assert store.get_rendered_proposals("sess-l3-mix") == []
 
@@ -403,8 +422,10 @@ def test_get_rendered_proposals_requires_a_message_id(store):
     """No message_id means no assistant turn to attach the emission to."""
     store.create_session("sess-l3-nomsg")
     store.add_decision(
-        session_id="sess-l3-nomsg", decision_type="trade_proposed",
-        summary_text="orphan", symbol="ZZZ",
+        session_id="sess-l3-nomsg",
+        decision_type="trade_proposed",
+        summary_text="orphan",
+        symbol="ZZZ",
     )
     assert store.get_rendered_proposals("sess-l3-nomsg") == []
 
@@ -415,8 +436,11 @@ def test_get_rendered_proposals_is_scoped_to_one_session(store):
     store.create_session("sess-l3-b")
     msg = store.add_message("sess-l3-a", "assistant", "proposed")
     store.add_decision(
-        session_id="sess-l3-a", decision_type="trade_proposed", summary_text="a",
-        symbol="ZZZ", message_id=msg,
+        session_id="sess-l3-a",
+        decision_type="trade_proposed",
+        summary_text="a",
+        symbol="ZZZ",
+        message_id=msg,
     )
     assert len(store.get_rendered_proposals("sess-l3-a")) == 1
     assert store.get_rendered_proposals("sess-l3-b") == []
@@ -427,8 +451,11 @@ def test_get_rendered_proposals_tolerates_unparseable_metadata(store):
     store.create_session("sess-l3-bad")
     msg = store.add_message("sess-l3-bad", "assistant", "proposed")
     store.add_decision(
-        session_id="sess-l3-bad", decision_type="trade_proposed", summary_text="x",
-        symbol="ZZZ", message_id=msg,
+        session_id="sess-l3-bad",
+        decision_type="trade_proposed",
+        summary_text="x",
+        symbol="ZZZ",
+        message_id=msg,
     )
     with store._conn() as conn:
         conn.execute("UPDATE decisions SET metadata_json='{not json'")
@@ -457,12 +484,17 @@ def test_get_completed_order_actions_returns_the_three_post_click_types_oldest_f
     store.create_session("sess-l4")
     for dtype in ("trade_staged", "trade_cancelled", "trade_modified"):
         store.add_decision(
-            session_id="sess-l4", decision_type=dtype, summary_text=dtype,
-            symbol="ZZZ", metadata=_SYNTHETIC_STAGED_META,
+            session_id="sess-l4",
+            decision_type=dtype,
+            summary_text=dtype,
+            symbol="ZZZ",
+            metadata=_SYNTHETIC_STAGED_META,
         )
     rows = store.get_completed_order_actions("sess-l4")
     assert [r["decision_type"] for r in rows] == [
-        "trade_staged", "trade_cancelled", "trade_modified",
+        "trade_staged",
+        "trade_cancelled",
+        "trade_modified",
     ]
     assert rows[0]["metadata"] == _SYNTHETIC_STAGED_META  # decoded, not raw JSON
 
@@ -473,8 +505,11 @@ def test_get_completed_order_actions_does_not_require_a_message_id(store):
     message_id at all. Requiring one would return nothing and re-create the blindness."""
     store.create_session("sess-l4-nomsg")
     store.add_decision(
-        session_id="sess-l4-nomsg", decision_type="trade_staged",
-        summary_text="STAGED", symbol="ZZZ", metadata=_SYNTHETIC_STAGED_META,
+        session_id="sess-l4-nomsg",
+        decision_type="trade_staged",
+        summary_text="STAGED",
+        symbol="ZZZ",
+        metadata=_SYNTHETIC_STAGED_META,
     )
     rows = store.get_completed_order_actions("sess-l4-nomsg")
     assert len(rows) == 1
@@ -485,10 +520,19 @@ def test_get_completed_order_actions_excludes_proposals_and_unrelated_types(stor
     """An allowlist, like the proposal query: a proposal is a button, not an order."""
     store.create_session("sess-l4-mix")
     msg = store.add_message("sess-l4-mix", "assistant", "text")
-    for dtype in ("trade_proposed", "trade_cancel_proposed", "trade_modify_proposed",
-                  "proposal_render_failed", "proposal_claim_unbacked", "backtest_run"):
+    for dtype in (
+        "trade_proposed",
+        "trade_cancel_proposed",
+        "trade_modify_proposed",
+        "proposal_render_failed",
+        "proposal_claim_unbacked",
+        "backtest_run",
+    ):
         store.add_decision(
-            session_id="sess-l4-mix", decision_type=dtype, summary_text=dtype, message_id=msg,
+            session_id="sess-l4-mix",
+            decision_type=dtype,
+            summary_text=dtype,
+            message_id=msg,
         )
     assert store.get_completed_order_actions("sess-l4-mix") == []
 
@@ -498,7 +542,10 @@ def test_get_completed_order_actions_is_scoped_to_one_session(store):
     store.create_session("sess-l4-a")
     store.create_session("sess-l4-b")
     store.add_decision(
-        session_id="sess-l4-a", decision_type="trade_staged", summary_text="a", symbol="ZZZ",
+        session_id="sess-l4-a",
+        decision_type="trade_staged",
+        summary_text="a",
+        symbol="ZZZ",
     )
     assert len(store.get_completed_order_actions("sess-l4-a")) == 1
     assert store.get_completed_order_actions("sess-l4-b") == []
@@ -509,7 +556,10 @@ def test_get_completed_order_actions_tolerates_unparseable_metadata(store):
     than gaining a wrong one."""
     store.create_session("sess-l4-bad")
     store.add_decision(
-        session_id="sess-l4-bad", decision_type="trade_staged", summary_text="x", symbol="ZZZ",
+        session_id="sess-l4-bad",
+        decision_type="trade_staged",
+        summary_text="x",
+        symbol="ZZZ",
     )
     with store._conn() as conn:
         conn.execute("UPDATE decisions SET metadata_json='{not json'")
@@ -589,18 +639,18 @@ def test_get_called_tool_names_filters_null_and_blank_names(store):
 @pytest.mark.parametrize(
     "query",
     [
-        "AAPL",                      # already valid, must keep working
-        "AAPL (long)",               # parentheses are FTS5 grouping
-        'AAPL "unclosed',            # unterminated string
-        "note: something",           # colon is a column filter
-        "AAPL OR",                   # dangling operator
-        "-AAPL",                     # leading hyphen
-        "C++ risk",                  # plus signs
-        "what's the P&L?",           # apostrophe + ampersand — an ordinary question
+        "AAPL",  # already valid, must keep working
+        "AAPL (long)",  # parentheses are FTS5 grouping
+        'AAPL "unclosed',  # unterminated string
+        "note: something",  # colon is a column filter
+        "AAPL OR",  # dangling operator
+        "-AAPL",  # leading hyphen
+        "C++ risk",  # plus signs
+        "what's the P&L?",  # apostrophe + ampersand — an ordinary question
         "did we discuss the dashboard?",
-        "*",                         # bare wildcard
-        "^ $ ( ) : -",               # punctuation only, no tokens at all
-        "",                          # empty
+        "*",  # bare wildcard
+        "^ $ ( ) : -",  # punctuation only, no tokens at all
+        "",  # empty
     ],
 )
 def test_ordinary_phrasing_never_raises_a_search_error(store, query):
@@ -640,7 +690,7 @@ def test_tokens_are_or_ed_so_a_partial_match_still_returns_rows(store):
     worse than reporting a loose match.
     """
     store.create_session("s-fts4")
-    store.add_message("s-fts4", "user", "NVDA looks strong")   # has NVDA, not "position"
+    store.add_message("s-fts4", "user", "NVDA looks strong")  # has NVDA, not "position"
     hits = store.search_messages("NVDA position")
     assert hits, "AND semantics would return nothing here"
 
@@ -663,9 +713,9 @@ def test_the_fts_index_has_exactly_the_triggers_the_schema_claims(tmp_path):
     ConversationStore(db)
     conn = sqlite3.connect(str(db))
     try:
-        triggers = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='trigger'"
-        )}
+        triggers = {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
+        }
     finally:
         conn.close()
     assert triggers == {"messages_ai", "messages_ad"}
@@ -696,8 +746,11 @@ def test_no_sql_in_the_package_updates_a_message_row():
             if node.func.attr not in ("execute", "executescript", "executemany"):
                 continue
             for arg in node.args:
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) \
-                        and re.search(r"\bUPDATE\s+messages\b", arg.value, re.I):
+                if (
+                    isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and re.search(r"\bUPDATE\s+messages\b", arg.value, re.I)
+                ):
                     offenders.append(f"{path.name}:{node.lineno}")
 
     assert not offenders, f"UPDATE on messages found at {offenders} — add an FTS update trigger"

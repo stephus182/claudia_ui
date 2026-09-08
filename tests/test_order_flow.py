@@ -28,6 +28,7 @@ from claudia.order_flow import (
 
 # ── _resolve_account_id ──────────────────────────────────────────────────────
 
+
 def test_resolve_account_id_accountid_key():
     """The documented `accountId` key is used when present."""
     assert _resolve_account_id([{"accountId": "U12345"}]) == "U12345"
@@ -49,6 +50,7 @@ def test_resolve_account_id_empty_list():
 
 
 # ── _format_order_summary ────────────────────────────────────────────────────
+
 
 def test_format_market_order():
     """A market order renders its side, size, symbol, type and TIF."""
@@ -178,11 +180,17 @@ def test_format_order_tif_shown():
 
 # ── _format_cancel_summary ───────────────────────────────────────────────────
 
+
 def test_format_cancel_summary_basic():
     """A cancel summary leads with the order id being cancelled."""
     proposal = {
-        "order_id": "242538143", "symbol": "AAPL", "action": "BUY",
-        "quantity": 1, "order_type": "LMT", "limit_price": 100.0, "tif": "GTC",
+        "order_id": "242538143",
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "LMT",
+        "limit_price": 100.0,
+        "tif": "GTC",
         "reason": "Closing test position",
     }
     summary = _format_cancel_summary(proposal)
@@ -196,7 +204,13 @@ def test_format_cancel_summary_basic():
 
 def test_format_cancel_summary_missing_reason():
     """A cancel with no reason renders without an empty reason line."""
-    proposal = {"order_id": "1", "symbol": "SPY", "action": "SELL", "quantity": 5, "order_type": "MKT"}
+    proposal = {
+        "order_id": "1",
+        "symbol": "SPY",
+        "action": "SELL",
+        "quantity": 5,
+        "order_type": "MKT",
+    }
     summary = _format_cancel_summary(proposal)
     assert "SPY" in summary
     assert "1" in summary
@@ -205,8 +219,12 @@ def test_format_cancel_summary_missing_reason():
 def test_format_cancel_summary_shows_limit_price():
     """The resting limit price is shown as context for what is being pulled."""
     proposal = {
-        "order_id": "5", "symbol": "NVDA", "action": "BUY", "quantity": 10,
-        "order_type": "LMT", "limit_price": 850.0,
+        "order_id": "5",
+        "symbol": "NVDA",
+        "action": "BUY",
+        "quantity": 10,
+        "order_type": "LMT",
+        "limit_price": 850.0,
     }
     summary = _format_cancel_summary(proposal)
     assert "850.00" in summary
@@ -216,8 +234,12 @@ def test_format_cancel_summary_shows_limit_price():
 def test_format_cancel_summary_shows_stop_price():
     """STP orders show the stop price too, mirroring _format_order_summary."""
     proposal = {
-        "order_id": "6", "symbol": "MSFT", "action": "SELL", "quantity": 50,
-        "order_type": "STP", "stop_price": 395.0,
+        "order_id": "6",
+        "symbol": "MSFT",
+        "action": "SELL",
+        "quantity": 50,
+        "order_type": "STP",
+        "stop_price": 395.0,
     }
     summary = _format_cancel_summary(proposal)
     assert "395.00" in summary
@@ -226,10 +248,13 @@ def test_format_cancel_summary_shows_stop_price():
 
 # ── _format_modify_summary ───────────────────────────────────────────────────
 
+
 def test_format_modify_summary_shows_changed_fields():
     """Each `changes` entry renders as a before/after line."""
     proposal = {
-        "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
+        "order_id": "242538143",
+        "conid": 265598,
+        "symbol": "AAPL",
         "limit_price": 105.0,
         "changes": [{"field": "limit_price", "previous_value": 100.0}],
     }
@@ -244,7 +269,11 @@ def test_format_modify_summary_shows_changed_fields():
 def test_format_modify_summary_shows_every_changed_field():
     """One line per entry — a multi-field modify must not show only the first."""
     proposal = {
-        "order_id": "1", "conid": 1, "symbol": "AAPL", "limit_price": 105.0, "quantity": 3,
+        "order_id": "1",
+        "conid": 1,
+        "symbol": "AAPL",
+        "limit_price": 105.0,
+        "quantity": 3,
         "changes": [
             {"field": "limit_price", "previous_value": 100.0},
             {"field": "quantity", "previous_value": 1},
@@ -276,7 +305,10 @@ def test_format_modify_summary_renders_a_malformed_entry_instead_of_raising():
 def test_format_modify_summary_shows_reason():
     """The model's stated reason is rendered when present."""
     proposal = {
-        "order_id": "1", "conid": 1, "symbol": "AAPL", "tif": "GTC",
+        "order_id": "1",
+        "conid": 1,
+        "symbol": "AAPL",
+        "tif": "GTC",
         "changes": [{"field": "tif", "previous_value": "DAY"}],
         "reason": "Extending time in force",
     }
@@ -285,6 +317,7 @@ def test_format_modify_summary_shows_reason():
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize(
     "summary_of",
@@ -298,10 +331,17 @@ def test_a_stop_limit_shows_both_of_its_prices(summary_of):
     plus `auxPrice` (stop) for it, but each formatter only handled its own single type. The
     last screen before Touch ID therefore showed a stop-limit order with no price at all.
     """
-    summary = summary_of({
-        "order_id": "1", "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "STOP_LIMIT", "limit_price": 6000.0, "stop_price": 5950.0,
-    })
+    summary = summary_of(
+        {
+            "order_id": "1",
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "STOP_LIMIT",
+            "limit_price": 6000.0,
+            "stop_price": 5950.0,
+        }
+    )
     assert "6,000.00 limit" in summary
     assert "5,950.00 stop" in summary
 
@@ -318,20 +358,33 @@ def test_no_approval_line_ever_claims_a_currency(summary_of):
     equities, so a symbol here reads as an ordinary price on a wrong-currency contract. The
     bare number is what `panel_dashboard.fmt_money` renders for an unknown currency.
     """
-    summary = summary_of({
-        "order_id": "1", "symbol": "P911d", "action": "BUY", "quantity": 10,
-        "order_type": "LMT", "limit_price": 1234.5, "stop_price": None,
-    })
+    summary = summary_of(
+        {
+            "order_id": "1",
+            "symbol": "P911d",
+            "action": "BUY",
+            "quantity": 10,
+            "order_type": "LMT",
+            "limit_price": 1234.5,
+            "stop_price": None,
+        }
+    )
     assert "1,234.50 limit" in summary
     assert "$" not in summary
 
 
 def test_a_market_order_carries_no_price_clause():
     """MKT has no price to show, so the clause is omitted rather than left dangling."""
-    summary = _format_order_summary({
-        "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT",
-        "limit_price": None, "stop_price": None,
-    })
+    summary = _format_order_summary(
+        {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "limit_price": None,
+            "stop_price": None,
+        }
+    )
     assert " @ " not in summary
 
 
@@ -346,10 +399,16 @@ def test_a_priced_order_missing_its_price_says_so(order_type, missing):
     proposal. Rendering it as a bare `(LMT, DAY)` would put a limit order with no visible
     limit in front of the user one click before Touch ID.
     """
-    summary = _format_order_summary({
-        "symbol": "AAPL", "action": "BUY", "quantity": 1,
-        "order_type": order_type, "limit_price": None, "stop_price": None,
-    })
+    summary = _format_order_summary(
+        {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": order_type,
+            "limit_price": None,
+            "stop_price": None,
+        }
+    )
     assert f"NO {missing} PRICE GIVEN" in summary
 
 
@@ -375,8 +434,14 @@ def _make_action(order_payload=None):
     """
     if order_payload is None:
         order_payload = {
-            "symbol": "AAPL", "action": "BUY", "quantity": 50, "conid": 265598,
-            "order_type": "MKT", "limit_price": None, "stop_price": None, "reason": "Test",
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 50,
+            "conid": 265598,
+            "order_type": "MKT",
+            "limit_price": None,
+            "stop_price": None,
+            "reason": "Test",
         }
     action = MagicMock()
     action.payload = {"order": json.dumps(order_payload)}
@@ -425,8 +490,11 @@ def _make_ibkr_mock():
     # /iserver/contract/{conid}/info is where the multiplier, currency and local symbol
     # live (measured on ES conid 649180671: '50', 'USD', 'ESU6', maturity 20260918).
     client.get_contract_info.return_value = {
-        "multiplier": "50", "currency": "USD", "local_symbol": "ESU6",
-        "maturity_date": "20260918", "instrument_type": "FUT",
+        "multiplier": "50",
+        "currency": "USD",
+        "local_symbol": "ESU6",
+        "maturity_date": "20260918",
+        "instrument_type": "FUT",
     }
     client.get_accounts.return_value = [{"accountId": "U12345"}]
     client.place_order_and_confirm.return_value = [{"orderId": "999"}]
@@ -457,7 +525,10 @@ async def _run(action, ibkr_mod, store=None, session_id="test-session"):
     where every safety-critical Gate-1/Gate-2 / place_order / rejection path lives."""
     proposal = json.loads(action.payload["order"])
     send_status, calls = _make_send_status_recorder()
-    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), _no_readback_delay():
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
         await _execute_staged_order_core(proposal, send_status, session_id=session_id, store=store)
     return calls
 
@@ -471,8 +542,14 @@ def _make_cancel_action(payload=None):
     """A cancel proposal dict carrying the order id and display context."""
     if payload is None:
         payload = {
-            "order_id": "242538143", "symbol": "AAPL", "action": "BUY",
-            "quantity": 1, "order_type": "LMT", "limit_price": 100.0, "tif": "GTC", "reason": "Test",
+            "order_id": "242538143",
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 100.0,
+            "tif": "GTC",
+            "reason": "Test",
         }
     action = MagicMock()
     action.payload = {"order": json.dumps(payload)}
@@ -483,9 +560,15 @@ def _make_modify_action(payload=None):
     """A modify proposal dict carrying the full replacement order plus its conid."""
     if payload is None:
         payload = {
-            "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
-            "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
-            "tif": "GTC", "sec_type": "STK",
+            "order_id": "242538143",
+            "conid": 265598,
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 105.0,
+            "tif": "GTC",
+            "sec_type": "STK",
             "changes": [{"field": "limit_price", "previous_value": 100.0}],
         }
     action = MagicMock()
@@ -504,10 +587,15 @@ def _make_cancel_modify_ibkr_mock():
     # Documented successful-cancel body, verbatim shape (order_id is an int there):
     # https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md
     client.cancel_order.return_value = {
-        "msg": "Request was submitted", "order_id": 242538143,
-        "conid": 265598, "account": "U12345",
+        "msg": "Request was submitted",
+        "order_id": 242538143,
+        "conid": 265598,
+        "account": "U12345",
     }
-    client.modify_order_and_confirm.return_value = {"order_id": "242538143", "order_status": "Submitted"}
+    client.modify_order_and_confirm.return_value = {
+        "order_id": "242538143",
+        "order_status": "Submitted",
+    }
     _set_readback(client)
     return mod, client
 
@@ -516,7 +604,10 @@ async def _run_cancel(action, ibkr_mod, store=None, session_id="test-session"):
     """Run the cancel core against a captured status callback and return what it reported."""
     proposal = json.loads(action.payload["order"])
     send_status, calls = _make_send_status_recorder()
-    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), _no_readback_delay():
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
         await _execute_cancel_order_core(proposal, send_status, session_id=session_id, store=store)
     return calls
 
@@ -525,7 +616,10 @@ async def _run_modify(action, ibkr_mod, store=None, session_id="test-session"):
     """Run the modify core against a captured status callback and return what it reported."""
     proposal = json.loads(action.payload["order"])
     send_status, calls = _make_send_status_recorder()
-    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), _no_readback_delay():
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
         await _execute_modify_order_core(proposal, send_status, session_id=session_id, store=store)
     return calls
 
@@ -552,10 +646,15 @@ async def test_a_placement_without_a_resolved_contract_is_refused(sec_type, tool
     the exposure is real rather than theoretical.
     """
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "IGV", "action": "BUY", "quantity": 10,
-        "order_type": "MKT", "sec_type": sec_type,
-    })
+    action = _make_action(
+        {
+            "symbol": "IGV",
+            "action": "BUY",
+            "quantity": 10,
+            "order_type": "MKT",
+            "sec_type": sec_type,
+        }
+    )
     contents = _sent_contents(await _run(action, ibkr_mod))
     assert any(sec_type in c and "conid" in c and tool in c for c in contents)
     client.place_order_and_confirm.assert_not_called()
@@ -569,9 +668,17 @@ async def test_the_defective_symbol_search_is_never_reached_from_the_order_path(
     being live again. This asserts the absence, not the behaviour.
     """
     ibkr_mod, client = _make_ibkr_mock()
-    await _run(_make_action({
-        "symbol": "IGV", "action": "BUY", "quantity": 10, "order_type": "MKT",
-    }), ibkr_mod)
+    await _run(
+        _make_action(
+            {
+                "symbol": "IGV",
+                "action": "BUY",
+                "quantity": 10,
+                "order_type": "MKT",
+            }
+        ),
+        ibkr_mod,
+    )
     client.search_contract.assert_not_called()
 
     # AST, not a substring search: `_needs_conid_text`'s docstring names the method when
@@ -579,12 +686,15 @@ async def test_the_defective_symbol_search_is_never_reached_from_the_order_path(
     # site should fail this.
     tree = ast.parse(Path(order_flow.__file__).read_text(encoding="utf-8"))
     calls = [
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.Call)
         and isinstance(n.func, ast.Attribute)
         and n.func.attr == "search_contract"
     ]
-    assert not calls, f"order_flow still calls search_contract at line(s) {[n.lineno for n in calls]}"
+    assert not calls, (
+        f"order_flow still calls search_contract at line(s) {[n.lineno for n in calls]}"
+    )
 
 
 @pytest.mark.asyncio
@@ -656,18 +766,27 @@ async def test_execute_staged_order_generic_error():
     client.place_order_and_confirm.side_effect = RuntimeError("Connection reset")
     action = _make_action()
     recorded = await _run(action, ibkr_mod)
-    assert any("Order staging failed" in c or "Order not placed" in c
-               for c in _sent_contents(recorded))
+    assert any(
+        "Order staging failed" in c or "Order not placed" in c for c in _sent_contents(recorded)
+    )
 
 
 @pytest.mark.asyncio
 async def test_execute_staged_order_limit_price_in_order_body():
     """LMT order with limit_price → 'price' field in order body sent to place_order."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "TSLA", "action": "BUY", "quantity": 10, "conid": 76792991,
-        "order_type": "LMT", "limit_price": 245.0, "stop_price": None, "reason": "Dip buy",
-    })
+    action = _make_action(
+        {
+            "symbol": "TSLA",
+            "action": "BUY",
+            "quantity": 10,
+            "conid": 76792991,
+            "order_type": "LMT",
+            "limit_price": 245.0,
+            "stop_price": None,
+            "reason": "Dip buy",
+        }
+    )
     await _run(action, ibkr_mod)
     client.place_order_and_confirm.assert_called_once()
     _account_id, order_body = client.place_order_and_confirm.call_args.args
@@ -679,10 +798,15 @@ async def test_execute_staged_order_limit_price_in_order_body():
 async def test_execute_staged_order_quantity_is_int():
     """quantity sent to place_order is int, not float."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "AAPL", "action": "BUY", "quantity": 5, "conid": 265598,
-        "order_type": "MKT",
-    })
+    action = _make_action(
+        {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 5,
+            "conid": 265598,
+            "order_type": "MKT",
+        }
+    )
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert isinstance(order_body.get("quantity"), int)
@@ -692,10 +816,16 @@ async def test_execute_staged_order_quantity_is_int():
 async def test_execute_staged_order_stk_no_cme_fields():
     """STK order body must NOT contain manualIndicator or extOperator."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "AAPL", "action": "BUY", "quantity": 1, "conid": 265598,
-        "order_type": "MKT", "sec_type": "STK",
-    })
+    action = _make_action(
+        {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "conid": 265598,
+            "order_type": "MKT",
+            "sec_type": "STK",
+        }
+    )
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert "manualIndicator" not in order_body
@@ -704,14 +834,20 @@ async def test_execute_staged_order_stk_no_cme_fields():
 
 # ── execute_staged_order — futures (FUT) ─────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_execute_staged_order_fut_uses_get_futures_not_search():
     """FUT: conid resolved via get_futures(), search_contract never called."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "MKT", "sec_type": "FUT",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "sec_type": "FUT",
+        }
+    )
     await _run(action, ibkr_mod)
     client.get_futures.assert_called_once_with(["ES"])
     client.search_contract.assert_not_called()
@@ -724,10 +860,15 @@ async def test_execute_staged_order_fut_cme_536b_fields():
     class (proven via whatif isolation 2026-07-23; see
     docs/plans/2026-07-23-futures-order-field-8089-bug.md)."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "MKT", "sec_type": "FUT",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "sec_type": "FUT",
+        }
+    )
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("manualIndicator") is True
@@ -740,16 +881,24 @@ async def test_execute_staged_order_fut_multiplier_currency_and_label_from_contr
     /iserver/contract/{conid}/info — never from /trsrv/futures, which carries no multiplier.
     Live 2026-09-04: Gate 2 showed 'Total (est.): 7,735.00' for one ES contract, 50x short."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "LMT", "limit_price": 5500.0, "sec_type": "FUT",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 5500.0,
+            "sec_type": "FUT",
+        }
+    )
     await _run(action, ibkr_mod)
     client.get_contract_info.assert_called_once_with(495512557)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("_multiplier") == 50.0
     assert order_body.get("_currency") == "USD"
-    assert "ESU6" in order_body.get("_companyName", "") and "2026-09-18" in order_body["_companyName"]
+    assert (
+        "ESU6" in order_body.get("_companyName", "") and "2026-09-18" in order_body["_companyName"]
+    )
     assert "_multiplier_unknown" not in order_body
 
 
@@ -758,10 +907,18 @@ async def test_execute_staged_order_fut_with_conid_still_fetches_the_multiplier(
     """The live case: the proposal carries the conid (ClaudIA had just quoted the contract),
     so get_futures is skipped — the multiplier must still be fetched, from contract info."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1, "conid": 649180671,
-        "order_type": "STP", "stop_price": 7735.0, "tif": "GTC", "sec_type": "FUT",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "conid": 649180671,
+            "order_type": "STP",
+            "stop_price": 7735.0,
+            "tif": "GTC",
+            "sec_type": "FUT",
+        }
+    )
     await _run(action, ibkr_mod)
     client.get_futures.assert_not_called()
     client.get_contract_info.assert_called_once_with(649180671)
@@ -776,10 +933,15 @@ async def test_execute_staged_order_fut_unknown_multiplier_is_flagged_not_guesse
     cannot fall back to price x qty and show a 50x-short notional as if it were real."""
     ibkr_mod, client = _make_ibkr_mock()
     client.get_contract_info.side_effect = RuntimeError("503")
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "MKT", "sec_type": "FUT",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "sec_type": "FUT",
+        }
+    )
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert "_multiplier" not in order_body
@@ -790,10 +952,16 @@ async def test_execute_staged_order_fut_unknown_multiplier_is_flagged_not_guesse
 async def test_execute_staged_order_stk_does_not_fetch_contract_info():
     """Equities: no multiplier lookup, no futures display fields."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "AAPL", "action": "BUY", "quantity": 1, "conid": 265598,
-        "order_type": "MKT", "sec_type": "STK",
-    })
+    action = _make_action(
+        {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "conid": 265598,
+            "order_type": "MKT",
+            "sec_type": "STK",
+        }
+    )
     await _run(action, ibkr_mod)
     client.get_contract_info.assert_not_called()
     _, order_body = client.place_order_and_confirm.call_args.args
@@ -806,7 +974,10 @@ def test_futures_contract_facts_parses_ibkr_strings_and_survives_junk():
 
     client = MagicMock()
     client.get_contract_info.return_value = {
-        "multiplier": "50", "currency": "USD", "local_symbol": "ESU6", "maturity_date": "20260918",
+        "multiplier": "50",
+        "currency": "USD",
+        "local_symbol": "ESU6",
+        "maturity_date": "20260918",
     }
     assert _futures_contract_facts(client, 1) == (50.0, "USD", "ESU6 · expires 2026-09-18 · x50")
     client.get_contract_info.return_value = {"multiplier": "fifty", "maturity_date": "soon"}
@@ -821,10 +992,15 @@ async def test_execute_staged_order_fut_not_found():
     """FUT: get_futures returns [] → error message, no place_order."""
     ibkr_mod, client = _make_ibkr_mock()
     client.get_futures.return_value = []
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "MKT", "sec_type": "FUT",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "sec_type": "FUT",
+        }
+    )
     recorded = await _run(action, ibkr_mod)
     assert any("futures contracts" in c for c in _sent_contents(recorded))
     client.place_order_and_confirm.assert_not_called()
@@ -835,14 +1011,34 @@ async def test_execute_staged_order_fut_front_month_selected():
     """FUT: lowest expirationDate is selected as front month."""
     ibkr_mod, client = _make_ibkr_mock()
     client.get_futures.return_value = [
-        {"conid": 700000, "expirationDate": 20261218, "multiplier": "50", "contractDesc": "ES DEC 26"},
-        {"conid": 495512557, "expirationDate": 20260918, "multiplier": "50", "contractDesc": "ES SEP 26"},
-        {"conid": 800000, "expirationDate": 20270318, "multiplier": "50", "contractDesc": "ES MAR 27"},
+        {
+            "conid": 700000,
+            "expirationDate": 20261218,
+            "multiplier": "50",
+            "contractDesc": "ES DEC 26",
+        },
+        {
+            "conid": 495512557,
+            "expirationDate": 20260918,
+            "multiplier": "50",
+            "contractDesc": "ES SEP 26",
+        },
+        {
+            "conid": 800000,
+            "expirationDate": 20270318,
+            "multiplier": "50",
+            "contractDesc": "ES MAR 27",
+        },
     ]
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "MKT", "sec_type": "FUT",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "sec_type": "FUT",
+        }
+    )
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("conid") == 495512557  # lowest expirationDate = front month
@@ -850,14 +1046,21 @@ async def test_execute_staged_order_fut_front_month_selected():
 
 # ── execute_staged_order — conid override ────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_execute_staged_order_conid_override_skips_resolution():
     """Proposal with conid set → uses it directly, no search_contract or get_futures."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "AAPL", "action": "BUY", "quantity": 1,
-        "order_type": "MKT", "sec_type": "STK", "conid": 265598,
-    })
+    action = _make_action(
+        {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "sec_type": "STK",
+            "conid": 265598,
+        }
+    )
     await _run(action, ibkr_mod)
     client.search_contract.assert_not_called()
     client.get_futures.assert_not_called()
@@ -869,10 +1072,16 @@ async def test_execute_staged_order_conid_override_skips_resolution():
 async def test_execute_staged_order_conid_override_works_for_fut():
     """Pre-resolved conid also works for FUT (bypasses get_futures)."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "MKT", "sec_type": "FUT", "conid": 495512557,
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "sec_type": "FUT",
+            "conid": 495512557,
+        }
+    )
     await _run(action, ibkr_mod)
     client.get_futures.assert_not_called()
     _, order_body = client.place_order_and_confirm.call_args.args
@@ -883,18 +1092,24 @@ async def test_execute_staged_order_conid_override_works_for_fut():
 
 # ── execute_staged_order — FOP guard ─────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_execute_staged_order_fop_without_conid_sends_error():
     """FOP without conid → clear error message, no place_order, button removed."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "LMT", "limit_price": 50.0, "sec_type": "FOP",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 50.0,
+            "sec_type": "FOP",
+        }
+    )
     recorded = await _run(action, ibkr_mod)
     contents = _sent_contents(recorded)
-    assert any("FOP" in c or "Futures Options" in c or "conid" in c.lower()
-               for c in contents)
+    assert any("FOP" in c or "Futures Options" in c or "conid" in c.lower() for c in contents)
     client.place_order_and_confirm.assert_not_called()
 
 
@@ -903,10 +1118,17 @@ async def test_execute_staged_order_fop_with_conid_proceeds():
     """FOP with pre-resolved conid → order submitted with manualIndicator but NOT
     extOperator (rejected by IBKR as field 8089 — see FUT test above)."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "LMT", "limit_price": 50.0, "sec_type": "FOP", "conid": 999888,
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 50.0,
+            "sec_type": "FOP",
+            "conid": 999888,
+        }
+    )
     await _run(action, ibkr_mod)
     client.place_order_and_confirm.assert_called_once()
     _, order_body = client.place_order_and_confirm.call_args.args
@@ -920,17 +1142,24 @@ async def test_execute_staged_order_fop_with_conid_proceeds():
 # so the result must be classified, not assumed successful.
 # Shape copied verbatim from docs/plans/2026-07-23-futures-order-field-8089-bug.md.
 
-_REJECTION_PAYLOAD = [{
-    "error": "\"BUY 1 ES SEP'26 @ 6000.00\"\nCan not contain field # 8089",
-    "cqe": {"post_payload": {"rejections": ["Can not contain field # 8089"],
-                             "sec_type": "FUT", "conid": "649180671", "exchange": "CME",
-                             "order_id": "0"}},
-    "action": "order_submit_issue",
-}]
+_REJECTION_PAYLOAD = [
+    {
+        "error": '"BUY 1 ES SEP\'26 @ 6000.00"\nCan not contain field # 8089',
+        "cqe": {
+            "post_payload": {
+                "rejections": ["Can not contain field # 8089"],
+                "sec_type": "FUT",
+                "conid": "649180671",
+                "exchange": "CME",
+                "order_id": "0",
+            }
+        },
+        "action": "order_submit_issue",
+    }
+]
 
 # Live-verified success shape (AAPL order, earlier live test).
-_SUCCESS_PAYLOAD = [{"order_id": "1986940574", "order_status": "Submitted",
-                     "encrypt_message": "1"}]
+_SUCCESS_PAYLOAD = [{"order_id": "1986940574", "order_status": "Submitted", "encrypt_message": "1"}]
 
 
 @pytest.mark.parametrize(
@@ -941,8 +1170,9 @@ _SUCCESS_PAYLOAD = [{"order_id": "1986940574", "order_status": "Submitted",
         # Live-verified success list (order_id + order_status) → success.
         pytest.param(_SUCCESS_PAYLOAD, False, id="live-success-list"),
         # Success dict shape (modify/cancel return a single dict) → success.
-        pytest.param({"order_id": "242538143", "order_status": "Submitted"}, False,
-                     id="success-dict"),
+        pytest.param(
+            {"order_id": "242538143", "order_status": "Submitted"}, False, id="success-dict"
+        ),
         # Zero order id with no action/error and no order_status → rejected
         # (third marker's direct coverage, both string and int spellings).
         pytest.param([{"order_id": "0"}], True, id="zero-order-id-str"),
@@ -956,8 +1186,7 @@ _SUCCESS_PAYLOAD = [{"order_id": "1986940574", "order_status": "Submitted",
         pytest.param(["nonsense"], True, id="non-dict-entries"),
         # Multi-entry: order id resolution is last-write-wins — the reply-chain
         # terminal entry is last, so it is the authoritative one.
-        pytest.param([{"order_id": "123"}, {"order_id": "0"}], True,
-                     id="multi-entry-last-wins"),
+        pytest.param([{"order_id": "123"}, {"order_id": "0"}], True, id="multi-entry-last-wins"),
     ],
 )
 def test_is_ibkr_rejection_contract(result, expected):
@@ -973,10 +1202,17 @@ async def test_execute_staged_order_rejection_payload_reports_failure():
     """IBKR 200-with-rejection payload → REJECTED message, never 'staged successfully'."""
     ibkr_mod, client = _make_ibkr_mock()
     client.place_order_and_confirm.return_value = _REJECTION_PAYLOAD
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "LMT", "limit_price": 6000.0, "sec_type": "FUT", "tif": "GTC",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 6000.0,
+            "sec_type": "FUT",
+            "tif": "GTC",
+        }
+    )
     recorded = await _run(action, ibkr_mod)
     contents = _sent_contents(recorded)
     assert any("REJECTED" in c for c in contents)
@@ -992,10 +1228,17 @@ async def test_execute_staged_order_rejection_payload_logs_no_success_decision()
     ibkr_mod, client = _make_ibkr_mock()
     client.place_order_and_confirm.return_value = _REJECTION_PAYLOAD
     store = MagicMock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "LMT", "limit_price": 6000.0, "sec_type": "FUT", "tif": "GTC",
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 6000.0,
+            "sec_type": "FUT",
+            "tif": "GTC",
+        }
+    )
     await _run(action, ibkr_mod, store=store, session_id="s42")
     store.add_decision.assert_not_called()
 
@@ -1026,7 +1269,9 @@ async def test_execute_cancel_order_rejection_payload_reports_failure():
     no 'cancelled' success message, no decision logged."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.cancel_order.return_value = {
-        "error": "Order not found", "action": "order_submit_issue", "order_id": "0",
+        "error": "Order not found",
+        "action": "order_submit_issue",
+        "order_id": "0",
     }
     store = MagicMock()
     action = _make_cancel_action()
@@ -1046,9 +1291,8 @@ async def test_execute_modify_order_rejection_payload_reports_failure():
     REJECTED message, no 'modified' success message, no decision logged."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.modify_order_and_confirm.return_value = {
-        "error": "\"BUY 1 ES SEP'26 @ 6000.00\"\nCan not contain field # 8089",
-        "cqe": {"post_payload": {"rejections": ["Can not contain field # 8089"],
-                                 "order_id": "0"}},
+        "error": '"BUY 1 ES SEP\'26 @ 6000.00"\nCan not contain field # 8089',
+        "cqe": {"post_payload": {"rejections": ["Can not contain field # 8089"], "order_id": "0"}},
         "action": "order_submit_issue",
     }
     store = MagicMock()
@@ -1068,7 +1312,9 @@ async def test_execute_modify_order_rejection_payload_reports_failure():
 async def test_execute_cancel_order_missing_order_id_sends_error():
     """A cancel with no order id is refused before any IBKR call."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_cancel_action({"symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
+    action = _make_cancel_action(
+        {"symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    )
     recorded = await _run_cancel(action, ibkr_mod)
     assert any("order_id" in c.lower() for c in _sent_contents(recorded))
     client.cancel_order.assert_not_called()
@@ -1078,8 +1324,7 @@ async def test_execute_cancel_order_missing_order_id_sends_error():
 async def test_execute_cancel_order_success_sends_success_message():
     """A cancel is only reported as done once get_order_status reads back Cancelled."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    _set_readback(client, order_status="Cancelled",
-                  order_status_description="Order cancelled")
+    _set_readback(client, order_status="Cancelled", order_status_description="Order cancelled")
     action = _make_cancel_action()
     contents = _sent_contents(await _run_cancel(action, ibkr_mod))
     assert any("Verified via get_order_status" in c and "Cancelled" in c for c in contents)
@@ -1089,7 +1334,13 @@ async def test_execute_cancel_order_success_sends_success_message():
 async def test_execute_cancel_order_calls_client_with_account_and_order_id():
     """The cancel reaches the client with the resolved account and the order id."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    proposal = {
+        "order_id": "555",
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "MKT",
+    }
     action = _make_cancel_action(proposal)
     await _run_cancel(action, ibkr_mod)
     client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
@@ -1137,7 +1388,9 @@ async def test_execute_cancel_order_generic_error():
     client.cancel_order.side_effect = RuntimeError("Connection reset")
     action = _make_cancel_action()
     recorded = await _run_cancel(action, ibkr_mod)
-    assert any("failed" in c.lower() or "not cancelled" in c.lower() for c in _sent_contents(recorded))
+    assert any(
+        "failed" in c.lower() or "not cancelled" in c.lower() for c in _sent_contents(recorded)
+    )
 
 
 @pytest.mark.asyncio
@@ -1157,7 +1410,9 @@ async def test_execute_cancel_order_403_error():
 async def test_execute_modify_order_missing_order_id_sends_error():
     """A modify with no order id is refused before any IBKR call."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action({"conid": 265598, "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
+    action = _make_modify_action(
+        {"conid": 265598, "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    )
     recorded = await _run_modify(action, ibkr_mod)
     assert any("order_id" in c.lower() for c in _sent_contents(recorded))
     client.modify_order_and_confirm.assert_not_called()
@@ -1167,7 +1422,9 @@ async def test_execute_modify_order_missing_order_id_sends_error():
 async def test_execute_modify_order_missing_conid_sends_error_directing_to_get_order_status():
     """A modify with no conid is refused and points at `get_order_status`, which returns it."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action({"order_id": "1", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"})
+    action = _make_modify_action(
+        {"order_id": "1", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    )
     recorded = await _run_modify(action, ibkr_mod)
     contents = _sent_contents(recorded)
     assert any("get_order_status" in c or "conid" in c.lower() for c in contents)
@@ -1203,10 +1460,19 @@ async def test_execute_modify_order_success_logs_decision():
 async def test_execute_modify_order_calls_client_with_account_order_id_and_body():
     """The modify reaches the client with the account, order id and a full replacement body."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action({
-        "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
-        "quantity": 3, "order_type": "LMT", "limit_price": 105.0, "tif": "GTC", "sec_type": "STK",
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "555",
+            "conid": 265598,
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 3,
+            "order_type": "LMT",
+            "limit_price": 105.0,
+            "tif": "GTC",
+            "sec_type": "STK",
+        }
+    )
     await _run_modify(action, ibkr_mod)
     client.modify_order_and_confirm.assert_called_once()
     account_id, order_id, order_body = client.modify_order_and_confirm.call_args.args
@@ -1236,10 +1502,16 @@ async def test_execute_modify_order_builds_fresh_body_not_raw_proposal():
 async def test_execute_modify_order_quantity_is_int():
     """Quantity is sent as a whole number, matching the placement path."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action({
-        "order_id": "1", "conid": 1, "symbol": "AAPL", "action": "BUY",
-        "quantity": 5, "order_type": "MKT",
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "1",
+            "conid": 1,
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 5,
+            "order_type": "MKT",
+        }
+    )
     await _run_modify(action, ibkr_mod)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
     assert isinstance(order_body.get("quantity"), int)
@@ -1249,10 +1521,17 @@ async def test_execute_modify_order_quantity_is_int():
 async def test_execute_modify_order_stk_no_cme_fields():
     """A stock modify carries no CME 536-B fields — those are futures-only."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action({
-        "order_id": "1", "conid": 1, "symbol": "AAPL", "action": "BUY",
-        "quantity": 1, "order_type": "MKT", "sec_type": "STK",
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "1",
+            "conid": 1,
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "sec_type": "STK",
+        }
+    )
     await _run_modify(action, ibkr_mod)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
     assert "manualIndicator" not in order_body
@@ -1264,10 +1543,17 @@ async def test_execute_modify_order_fut_cme_536b_fields():
     """FUT modify body includes manualIndicator=True but NOT extOperator — same
     field-8089 rejection as the place path (docs/plans/2026-07-23-futures-order-field-8089-bug.md)."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action({
-        "order_id": "1", "conid": 495512557, "symbol": "ES", "action": "BUY",
-        "quantity": 1, "order_type": "MKT", "sec_type": "FUT",
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "1",
+            "conid": 495512557,
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "MKT",
+            "sec_type": "FUT",
+        }
+    )
     await _run_modify(action, ibkr_mod)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
     assert order_body.get("manualIndicator") is True
@@ -1278,10 +1564,18 @@ async def test_execute_modify_order_fut_cme_536b_fields():
 async def test_execute_modify_order_stop_limit_price_and_aux_price():
     """A stop-limit modify sends the limit in `price` and the stop in `auxPrice`."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action({
-        "order_id": "1", "conid": 1, "symbol": "AAPL", "action": "SELL", "quantity": 1,
-        "order_type": "STOP_LIMIT", "limit_price": 95.0, "stop_price": 96.0,
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "1",
+            "conid": 1,
+            "symbol": "AAPL",
+            "action": "SELL",
+            "quantity": 1,
+            "order_type": "STOP_LIMIT",
+            "limit_price": 95.0,
+            "stop_price": 96.0,
+        }
+    )
     await _run_modify(action, ibkr_mod)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
     assert order_body.get("price") == 95.0
@@ -1326,10 +1620,13 @@ async def test_execute_modify_order_generic_error():
     client.modify_order_and_confirm.side_effect = RuntimeError("Connection reset")
     action = _make_modify_action()
     recorded = await _run_modify(action, ibkr_mod)
-    assert any("failed" in c.lower() or "not modified" in c.lower() for c in _sent_contents(recorded))
+    assert any(
+        "failed" in c.lower() or "not modified" in c.lower() for c in _sent_contents(recorded)
+    )
 
 
 # ── Extracted core functions (Task 3.2) — framework-agnostic, dict + callback in ────
+
 
 def _make_send_status_recorder():
     """A send_status callback that records every (text, author) call, for assertions —
@@ -1349,13 +1646,23 @@ async def test_execute_staged_order_core_success_calls_send_status():
     """The extracted core, called directly with a plain dict (no cl.Action, no JSON
     parsing) and a plain callback (no chainlit), produces the same success behavior."""
     from claudia.order_flow import _execute_staged_order_core
+
     ibkr_mod, _client = _make_ibkr_mock()
     proposal = {
-        "symbol": "AAPL", "action": "BUY", "quantity": 50, "conid": 265598,
-        "order_type": "MKT", "limit_price": None, "stop_price": None, "reason": "Test",
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 50,
+        "conid": 265598,
+        "order_type": "MKT",
+        "limit_price": None,
+        "stop_price": None,
+        "reason": "Test",
     }
     send_status, calls = _make_send_status_recorder()
-    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), _no_readback_delay():
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
         await _execute_staged_order_core(proposal, send_status, session_id="s1", store=None)
     assert any("Verified via get_order_status" in text for text, _author in calls)
 
@@ -1367,6 +1674,7 @@ async def test_execute_staged_order_core_never_touches_action_or_removes_anythin
     import inspect
 
     from claudia.order_flow import _execute_staged_order_core
+
     sig = inspect.signature(_execute_staged_order_core)
     assert "action" not in sig.parameters
     assert "proposal" in sig.parameters
@@ -1377,10 +1685,20 @@ async def test_execute_staged_order_core_never_touches_action_or_removes_anythin
 async def test_execute_cancel_order_core_calls_client_with_account_and_order_id():
     """The framework-agnostic core passes the account and order id straight through."""
     from claudia.order_flow import _execute_cancel_order_core
+
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    proposal = {
+        "order_id": "555",
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "MKT",
+    }
     send_status, _calls = _make_send_status_recorder()
-    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), _no_readback_delay():
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
         await _execute_cancel_order_core(proposal, send_status, session_id="s1", store=None)
     client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
 
@@ -1390,6 +1708,7 @@ def test_execute_cancel_order_core_never_touches_action_or_removes_anything():
     import inspect
 
     from claudia.order_flow import _execute_cancel_order_core
+
     sig = inspect.signature(_execute_cancel_order_core)
     assert "action" not in sig.parameters
     assert "proposal" in sig.parameters
@@ -1400,15 +1719,25 @@ def test_execute_cancel_order_core_never_touches_action_or_removes_anything():
 async def test_execute_modify_order_core_builds_fresh_body_not_raw_proposal():
     """The core builds a clean IBKR body rather than forwarding the display-carrying proposal."""
     from claudia.order_flow import _execute_modify_order_core
+
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     proposal = {
-        "order_id": "242538143", "conid": 265598, "symbol": "AAPL",
-        "action": "BUY", "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
-        "tif": "GTC", "sec_type": "STK",
+        "order_id": "242538143",
+        "conid": 265598,
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "LMT",
+        "limit_price": 105.0,
+        "tif": "GTC",
+        "sec_type": "STK",
         "changes": [{"field": "limit_price", "previous_value": 100.0}],
     }
     send_status, _calls = _make_send_status_recorder()
-    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), _no_readback_delay():
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
         await _execute_modify_order_core(proposal, send_status, session_id="s1", store=None)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
     assert "changes" not in order_body
@@ -1419,6 +1748,7 @@ def test_execute_modify_order_core_never_touches_action_or_removes_anything():
     import inspect
 
     from claudia.order_flow import _execute_modify_order_core
+
     sig = inspect.signature(_execute_modify_order_core)
     assert "action" not in sig.parameters
     assert "proposal" in sig.parameters
@@ -1444,6 +1774,7 @@ NOT_CONFIRMED_PLACE = ["PendingSubmit", "Inactive", "WarnState"]
 
 
 # ── the delay is a wait, and the read follows the dispatch ───────────────────
+
 
 def test_readback_delay_sits_above_the_client_subscription_warmup():
     """client.py's order endpoints warm up their subscription with a 1 s sleep; the
@@ -1493,6 +1824,7 @@ async def test_read_back_happens_after_the_dispatch_never_before():
 
 
 # ── place ────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", CONFIRMED_PLACE)
@@ -1587,10 +1919,13 @@ async def test_presence_is_matched_on_the_order_id_not_on_any_order_being_there(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("row", [
-    {"order_id": "999", "status": "Submitted"},   # snake_case spelling
-    {"orderId": 999, "status": "Submitted"},      # int, as IBKR sometimes returns
-])
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"order_id": "999", "status": "Submitted"},  # snake_case spelling
+        {"orderId": 999, "status": "Submitted"},  # int, as IBKR sometimes returns
+    ],
+)
 async def test_presence_accepts_both_id_spellings_and_numeric_ids(row):
     """Both spellings occur across IBKR order responses (see `_extract_order_id`), and a
     missed match here would be reported as an absence — the dangerous direction."""
@@ -1646,7 +1981,7 @@ async def test_absence_is_never_reported_as_success_or_as_failure():
     joined = " ".join(contents)
 
     assert "could not be verified" in joined
-    assert "NOT evidence" in joined                 # absence is named as non-evidence
+    assert "NOT evidence" in joined  # absence is named as non-evidence
     assert "Verified via get_live_orders" not in joined
     assert "does not exist" not in joined
     assert "was not placed" not in joined
@@ -1698,8 +2033,10 @@ async def test_the_live_book_is_read_after_the_wait_and_after_the_dispatch():
         seen.append(("sleep", seconds))
 
     proposal = json.loads(_make_action().payload["order"])
-    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}), \
-            patch.object(order_flow.asyncio, "sleep", _fake_sleep):
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        patch.object(order_flow.asyncio, "sleep", _fake_sleep),
+    ):
         await _execute_staged_order_core(proposal, send_status)
 
     assert seen == ["dispatch", ("sleep", _READBACK_DELAY_S), "live_orders"]
@@ -1731,6 +2068,7 @@ async def test_the_modify_path_does_not_use_the_live_book_as_evidence():
 
 # ── cancel ───────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["PendingCancel", "PreCancelled"])
 async def test_cancel_pending_is_not_a_cancellation(status):
@@ -1740,8 +2078,9 @@ async def test_cancel_pending_is_not_a_cancellation(status):
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, order_status=status, order_status_description="d")
     store = MagicMock()
-    contents = _sent_contents(await _run_cancel(_make_cancel_action(), ibkr_mod,
-                                                store=store, session_id="s1"))
+    contents = _sent_contents(
+        await _run_cancel(_make_cancel_action(), ibkr_mod, store=store, session_id="s1")
+    )
     assert any("not confirmed" in c for c in contents)
     assert any("may still receive an execution" in c for c in contents)
     assert not any("Verified via get_order_status" in c for c in contents)
@@ -1752,13 +2091,14 @@ async def test_cancel_pending_is_not_a_cancellation(status):
 
 @pytest.mark.asyncio
 async def test_cancel_confirmed_only_on_cancelled():
-    """"Cancelled": "the balance of your order has been confirmed canceled by the
+    """ "Cancelled": "the balance of your order has been confirmed canceled by the
     system" — the only documented value that is evidence of a cancellation."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, order_status="Cancelled", order_status_description="d")
     store = MagicMock()
-    contents = _sent_contents(await _run_cancel(_make_cancel_action(), ibkr_mod,
-                                                store=store, session_id="s1"))
+    contents = _sent_contents(
+        await _run_cancel(_make_cancel_action(), ibkr_mod, store=store, session_id="s1")
+    )
     assert any("Verified via get_order_status" in c and "Cancelled" in c for c in contents)
     assert store.add_decision.call_args.kwargs["metadata"]["readback_confirmed"] is True
 
@@ -1786,6 +2126,7 @@ async def test_cancel_provisional_line_does_not_claim_the_ticket_is_gone():
 
 
 # ── 503 / read failure ───────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("runner", ["place", "cancel"])
@@ -1832,6 +2173,7 @@ async def test_a_non_dict_read_back_is_not_confirmation():
 
 # ── modify — fields, not just status ─────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_modify_compares_fields_not_just_status():
     """A modify that silently did not apply still reads Submitted — the status alone
@@ -1839,11 +2181,19 @@ async def test_modify_compares_fields_not_just_status():
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, order_status="Submitted", total_size=1)  # requested 3
     store = MagicMock()
-    action = _make_modify_action({
-        "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
-        "quantity": 3, "order_type": "LMT", "limit_price": 105.0, "tif": "GTC",
-        "sec_type": "STK",
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "555",
+            "conid": 265598,
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 3,
+            "order_type": "LMT",
+            "limit_price": 105.0,
+            "tif": "GTC",
+            "sec_type": "STK",
+        }
+    )
     contents = _sent_contents(await _run_modify(action, ibkr_mod, store=store, session_id="s1"))
     assert any("does NOT match the request" in c for c in contents)
     assert any("quantity" in c and "not confirmed" in c for c in contents)
@@ -1856,11 +2206,19 @@ async def test_modify_field_comparison_tolerates_ibkr_number_formatting():
     mismatch on that would train the user to ignore the warning."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, total_size="3.0", side="buy", order_type="lmt", tif="gtc")
-    action = _make_modify_action({
-        "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
-        "quantity": 3, "order_type": "LMT", "limit_price": 105.0, "tif": "GTC",
-        "sec_type": "STK",
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "555",
+            "conid": 265598,
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 3,
+            "order_type": "LMT",
+            "limit_price": 105.0,
+            "tif": "GTC",
+            "sec_type": "STK",
+        }
+    )
     contents = _sent_contents(await _run_modify(action, ibkr_mod))
     assert any("Read-back matches the request" in c for c in contents)
     assert not any("does NOT match" in c for c in contents)
@@ -1884,10 +2242,18 @@ async def test_modify_price_caveat_absent_for_a_non_price_modify():
     """No price in the request → no price caveat. The warning must mean something."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, order_type="MKT", total_size=2)
-    action = _make_modify_action({
-        "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
-        "quantity": 2, "order_type": "MKT", "tif": "GTC", "sec_type": "STK",
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "555",
+            "conid": 265598,
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 2,
+            "order_type": "MKT",
+            "tif": "GTC",
+            "sec_type": "STK",
+        }
+    )
     contents = _sent_contents(await _run_modify(action, ibkr_mod))
     assert not any("price could not be verified" in c for c in contents)
     assert any("Read-back matches the request" in c for c in contents)
@@ -1904,12 +2270,15 @@ async def test_modify_non_working_status_is_not_confirmed_even_if_fields_match()
 
 def test_compare_modify_readback_reports_no_comparable_fields_as_unconfirmed():
     """Nothing observed to compare is not a match — never invent agreement."""
-    ok, line = _compare_modify_readback({"quantity": 1, "side": "BUY"}, {"order_status": "Submitted"})
+    ok, line = _compare_modify_readback(
+        {"quantity": 1, "side": "BUY"}, {"order_status": "Submitted"}
+    )
     assert ok is False
     assert "no comparable" in line.lower()
 
 
 # ── _extract_order_id ────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize(
     ("result", "expected"),
@@ -1934,6 +2303,7 @@ def test_extract_order_id_contract(result, expected):
 
 # ── provisional line ordering ────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", CONFIRMED_PLACE + NOT_CONFIRMED_PLACE)
 async def test_provisional_line_precedes_the_verified_one(status):
@@ -1943,8 +2313,11 @@ async def test_provisional_line_precedes_the_verified_one(status):
     _set_readback(client, order_status=status)
     contents = _sent_contents(await _run(_make_action(), ibkr_mod))
     provisional = next(i for i, c in enumerate(contents) if "accepted by ibkr" in c.lower())
-    verified = next(i for i, c in enumerate(contents) if "verifying" not in c.lower()
-                    and ("get_order_status" in c or "not confirmed" in c))
+    verified = next(
+        i
+        for i, c in enumerate(contents)
+        if "verifying" not in c.lower() and ("get_order_status" in c or "not confirmed" in c)
+    )
     assert provisional < verified
     assert any("verifying" in c.lower() for c in contents)
     assert not any("successfully" in c for c in contents)
@@ -1955,6 +2328,7 @@ async def test_provisional_line_precedes_the_verified_one(status):
 # that — surfacing the result, writing the decision row — is a reporting failure,
 # not a placement failure. Saying "Order not placed" there is the same defect this
 # task exists to close, pointed the other way.
+
 
 @pytest.mark.asyncio
 async def test_place_post_dispatch_failure_does_not_claim_the_order_was_not_placed():
@@ -1974,8 +2348,9 @@ async def test_cancel_post_dispatch_failure_does_not_claim_the_order_was_not_can
     ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     store = MagicMock()
     store.add_decision.side_effect = RuntimeError("database is locked")
-    contents = _sent_contents(await _run_cancel(_make_cancel_action(), ibkr_mod,
-                                                store=store, session_id="s1"))
+    contents = _sent_contents(
+        await _run_cancel(_make_cancel_action(), ibkr_mod, store=store, session_id="s1")
+    )
     assert not any("**Order not cancelled:**" in c for c in contents)
     assert any("WAS dispatched to IBKR" in c for c in contents)
 
@@ -1986,8 +2361,9 @@ async def test_modify_post_dispatch_failure_does_not_claim_the_order_was_not_mod
     ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
     store = MagicMock()
     store.add_decision.side_effect = RuntimeError("database is locked")
-    contents = _sent_contents(await _run_modify(_make_modify_action(), ibkr_mod,
-                                                store=store, session_id="s1"))
+    contents = _sent_contents(
+        await _run_modify(_make_modify_action(), ibkr_mod, store=store, session_id="s1")
+    )
     assert not any("**Order not modified:**" in c for c in contents)
     assert any("WAS dispatched to IBKR" in c for c in contents)
 
@@ -2003,6 +2379,7 @@ async def test_a_failure_before_the_dispatch_still_says_the_order_was_not_placed
 
 
 # ── blank read-back fields are absence, not disagreement ─────────────────────
+
 
 def test_blank_readback_field_is_uncomparable_not_a_mismatch():
     """An empty value carries no information — treating it as disagreement would be a
@@ -2021,8 +2398,12 @@ def test_documented_cancel_success_body_is_not_classified_a_rejection():
     _is_ibkr_rejection's no-status/zero-id marker, or a real cancel would be reported as
     FAILED and never reach the read-back at all. Shape verbatim from
     https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md"""
-    body = {"msg": "Request was submitted", "order_id": 987654,
-            "conid": 265598, "account": "U12345"}
+    body = {
+        "msg": "Request was submitted",
+        "order_id": 987654,
+        "conid": 265598,
+        "account": "U12345",
+    }
     assert _is_ibkr_rejection(body) is False
 
 
@@ -2116,10 +2497,18 @@ def test_a_genuinely_changed_side_is_still_caught():
 async def test_place_body_carries_outside_rth_when_the_proposal_states_it(value, expected):
     """A stated outside_rth reaches IBKR as outsideRTH, verbatim (order-parameter immutability)."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "STP",
-        "stop_price": 7725.0, "tif": "GTC", "sec_type": "FUT", "outside_rth": value,
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "STP",
+            "stop_price": 7725.0,
+            "tif": "GTC",
+            "sec_type": "FUT",
+            "outside_rth": value,
+        }
+    )
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("outsideRTH") is expected
@@ -2130,10 +2519,18 @@ async def test_place_body_carries_outside_rth_when_the_proposal_states_it(value,
 async def test_place_body_omits_outside_rth_when_the_user_did_not_say(payload):
     """null (or absent, for older callers) sends nothing — never a fabricated False."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "STP",
-        "stop_price": 7725.0, "tif": "GTC", "sec_type": "FUT", **payload,
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "STP",
+            "stop_price": 7725.0,
+            "tif": "GTC",
+            "sec_type": "FUT",
+            **payload,
+        }
+    )
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert "outsideRTH" not in order_body
@@ -2143,23 +2540,41 @@ async def test_place_body_omits_outside_rth_when_the_user_did_not_say(payload):
 async def test_modify_body_carries_outside_rth_when_stated_and_omits_it_when_null():
     """A modify resends the whole order: the attribute must survive the round trip."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action({
-        "order_id": "555", "conid": 649180671, "symbol": "ES", "action": "BUY",
-        "quantity": 1, "order_type": "STP", "stop_price": 7720.0, "tif": "GTC",
-        "sec_type": "FUT", "outside_rth": True,
-        "changes": [{"field": "stop_price", "previous_value": 7725.0}],
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "555",
+            "conid": 649180671,
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "STP",
+            "stop_price": 7720.0,
+            "tif": "GTC",
+            "sec_type": "FUT",
+            "outside_rth": True,
+            "changes": [{"field": "stop_price", "previous_value": 7725.0}],
+        }
+    )
     await _run_modify(action, ibkr_mod)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
     assert order_body.get("outsideRTH") is True
 
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    action = _make_modify_action({
-        "order_id": "555", "conid": 649180671, "symbol": "ES", "action": "BUY",
-        "quantity": 1, "order_type": "STP", "stop_price": 7720.0, "tif": "GTC",
-        "sec_type": "FUT", "outside_rth": None,
-        "changes": [{"field": "stop_price", "previous_value": 7725.0}],
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "555",
+            "conid": 649180671,
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "STP",
+            "stop_price": 7720.0,
+            "tif": "GTC",
+            "sec_type": "FUT",
+            "outside_rth": None,
+            "changes": [{"field": "stop_price", "previous_value": 7725.0}],
+        }
+    )
     await _run_modify(action, ibkr_mod)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
     assert "outsideRTH" not in order_body
@@ -2168,8 +2583,15 @@ async def test_modify_body_carries_outside_rth_when_stated_and_omits_it_when_nul
 def test_summary_states_outside_rth_for_every_futures_stop():
     """A futures stop ALWAYS says whether it is active outside RTH — 'no' is the dangerous
     default (IBKR triggers it only in RTH) and must be visible before Touch ID."""
-    base = {"symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "STP",
-            "stop_price": 7725.0, "tif": "GTC", "sec_type": "FUT"}
+    base = {
+        "symbol": "ES",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "STP",
+        "stop_price": 7725.0,
+        "tif": "GTC",
+        "sec_type": "FUT",
+    }
     unset = _format_order_summary({**base, "outside_rth": None})
     assert "Outside RTH: **not set**" in unset and "regular trading hours" in unset
     yes = _format_order_summary({**base, "outside_rth": True})
@@ -2179,8 +2601,15 @@ def test_summary_states_outside_rth_for_every_futures_stop():
 
 def test_summary_mentions_outside_rth_for_other_orders_only_when_set():
     """A stock limit says nothing about RTH unless the user set the attribute."""
-    base = {"symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "LMT",
-            "limit_price": 150.0, "tif": "GTC", "sec_type": "STK"}
+    base = {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "LMT",
+        "limit_price": 150.0,
+        "tif": "GTC",
+        "sec_type": "STK",
+    }
     assert "Outside RTH" not in _format_order_summary({**base, "outside_rth": None})
     assert "Outside RTH: **yes**" in _format_order_summary({**base, "outside_rth": True})
 
@@ -2194,10 +2623,18 @@ async def test_place_body_never_coerces_a_non_boolean_outside_rth(value):
     """#4: bool("false") is True. Only a real bool is sent; anything else sends nothing
     (the defect checker upstream rejects it — this is the belt to that brace)."""
     ibkr_mod, client = _make_ibkr_mock()
-    action = _make_action({
-        "symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "STP",
-        "stop_price": 7725.0, "tif": "GTC", "sec_type": "FUT", "outside_rth": value,
-    })
+    action = _make_action(
+        {
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "STP",
+            "stop_price": 7725.0,
+            "tif": "GTC",
+            "sec_type": "FUT",
+            "outside_rth": value,
+        }
+    )
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert "outsideRTH" not in order_body
@@ -2206,12 +2643,26 @@ async def test_place_body_never_coerces_a_non_boolean_outside_rth(value):
 def test_summary_tells_a_stated_no_from_not_set():
     """#5: False (stated) and None (not set) send different bodies, so they must read
     differently — and a stated False shows on ANY order, not only a futures stop."""
-    fut = {"symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "STP",
-           "stop_price": 7725.0, "tif": "GTC", "sec_type": "FUT"}
+    fut = {
+        "symbol": "ES",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "STP",
+        "stop_price": 7725.0,
+        "tif": "GTC",
+        "sec_type": "FUT",
+    }
     assert "Outside RTH: **not set**" in _format_order_summary({**fut, "outside_rth": None})
     assert "Outside RTH: **no**" in _format_order_summary({**fut, "outside_rth": False})
-    stk = {"symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "LMT",
-           "limit_price": 150.0, "tif": "GTC", "sec_type": "STK"}
+    stk = {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "LMT",
+        "limit_price": 150.0,
+        "tif": "GTC",
+        "sec_type": "STK",
+    }
     assert "Outside RTH: **no**" in _format_order_summary({**stk, "outside_rth": False})
     assert "Outside RTH" not in _format_order_summary({**stk, "outside_rth": None})
 
@@ -2220,15 +2671,30 @@ def test_modify_summary_warns_when_a_futures_stop_is_resent_without_outside_rth(
     """#1: a modify resends the whole order. Null on a futures stop means the attribute is
     dropped and the stop reverts to RTH-only — the approval text must say so; a stated
     value renders like the place summary."""
-    base = {"order_id": "555", "conid": 649180671, "symbol": "ES", "action": "BUY",
-            "quantity": 1, "order_type": "STP", "stop_price": 7720.0, "tif": "GTC",
-            "sec_type": "FUT", "changes": [{"field": "stop_price", "previous_value": 7725.0}]}
+    base = {
+        "order_id": "555",
+        "conid": 649180671,
+        "symbol": "ES",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "STP",
+        "stop_price": 7720.0,
+        "tif": "GTC",
+        "sec_type": "FUT",
+        "changes": [{"field": "stop_price", "previous_value": 7725.0}],
+    }
     dropped = _format_modify_summary({**base, "outside_rth": None})
     assert "Outside RTH: **not set**" in dropped and "resend" in dropped.lower()
     kept = _format_modify_summary({**base, "outside_rth": True})
     assert "Outside RTH: **yes**" in kept
-    stk = {**base, "symbol": "AAPL", "sec_type": "STK", "order_type": "LMT",
-           "limit_price": 150.0, "outside_rth": None}
+    stk = {
+        **base,
+        "symbol": "AAPL",
+        "sec_type": "STK",
+        "order_type": "LMT",
+        "limit_price": 150.0,
+        "outside_rth": None,
+    }
     assert "Outside RTH" not in _format_modify_summary(stk)
 
 
@@ -2239,11 +2705,13 @@ def test_modify_readback_compares_outside_rth_when_ibkr_reports_it():
 
     body = {"quantity": 1, "orderType": "LMT", "tif": "GTC", "side": "BUY", "outsideRTH": True}
     agree, line = _compare_modify_readback(
-        body, {"total_size": 1, "order_type": "LIMIT", "tif": "GTC", "side": "B", "outside_rth": False}
+        body,
+        {"total_size": 1, "order_type": "LIMIT", "tif": "GTC", "side": "B", "outside_rth": False},
     )
     assert agree is False and "outside RTH" in line
     agree, line = _compare_modify_readback(
-        body, {"total_size": 1, "order_type": "LIMIT", "tif": "GTC", "side": "B", "outside_rth": True}
+        body,
+        {"total_size": 1, "order_type": "LIMIT", "tif": "GTC", "side": "B", "outside_rth": True},
     )
     assert agree is True and "outside RTH True" in line
 
@@ -2282,12 +2750,21 @@ async def test_modify_readback_verifies_a_stop_price_from_stop_price():
     """The live case: STP moved 7735 → 7732, status stop_price '7732.00' → verified."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, order_type="STP", stop_price="7732.00", limit_price="")
-    action = _make_modify_action({
-        "order_id": "853170745", "conid": 649180671, "symbol": "ES", "action": "BUY",
-        "quantity": 1, "order_type": "STP", "stop_price": 7732.0, "tif": "GTC",
-        "sec_type": "FUT", "outside_rth": True,
-        "changes": [{"field": "stop_price", "previous_value": 7735.0}],
-    })
+    action = _make_modify_action(
+        {
+            "order_id": "853170745",
+            "conid": 649180671,
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "STP",
+            "stop_price": 7732.0,
+            "tif": "GTC",
+            "sec_type": "FUT",
+            "outside_rth": True,
+            "changes": [{"field": "stop_price", "previous_value": 7735.0}],
+        }
+    )
     contents = _sent_contents(await _run_modify(action, ibkr_mod))
     assert any("stop price 7732.0" in c for c in contents)
     assert not any("price could not be verified" in c for c in contents)
@@ -2316,10 +2793,22 @@ def test_compare_modify_readback_checks_both_prices_of_a_stop_limit():
     """STOP_LIMIT: `price` ↔ limit_price and `auxPrice` ↔ stop_price, each on its own."""
     from claudia.order_flow import _compare_modify_readback
 
-    body = {"quantity": 1, "orderType": "STOP_LIMIT", "tif": "GTC", "side": "BUY",
-            "price": 7740.0, "auxPrice": 7735.0}
-    status = {"total_size": 1, "order_type": "STOP_LIMIT", "tif": "GTC", "side": "B",
-              "limit_price": "7740.00", "stop_price": "7735.00"}
+    body = {
+        "quantity": 1,
+        "orderType": "STOP_LIMIT",
+        "tif": "GTC",
+        "side": "BUY",
+        "price": 7740.0,
+        "auxPrice": 7735.0,
+    }
+    status = {
+        "total_size": 1,
+        "order_type": "STOP_LIMIT",
+        "tif": "GTC",
+        "side": "B",
+        "limit_price": "7740.00",
+        "stop_price": "7735.00",
+    }
     agree, line = _compare_modify_readback(body, status)
     assert agree is True and "limit price 7740.0" in line and "stop price 7735.0" in line
     status["stop_price"] = "7730.00"

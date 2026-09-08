@@ -38,6 +38,7 @@ def _owner(live: bool = True):
     owner.state.return_value = state
     return owner
 
+
 _TODAY = date(2026, 8, 6)
 
 
@@ -53,8 +54,9 @@ def db(tmp_path):
         # `asset_category` is present on the REAL flex_lot (verified against the live
         # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
         # double weaker than its dependency, and kept the per-type breakdown untested.
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
-                  " fifo_pnl_realized REAL)")
+        w.execute(
+            "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
+        )
         w.executemany(
             "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?)",
             [
@@ -71,22 +73,41 @@ def db(tmp_path):
 # "BASE" (measured 2026-08-04), which is why the poller carries a base-currency hint
 # taken from /portfolio/accounts instead.
 _LEDGER = {
-    "USD": {"currency": "USD", "netliquidationvalue": 100000.0,
-            "cashbalance": 25000.0, "unrealizedpnl": -1234.5,
-            "realizedpnl": 99.0, "futuresonlypnl": -3516.98},
+    "USD": {
+        "currency": "USD",
+        "netliquidationvalue": 100000.0,
+        "cashbalance": 25000.0,
+        "unrealizedpnl": -1234.5,
+        "realizedpnl": 99.0,
+        "futuresonlypnl": -3516.98,
+    },
     "EUR": {"currency": "EUR", "netliquidationvalue": 10.0},
     "BASE": {"currency": "BASE", "netliquidationvalue": 100010.0},
 }
 
 _ORDER = {
-    "orderId": 314390101, "ticker": "AAPL", "side": "BUY", "totalSize": 1,
-    "remainingQuantity": 1, "price": 100.0, "orderType": "Limit",
-    "timeInForce": "GTC", "status": "Submitted", "order_ref": "CLAUDIA-178594",
+    "orderId": 314390101,
+    "ticker": "AAPL",
+    "side": "BUY",
+    "totalSize": 1,
+    "remainingQuantity": 1,
+    "price": 100.0,
+    "orderType": "Limit",
+    "timeInForce": "GTC",
+    "status": "Submitted",
+    "order_ref": "CLAUDIA-178594",
 }
 
-_POSITION = {"conid": 1, "ticker": "ESU6", "contractDesc": "ESU6", "assetClass": "FUT",
-             "position": 1.0, "mktValue": 324000.0, "unrealizedPnl": -1234.5,
-             "currency": "USD"}
+_POSITION = {
+    "conid": 1,
+    "ticker": "ESU6",
+    "contractDesc": "ESU6",
+    "assetClass": "FUT",
+    "position": 1.0,
+    "mktValue": 324000.0,
+    "unrealizedPnl": -1234.5,
+    "currency": "USD",
+}
 
 # Sentinel for FakeClient(trades=...): "this endpoint raises", which is a different
 # state from "it answered, with nothing" and the two must not share a value.
@@ -96,9 +117,15 @@ _RAISE = object()
 def _trade(conid, side, size, price, day="20260806", seq="01", multiplier=1.0):
     """One `/iserver/account/trades` row, in IBKR's own shape."""
     return {
-        "execution_id": f"{day}.{seq}", "conid": conid, "symbol": "TEST",
-        "sec_type": "STK", "side": side, "size": size, "price": price,
-        "net_amount": price * size * multiplier, "trade_time": f"{day}-12:00:00",
+        "execution_id": f"{day}.{seq}",
+        "conid": conid,
+        "symbol": "TEST",
+        "sec_type": "STK",
+        "side": side,
+        "size": size,
+        "price": price,
+        "net_amount": price * size * multiplier,
+        "trade_time": f"{day}-12:00:00",
     }
 
 
@@ -245,8 +272,9 @@ async def test_flex_sections_still_refresh_when_ibkr_is_down(db):
 
 async def test_a_missing_store_does_not_stop_the_account_half(tmp_path):
     """No store.db: the ledger still polls, the Flex sections are simply absent."""
-    p = DashboardPoller(FakeClient(), tmp_path / "nope.db", today_provider=lambda: _TODAY,
-                        session=_owner())
+    p = DashboardPoller(
+        FakeClient(), tmp_path / "nope.db", today_provider=lambda: _TODAY, session=_owner()
+    )
     await p._poll_once()
     snap = p.snapshot()
     assert snap.ledger is not None
@@ -309,8 +337,9 @@ async def test_an_empty_store_is_not_treated_as_a_failed_read(tmp_path):
         # `asset_category` is present on the REAL flex_lot (verified against the live
         # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
         # double weaker than its dependency, and kept the per-type breakdown untested.
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
-                  " fifo_pnl_realized REAL)")
+        w.execute(
+            "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
+        )
     p = DashboardPoller(FakeClient(), path, today_provider=lambda: _TODAY, session=_owner())
     await p._poll_once()
     snap = p.snapshot()
@@ -506,14 +535,17 @@ async def test_entries_are_attached_when_the_store_can_answer(tmp_path):
         # `asset_category` is present on the REAL flex_lot (verified against the live
         # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
         # double weaker than its dependency, and kept the per-type breakdown untested.
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
-                  " fifo_pnl_realized REAL)")
+        w.execute(
+            "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
+        )
         w.executemany(
             "INSERT INTO flex_trade (source, conid, symbol, trade_date, date_time,"
             " quantity, trade_price) VALUES ('flex', '1', 'TEST', ?, ?, ?, ?)",
-            [("20260601", "20260601;100000", 1.0, 100.0),
-             ("20260602", "20260602;100000", 1.0, 110.0),
-             ("20260603", "20260603;100000", -1.0, 130.0)],
+            [
+                ("20260601", "20260601;100000", 1.0, 100.0),
+                ("20260602", "20260602;100000", 1.0, 110.0),
+                ("20260603", "20260603;100000", -1.0, 130.0),
+            ],
         )
     p = _poller(path, FakeClient(positions=[{**_POSITION, "position": 1.0}]))
     await p._poll_once()
@@ -532,13 +564,16 @@ def _replaced_intraday_store(tmp_path):
             " symbol TEXT, underlying_symbol TEXT, date_time TEXT, quantity REAL,"
             " trade_price REAL)"
         )
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
-                  " fifo_pnl_realized REAL)")
+        w.execute(
+            "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
+        )
         w.executemany(
             "INSERT INTO flex_trade (source, conid, symbol, trade_date, trade_date_iso,"
             " date_time, quantity, trade_price) VALUES ('flex', '1', 'TEST', ?, ?, ?, ?, ?)",
-            [("20260605", "2026-06-05", "20260605;100000", 1.0, 100.0),
-             ("20260605", "2026-06-05", "20260605;100100", 1.0, 110.0)],
+            [
+                ("20260605", "2026-06-05", "20260605;100000", 1.0, 100.0),
+                ("20260605", "2026-06-05", "20260605;100100", 1.0, 110.0),
+            ],
         )
     return path
 
@@ -555,9 +590,11 @@ async def test_a_position_replaced_since_the_statement_publishes_todays_lots(tmp
         _replaced_intraday_store(tmp_path),
         FakeClient(
             positions=[{**_POSITION, "position": 2.0}],
-            trades=[_trade(1, "S", 2, 150.0, seq="01"),
-                    _trade(1, "B", 1, 200.0, seq="02"),
-                    _trade(1, "B", 1, 200.0, seq="03")],
+            trades=[
+                _trade(1, "S", 2, 150.0, seq="01"),
+                _trade(1, "B", 1, 200.0, seq="02"),
+                _trade(1, "B", 1, 200.0, seq="03"),
+            ],
         ),
     )
     await p._poll_once()
@@ -626,6 +663,7 @@ async def test_an_unreadable_order_book_is_none_not_empty(db):
     book could not be read. Orders come from /iserver/* and can fail while /portfolio/*
     answers perfectly.
     """
+
     class _NoBridge(FakeClient):
         """A client whose /iserver order lookup fails while /portfolio still answers."""
 
@@ -673,8 +711,9 @@ async def test_the_flex_half_still_runs_when_the_session_is_not_live(db):
     Blanking it because IBKR went away would invent an outage in the half of the
     dashboard that is still perfectly good.
     """
-    poller = DashboardPoller(FakeClient(), db, today_provider=lambda: _TODAY,
-                             session=_owner(live=False))
+    poller = DashboardPoller(
+        FakeClient(), db, today_provider=lambda: _TODAY, session=_owner(live=False)
+    )
 
     await poller._poll_once()
     snap = poller.snapshot()

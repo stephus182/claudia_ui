@@ -634,9 +634,7 @@ def parse_positions(rows: Sequence[Any]) -> tuple[Position, ...]:
         avg_price = _as_float(row.get("avgPrice"))
         if not avg_price and avg_cost and raw_multiplier:
             avg_price = avg_cost / raw_multiplier
-        multiplier = raw_multiplier or (
-            avg_cost / avg_price if avg_price and avg_cost else None
-        )
+        multiplier = raw_multiplier or (avg_cost / avg_price if avg_price and avg_cost else None)
         out.append(
             Position(
                 conid=int(_as_float(row.get("conid"))),
@@ -808,7 +806,9 @@ def economic_entries(
         if average is None or abs(held - position.quantity) > _QTY_EPSILON:
             log.debug(
                 "Economic entry declined for conid %s: reconstructed %s vs IBKR %s",
-                conid, held, position.quantity,
+                conid,
+                held,
+                position.quantity,
             )
             continue
         entries[conid] = average
@@ -820,8 +820,7 @@ def with_economic_entries(
 ) -> tuple[Position, ...]:
     """Attach reconstructed entries to positions, leaving unreconstructed ones at None."""
     return tuple(
-        replace(p, economic_entry=entries[p.conid]) if p.conid in entries else p
-        for p in positions
+        replace(p, economic_entry=entries[p.conid]) if p.conid in entries else p for p in positions
     )
 
 
@@ -940,9 +939,7 @@ class RealisedWindow:
         return sum(self.by_asset.get(c, 0.0) for c in categories)
 
 
-def realised_window(
-    conn: sqlite3.Connection, start: date, end: date
-) -> RealisedWindow:
+def realised_window(conn: sqlite3.Connection, start: date, end: date) -> RealisedWindow:
     """Realised P&L between `start` and `end` inclusive, split by asset class.
 
     The predicate is `source='flex' AND trade_date_iso BETWEEN ? AND ?` — no open/close
@@ -993,9 +990,7 @@ class RealisedPoint:
     cumulative: float
 
 
-def realised_series(
-    conn: sqlite3.Connection, start: date, end: date
-) -> tuple[RealisedPoint, ...]:
+def realised_series(conn: sqlite3.Connection, start: date, end: date) -> tuple[RealisedPoint, ...]:
     """Daily realised P&L between `start` and `end` inclusive, with a running total.
 
     Only days that actually traded appear — the cumulative line therefore steps between
@@ -1118,9 +1113,9 @@ def flex_coverage(conn: sqlite3.Connection) -> FlexCoverage:
     newest = conn.execute(
         "SELECT MAX(trade_date_iso) AS d FROM flex_trade WHERE source = 'flex'"
     ).fetchone()["d"]
-    pending = conn.execute(
-        "SELECT COUNT(*) AS n FROM flex_trade WHERE source = 'live'"
-    ).fetchone()["n"]
+    pending = conn.execute("SELECT COUNT(*) AS n FROM flex_trade WHERE source = 'live'").fetchone()[
+        "n"
+    ]
     return FlexCoverage(
         through=date.fromisoformat(str(newest)) if newest else None,
         live_pending=int(pending or 0),
@@ -1405,9 +1400,7 @@ def fetch_quotes(client: IBKRClient, conids: Sequence[int]) -> dict[int, Quote]:
     return parse_quotes(client.get_market_snapshot(list(conids), list(_QUOTE_FIELDS)))
 
 
-def with_quotes(
-    positions: Sequence[Position], quotes: Mapping[int, Quote]
-) -> tuple[Position, ...]:
+def with_quotes(positions: Sequence[Position], quotes: Mapping[int, Quote]) -> tuple[Position, ...]:
     """Attach each position's quote by conid. A position with no quote is left untouched.
 
     Matched on `conid` and never on symbol: a ticker is not a unique key, and this repo
@@ -1519,8 +1512,9 @@ def reconcile(snapshot: DashboardSnapshot) -> Reconciliation:
     """
     led = snapshot.ledger
     if led is None or not snapshot.positions:
-        return Reconciliation(False, 0.0, led.unrealised_pnl if led else 0.0,
-                              led.currency if led else "USD")
+        return Reconciliation(
+            False, 0.0, led.unrealised_pnl if led else 0.0, led.currency if led else "USD"
+        )
     currencies = {p.currency for p in snapshot.positions if p.currency}
     total = sum(p.unrealised_pnl for p in snapshot.positions)
     return Reconciliation(
@@ -1660,9 +1654,7 @@ class TypeBreakdown:
         return self.gross_loss / self.losers if self.losers else None
 
 
-def realised_by_type(
-    conn: sqlite3.Connection, start: date, end: date
-) -> tuple[TypeBreakdown, ...]:
+def realised_by_type(conn: sqlite3.Connection, start: date, end: date) -> tuple[TypeBreakdown, ...]:
     """Per-asset-class realised performance between `start` and `end` inclusive.
 
     Returns a row **only for asset classes that actually did something** in the window —
@@ -1801,9 +1793,7 @@ def bridged_by_type(
 
     cutoff = coverage_through.strftime("%Y%m%d") if coverage_through else ""
     lo, hi = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
-    days = sorted({
-        d for (d, _) in reconstruction.realised if lo <= d <= hi and d > cutoff
-    })
+    days = sorted({d for (d, _) in reconstruction.realised if lo <= d <= hi and d > cutoff})
 
     merged: dict[str, TypeBreakdown] = dict(flex_rows)
     for day in days:

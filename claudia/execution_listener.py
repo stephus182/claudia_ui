@@ -105,14 +105,14 @@ class ExecutionReport:
     """
 
     execution_id: str
-    symbol: str        # IBKR's `symbol`, e.g. "ES" — "" when absent
-    verb: str          # BOUGHT / SOLD / the raw side if IBKR sends something else
-    size: str          # "1", "1,234,567", "0.5", or "?" — IBKR's digits, never rounded
-    contract: str      # "ES Sep18 '26" (FUT, measured live); "AMD" (STK, IBKR's doc shape)
-    price: str         # "7,732.00", "1.08345" — IBKR's digits, two decimals at least, or "?"
-    time_et: str       # "12:47:05 ET" from the UTC trade_time, or ""
+    symbol: str  # IBKR's `symbol`, e.g. "ES" — "" when absent
+    verb: str  # BOUGHT / SOLD / the raw side if IBKR sends something else
+    size: str  # "1", "1,234,567", "0.5", or "?" — IBKR's digits, never rounded
+    contract: str  # "ES Sep18 '26" (FUT, measured live); "AMD" (STK, IBKR's doc shape)
+    price: str  # "7,732.00", "1.08345" — IBKR's digits, two decimals at least, or "?"
+    time_et: str  # "12:47:05 ET" from the UTC trade_time, or ""
     exchange: str
-    origin: str        # "via ClaudIA (CLAUDIA-…)" or "external (TWS / mobile / web portal)"
+    origin: str  # "via ClaudIA (CLAUDIA-…)" or "external (TWS / mobile / web portal)"
 
     @classmethod
     def from_event(cls, event: TradeExecution) -> ExecutionReport:
@@ -137,15 +137,27 @@ class ExecutionReport:
         # IBKR's documented format is YYYYMMDD-HH:mm:ss UTC; anything else is left blank.
         with contextlib.suppress(ValueError):
             time_et = (
-                datetime.strptime(raw, "%Y%m%d-%H:%M:%S").replace(tzinfo=UTC).astimezone(_ET)
+                datetime.strptime(raw, "%Y%m%d-%H:%M:%S")
+                .replace(tzinfo=UTC)
+                .astimezone(_ET)
                 .strftime("%H:%M:%S ET")
             )
         ref = (event.order_ref or "").strip()
-        origin = f"via ClaudIA ({ref})" if ref.upper().startswith("CLAUDIA-") else "external (TWS / mobile / web portal)"
+        origin = (
+            f"via ClaudIA ({ref})"
+            if ref.upper().startswith("CLAUDIA-")
+            else "external (TWS / mobile / web portal)"
+        )
         return cls(
-            execution_id=event.execution_id, symbol=symbol, verb=verb, size=size,
-            contract=contract, price=price, time_et=time_et,
-            exchange=(event.exchange or "").strip(), origin=origin,
+            execution_id=event.execution_id,
+            symbol=symbol,
+            verb=verb,
+            size=size,
+            contract=contract,
+            price=price,
+            time_et=time_et,
+            exchange=(event.exchange or "").strip(),
+            origin=origin,
         )
 
     def as_dict(self) -> dict[str, str]:
@@ -242,9 +254,7 @@ class ExecutionListener:
       await listener.stop()  — cancel the task cleanly
     """
 
-    def __init__(
-        self, gateway_url: str, store: SQLiteStore, session: Any = None
-    ) -> None:
+    def __init__(self, gateway_url: str, store: SQLiteStore, session: Any = None) -> None:
         """Configure the listener. No connection is opened until `start()`.
 
         Args:
@@ -287,13 +297,20 @@ class ExecutionListener:
         report or the listener its loop.
         """
         if event.execution_id in self._seen_executions:
-            log.info("ExecutionListener: execution %s already reported — skipped", event.execution_id)
+            log.info(
+                "ExecutionListener: execution %s already reported — skipped", event.execution_id
+            )
             return
         self._seen_executions.append(event.execution_id)
         try:
             report = ExecutionReport.from_event(event)
         except Exception as exc:
-            log.warning("Could not build an execution report for %s: %s", event.execution_id, exc, exc_info=True)
+            log.warning(
+                "Could not build an execution report for %s: %s",
+                event.execution_id,
+                exc,
+                exc_info=True,
+            )
             return
         for subscriber in list(self._subscribers):
             try:
@@ -358,7 +375,9 @@ class ExecutionListener:
                 delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
                 log.warning(
                     "ExecutionListener error (attempt %d), retrying in %ds: %s",
-                    attempt + 1, delay, type(exc).__name__,
+                    attempt + 1,
+                    delay,
+                    type(exc).__name__,
                     exc_info=True,
                 )
                 await asyncio.sleep(delay)
@@ -399,7 +418,7 @@ class ExecutionListener:
                             await self._capture_pnl_until_settled(ws, queue)
                 except StopAsyncIteration:
                     return  # WebSocket closed cleanly — _run_with_retry treats
-                            # a clean return as a reconnect-after-5s, not an error
+                    # a clean return as a reconnect-after-5s, not an error
             finally:
                 pump_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -429,7 +448,9 @@ class ExecutionListener:
         except Exception as exc:
             await queue.put(exc)
 
-    async def _capture_pnl_until_settled(self, ws: IBKRWebSocket, queue: asyncio.Queue[Any]) -> None:
+    async def _capture_pnl_until_settled(
+        self, ws: IBKRWebSocket, queue: asyncio.Queue[Any]
+    ) -> None:
         """Run one-shot P&L capture rounds until a round completes with no
         additional executions observed during it. Account P&L is cumulative,
         so one snapshot after the last known execution is sufficient — no need
@@ -461,9 +482,13 @@ class ExecutionListener:
                     return saw_extra_execution
                 if isinstance(item, PnLUpdate):
                     self._store.record_pnl_snapshot(
-                        account=item.account, row_type=item.row_type,
-                        dpl=item.dpl, nl=item.nl, upl=item.upl,
-                        uel=item.uel, mv=item.mv,
+                        account=item.account,
+                        row_type=item.row_type,
+                        dpl=item.dpl,
+                        nl=item.nl,
+                        upl=item.upl,
+                        uel=item.uel,
+                        mv=item.mv,
                     )
                     return saw_extra_execution
                 if isinstance(item, TradeExecution):

@@ -40,6 +40,7 @@ def _make_listener(live: bool = True):
 
 def _fake_ws(listen_items):
     """Build a MagicMock IBKRWebSocket whose listen() yields the given items."""
+
     async def fake_listen():
         """Replay the given feed items as an async generator, standing in for the socket."""
         for item in listen_items:
@@ -57,6 +58,7 @@ def _fake_ws(listen_items):
 
 # ── _capture_pnl_once ─────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_capture_pnl_once_records_and_returns_false_when_no_extra_execution():
     """One P&L tick is recorded, and the quiet case reports no further execution to wait for."""
@@ -64,8 +66,13 @@ async def test_capture_pnl_once_records_and_returns_false_when_no_extra_executio
 
     listener, store = _make_listener()
     pnl = PnLUpdate(
-        account="DU1234567.Core", row_type=1, dpl=12.5, nl=10000.0,
-        upl=3.0, uel=9000.0, mv=5000.0,
+        account="DU1234567.Core",
+        row_type=1,
+        dpl=12.5,
+        nl=10000.0,
+        upl=3.0,
+        uel=9000.0,
+        mv=5000.0,
     )
     queue: asyncio.Queue = asyncio.Queue()
     queue.put_nowait(pnl)
@@ -78,8 +85,13 @@ async def test_capture_pnl_once_records_and_returns_false_when_no_extra_executio
 
     assert result is False
     store.record_pnl_snapshot.assert_called_once_with(
-        account="DU1234567.Core", row_type=1, dpl=12.5, nl=10000.0,
-        upl=3.0, uel=9000.0, mv=5000.0,
+        account="DU1234567.Core",
+        row_type=1,
+        dpl=12.5,
+        nl=10000.0,
+        upl=3.0,
+        uel=9000.0,
+        mv=5000.0,
     )
     ws.subscribe_pnl.assert_awaited_once()
     ws.unsubscribe_pnl.assert_awaited_once()
@@ -135,6 +147,7 @@ async def test_capture_pnl_once_unsubscribe_error_does_not_mask_original_excepti
 
     class _BrokenQueue:
         """A queue whose reads always fail, standing in for a dropped connection."""
+
         async def get(self):
             """Fail the way a dropped connection does."""
             raise ConnectionError("dropped")
@@ -216,11 +229,14 @@ async def test_capture_pnl_once_propagates_forwarded_exception_mid_wait():
 
 # ── _capture_pnl_until_settled ────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_capture_pnl_until_settled_single_round():
     """A quiet capture settles in one round."""
     listener, _ = _make_listener()
-    with patch.object(listener, "_capture_pnl_once", new=AsyncMock(return_value=False)) as mock_once:
+    with patch.object(
+        listener, "_capture_pnl_once", new=AsyncMock(return_value=False)
+    ) as mock_once:
         await listener._capture_pnl_until_settled(MagicMock(), MagicMock())
     mock_once.assert_awaited_once()
 
@@ -238,6 +254,7 @@ async def test_capture_pnl_until_settled_reruns_on_burst():
 
 # ── _run_once ─────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_run_once_triggers_capture_per_top_level_execution():
     """The execution feed is subscribed once and each execution triggers a capture."""
@@ -246,9 +263,11 @@ async def test_run_once_triggers_capture_per_top_level_execution():
     listener, _ = _make_listener()
     fake_ws = _fake_ws([TradeExecution(execution_id="E1"), TradeExecution(execution_id="E2")])
 
-    with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws), \
-         patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()) as mock_capture:
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws),
+        patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()) as mock_capture,
+    ):
         await listener._run_once()
 
     fake_ws.subscribe_executions.assert_awaited_once()
@@ -264,8 +283,10 @@ async def test_run_once_returns_cleanly_when_websocket_closes():
     listener, _ = _make_listener()
     fake_ws = _fake_ws([])  # empty — listen() yields nothing, then ends
 
-    with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws):
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws),
+    ):
         await listener._run_once()  # must not raise
 
     fake_ws.disconnect.assert_awaited_once()
@@ -287,9 +308,11 @@ async def test_run_once_disconnects_even_on_listen_error():
     ws.subscribe_executions = AsyncMock()
     ws.listen = broken_listen
 
-    with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=ws), \
-         pytest.raises(ConnectionError):
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=ws),
+        pytest.raises(ConnectionError),
+    ):
         await listener._run_once()
 
     ws.disconnect.assert_awaited_once()
@@ -305,15 +328,19 @@ async def test_run_once_end_to_end_reconciles_burst_through_real_pump_and_captur
     from ibkr_core_mcp.streaming import PnLUpdate, TradeExecution
 
     listener, store = _make_listener()
-    fake_ws = _fake_ws([
-        TradeExecution(execution_id="E1"),
-        TradeExecution(execution_id="E2"),
-        PnLUpdate(account="DU1234567.Core", dpl=1.0, nl=1.0, upl=1.0, uel=1.0, mv=1.0),
-        PnLUpdate(account="DU1234567.Core", dpl=2.0, nl=2.0, upl=2.0, uel=2.0, mv=2.0),
-    ])
+    fake_ws = _fake_ws(
+        [
+            TradeExecution(execution_id="E1"),
+            TradeExecution(execution_id="E2"),
+            PnLUpdate(account="DU1234567.Core", dpl=1.0, nl=1.0, upl=1.0, uel=1.0, mv=1.0),
+            PnLUpdate(account="DU1234567.Core", dpl=2.0, nl=2.0, upl=2.0, uel=2.0, mv=2.0),
+        ]
+    )
 
-    with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws):
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws),
+    ):
         await listener._run_once()
 
     fake_ws.subscribe_executions.assert_awaited_once()
@@ -322,6 +349,7 @@ async def test_run_once_end_to_end_reconciles_burst_through_real_pump_and_captur
 
 
 # ── _run_with_retry ────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_run_with_retry_retries_on_error_then_cancels():
@@ -337,9 +365,11 @@ async def test_run_with_retry_retries_on_error_then_cancels():
             raise ConnectionError("transient")
         raise asyncio.CancelledError
 
-    with patch.object(listener, "_run_once", side_effect=flaky_run_once), \
-         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()), \
-         pytest.raises(asyncio.CancelledError):
+    with (
+        patch.object(listener, "_run_once", side_effect=flaky_run_once),
+        patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()),
+        pytest.raises(asyncio.CancelledError),
+    ):
         await listener._run_with_retry()
 
     assert call_count == 2
@@ -354,8 +384,10 @@ async def test_run_with_retry_cancelled_propagates_immediately():
         """Cancel immediately, so the loop exits on its first pass."""
         raise asyncio.CancelledError
 
-    with patch.object(listener, "_run_once", side_effect=always_cancel), \
-         pytest.raises(asyncio.CancelledError):
+    with (
+        patch.object(listener, "_run_once", side_effect=always_cancel),
+        pytest.raises(asyncio.CancelledError),
+    ):
         await listener._run_with_retry()
 
 
@@ -374,9 +406,11 @@ async def test_run_with_retry_clean_return_reconnects_after_5s():
             return  # clean close
         raise asyncio.CancelledError
 
-    with patch.object(listener, "_run_once", side_effect=clean_then_cancel), \
-         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
-         pytest.raises(asyncio.CancelledError):
+    with (
+        patch.object(listener, "_run_once", side_effect=clean_then_cancel),
+        patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()) as mock_sleep,
+        pytest.raises(asyncio.CancelledError),
+    ):
         await listener._run_with_retry()
 
     assert call_count == 2
@@ -399,9 +433,12 @@ async def test_run_with_retry_logs_traceback_on_error(caplog):
             raise RuntimeError("Timeout should be used inside a task")
         raise asyncio.CancelledError
 
-    with patch.object(listener, "_run_once", side_effect=fail_then_cancel), \
-         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()), \
-         caplog.at_level(logging.WARNING), pytest.raises(asyncio.CancelledError):
+    with (
+        patch.object(listener, "_run_once", side_effect=fail_then_cancel),
+        patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()),
+        caplog.at_level(logging.WARNING),
+        pytest.raises(asyncio.CancelledError),
+    ):
         await listener._run_with_retry()
 
     assert any(r.exc_info is not None for r in caplog.records)
@@ -422,15 +459,18 @@ async def test_run_with_retry_escalates_backoff_then_caps():
             raise ConnectionError("transient")
         raise asyncio.CancelledError
 
-    with patch.object(listener, "_run_once", side_effect=always_fail_then_cancel), \
-         patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
-         pytest.raises(asyncio.CancelledError):
+    with (
+        patch.object(listener, "_run_once", side_effect=always_fail_then_cancel),
+        patch("claudia.execution_listener.asyncio.sleep", new=AsyncMock()) as mock_sleep,
+        pytest.raises(asyncio.CancelledError),
+    ):
         await listener._run_with_retry()
 
     assert mock_sleep.call_args_list == [call(5), call(10), call(30), call(60), call(60)]
 
 
 # ── start() / stop() lifecycle ─────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_start_is_idempotent():
@@ -471,9 +511,11 @@ async def test_stop_before_start_is_noop():
 
 # ── format_pnl_snapshot ────────────────────────────────────────────────────────
 
+
 def test_format_pnl_snapshot_none():
     """With no snapshot the line says so plainly rather than rendering zeros."""
     from claudia.execution_listener import format_pnl_snapshot
+
     result = format_pnl_snapshot(None)
     assert "not yet available" in result.lower()
 
@@ -481,10 +523,17 @@ def test_format_pnl_snapshot_none():
 def test_format_pnl_snapshot_full():
     """A full snapshot renders the account and every figure, signed where it is a P&L."""
     from claudia.execution_listener import format_pnl_snapshot
-    result = format_pnl_snapshot({
-        "account": "DU1234567.Core", "dpl": 12.5, "nl": 10000.0,
-        "upl": 3.0, "uel": 9000.0, "mv": 5000.0,
-    })
+
+    result = format_pnl_snapshot(
+        {
+            "account": "DU1234567.Core",
+            "dpl": 12.5,
+            "nl": 10000.0,
+            "upl": 3.0,
+            "uel": 9000.0,
+            "mv": 5000.0,
+        }
+    )
     assert "DU1234567.Core" in result
     assert "+12.50" in result
     assert "10000.00" in result
@@ -494,10 +543,17 @@ def test_format_pnl_snapshot_partial_fields_format_as_na():
     """A partial snapshot (e.g. a first, incomplete tick) must show 'n/a' per-field,
     not discard the whole snapshot as 'not yet available'."""
     from claudia.execution_listener import format_pnl_snapshot
-    result = format_pnl_snapshot({
-        "account": "DU1234567.Core", "dpl": None, "nl": 10000.0,
-        "upl": None, "uel": None, "mv": None,
-    })
+
+    result = format_pnl_snapshot(
+        {
+            "account": "DU1234567.Core",
+            "dpl": None,
+            "nl": 10000.0,
+            "upl": None,
+            "uel": None,
+            "mv": None,
+        }
+    )
     assert "n/a" in result
     assert "10000.00" in result
     assert "not yet available" not in result.lower()
@@ -505,15 +561,21 @@ def test_format_pnl_snapshot_partial_fields_format_as_na():
 
 # ── get_live_pnl_text ──────────────────────────────────────────────────────────
 
+
 def test_get_live_pnl_text_uses_cache_when_populated():
     """A cached snapshot is used and no live call is made."""
     from unittest.mock import MagicMock
 
     from claudia.execution_listener import get_live_pnl_text
+
     toolkit = MagicMock()
     toolkit._store.get_latest_pnl.return_value = {
-        "account": "U1675699.Core", "dpl": 12.5, "nl": 10000.0,
-        "upl": 3.0, "uel": 9000.0, "mv": 5000.0,
+        "account": "U1675699.Core",
+        "dpl": 12.5,
+        "nl": 10000.0,
+        "upl": 3.0,
+        "uel": 9000.0,
+        "mv": 5000.0,
     }
     result = get_live_pnl_text(toolkit)
     assert "U1675699.Core" in result
@@ -525,6 +587,7 @@ def test_get_live_pnl_text_falls_back_to_ledger_when_cache_empty():
     from unittest.mock import MagicMock
 
     from claudia.execution_listener import get_live_pnl_text
+
     toolkit = MagicMock()
     toolkit._store.get_latest_pnl.return_value = None
     toolkit.execute.return_value = ("Account Ledger (USD):\n  Realized P&L : +461.56", None)
@@ -571,7 +634,7 @@ async def test_connects_once_the_session_is_live():
 
 @pytest.mark.asyncio
 async def test_waiting_for_a_session_does_not_consume_the_backoff_budget():
-    """"Not up yet" is the ordinary startup state, not an error.
+    """ "Not up yet" is the ordinary startup state, not an error.
 
     Letting it advance the retry counter would push a genuine reconnect out to a minute on
     a gateway that had merely not finished logging in. The stub stops the loop on its first
@@ -606,11 +669,20 @@ async def test_waiting_for_a_session_does_not_consume_the_backoff_budget():
 # capture that can block for 10 s. The report is built ONLY from IBKR's event fields.
 
 _TODAYS_FILL = {  # the real event of 2026-09-04 16:47:05 UTC, verbatim field values
-    "execution_id": "00010181.6a9a4b19.01.01", "conid": 649180671, "symbol": "ES",
-    "side": "B", "size": 1.0, "price": 7732.0, "trade_time": "20260904-16:47:05",
-    "order_ref": "CLAUDIA-1788538622110", "exchange": "CME", "net_amount": 386600.0,
-    "account": "U1675699", "company_name": "E-mini S&P 500",
-    "contract_description_1": "Sep18 '26", "sec_type": "FUT",
+    "execution_id": "00010181.6a9a4b19.01.01",
+    "conid": 649180671,
+    "symbol": "ES",
+    "side": "B",
+    "size": 1.0,
+    "price": 7732.0,
+    "trade_time": "20260904-16:47:05",
+    "order_ref": "CLAUDIA-1788538622110",
+    "exchange": "CME",
+    "net_amount": 386600.0,
+    "account": "U1675699",
+    "company_name": "E-mini S&P 500",
+    "contract_description_1": "Sep18 '26",
+    "sec_type": "FUT",
 }
 
 
@@ -676,9 +748,11 @@ async def test_subscribers_are_told_of_each_fill_before_the_pnl_capture():
     capture = AsyncMock(side_effect=lambda *a, **k: order.capture())
     fake_ws = _fake_ws([TradeExecution(**_TODAYS_FILL), TradeExecution(execution_id="E2")])
     unsubscribe = listener.subscribe(subscriber)
-    with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws), \
-         patch.object(listener, "_capture_pnl_until_settled", new=capture):
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws),
+        patch.object(listener, "_capture_pnl_until_settled", new=capture),
+    ):
         await listener._run_once()
     assert [r.execution_id for r in received] == ["00010181.6a9a4b19.01.01", "E2"]
     names = [c[0] for c in order.mock_calls]
@@ -699,10 +773,12 @@ async def test_a_raising_subscriber_is_logged_and_does_not_stop_the_others(caplo
     listener.subscribe(bad)
     listener.subscribe(good)
     fake_ws = _fake_ws([TradeExecution(**_TODAYS_FILL)])
-    with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws), \
-         patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()), \
-         caplog.at_level(logging.WARNING):
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws),
+        patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()),
+        caplog.at_level(logging.WARNING),
+    ):
         await listener._run_once()
     good.assert_awaited_once()
     assert any("execution report" in r.message.lower() for r in caplog.records)
@@ -727,9 +803,13 @@ async def test_fills_arriving_during_a_pnl_capture_round_are_reported_too():
 
     listener.subscribe(subscriber)
     pnl = PnLUpdate(account="U1", row_type="", dpl=1.0, nl=2.0, upl=3.0, uel=4.0, mv=5.0)
-    fake_ws = _fake_ws([TradeExecution(execution_id="E1"), TradeExecution(execution_id="E2"), pnl, pnl])
-    with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws):
+    fake_ws = _fake_ws(
+        [TradeExecution(execution_id="E1"), TradeExecution(execution_id="E2"), pnl, pnl]
+    )
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws),
+    ):
         await listener._run_once()
     assert received == ["E1", "E2"]
 
@@ -748,11 +828,18 @@ async def test_the_same_execution_id_is_reported_once():
         received.append(report.execution_id)
 
     listener.subscribe(subscriber)
-    fake_ws = _fake_ws([TradeExecution(execution_id="E1"), TradeExecution(execution_id="E1"),
-                        TradeExecution(execution_id="E2")])
-    with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws), \
-         patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()):
+    fake_ws = _fake_ws(
+        [
+            TradeExecution(execution_id="E1"),
+            TradeExecution(execution_id="E1"),
+            TradeExecution(execution_id="E2"),
+        ]
+    )
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws),
+        patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()),
+    ):
         await listener._run_once()
     assert received == ["E1", "E2"]
 
@@ -779,11 +866,19 @@ def test_report_contract_label_does_not_double_the_ticker():
 
     from claudia.execution_listener import ExecutionReport
 
-    stk = ExecutionReport.from_event(TradeExecution(execution_id="E", symbol="AMD", contract_description_1="AMD"))
+    stk = ExecutionReport.from_event(
+        TradeExecution(execution_id="E", symbol="AMD", contract_description_1="AMD")
+    )
     assert stk.contract == "AMD"
-    opt = ExecutionReport.from_event(TradeExecution(execution_id="E", symbol="AAPL", contract_description_1="AAPL Jan16'26 250 Call"))
+    opt = ExecutionReport.from_event(
+        TradeExecution(
+            execution_id="E", symbol="AAPL", contract_description_1="AAPL Jan16'26 250 Call"
+        )
+    )
     assert opt.contract == "AAPL Jan16'26 250 Call"
-    fut = ExecutionReport.from_event(TradeExecution(execution_id="E", symbol="ES", contract_description_1="Sep18 '26"))
+    fut = ExecutionReport.from_event(
+        TradeExecution(execution_id="E", symbol="ES", contract_description_1="Sep18 '26")
+    )
     assert fut.contract == "ES Sep18 '26"
     assert fut.symbol == "ES" and stk.symbol == "AMD"
 
@@ -797,11 +892,15 @@ async def test_a_report_that_cannot_be_built_is_logged_not_fatal(caplog):
     good = AsyncMock()
     listener.subscribe(good)
     fake_ws = _fake_ws([TradeExecution(execution_id="E1")])
-    with patch("claudia.execution_listener.BrowserCookieAuth"), \
-         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws), \
-         patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()), \
-         patch("claudia.execution_listener.ExecutionReport.from_event", side_effect=ValueError("odd")), \
-         caplog.at_level(logging.WARNING):
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws),
+        patch.object(listener, "_capture_pnl_until_settled", new=AsyncMock()),
+        patch(
+            "claudia.execution_listener.ExecutionReport.from_event", side_effect=ValueError("odd")
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
         await listener._run_once()
     good.assert_not_awaited()
     assert any("execution report" in r.message.lower() for r in caplog.records)

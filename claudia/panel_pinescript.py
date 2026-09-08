@@ -191,7 +191,8 @@ def _render_pine_block(
             if store is not None and session_id is not None:
                 try:
                     store.add_message(
-                        session_id, "tool",
+                        session_id,
+                        "tool",
                         content=UI_BUTTON_ORIGIN,
                         tool_name="pine_set_source",
                         tool_input={"source": code},
@@ -204,7 +205,9 @@ def _render_pine_block(
             # would be a false-success (same class as the field-8089 order bug); the
             # project's data-integrity standard forbids claiming success on failure.
             if _pine_inject_succeeded(result):
-                chat.send("✅ Injected into the TradingView Pine Editor.", user="ClaudIA", respond=False)
+                chat.send(
+                    "✅ Injected into the TradingView Pine Editor.", user="ClaudIA", respond=False
+                )
             else:
                 chat.send(
                     f"✕ Injection did not complete — copy the script manually.\n\n"

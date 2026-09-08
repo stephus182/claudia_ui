@@ -254,8 +254,10 @@ def _covered_toolkit():
     toolkit = _make_toolkit()
     toolkit._config.sqlite_path = "/tmp/store.db"
     toolkit._store.get_trade_date_coverage.return_value = {
-        "oldest": "2024-01-02", "newest": "2026-07-22",
-        "total_trades": 1234, "days_since_newest": 1,
+        "oldest": "2024-01-02",
+        "newest": "2026-07-22",
+        "total_trades": 1234,
+        "days_since_newest": 1,
     }
     return toolkit
 
@@ -305,21 +307,24 @@ def test_a_reused_verdict_says_when_it_was_proven_and_that_nothing_was_rechecked
     """Transparency over implication. Flex is T+1 and the store is pulled once a day, so
     the second session of the day validates nothing — and a bare "integrity validated"
     would be true of the data while implying a check that did not just happen."""
-    with patch("claudia.opening_status.validate_dataset_daily",
-               return_value=_outcome(ok=True, reused=True)):
+    with patch(
+        "claudia.opening_status.validate_dataset_daily", return_value=_outcome(ok=True, reused=True)
+    ):
         status, context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
 
     assert "not re-checked" in status
     assert "unchanged since" in status
     local = _VALIDATED_AT.astimezone().strftime("%H:%M")
-    assert local in status          # the time it was PROVEN, in the reader's timezone
+    assert local in status  # the time it was PROVEN, in the reader's timezone
     assert local in (context or "")  # and the model is told the same thing
 
 
 def test_a_fresh_verdict_does_not_claim_to_be_reused():
     """A freshly-proven verdict is not described as reused."""
-    with patch("claudia.opening_status.validate_dataset_daily",
-               return_value=_outcome(ok=True, reused=False)):
+    with patch(
+        "claudia.opening_status.validate_dataset_daily",
+        return_value=_outcome(ok=True, reused=False),
+    ):
         status, _ = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
 
     assert "integrity validated" in status
@@ -332,8 +337,11 @@ def test_the_line_reports_when_the_store_was_updated_not_the_newest_trade_date()
     it was a day staler than it was."""
     from claudia.flex_sync import LastImport
 
-    imported = LastImport(at=datetime(2026, 8, 5, 12, 18, tzinfo=UTC),
-                          filename="flex_U1675699_2026-08-05.xml", trade_count=105)
+    imported = LastImport(
+        at=datetime(2026, 8, 5, 12, 18, tzinfo=UTC),
+        filename="flex_U1675699_2026-08-05.xml",
+        trade_count=105,
+    )
     with (
         patch("claudia.opening_status.last_import", return_value=imported),
         patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()),
@@ -378,7 +386,9 @@ def test_the_model_is_told_the_same_update_time_as_the_user():
     """
     from claudia.flex_sync import LastImport
 
-    imported = LastImport(at=datetime(2026, 8, 5, 12, 18, tzinfo=UTC), filename="x", trade_count=105)
+    imported = LastImport(
+        at=datetime(2026, 8, 5, 12, 18, tzinfo=UTC), filename="x", trade_count=105
+    )
     with (
         patch("claudia.opening_status.last_import", return_value=imported),
         patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()),
@@ -387,6 +397,6 @@ def test_the_model_is_told_the_same_update_time_as_the_user():
 
     stamp = imported.at.astimezone().strftime("%Y-%m-%d %H:%M")
     assert context is not None
-    assert stamp in context and stamp in status      # same moment on both surfaces
+    assert stamp in context and stamp in status  # same moment on both surfaces
     assert "Last refreshed: 2026-07-22" not in context  # the mislabel, gone from here too
-    assert "newest trade date 2026-07-22" in context    # stated as what it is
+    assert "newest trade date 2026-07-22" in context  # stated as what it is

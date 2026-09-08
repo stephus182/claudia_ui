@@ -39,7 +39,10 @@ def _make_ibkr_mock():
     client.get_accounts.return_value = [{"accountId": "U12345"}]
     client.place_order_and_confirm.return_value = [{"orderId": "999"}]
     client.cancel_order.return_value = {"order_id": "242538143", "msg": "Cancelled"}
-    client.modify_order_and_confirm.return_value = {"order_id": "242538143", "order_status": "Submitted"}
+    client.modify_order_and_confirm.return_value = {
+        "order_id": "242538143",
+        "order_status": "Submitted",
+    }
     return mod, client
 
 
@@ -67,8 +70,13 @@ async def test_render_order_proposal_stage_click_executes_and_disables_buttons()
     # Carries a conid because real proposals do, and because a placement without one is
     # now refused before it reaches IBKR (order_flow._needs_conid_text).
     proposal = {
-        "symbol": "AAPL", "action": "BUY", "quantity": 10, "conid": 265598,
-        "order_type": "MKT", "limit_price": None, "stop_price": None,
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 10,
+        "conid": 265598,
+        "order_type": "MKT",
+        "limit_price": None,
+        "stop_price": None,
     }
     ibkr_mod, client = _make_ibkr_mock()
     await render_order_proposal(chat, proposal, session_id="s1", store=None)
@@ -104,7 +112,13 @@ async def test_render_order_proposal_cancel_click_disables_without_executing():
 async def test_render_cancel_proposal_sends_message_with_two_buttons():
     """A cancel proposal renders one message carrying a cancel and a keep button."""
     chat = _make_chat()
-    proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    proposal = {
+        "order_id": "555",
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "MKT",
+    }
     await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
     column = chat.send.call_args.args[0]
     button_row = column[1]
@@ -116,7 +130,13 @@ async def test_render_cancel_proposal_sends_message_with_two_buttons():
 async def test_render_cancel_proposal_confirm_click_calls_cancel_core():
     """Confirming routes to the cancel core, not to any other path."""
     chat = _make_chat()
-    proposal = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+    proposal = {
+        "order_id": "555",
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "MKT",
+    }
     ibkr_mod, client = _make_ibkr_mock()
     await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
     column = chat.send.call_args.args[0]
@@ -133,8 +153,13 @@ async def test_render_modify_proposal_sends_message_with_two_buttons():
     """A modify proposal renders one message carrying a modify and a discard button."""
     chat = _make_chat()
     proposal = {
-        "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
-        "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
+        "order_id": "555",
+        "conid": 265598,
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "LMT",
+        "limit_price": 105.0,
         "changes": [{"field": "limit_price", "previous_value": 100.0}],
     }
     await render_modify_proposal(chat, proposal, session_id="s1", store=None)
@@ -149,8 +174,13 @@ async def test_render_modify_proposal_confirm_click_calls_modify_core():
     """Confirming routes to the modify core, not to any other path."""
     chat = _make_chat()
     proposal = {
-        "order_id": "555", "conid": 265598, "symbol": "AAPL", "action": "BUY",
-        "quantity": 1, "order_type": "LMT", "limit_price": 105.0,
+        "order_id": "555",
+        "conid": 265598,
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "LMT",
+        "limit_price": 105.0,
         "changes": [{"field": "limit_price", "previous_value": 100.0}],
     }
     ibkr_mod, client = _make_ibkr_mock()

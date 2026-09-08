@@ -49,9 +49,7 @@ def _undocumented(path: Path) -> list[str]:
     return missing
 
 
-@pytest.mark.parametrize(
-    "module", sorted(_PACKAGE.glob("*.py")), ids=lambda p: p.name
-)
+@pytest.mark.parametrize("module", sorted(_PACKAGE.glob("*.py")), ids=lambda p: p.name)
 def test_every_definition_has_a_docstring(module: Path):
     """Every module, class, function, and method in claudia/ must be documented.
 
@@ -60,14 +58,11 @@ def test_every_definition_has_a_docstring(module: Path):
     """
     missing = _undocumented(module)
     assert not missing, (
-        f"{module.name} has {len(missing)} undocumented definition(s):\n  "
-        + "\n  ".join(missing)
+        f"{module.name} has {len(missing)} undocumented definition(s):\n  " + "\n  ".join(missing)
     )
 
 
-@pytest.mark.parametrize(
-    "module", sorted(_TESTS.glob("*.py")), ids=lambda p: p.name
-)
+@pytest.mark.parametrize("module", sorted(_TESTS.glob("*.py")), ids=lambda p: p.name)
 def test_every_test_definition_has_a_docstring(module: Path):
     """Every module, class, function, and method in tests/ must be documented too.
 
@@ -77,8 +72,7 @@ def test_every_test_definition_has_a_docstring(module: Path):
     """
     missing = _undocumented(module)
     assert not missing, (
-        f"{module.name} has {len(missing)} undocumented definition(s):\n  "
-        + "\n  ".join(missing)
+        f"{module.name} has {len(missing)} undocumented definition(s):\n  " + "\n  ".join(missing)
     )
 
 

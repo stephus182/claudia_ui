@@ -55,14 +55,26 @@ BROKERAGE_SESSION_DOWN = (
 )
 
 _EXCHANGE_LABELS = {
-    "XNYS": "NYSE", "CME": "CME Futures",
-    "XLON": "LSE London", "XETR": "Xetra Frankfurt", "XEUR": "Eurex",
-    "XPAR": "Euronext Paris", "XMIL": "Borsa Italiana",
-    "XTKS": "TSE Tokyo", "XHKG": "HKEX Hong Kong", "XSHG": "SSE Shanghai",
-    "XBOM": "BSE Mumbai", "XKRX": "KRX Seoul", "XASX": "ASX Sydney",
-    "XTSE": "TSX Toronto", "BVMF": "B3 São Paulo", "XMEX": "BMV Mexico City",
-    "XJSE": "JSE Johannesburg", "XSAU": "Tadawul (Sun–Thu week)",  # noqa: RUF001 — correct en-dash for a day range
-    "XIDX": "IDX Jakarta", "XIST": "Borsa Istanbul",
+    "XNYS": "NYSE",
+    "CME": "CME Futures",
+    "XLON": "LSE London",
+    "XETR": "Xetra Frankfurt",
+    "XEUR": "Eurex",
+    "XPAR": "Euronext Paris",
+    "XMIL": "Borsa Italiana",
+    "XTKS": "TSE Tokyo",
+    "XHKG": "HKEX Hong Kong",
+    "XSHG": "SSE Shanghai",
+    "XBOM": "BSE Mumbai",
+    "XKRX": "KRX Seoul",
+    "XASX": "ASX Sydney",
+    "XTSE": "TSX Toronto",
+    "BVMF": "B3 São Paulo",
+    "XMEX": "BMV Mexico City",
+    "XJSE": "JSE Johannesburg",
+    "XSAU": "Tadawul (Sun–Thu week)",  # noqa: RUF001 — correct en-dash for a day range
+    "XIDX": "IDX Jakarta",
+    "XIST": "Borsa Istanbul",
 }
 
 
@@ -233,8 +245,7 @@ def _integrity_phrases(config: Config) -> tuple[str, str]:
         )
         return (
             note,
-            f"Dataset is complete and verified — no missing imports "
-            f"(validated {when}).",
+            f"Dataset is complete and verified — no missing imports (validated {when}).",
         )
     log.error("Flex dataset validation FAILED at session start — %s", validity.summary)
     return (
@@ -308,7 +319,9 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
             log.warning("Could not read trade date coverage: %s", exc)
             trade_status = "Trade history: syncing…"
     else:
-        trade_status = "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
+        trade_status = (
+            "Trade history: Flex not configured (set IBKR_FLEX_TOKEN + IBKR_FLEX_QUERY_ID)"
+        )
 
     # Append market calendar context (holidays, last/next trading day, futures
     # schedule). Parity with the removed app.py: appends even when trade_context is None.
@@ -338,8 +351,7 @@ def _format_market_calendar(mkt: dict[str, Any]) -> str:
         syms = ", ".join(g["products"][:4]) + ("…" if len(g["products"]) > 4 else "")
         group_lines.append(
             f"  {gname.replace('_', ' ').title()} ({g['exchange']}): "
-            f"{g['globex_hours_ct']} [{syms}]"
-            + (f" — {g['note']}" if "note" in g else "")
+            f"{g['globex_hours_ct']} [{syms}]" + (f" — {g['note']}" if "note" in g else "")
         )
 
     return (
@@ -347,12 +359,12 @@ def _format_market_calendar(mkt: dict[str, Any]) -> str:
         f"Today: {mkt['today']} ({'trading day' if mkt['is_trading_day'] else 'non-trading day'} on NYSE).\n"
         f"Last trading day (NYSE): {mkt['last_trading_day']}. "
         f"Next trading day (NYSE): {mkt['next_trading_day']}.\n\n"
-        f"### Exchange Holidays (current + next year)\n" +
-        "\n".join(f"  - {line}" for line in holiday_lines) + "\n\n"
+        f"### Exchange Holidays (current + next year)\n"
+        + "\n".join(f"  - {line}" for line in holiday_lines)
+        + "\n\n"
         f"### Futures vs Securities — Key Distinction\n"
         f"{fut.get('note', '')}\n"
         f"Maintenance break: {fut.get('maintenance_break_ct', 'N/A')}\n"
         f"CME open when NYSE is closed: {', '.join(cme_extra) if cme_extra else 'none this period'}\n\n"
-        f"### CME Globex Product Schedule (all times CT)\n" +
-        "\n".join(group_lines) + "\n"
+        f"### CME Globex Product Schedule (all times CT)\n" + "\n".join(group_lines) + "\n"
     )

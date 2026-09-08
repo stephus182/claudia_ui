@@ -36,9 +36,11 @@ def _make_send_status(chat: pn.chat.ChatInterface) -> SendStatus:
     _execute_*_order_core functions call this SendStatus `(text, author) -> None` to
     surface progress and results; binding it to `chat` routes those messages to the
     right Panel session (each session gets its own ChatInterface)."""
+
     async def _send_status(text: str, author: str) -> None:
         """Route one status line to this session's chat feed."""
         chat.send(text, user=author, respond=False)
+
     return _send_status
 
 
@@ -97,7 +99,9 @@ async def render_order_proposal(
         try:
             chat.send("Order proposal cancelled.", user="ClaudIA", respond=False)
         except Exception:
-            log.exception("Failed to send order-proposal cancellation notice (session %s)", session_id)
+            log.exception(
+                "Failed to send order-proposal cancellation notice (session %s)", session_id
+            )
             raise
 
     stage_btn.on_click(_on_stage)
@@ -145,9 +149,13 @@ async def render_cancel_proposal(
         cancel_btn.disabled = True
         keep_btn.disabled = True
         try:
-            chat.send("Cancel proposal dismissed — order left unchanged.", user="ClaudIA", respond=False)
+            chat.send(
+                "Cancel proposal dismissed — order left unchanged.", user="ClaudIA", respond=False
+            )
         except Exception:
-            log.exception("Failed to send cancel-proposal dismissal notice (session %s)", session_id)
+            log.exception(
+                "Failed to send cancel-proposal dismissal notice (session %s)", session_id
+            )
             raise
 
     cancel_btn.on_click(_on_cancel_click)
@@ -201,7 +209,9 @@ async def render_modify_proposal(
         modify_btn.disabled = True
         discard_btn.disabled = True
         try:
-            chat.send("Modify proposal discarded — order left unchanged.", user="ClaudIA", respond=False)
+            chat.send(
+                "Modify proposal discarded — order left unchanged.", user="ClaudIA", respond=False
+            )
         except Exception:
             log.exception("Failed to send modify-proposal discard notice (session %s)", session_id)
             raise

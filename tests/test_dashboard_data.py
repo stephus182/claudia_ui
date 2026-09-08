@@ -81,8 +81,9 @@ def store(tmp_path):
             " asset_category TEXT, currency TEXT, open_close_indicator TEXT,"
             " fifo_pnl_realized REAL)"
         )
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
-                  " fifo_pnl_realized REAL)")
+        w.execute(
+            "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
+        )
         w.executemany(
             "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
@@ -272,9 +273,14 @@ def test_win_rate_excludes_scratches_and_is_none_when_nothing_closed(store):
     assert (empty.closed_lots, empty.win_rate) == (0, None)
 
     scratch = dd.RoundTripStats(
-        start=date(2026, 1, 1), end=date(2026, 1, 2),
-        closed_lots=3, winners=1, losers=1, scratches=1,
-        gross_win=10.0, gross_loss=-5.0,
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 2),
+        closed_lots=3,
+        winners=1,
+        losers=1,
+        scratches=1,
+        gross_win=10.0,
+        gross_loss=-5.0,
     )
     assert scratch.win_rate == pytest.approx(50.0)
 
@@ -334,7 +340,7 @@ def test_breakdowns_carry_a_day_window_that_the_flex_windows_cannot(store):
     """
     s = dd.build_flex_sections(store, _TODAY)
     assert set(s["breakdowns"]) == {"day", "week", "month", "ytd"}
-    assert set(s["stats"]) == {"week", "month", "ytd"}   # no "day" here, deliberately
+    assert set(s["stats"]) == {"week", "month", "ytd"}  # no "day" here, deliberately
 
 
 def test_breakdowns_are_flex_only_without_a_reconstruction(store):
@@ -386,10 +392,12 @@ def test_the_real_ledger_shape_resolves_to_usd_not_base():
     put **"57,600.71 BASE"** on the KPI strip on the first real run — a currency label
     that is not a currency, on a money figure.
     """
-    snap = dd.parse_ledger({
-        "USD": _ledger_row(currency="USD", netliquidationvalue=57600.71),
-        "BASE": _ledger_row(currency="BASE", netliquidationvalue=57600.71),
-    })
+    snap = dd.parse_ledger(
+        {
+            "USD": _ledger_row(currency="USD", netliquidationvalue=57600.71),
+            "BASE": _ledger_row(currency="BASE", netliquidationvalue=57600.71),
+        }
+    )
     assert snap is not None
     assert snap.currency == "USD"
     assert snap.currency != "BASE"
@@ -425,11 +433,13 @@ def test_a_base_hint_is_never_used_as_a_currency_label():
 
 def test_parse_ledger_falls_back_to_a_base_row_that_names_a_real_key():
     """A BASE row naming a currency that has its own row is still honoured (rule 3)."""
-    snap = dd.parse_ledger({
-        "BASE": _ledger_row(currency="CHF"),
-        "CHF": _ledger_row(currency="CHF", cashbalance=7.0),
-        "EUR": _ledger_row(currency="EUR"),
-    })
+    snap = dd.parse_ledger(
+        {
+            "BASE": _ledger_row(currency="CHF"),
+            "CHF": _ledger_row(currency="CHF", cashbalance=7.0),
+            "EUR": _ledger_row(currency="EUR"),
+        }
+    )
     assert snap is not None
     assert (snap.currency, snap.cash) == ("CHF", 7.0)
 
@@ -469,8 +479,9 @@ def test_parse_ledger_handles_junk(payload):
 
 def test_parse_ledger_coerces_string_and_missing_numbers():
     """IBKR ships numbers as float, int or numeric string; blanks must read as 0.0."""
-    snap = dd.parse_ledger({"USD": {"currency": "USD", "cashbalance": "1234.56",
-                                    "netliquidationvalue": None}})
+    snap = dd.parse_ledger(
+        {"USD": {"currency": "USD", "cashbalance": "1234.56", "netliquidationvalue": None}}
+    )
     assert snap is not None
     assert snap.cash == pytest.approx(1234.56)
     assert snap.net_liquidation == 0.0
@@ -479,6 +490,7 @@ def test_parse_ledger_coerces_string_and_missing_numbers():
 
 def test_fetch_ledger_passes_the_account_id_and_currency_hint_through():
     """The resolved account id reaches the client and the currency hint picks the right row."""
+
     class _Client:
         """Records the account id it was asked for."""
 
@@ -489,8 +501,11 @@ def test_fetch_ledger_passes_the_account_id_and_currency_hint_through():
         def get_account_ledger(self, account_id):
             """Return the live ledger shape and remember the account id."""
             self.seen = account_id
-            return {"USD": _ledger_row(), "BASE": _ledger_row(currency="BASE"),
-                    "EUR": _ledger_row(currency="EUR")}
+            return {
+                "USD": _ledger_row(),
+                "BASE": _ledger_row(currency="BASE"),
+                "EUR": _ledger_row(currency="EUR"),
+            }
 
     client = _Client()
     snap = dd.fetch_ledger(client, "U1234567", "USD")
@@ -554,19 +569,89 @@ def fills(tmp_path):
             "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 # GLD: +60 @ 100, +40 @ 110. Today's -50 arrives as a live fill, not a row.
-                ("1", "GLD", None, "flex", "20260601", "2026-06-01", "20260601;100000", 60.0, 100.0),
-                ("1", "GLD", None, "flex", "20260602", "2026-06-02", "20260602;100000", 40.0, 110.0),
+                (
+                    "1",
+                    "GLD",
+                    None,
+                    "flex",
+                    "20260601",
+                    "2026-06-01",
+                    "20260601;100000",
+                    60.0,
+                    100.0,
+                ),
+                (
+                    "1",
+                    "GLD",
+                    None,
+                    "flex",
+                    "20260602",
+                    "2026-06-02",
+                    "20260602;100000",
+                    40.0,
+                    110.0,
+                ),
                 # IGV: +100 @ 90, nothing today
-                ("2", "IGV", None, "flex", "20260610", "2026-06-10", "20260610;100000", 100.0, 90.0),
+                (
+                    "2",
+                    "IGV",
+                    None,
+                    "flex",
+                    "20260610",
+                    "2026-06-10",
+                    "20260610;100000",
+                    100.0,
+                    90.0,
+                ),
                 # OLD: only a partial sale is on record, never the opening buy
                 ("3", "OLD", None, "flex", "20260701", "2026-07-01", "20260701;100000", -5.0, 50.0),
                 # Two contracts that have both traded under the ticker "DUP"
-                ("4", "DUPa", "DUP", "flex", "20260601", "2026-06-01", "20260601;100000", 10.0, 10.0),
-                ("5", "DUPb", "DUP", "flex", "20260601", "2026-06-01", "20260601;110000", 10.0, 20.0),
+                (
+                    "4",
+                    "DUPa",
+                    "DUP",
+                    "flex",
+                    "20260601",
+                    "2026-06-01",
+                    "20260601;100000",
+                    10.0,
+                    10.0,
+                ),
+                (
+                    "5",
+                    "DUPb",
+                    "DUP",
+                    "flex",
+                    "20260601",
+                    "2026-06-01",
+                    "20260601;110000",
+                    10.0,
+                    20.0,
+                ),
                 # CL: the 2026-08-10 case. Flex's last word is two open lots averaging
                 # 77.185 — and every one of them was closed and replaced *today*.
-                ("6", "CLU6", "CL", "flex", "20260807", "2026-08-07", "20260807;150000", 1.0, 77.47),
-                ("6", "CLU6", "CL", "flex", "20260807", "2026-08-07", "20260807;150100", 1.0, 76.90),
+                (
+                    "6",
+                    "CLU6",
+                    "CL",
+                    "flex",
+                    "20260807",
+                    "2026-08-07",
+                    "20260807;150000",
+                    1.0,
+                    77.47,
+                ),
+                (
+                    "6",
+                    "CLU6",
+                    "CL",
+                    "flex",
+                    "20260807",
+                    "2026-08-07",
+                    "20260807;150100",
+                    1.0,
+                    76.90,
+                ),
             ],
         )
     conn = dd.connect(path)
@@ -577,10 +662,19 @@ def fills(tmp_path):
 def _entry_pos(conid, symbol, quantity, **over):
     """A `Position` carrying only the fields `economic_entries` and the deltas read."""
     fields = {
-        "conid": conid, "symbol": symbol, "description": symbol, "asset_class": "STK",
-        "quantity": quantity, "average_cost": 0.0, "market_price": 0.0,
-        "market_value": 0.0, "unrealised_pnl": 0.0, "realised_pnl": 0.0,
-        "currency": "USD", "average_price": 0.0, "multiplier": 1.0,
+        "conid": conid,
+        "symbol": symbol,
+        "description": symbol,
+        "asset_class": "STK",
+        "quantity": quantity,
+        "average_cost": 0.0,
+        "market_price": 0.0,
+        "market_value": 0.0,
+        "unrealised_pnl": 0.0,
+        "realised_pnl": 0.0,
+        "currency": "USD",
+        "average_price": 0.0,
+        "multiplier": 1.0,
     }
     fields.update(over)
     return dd.Position(**fields)
@@ -605,9 +699,7 @@ def test_fifo_open_average_returns_none_when_flat():
 
 def test_fifo_open_average_resets_after_going_flat():
     """A closed position must not contaminate the next one — the six-year-history case."""
-    average, held = dd._fifo_open_average(
-        [(10.0, 5.0), (-10.0, 7.0), (4.0, 200.0)]
-    )
+    average, held = dd._fifo_open_average([(10.0, 5.0), (-10.0, 7.0), (4.0, 200.0)])
     assert held == pytest.approx(4.0)
     assert average == pytest.approx(200.0)
 
@@ -748,7 +840,6 @@ def test_basis_delta_is_none_without_a_reconstructed_entry():
     assert position.basis_delta_value is None
 
 
-
 def test_multiplier_is_derived_when_ibkr_omits_it():
     """IBKR served a lean CL row with no `multiplier` and a full one minutes later.
 
@@ -756,30 +847,47 @@ def test_multiplier_is_derived_when_ibkr_omits_it():
     row, so deriving it keeps the three fields consistent. Defaulting to 1 instead put
     +0.00472 on screen where the answer was +4.72 (measured live 2026-08-04).
     """
-    (position,) = dd.parse_positions([
-        {"conid": 9, "ticker": "CL", "assetClass": "FUT", "position": 2.0,
-         "avgCost": 80932.36, "avgPrice": 80.93236, "currency": "USD"}
-    ])
+    (position,) = dd.parse_positions(
+        [
+            {
+                "conid": 9,
+                "ticker": "CL",
+                "assetClass": "FUT",
+                "position": 2.0,
+                "avgCost": 80932.36,
+                "avgPrice": 80.93236,
+                "currency": "USD",
+            }
+        ]
+    )
     assert position.multiplier == pytest.approx(1000.0)
     assert position.average_price == pytest.approx(80.93236)
 
 
 def test_multiplier_stays_unknown_when_it_cannot_be_established():
     """No multiplier and no way to derive one means no money figure — not a guess of 1."""
-    (position,) = dd.parse_positions([
-        {"conid": 9, "ticker": "CL", "assetClass": "FUT", "position": 2.0,
-         "currency": "USD"}
-    ])
+    (position,) = dd.parse_positions(
+        [{"conid": 9, "ticker": "CL", "assetClass": "FUT", "position": 2.0, "currency": "USD"}]
+    )
     assert position.multiplier is None
     assert dd.replace(position, economic_entry=80.0).basis_delta_value is None
 
 
 def test_stock_multiplier_derives_to_one():
     """`avgCost == avgPrice` for stock, so the ratio establishes 1 rather than assuming it."""
-    (position,) = dd.parse_positions([
-        {"conid": 1, "ticker": "GLD", "assetClass": "STK", "position": 50.0,
-         "avgCost": 383.270899, "avgPrice": 383.270899, "currency": "USD"}
-    ])
+    (position,) = dd.parse_positions(
+        [
+            {
+                "conid": 1,
+                "ticker": "GLD",
+                "assetClass": "STK",
+                "position": 50.0,
+                "avgCost": 383.270899,
+                "avgPrice": 383.270899,
+                "currency": "USD",
+            }
+        ]
+    )
     assert position.multiplier == pytest.approx(1.0)
 
 
@@ -797,8 +905,9 @@ def test_basis_delta_value_applies_the_futures_multiplier():
     CL-shaped: 2 contracts, multiplier 1000, basis 80.93236 against an entry of 80.93
     is 4.72, which is what commission looks like on a clean futures position.
     """
-    position = _entry_pos(9, "CL", 2.0, average_price=80.93236, economic_entry=80.93,
-                    multiplier=1000.0)
+    position = _entry_pos(
+        9, "CL", 2.0, average_price=80.93236, economic_entry=80.93, multiplier=1000.0
+    )
     assert position.basis_delta == pytest.approx(0.00236)
     assert position.basis_delta_value == pytest.approx(4.72)
 
@@ -845,11 +954,13 @@ def test_parse_positions_types_the_fields():
 
 def test_parse_positions_drops_closed_rows_but_keeps_unparseable_ones():
     """position: 0 is a closed trade IBKR keeps echoing; a missing field is not."""
-    rows = dd.parse_positions([
-        _position_row(position=0.0),
-        _position_row(ticker="AAPL"),
-        {k: v for k, v in _position_row(ticker="MSFT").items() if k != "position"},
-    ])
+    rows = dd.parse_positions(
+        [
+            _position_row(position=0.0),
+            _position_row(ticker="AAPL"),
+            {k: v for k, v in _position_row(ticker="MSFT").items() if k != "position"},
+        ]
+    )
     assert [p.symbol for p in rows] == ["AAPL", "MSFT"]
     assert rows[1].quantity == 0.0
 
@@ -907,6 +1018,7 @@ def test_fetch_positions_stops_on_an_empty_first_page():
 
 def test_fetch_positions_is_capped_against_a_never_shortening_response(caplog):
     """A response that always returns a full page must not spin forever."""
+
     class _Endless:
         """Always returns a full page, whatever the page number."""
 
@@ -953,17 +1065,19 @@ def _snapshot_for_reconcile(positions, unrealised, currency="USD"):
 
 def _pos(symbol, upl, currency="USD"):
     """One position carrying only the fields reconciliation reads."""
-    (out,) = dd.parse_positions([
-        {"ticker": symbol, "position": 1.0, "unrealizedPnl": upl, "currency": currency}
-    ])
+    (out,) = dd.parse_positions(
+        [{"ticker": symbol, "position": 1.0, "unrealizedPnl": upl, "currency": currency}]
+    )
     return out
 
 
 def test_reconcile_agrees_on_the_live_figures():
     """Measured live 2026-08-04: positions summed -11,618.31 vs ledger -11,618.32."""
-    rec = dd.reconcile(_snapshot_for_reconcile(
-        (_pos("GLD", -458.66), _pos("CL", -11584.72), _pos("IGV", 425.07)), -11618.32
-    ))
+    rec = dd.reconcile(
+        _snapshot_for_reconcile(
+            (_pos("GLD", -458.66), _pos("CL", -11584.72), _pos("IGV", 425.07)), -11618.32
+        )
+    )
     assert rec.checked
     assert rec.positions_total == pytest.approx(-11618.31)
     assert rec.delta == pytest.approx(0.01)
@@ -976,9 +1090,9 @@ def test_reconcile_rounds_to_cents_before_comparing():
     Against a tolerance of 0.05 that trips by 1.8e-13 — a spurious integrity alarm on
     money that reconciles perfectly. The same trap `opening_status` documents.
     """
-    rec = dd.reconcile(_snapshot_for_reconcile(
-        (_pos("A", -1152.43), _pos("B", -2486.08)), -3638.56
-    ))
+    rec = dd.reconcile(
+        _snapshot_for_reconcile((_pos("A", -1152.43), _pos("B", -2486.08)), -3638.56)
+    )
     assert rec.positions_total == pytest.approx(-3638.51)
     assert rec.delta == 0.05  # exactly, not 0.0500000000001819
 
@@ -993,9 +1107,7 @@ def test_reconcile_fails_past_the_tolerance():
 
 def test_reconcile_flags_a_cross_currency_book_rather_than_summing_it():
     """IGV once priced a US ETF in MXN — a cross-currency sum is a confident wrong number."""
-    rec = dd.reconcile(_snapshot_for_reconcile(
-        (_pos("AAPL", 10.0), _pos("SAP", -4.0, "EUR")), 6.0
-    ))
+    rec = dd.reconcile(_snapshot_for_reconcile((_pos("AAPL", 10.0), _pos("SAP", -4.0, "EUR")), 6.0))
     assert rec.mixed_currency
     assert not rec.agrees  # the delta happens to be 0.00, and that proves nothing
 
@@ -1018,11 +1130,22 @@ def test_an_unrun_check_is_never_a_pass():
 
 def test_parse_orders_reads_a_working_order():
     """A working order is typed, with nothing filled and ClaudIA attribution from the local id."""
-    orders = dd.parse_orders([{
-        "orderId": 314390101, "ticker": "AAPL", "side": "BUY", "totalSize": 1,
-        "remainingQuantity": 1, "price": 100.0, "orderType": "Limit",
-        "timeInForce": "GTC", "status": "Submitted", "order_ref": "CLAUDIA-178594",
-    }])
+    orders = dd.parse_orders(
+        [
+            {
+                "orderId": 314390101,
+                "ticker": "AAPL",
+                "side": "BUY",
+                "totalSize": 1,
+                "remainingQuantity": 1,
+                "price": 100.0,
+                "orderType": "Limit",
+                "timeInForce": "GTC",
+                "status": "Submitted",
+                "order_ref": "CLAUDIA-178594",
+            }
+        ]
+    )
     assert len(orders) == 1
     o = orders[0]
     assert o.order_id == "314390101" and o.symbol == "AAPL"
@@ -1039,10 +1162,18 @@ def test_a_blank_remaining_quantity_does_not_read_as_fully_filled():
     on the positions endpoint). Unknown must mean 0 filled, not complete.
     """
     for blank in (None, ""):
-        orders = dd.parse_orders([{
-            "orderId": "1", "ticker": "CL", "side": "SELL", "totalSize": 2,
-            "remainingQuantity": blank, "status": "PreSubmitted",
-        }])
+        orders = dd.parse_orders(
+            [
+                {
+                    "orderId": "1",
+                    "ticker": "CL",
+                    "side": "SELL",
+                    "totalSize": 2,
+                    "remainingQuantity": blank,
+                    "status": "PreSubmitted",
+                }
+            ]
+        )
         assert orders[0].filled == 0.0, f"blank {blank!r} read as filled"
 
     # absent entirely — same answer
@@ -1052,9 +1183,16 @@ def test_a_blank_remaining_quantity_does_not_read_as_fully_filled():
 
 def test_a_partial_fill_is_reported_as_such():
     """Filled quantity is total minus remaining."""
-    orders = dd.parse_orders([{
-        "orderId": "1", "ticker": "CL", "totalSize": 5, "remainingQuantity": 2,
-    }])
+    orders = dd.parse_orders(
+        [
+            {
+                "orderId": "1",
+                "ticker": "CL",
+                "totalSize": 5,
+                "remainingQuantity": 2,
+            }
+        ]
+    )
     assert orders[0].filled == 3.0
 
 
@@ -1073,8 +1211,10 @@ def test_an_external_order_is_not_attributed_to_claudia():
 
 def test_fetch_orders_returns_none_when_the_lookup_fails(monkeypatch):
     """None is "unknown", () is "nothing resting" — the whole point of the field."""
+
     class _Boom:
         """A client whose order lookup always fails."""
+
         def get_live_orders(self):
             """Fail the way a downed brokerage session does."""
             raise RuntimeError("no bridge")
@@ -1093,13 +1233,23 @@ def test_equities_report_multiplier_zero_and_must_normalise_to_one():
     pins that behaviour, because the obvious tidy-up — `if raw_multiplier is not None` —
     would take every equity position to a zero multiplier and silence its money figures.
     """
-    rows = [{
-        "conid": 1, "ticker": "GLD", "contractDesc": "GLD", "assetClass": "STK",
-        "position": 50.0, "multiplier": 0.0,
-        "avgPrice": 383.215004, "avgCost": 383.215004,
-        "mktPrice": 391.4, "mktValue": 19570.0, "unrealizedPnl": 0.0, "realizedPnl": 0.0,
-        "currency": "USD",
-    }]
+    rows = [
+        {
+            "conid": 1,
+            "ticker": "GLD",
+            "contractDesc": "GLD",
+            "assetClass": "STK",
+            "position": 50.0,
+            "multiplier": 0.0,
+            "avgPrice": 383.215004,
+            "avgCost": 383.215004,
+            "mktPrice": 391.4,
+            "mktValue": 19570.0,
+            "unrealizedPnl": 0.0,
+            "realizedPnl": 0.0,
+            "currency": "USD",
+        }
+    ]
     assert dd.parse_positions(rows)[0].multiplier == 1.0
 
 
@@ -1109,26 +1259,45 @@ def test_a_futures_multiplier_is_taken_from_ibkrs_own_field():
     A hardcoded multiplier table would be a second, drifting definition of a contract
     property IBKR already publishes.
     """
-    rows = [{
-        "conid": 2, "ticker": "ES", "contractDesc": "ES  SEP2026", "assetClass": "FUT",
-        "position": -1.0, "multiplier": 50.0,
-        "avgPrice": 7754.9552, "avgCost": 387747.76,
-        "mktPrice": 7755.0, "mktValue": -387750.0, "unrealizedPnl": -20.23,
-        "realizedPnl": 945.52, "currency": "USD",
-    }]
+    rows = [
+        {
+            "conid": 2,
+            "ticker": "ES",
+            "contractDesc": "ES  SEP2026",
+            "assetClass": "FUT",
+            "position": -1.0,
+            "multiplier": 50.0,
+            "avgPrice": 7754.9552,
+            "avgCost": 387747.76,
+            "mktPrice": 7755.0,
+            "mktValue": -387750.0,
+            "unrealizedPnl": -20.23,
+            "realizedPnl": 945.52,
+            "currency": "USD",
+        }
+    ]
     assert dd.parse_positions(rows)[0].multiplier == 50.0
 
 
 def test_the_multiplier_falls_back_to_the_cost_price_ratio():
     """`avgCost / avgPrice` is the second independent route, and it agreed on all three
     live positions on 2026-08-06 (ES 50, GLD 1, IGV 1)."""
-    rows = [{
-        "conid": 3, "ticker": "CL", "contractDesc": "CL  SEP2026", "assetClass": "FUT",
-        "position": 1.0,  # multiplier field absent entirely
-        "avgPrice": 80.84, "avgCost": 80840.0,
-        "mktPrice": 75.0, "mktValue": 75000.0, "unrealizedPnl": 0.0, "realizedPnl": 0.0,
-        "currency": "USD",
-    }]
+    rows = [
+        {
+            "conid": 3,
+            "ticker": "CL",
+            "contractDesc": "CL  SEP2026",
+            "assetClass": "FUT",
+            "position": 1.0,  # multiplier field absent entirely
+            "avgPrice": 80.84,
+            "avgCost": 80840.0,
+            "mktPrice": 75.0,
+            "mktValue": 75000.0,
+            "unrealizedPnl": 0.0,
+            "realizedPnl": 0.0,
+            "currency": "USD",
+        }
+    ]
     assert dd.parse_positions(rows)[0].multiplier == 1000.0
 
 
@@ -1139,24 +1308,33 @@ def _breakdown_db(tmp_path):
     """A store with FUT and STK activity, plus an OPT lot that realised nothing."""
     path = tmp_path / "bd.db"
     with sqlite3.connect(path) as w:
-        w.execute("CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
-                  " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)")
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
-                  " fifo_pnl_realized REAL)")
-        w.executemany("INSERT INTO flex_trade VALUES (?,?,?,?,?)", [
-            ("2026-08-03", "flex", "FUT", "USD", -3516.98),
-            ("2026-08-04", "flex", "FUT", "USD", 590.80),
-            ("2026-08-04", "flex", "STK", "USD", -3249.70),
-            ("2026-08-04", "live", "FUT", "USD", 999999.0),   # live rows are excluded
-            ("2026-07-01", "flex", "FUT", "USD", 111.0),      # outside the window
-        ])
-        w.executemany("INSERT INTO flex_lot VALUES (?,?,?)", [
-            ("20260803", "FUT", -3516.98),
-            ("20260804", "FUT", 1945.28),
-            ("20260804", "FUT", -1354.48),
-            ("20260804", "STK", -3249.70),
-            ("20260804", "OPT", 0.0),        # a scratch: neither won nor lost
-        ])
+        w.execute(
+            "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)"
+        )
+        w.execute(
+            "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
+        )
+        w.executemany(
+            "INSERT INTO flex_trade VALUES (?,?,?,?,?)",
+            [
+                ("2026-08-03", "flex", "FUT", "USD", -3516.98),
+                ("2026-08-04", "flex", "FUT", "USD", 590.80),
+                ("2026-08-04", "flex", "STK", "USD", -3249.70),
+                ("2026-08-04", "live", "FUT", "USD", 999999.0),  # live rows are excluded
+                ("2026-07-01", "flex", "FUT", "USD", 111.0),  # outside the window
+            ],
+        )
+        w.executemany(
+            "INSERT INTO flex_lot VALUES (?,?,?)",
+            [
+                ("20260803", "FUT", -3516.98),
+                ("20260804", "FUT", 1945.28),
+                ("20260804", "FUT", -1354.48),
+                ("20260804", "STK", -3249.70),
+                ("20260804", "OPT", 0.0),  # a scratch: neither won nor lost
+            ],
+        )
     return dd.connect(path)
 
 
@@ -1175,11 +1353,14 @@ def test_breakdown_takes_money_from_trades_and_counts_from_lots(tmp_path):
     money figure overstates losses. So `net` must come from `flex_trade` even when the
     lot subtotals are available and look usable.
     """
-    fut = next(r for r in dd.realised_by_type(
-        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6)) if r.asset_class == "FUT")
-    assert fut.net == pytest.approx(-2926.18, abs=0.005)          # flex_trade
-    assert fut.gross_win == pytest.approx(1945.28, abs=0.005)     # flex_lot
-    assert fut.gross_loss == pytest.approx(-4871.46, abs=0.005)   # flex_lot
+    fut = next(
+        r
+        for r in dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
+        if r.asset_class == "FUT"
+    )
+    assert fut.net == pytest.approx(-2926.18, abs=0.005)  # flex_trade
+    assert fut.gross_win == pytest.approx(1945.28, abs=0.005)  # flex_lot
+    assert fut.gross_loss == pytest.approx(-4871.46, abs=0.005)  # flex_lot
     assert fut.winners == 1 and fut.losers == 2
 
 
@@ -1217,10 +1398,13 @@ def test_win_loss_ratio_is_none_rather_than_infinite(tmp_path):
     """A window with no losing lot has no ratio; rendering one invites a false comparison."""
     path = tmp_path / "w.db"
     with sqlite3.connect(path) as w:
-        w.execute("CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
-                  " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)")
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
-                  " fifo_pnl_realized REAL)")
+        w.execute(
+            "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)"
+        )
+        w.execute(
+            "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
+        )
         w.execute("INSERT INTO flex_trade VALUES ('2026-08-04','flex','FUT','USD',100.0)")
         w.execute("INSERT INTO flex_lot VALUES ('20260804','FUT',100.0)")
     row = dd.realised_by_type(dd.connect(path), date(2026, 8, 4), date(2026, 8, 4))[0]
@@ -1248,17 +1432,22 @@ def test_average_win_and_loss_expose_what_the_win_rate_hides(tmp_path):
     """
     path = tmp_path / "avg.db"
     with sqlite3.connect(path) as w:
-        w.execute("CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
-                  " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)")
-        w.execute("CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT,"
-                  " fifo_pnl_realized REAL)")
+        w.execute(
+            "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)"
+        )
+        w.execute(
+            "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
+        )
         w.execute("INSERT INTO flex_trade VALUES ('2026-08-04','flex','FUT','USD',2400.0)")
-        w.executemany("INSERT INTO flex_lot VALUES ('20260804','FUT',?)",
-                      [(3000.0,), (-120.0,), (-120.0,), (-120.0,), (-120.0,), (-120.0,)])
+        w.executemany(
+            "INSERT INTO flex_lot VALUES ('20260804','FUT',?)",
+            [(3000.0,), (-120.0,), (-120.0,), (-120.0,), (-120.0,), (-120.0,)],
+        )
     row = dd.realised_by_type(dd.connect(path), date(2026, 8, 4), date(2026, 8, 4))[0]
 
-    assert row.win_rate == pytest.approx(16.67, abs=0.01)   # reads as a disaster
-    assert row.net == pytest.approx(2400.0)                 # was in fact a good day
+    assert row.win_rate == pytest.approx(16.67, abs=0.01)  # reads as a disaster
+    assert row.net == pytest.approx(2400.0)  # was in fact a good day
     assert row.average_win == pytest.approx(3000.0)
     assert row.average_loss == pytest.approx(-120.0)
     assert row.win_loss_ratio == pytest.approx(5.0)
@@ -1277,6 +1466,7 @@ def test_averages_are_none_rather_than_zero_when_absent(tmp_path):
 def _bridge_rec(**kw):
     """A stand-in Reconstruction with just the surface `bridged_by_type` consumes."""
     from types import SimpleNamespace
+
     base = {"realised": {}, "declined_days": frozenset(), "by_type": {}, "stats": {}}
     base.update(kw)
 
@@ -1295,8 +1485,9 @@ def test_the_bridge_adds_days_flex_has_not_delivered(tmp_path):
         by_type={"20260806": {"FUT": 1841.04}},
         stats={("20260806", "FUT"): (2, 0, 0, 1841.04, 0.0)},
     )
-    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6),
-                           rec, date(2026, 8, 4))
+    w = dd.bridged_by_type(
+        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
+    )
     fut = w.for_type("FUT")
     assert w.bridged_days == ("20260806",)
     assert fut.net == pytest.approx(-2926.18 + 1841.04, abs=0.005)
@@ -1314,8 +1505,9 @@ def test_a_day_flex_already_covers_is_never_double_counted(tmp_path):
         by_type={"20260804": {"FUT": 590.80}},
         stats={("20260804", "FUT"): (1, 1, 0, 1945.28, -1354.48)},
     )
-    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6),
-                           rec, date(2026, 8, 4))
+    w = dd.bridged_by_type(
+        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
+    )
     assert w.bridged_days == ()
     assert w.for_type("FUT").net == pytest.approx(-2926.18, abs=0.005)
 
@@ -1332,16 +1524,18 @@ def test_a_declined_contract_marks_the_window_incomplete(tmp_path):
         stats={("20260806", "FUT"): (1, 0, 0, 100.0, 0.0)},
         declined_days=frozenset({"20260806"}),
     )
-    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6),
-                           rec, date(2026, 8, 4))
+    w = dd.bridged_by_type(
+        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
+    )
     assert w.incomplete is True
 
 
 def test_a_decline_outside_the_window_does_not_flag_it(tmp_path):
     """Otherwise every window inherits every problem the fill history ever had."""
     rec = _bridge_rec(declined_days=frozenset({"20260701"}))
-    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6),
-                           rec, date(2026, 8, 4))
+    w = dd.bridged_by_type(
+        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
+    )
     assert w.incomplete is False
 
 
@@ -1353,22 +1547,26 @@ def test_without_a_reconstruction_the_window_is_flex_alone(tmp_path):
 
 
 def test_a_window_records_whether_a_reconstruction_was_available(tmp_path):
-    """"Nothing closed" and "we could not look" are opposite claims on a P&L surface.
+    """ "Nothing closed" and "we could not look" are opposite claims on a P&L surface.
 
     Both arrive as a window with no rows, so without this flag the Daily window would assert
     "no round trips today" during a gateway outage — the one day it cannot know that.
     """
     conn = _breakdown_db(tmp_path)
-    assert dd.bridged_by_type(conn, date(2026, 8, 7),
-                              date(2026, 8, 7)).reconstructed is False
-    assert dd.bridged_by_type(conn, date(2026, 8, 7), date(2026, 8, 7),
-                              _bridge_rec(), date(2026, 8, 4)).reconstructed is True
+    assert dd.bridged_by_type(conn, date(2026, 8, 7), date(2026, 8, 7)).reconstructed is False
+    assert (
+        dd.bridged_by_type(
+            conn, date(2026, 8, 7), date(2026, 8, 7), _bridge_rec(), date(2026, 8, 4)
+        ).reconstructed
+        is True
+    )
 
 
 def test_a_reconstruction_that_found_nothing_is_still_a_reconstruction(tmp_path):
     """A quiet day is an answer. The flag reports reachability, not activity."""
-    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 7), date(2026, 8, 7),
-                           _bridge_rec(), date(2026, 8, 4))
+    w = dd.bridged_by_type(
+        _breakdown_db(tmp_path), date(2026, 8, 7), date(2026, 8, 7), _bridge_rec(), date(2026, 8, 4)
+    )
     assert w.rows == () and w.bridged_days == ()
     assert w.reconstructed is True
 
@@ -1380,8 +1578,9 @@ def test_a_type_traded_only_live_still_gets_a_row(tmp_path):
         by_type={"20260806": {"OPT": 42.0}},
         stats={("20260806", "OPT"): (1, 0, 0, 42.0, 0.0)},
     )
-    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 6), date(2026, 8, 6),
-                           rec, date(2026, 8, 4))
+    w = dd.bridged_by_type(
+        _breakdown_db(tmp_path), date(2026, 8, 6), date(2026, 8, 6), rec, date(2026, 8, 4)
+    )
     assert w.for_type("OPT").net == pytest.approx(42.0)
     assert w.for_type("OPT").win_rate == pytest.approx(100.0)
 
@@ -1391,8 +1590,9 @@ def test_a_type_traded_only_live_still_gets_a_row(tmp_path):
 
 def test_a_quote_parses_the_three_fields_we_render():
     """31 Last, 82 Change, 83 Change % — IBKR returns them as strings."""
-    q = dd.parse_quotes([{"conid": 8314, "31": "398.87", "82": "+9.33", "83": "2.39",
-                          "6509": "RivB"}])[8314]
+    q = dd.parse_quotes(
+        [{"conid": 8314, "31": "398.87", "82": "+9.33", "83": "2.39", "6509": "RivB"}]
+    )[8314]
     assert (q.last, q.change, q.change_pct) == (398.87, 9.33, 2.39)
     assert q.is_live is True
 
@@ -1438,25 +1638,49 @@ def test_a_delayed_or_unsubscribed_feed_is_not_reported_as_live():
 
 def test_an_unparseable_field_blanks_that_field_and_keeps_the_rest():
     """One malformed value must not discard the whole quote."""
-    q = dd.parse_quotes([{"conid": 1, "31": "398.87", "82": "", "83": "n/a",
-                          "6509": "RivB"}])[1]
+    q = dd.parse_quotes([{"conid": 1, "31": "398.87", "82": "", "83": "n/a", "6509": "RivB"}])[1]
     assert q.last == 398.87 and q.change is None and q.change_pct is None
 
 
 def test_with_quotes_attaches_by_conid_and_leaves_unquoted_rows_alone():
     """A position with no quote keeps its IBKR fields — blank beats wrong."""
-    pos = dd.parse_positions([
-        {"conid": 1, "ticker": "A", "contractDesc": "A", "assetClass": "STK",
-         "position": 1, "avgCost": 10.0, "avgPrice": 10.0, "multiplier": 1,
-         "mktPrice": 11.0, "mktValue": 11.0, "unrealizedPnl": 1.0, "realizedPnl": 0,
-         "currency": "USD"},
-        {"conid": 2, "ticker": "B", "contractDesc": "B", "assetClass": "STK",
-         "position": 1, "avgCost": 20.0, "avgPrice": 20.0, "multiplier": 1,
-         "mktPrice": 21.0, "mktValue": 21.0, "unrealizedPnl": 1.0, "realizedPnl": 0,
-         "currency": "USD"},
-    ])
-    out = dd.with_quotes(pos, {1: dd.Quote(conid=1, last=11.5, change=0.5,
-                                           change_pct=4.5, status="RivB")})
+    pos = dd.parse_positions(
+        [
+            {
+                "conid": 1,
+                "ticker": "A",
+                "contractDesc": "A",
+                "assetClass": "STK",
+                "position": 1,
+                "avgCost": 10.0,
+                "avgPrice": 10.0,
+                "multiplier": 1,
+                "mktPrice": 11.0,
+                "mktValue": 11.0,
+                "unrealizedPnl": 1.0,
+                "realizedPnl": 0,
+                "currency": "USD",
+            },
+            {
+                "conid": 2,
+                "ticker": "B",
+                "contractDesc": "B",
+                "assetClass": "STK",
+                "position": 1,
+                "avgCost": 20.0,
+                "avgPrice": 20.0,
+                "multiplier": 1,
+                "mktPrice": 21.0,
+                "mktValue": 21.0,
+                "unrealizedPnl": 1.0,
+                "realizedPnl": 0,
+                "currency": "USD",
+            },
+        ]
+    )
+    out = dd.with_quotes(
+        pos, {1: dd.Quote(conid=1, last=11.5, change=0.5, change_pct=4.5, status="RivB")}
+    )
     assert out[0].quote is not None and out[0].quote.last == 11.5
     assert out[1].quote is None
     assert out[1].market_price == 21.0
@@ -1488,10 +1712,19 @@ def test_parse_orders_outside_rth_absent_or_junk_is_none():
 def test_parse_orders_reads_the_stop_price_from_ibkr_s_stop_fields():
     """Live 2026-09-04: a resting ES stop came back with price '' and the stop in
     `auxPrice` / `stop_price` (7735.00). The book must read it, or a stop shows no price."""
-    orders = dd.parse_orders([{
-        "orderId": "853170745", "ticker": "ES", "totalSize": 1, "orderType": "Stop",
-        "price": "", "auxPrice": "7735.00", "stop_price": "7735.00",
-    }])
+    orders = dd.parse_orders(
+        [
+            {
+                "orderId": "853170745",
+                "ticker": "ES",
+                "totalSize": 1,
+                "orderType": "Stop",
+                "price": "",
+                "auxPrice": "7735.00",
+                "stop_price": "7735.00",
+            }
+        ]
+    )
     assert orders[0].price is None
     assert orders[0].stop_price == 7735.0
     plain = dd.parse_orders([{"orderId": "1", "ticker": "AAPL", "totalSize": 1, "price": 150.0}])

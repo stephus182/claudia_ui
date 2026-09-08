@@ -211,7 +211,9 @@ async def _get_tv_bridge() -> TradingViewBridge:
     async with _tv_bridge_lock:
         if _tv_bridge is None:
             bridge = TradingViewBridge()
-            await bridge.start()  # only assign if start() succeeds; keeps _tv_bridge None on failure
+            await (
+                bridge.start()
+            )  # only assign if start() succeeds; keeps _tv_bridge None on failure
             _tv_bridge = bridge
     return _tv_bridge
 
@@ -298,9 +300,7 @@ def _register_doc_version(
     never fire again."""
     context_text, principles_text = loader.get_effective_texts()
     current_hash = loader.compute_hash()
-    version_label = store.register_doc_version_if_new(
-        current_hash, context_text, principles_text
-    )
+    version_label = store.register_doc_version_if_new(current_hash, context_text, principles_text)
     log.info("Active document version: %s", version_label)
     _write_version_snapshot(version_label, context_text, principles_text)
 
@@ -374,9 +374,7 @@ async def _send_opening_status(
     no longer echoed here (2026-08-05) — so on a healthy start this message is two lines:
     the trade dataset and TradingView."""
     ibkr_caveat, ibkr_offline = await gather_session_state(toolkit)
-    trade_status, trade_context = await asyncio.to_thread(
-        build_trade_lines, toolkit, ibkr_offline
-    )
+    trade_status, trade_context = await asyncio.to_thread(build_trade_lines, toolkit, ibkr_offline)
     tv_line = (
         "_TradingView: not connected — click Launch below._"
         if tv_offline
@@ -402,6 +400,7 @@ def _make_alert_subscriber(syslog: SystemLog) -> Callable[[str], Awaitable[None]
     the same process-wide loop as the session (V2/V3 probe basis), so a direct feed send
     is safe; a closed session's send is a harmless no-op (V4). Lands in the System log as
     a warning (entry + toast): a lost feed is worth one interruption (2026-09-03)."""
+
     async def _on_alert(text: str) -> None:
         """Deliver one connectivity alert into this session's System log."""
         syslog.say(text, "warning")
@@ -435,6 +434,7 @@ def _make_fill_subscriber(
     closed session's sends are harmless no-ops, and the listener logs a raising subscriber
     rather than dying.
     """
+
     async def _on_fill(report: ExecutionReport) -> None:
         """Show one fill on all three surfaces."""
         text = format_execution_report(report)
@@ -456,7 +456,9 @@ def _make_fill_subscriber(
             except Exception:
                 # The screen already has the fill; a failed row is a logging loss, not a
                 # reason to raise inside the listener's delivery loop.
-                log.exception("Could not record execution %s (session %s)", report.execution_id, session_id)
+                log.exception(
+                    "Could not record execution %s (session %s)", report.execution_id, session_id
+                )
 
     return _on_fill
 
@@ -484,9 +486,7 @@ def _build_action_bar(
         _session["closed"] = True
         syslog.say("Saving session…")
         try:
-            status = await _run_session_cleanup(
-                session_id, _session["store"], _session["loader"]
-            )
+            status = await _run_session_cleanup(session_id, _session["store"], _session["loader"])
         except Exception as exc:
             # `closed` is already True (the destroy hook must not run cleanup twice), so
             # this line is the only trace the user gets — say it (review 2026-09-04).
@@ -509,7 +509,8 @@ def _build_action_bar(
         # session's loop rather than touching Panel objects off-loop (review 2026-09-04).
         loop = asyncio.get_running_loop()
         result = await asyncio.to_thread(
-            get_session().establish, GatewayManager(),
+            get_session().establish,
+            GatewayManager(),
             emit=lambda line: loop.call_soon_threadsafe(syslog.say, line),
         )
         if result.phase is SessionPhase.LIVE:
@@ -637,9 +638,7 @@ async def _maybe_background_flex_sync(
                 f"last trading day: {cov.get('last_trading_day')})"
             )
         else:
-            last_attempts = await asyncio.to_thread(
-                toolkit._store.get_log, n=1, event="flex_sync"
-            )
+            last_attempts = await asyncio.to_thread(toolkit._store.get_log, n=1, event="flex_sync")
             if last_attempts:
                 last_ts = datetime.fromisoformat(last_attempts[0]["ts"]).replace(tzinfo=UTC)
                 hours_since = (datetime.now(UTC) - last_ts).total_seconds() / 3600
@@ -708,9 +707,7 @@ async def _maybe_background_flex_sync(
             log.warning("Background Flex sync failed: %s", exc)
             # Sync failed — still run integrity check so data status is known
             try:
-                cov_result, _ = await asyncio.to_thread(
-                    toolkit.execute, "check_flex_coverage", {}
-                )
+                cov_result, _ = await asyncio.to_thread(toolkit.execute, "check_flex_coverage", {})
                 syslog.say(
                     f"⚠ Sync failed: {exc}. Run `sync_flex_trades` manually.\n\n{cov_result}",
                     "warning",
@@ -755,12 +752,16 @@ async def _run_session_cleanup(
         store.close_session(session_id, metadata={"model": _MODEL})
         connectivity = (
             {k: v.value for k, v in _connectivity_checker.get_status().items()}
-            if _connectivity_checker else {}
+            if _connectivity_checker
+            else {}
         )
         session_meta = store.get_session(session_id) or {}
         await asyncio.to_thread(
             generate_session_report,
-            session_id, store, connectivity, session_meta.get("doc_version"),
+            session_id,
+            store,
+            connectivity,
+            session_meta.get("doc_version"),
         )
         msg_count = store.count_messages(session_id)
     else:
@@ -997,7 +998,8 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             if not (isinstance(mime, str) and mime.startswith("image/")):
                 chat.send(
                     "Only image attachments are supported (TradingView screenshots).",
-                    user="System", respond=False,
+                    user="System",
+                    respond=False,
                 )
                 return
             # Echo the screenshot into the feed (the standalone widget renders
@@ -1014,9 +1016,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                     "data": base64.b64encode(data).decode(),
                 },
             }
-            await agent.handle_message(
-                f"(screenshot attached: {filename})", images=[block]
-            )
+            await agent.handle_message(f"(screenshot attached: {filename})", images=[block])
         except Exception as exc:
             # Unlike the chat callback, no Panel exception renderer sits above a
             # param watcher — raising would vanish into the async executor, so
@@ -1139,9 +1139,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
             if warning is not None:
                 syslog.say(warning, "warning")
 
-            store.create_session(
-                session_id, context_hash=current_hash, doc_version=version_label
-            )
+            store.create_session(session_id, context_hash=current_hash, doc_version=version_label)
 
             # Backend singletons (design D6, parity with the removed app.py). The
             # checker's 60s /tickle poll is the IBKR session KEEPALIVE — live-
@@ -1371,8 +1369,17 @@ def _configure_logging() -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    for noisy in ("httpx", "httpcore", "anthropic", "urllib3", "googleapiclient",
-                  "google_auth_httplib2", "bokeh", "tornado", "markdown_it"):
+    for noisy in (
+        "httpx",
+        "httpcore",
+        "anthropic",
+        "urllib3",
+        "googleapiclient",
+        "google_auth_httplib2",
+        "bokeh",
+        "tornado",
+        "markdown_it",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
@@ -1435,7 +1442,8 @@ def main() -> None:
             "process would have died with EADDRINUSE. Find the owner with: "
             "lsof -nP -iTCP:%d -sTCP:LISTEN   then stop it by PID (pkill -f "
             "'claudia.panel_app' does NOT match — the binary is named Python).",
-            _PANEL_PORT, _PANEL_PORT,
+            _PANEL_PORT,
+            _PANEL_PORT,
         )
         return
     # The only "server is up" signal. pn.serve(show=False) opens no browser, and

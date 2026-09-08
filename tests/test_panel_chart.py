@@ -526,7 +526,9 @@ def test_build_chart_object_tolerates_frame_shorter_than_sma_period():
     """A frame shorter than the SMA window still renders, without the overlay."""
     from claudia.panel_chart import build_chart_object
 
-    values = list(_price(build_chart_object(_sample_df(), "T")).Curve.Sma_20.dimension_values("sma_20"))
+    values = list(
+        _price(build_chart_object(_sample_df(), "T")).Curve.Sma_20.dimension_values("sma_20")
+    )
     assert len(values) == 4
     assert all(v != v for v in values)  # every value NaN
 
@@ -608,9 +610,7 @@ def test_build_chart_object_stacks_price_over_volume():
     from claudia.panel_chart import _VOLUME_HEIGHT, build_chart_object
 
     fig = hv.render(build_chart_object(_long_df(), "T"), backend="bokeh")
-    figs = [
-        (row, col, child) for child, row, col in fig.children if isinstance(child, bk_figure)
-    ]
+    figs = [(row, col, child) for child, row, col in fig.children if isinstance(child, bk_figure)]
     assert sorted((row, col) for row, col, _ in figs) == [(0, 0), (1, 0)]
     volume_fig = next(child for row, col, child in figs if row == 1)
     assert volume_fig.height == _VOLUME_HEIGHT
@@ -636,9 +636,7 @@ async def test_on_load_unknown_symbol_reports_the_fetch_reason_not_the_cache_key
         "Could not resolve conid for ZZQQXX (as STK). Is IBKR connected?",
         None,
     )
-    tk._cache.load.side_effect = RuntimeError(
-        "No cached file for ZZQQXX_30M_1M_2026-08-03"
-    )
+    tk._cache.load.side_effect = RuntimeError("No cached file for ZZQQXX_30M_1M_2026-08-03")
     pane = build_chart_pane()
     _first(pane, pn.widgets.TextInput).value = "ZZQQXX"
     cb = _get_click_callback(_button(pane))
@@ -763,9 +761,7 @@ def test_infer_bar_label_is_robust_to_weekend_gaps():
     """A weekend gap does not fool the inference into reporting a larger bar."""
     from claudia.panel_chart import _infer_bar_label
 
-    idx = pd.to_datetime(
-        ["2026-01-01", "2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07"]
-    )
+    idx = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07"])
     assert _infer_bar_label(idx) == "1d"
 
 

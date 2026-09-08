@@ -21,7 +21,9 @@ _LIVE_CHECK_ENV = "CLAUDIA_LIVE_SCHEMA_CHECK"
 # Numeric-constraint keywords the tools endpoint rejects. exclusiveMinimum is the one
 # actually proven to 400 (2026-07-27 probe); the siblings are banned pre-emptively
 # because they are the same documented family and the same trap.
-_BANNED_NUMERIC_KEYWORDS = frozenset({"exclusiveMinimum", "exclusiveMaximum", "minimum", "maximum", "multipleOf"})
+_BANNED_NUMERIC_KEYWORDS = frozenset(
+    {"exclusiveMinimum", "exclusiveMaximum", "minimum", "maximum", "multipleOf"}
+)
 
 
 def _schema(name: str) -> Any:
@@ -387,9 +389,18 @@ def test_previous_value_accepts_a_boolean_for_an_outside_rth_change() -> None:
     only string | number | null, so a boolean prior was inexpressible and strict mode would
     have steered the model into "false" / 0 / null. Booleans are now in the scalar union."""
     ok = {
-        "order_id": "555", "conid": 649180671, "symbol": "ES", "action": "BUY", "quantity": 1,
-        "order_type": "STP", "limit_price": None, "stop_price": 7720.0, "tif": "GTC",
-        "sec_type": "FUT", "outside_rth": True, "reason": "keep it live overnight",
+        "order_id": "555",
+        "conid": 649180671,
+        "symbol": "ES",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "STP",
+        "limit_price": None,
+        "stop_price": 7720.0,
+        "tif": "GTC",
+        "sec_type": "FUT",
+        "outside_rth": True,
+        "reason": "keep it live overnight",
         "changes": [{"field": "outside_rth", "previous_value": False}],
     }
     assert not list(Draft202012Validator(_schema("propose_modify")).iter_errors(ok))

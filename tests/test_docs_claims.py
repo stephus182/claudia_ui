@@ -48,9 +48,7 @@ REPO = Path(__file__).resolve().parent.parent
 _DATED = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 # Backticked repo-relative paths — the form a reader treats as "open this".
-_BACKTICK_PATH = re.compile(
-    r"`((?:docs|claudia|tests|scripts)/[A-Za-z0-9_./-]+\.(?:md|py|sh))`"
-)
+_BACKTICK_PATH = re.compile(r"`((?:docs|claudia|tests|scripts)/[A-Za-z0-9_./-]+\.(?:md|py|sh))`")
 
 # Paths that are correct despite not existing. Each entry states why, because an
 # unexplained exemption is how a real defect gets parked here later.
@@ -150,9 +148,7 @@ def test_every_living_reference_is_listed_in_the_docs_index():
     personal = {"context.md", "principles.md", "README.md"}
 
     unlisted = sorted(
-        p.name
-        for p in docs.glob("*.md")
-        if p.name not in personal and f"]({p.name})" not in index
+        p.name for p in docs.glob("*.md") if p.name not in personal and f"]({p.name})" not in index
     )
     assert not unlisted, (
         "These documents exist but are not linked from docs/README.md, which calls itself "
@@ -177,6 +173,6 @@ def test_the_docs_index_does_not_link_a_document_that_was_deleted():
         for target in re.findall(r"\]\(([^)#:]+\.md)\)", index)
         if not (docs / target).exists()
     )
-    assert not dangling, (
-        "docs/README.md links documents that do not exist:\n  " + "\n  ".join(dangling)
+    assert not dangling, "docs/README.md links documents that do not exist:\n  " + "\n  ".join(
+        dangling
     )

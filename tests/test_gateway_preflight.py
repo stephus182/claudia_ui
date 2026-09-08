@@ -30,10 +30,13 @@ def _tickle(**auth):
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = {
-        "session": "abc", "ssoExpires": 600000, "collission": auth.pop("collission", False),
+        "session": "abc",
+        "ssoExpires": 600000,
+        "collission": auth.pop("collission", False),
         "userId": auth.pop("userId", 99999999),
-        "iserver": {"authStatus": {"authenticated": False, "connected": False,
-                                   "competing": False, **auth}},
+        "iserver": {
+            "authStatus": {"authenticated": False, "connected": False, "competing": False, **auth}
+        },
     }
     return resp
 
@@ -83,7 +86,7 @@ def test_sso_alive_without_a_brokerage_session_names_the_user():
 
 
 def test_an_unreachable_gateway_is_not_reported_as_a_free_session():
-    """"The gateway did not answer" and "no session exists" are opposite claims."""
+    """ "The gateway did not answer" and "no session exists" are opposite claims."""
     code, headline, _ = verdict(GatewayState(reachable=False, detail="ConnectionError"))
     assert code == EXIT_UNREACHABLE
     assert "not answering" in headline.lower()
@@ -99,8 +102,10 @@ def test_read_state_never_raises_on_a_dead_gateway():
 
 def test_read_state_types_the_live_response_shape():
     """The wire spelling `collission` is corrected on our side, not propagated."""
-    with patch("claudia.gateway_preflight.requests.get",
-               return_value=_tickle(authenticated=True, connected=True, collission=True)):
+    with patch(
+        "claudia.gateway_preflight.requests.get",
+        return_value=_tickle(authenticated=True, connected=True, collission=True),
+    ):
         state = read_state("https://localhost:5055/v1/api")
     assert state.authenticated and state.connected
     assert state.collision is True
@@ -116,8 +121,10 @@ def test_read_state_reads_both_endpoints_and_writes_to_neither():
     Asserted over every call rather than the last one: with two GETs, checking
     `call_args` alone would silently stop covering `/tickle`.
     """
-    with patch("claudia.gateway_preflight.requests.get", return_value=_tickle()) as get, \
-         patch("claudia.gateway_preflight.requests.post") as post:
+    with (
+        patch("claudia.gateway_preflight.requests.get", return_value=_tickle()) as get,
+        patch("claudia.gateway_preflight.requests.post") as post,
+    ):
         read_state("https://localhost:5055/v1/api")
     urls = [c.args[0] for c in get.call_args_list]
     assert any(u.endswith("/tickle") for u in urls)
@@ -131,8 +138,13 @@ def test_read_state_reads_both_endpoints_and_writes_to_neither():
 def _borrowed():
     """The state measured live on 2026-08-05: the phone's session, held by the gateway."""
     return GatewayState(
-        reachable=True, authenticated=False, connected=False, competing=False,
-        user_id=99999999, sso_valid=True, client_app="IBKRMOBILE_000.a-000",
+        reachable=True,
+        authenticated=False,
+        connected=False,
+        competing=False,
+        user_id=99999999,
+        sso_valid=True,
+        client_app="IBKRMOBILE_000.a-000",
         sso_user="ibkruser",
     )
 
@@ -159,8 +171,10 @@ def test_a_borrowed_session_outranks_the_generic_not_authenticated_verdicts():
 
 def test_the_startup_warning_fires_only_on_positive_proof(caplog):
     """Named owner + valid SSO + unauthenticated gateway. Anything less stays silent."""
-    with patch("claudia.gateway_preflight.read_state", return_value=_borrowed()), \
-         caplog.at_level(logging.ERROR, logger="claudia.gateway_preflight"):
+    with (
+        patch("claudia.gateway_preflight.read_state", return_value=_borrowed()),
+        caplog.at_level(logging.ERROR, logger="claudia.gateway_preflight"),
+    ):
         owner = warn_if_session_borrowed("https://x/v1/api")
     assert owner == "IBKRMOBILE_000.a-000"
     assert "LOG OUT" in caplog.text
@@ -170,8 +184,16 @@ def test_the_startup_warning_fires_only_on_positive_proof(caplog):
 @pytest.mark.parametrize(
     ("label", "state"),
     [
-        ("authenticated", GatewayState(reachable=True, authenticated=True, connected=True,
-                                       sso_valid=True, client_app="IBKRMOBILE_000.a-000")),
+        (
+            "authenticated",
+            GatewayState(
+                reachable=True,
+                authenticated=True,
+                connected=True,
+                sso_valid=True,
+                client_app="IBKRMOBILE_000.a-000",
+            ),
+        ),
         ("unreachable", GatewayState(reachable=False)),
         ("no sso", GatewayState(reachable=True, sso_valid=False, client_app="")),
         ("no owner named", GatewayState(reachable=True, sso_valid=True, client_app="")),
@@ -179,8 +201,10 @@ def test_the_startup_warning_fires_only_on_positive_proof(caplog):
 )
 def test_the_startup_warning_stays_silent_without_proof(label, state, caplog):
     """A warning that fires when it need not is one that gets ignored when it must not."""
-    with patch("claudia.gateway_preflight.read_state", return_value=state), \
-         caplog.at_level(logging.ERROR, logger="claudia.gateway_preflight"):
+    with (
+        patch("claudia.gateway_preflight.read_state", return_value=state),
+        caplog.at_level(logging.ERROR, logger="claudia.gateway_preflight"),
+    ):
         assert warn_if_session_borrowed("https://x/v1/api") is None
     assert caplog.text == ""
 
@@ -200,8 +224,10 @@ def test_release_reports_ibkrs_own_status_field_not_merely_a_200():
 
 def test_release_is_never_reached_by_the_read_only_path():
     """`read_state` must not be able to release anything — its contract is read-only."""
-    with patch("claudia.gateway_preflight.requests.get", return_value=_tickle()), \
-         patch("claudia.gateway_preflight.requests.post") as post:
+    with (
+        patch("claudia.gateway_preflight.requests.get", return_value=_tickle()),
+        patch("claudia.gateway_preflight.requests.post") as post,
+    ):
         read_state("https://localhost:5055/v1/api")
     assert not post.called
 
@@ -228,8 +254,13 @@ def test_a_malformed_sso_body_degrades_instead_of_raising(body):
 
     assert state.reachable is True
     assert isinstance(state.client_app, str)
-    assert verdict(state)[0] in {EXIT_READY, EXIT_UNREACHABLE, EXIT_FREE,
-                                 EXIT_CONTESTED, EXIT_BORROWED}
+    assert verdict(state)[0] in {
+        EXIT_READY,
+        EXIT_UNREACHABLE,
+        EXIT_FREE,
+        EXIT_CONTESTED,
+        EXIT_BORROWED,
+    }
 
 
 def test_verdict_is_total_over_every_field_combination():
@@ -241,8 +272,15 @@ def test_verdict_is_total_over_every_field_combination():
     import itertools
 
     for r, a, c, comp, coll, sso, app in itertools.product([True, False], repeat=7):
-        state = GatewayState(reachable=r, authenticated=a, connected=c, competing=comp,
-                             collision=coll, sso_valid=sso, client_app="X" if app else "")
+        state = GatewayState(
+            reachable=r,
+            authenticated=a,
+            connected=c,
+            competing=comp,
+            collision=coll,
+            sso_valid=sso,
+            client_app="X" if app else "",
+        )
         code, headline, guidance = verdict(state)
         assert code in {EXIT_READY, EXIT_UNREACHABLE, EXIT_FREE, EXIT_CONTESTED, EXIT_BORROWED}
         assert headline and guidance, f"empty verdict for {state}"

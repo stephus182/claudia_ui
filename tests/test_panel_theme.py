@@ -191,7 +191,9 @@ def test_register_claudia_avatar_makes_claudia_messages_carry_the_image(
     assert isinstance(msg._render_avatar(), pn.pane.Image)
 
 
-def test_register_claudia_avatar_survives_braces_in_the_checkout_path(tmp_path, restore_default_avatars):
+def test_register_claudia_avatar_survives_braces_in_the_checkout_path(
+    tmp_path, restore_default_avatars
+):
     """Panel runs `.format(dist_path=…)` on a *string* avatar (panel/chat/utils.py), so a
     path containing `{` or `}` would raise KeyError on every message. Registering the bytes
     sidesteps that — and reads the file once instead of per message."""

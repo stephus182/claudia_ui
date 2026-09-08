@@ -53,6 +53,7 @@ pytestmark = pytest.mark.skipif(
     ),
 )
 
+
 @pytest.fixture
 def fills():
     """The real 23 executions, typed."""
@@ -73,9 +74,9 @@ def positions(fills):
     this code produced would check nothing.
     """
     return {
-        _conid(fills, "ES"): 0.0,    # closed by ClaudIA's fill; every leg in-window
-        _conid(fills, "CL"): 0.0,    # flat, every leg in-window
-        _conid(fills, "CRM"): 0.0,   # opened before the window -> declined
+        _conid(fills, "ES"): 0.0,  # closed by ClaudIA's fill; every leg in-window
+        _conid(fills, "CL"): 0.0,  # flat, every leg in-window
+        _conid(fills, "CRM"): 0.0,  # opened before the window -> declined
         _conid(fills, "GLD"): 50.0,  # opened before the window -> declined
     }
 
@@ -149,14 +150,34 @@ def test_a_short_opened_and_closed_across_two_days_is_realised_on_the_closing_da
 
     A same-day-only window would find no opening leg and report nothing.
     """
-    fills = parse_fills([
-        {"execution_id": "a", "conid": 1, "symbol": "ES", "sec_type": "FUT", "side": "S",
-         "size": 1, "price": "7765.00", "net_amount": 388250.0, "commission": "2.24",
-         "trade_time": "20260805-22:22:57"},
-        {"execution_id": "b", "conid": 1, "symbol": "ES", "sec_type": "FUT", "side": "B",
-         "size": 1, "price": "7746.00", "net_amount": 387300.0, "commission": "2.24",
-         "trade_time": "20260806-13:34:12"},
-    ])
+    fills = parse_fills(
+        [
+            {
+                "execution_id": "a",
+                "conid": 1,
+                "symbol": "ES",
+                "sec_type": "FUT",
+                "side": "S",
+                "size": 1,
+                "price": "7765.00",
+                "net_amount": 388250.0,
+                "commission": "2.24",
+                "trade_time": "20260805-22:22:57",
+            },
+            {
+                "execution_id": "b",
+                "conid": 1,
+                "symbol": "ES",
+                "sec_type": "FUT",
+                "side": "B",
+                "size": 1,
+                "price": "7746.00",
+                "net_amount": 387300.0,
+                "commission": "2.24",
+                "trade_time": "20260806-13:34:12",
+            },
+        ]
+    )
     result = reconstruct(fills, {1: 0.0})
     assert result.total_for_day("20260805") == 0.0
     assert result.total_for_day("20260806") == pytest.approx(945.52, abs=0.005)

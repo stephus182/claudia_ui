@@ -55,6 +55,7 @@ def session_with_error(store):
 # Report file creation
 # ---------------------------------------------------------------------------
 
+
 def test_report_is_written_to_disk(store, session_with_tools, tmp_path, monkeypatch):
     """generate_session_report writes a .md file and returns its path."""
     monkeypatch.chdir(tmp_path)
@@ -67,6 +68,7 @@ def test_report_is_written_to_disk(store, session_with_tools, tmp_path, monkeypa
 def test_report_filename_is_timestamp(store, session_with_tools, tmp_path, monkeypatch):
     """Report filename matches YYYY-MM-DD-HHmm pattern."""
     import re
+
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_with_tools, store)
     assert path is not None
@@ -76,6 +78,7 @@ def test_report_filename_is_timestamp(store, session_with_tools, tmp_path, monke
 # ---------------------------------------------------------------------------
 # Report content
 # ---------------------------------------------------------------------------
+
 
 def test_report_contains_session_id(store, session_with_tools, tmp_path, monkeypatch):
     """The generated report names the session it describes."""
@@ -100,8 +103,9 @@ def test_report_uses_raw_name_for_unknown_tool(store, tmp_path, monkeypatch):
     """Unknown tool names appear verbatim (no label entry needed for every tool)."""
     session_id = "sess-unknown-tool"
     store.create_session(session_id)
-    store.add_message(session_id, role="tool", content="", tool_name="some_future_tool",
-                      tool_result="ok")
+    store.add_message(
+        session_id, role="tool", content="", tool_name="some_future_tool", tool_result="ok"
+    )
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_id, store)
     assert path is not None
@@ -113,8 +117,9 @@ def test_report_shows_tool_count_when_called_multiple_times(store, tmp_path, mon
     session_id = "sess-multi-tool"
     store.create_session(session_id)
     for _ in range(3):
-        store.add_message(session_id, role="tool", content="", tool_name="get_positions",
-                          tool_result="[]")
+        store.add_message(
+            session_id, role="tool", content="", tool_name="get_positions", tool_result="[]"
+        )
     monkeypatch.chdir(tmp_path)
     path = generate_session_report(session_id, store)
     assert path is not None
@@ -183,9 +188,15 @@ def test_report_returns_none_on_bad_session(store, tmp_path, monkeypatch):
 # _TOOL_LABELS completeness
 # ---------------------------------------------------------------------------
 
+
 def test_all_local_tools_have_labels():
     """Every local tool defined in agent.py must have a label entry."""
-    local_tools = {"list_doc_versions", "get_doc_version", "search_past_conversations", "fetch_web_page"}
+    local_tools = {
+        "list_doc_versions",
+        "get_doc_version",
+        "search_past_conversations",
+        "fetch_web_page",
+    }
     missing = local_tools - _TOOL_LABELS.keys()
     assert missing == set(), f"Missing labels for local tools: {missing}"
 
@@ -193,8 +204,14 @@ def test_all_local_tools_have_labels():
 def test_key_ibkr_tools_have_labels():
     """High-frequency IBKR tools must have readable labels."""
     required = {
-        "get_positions", "get_live_orders", "get_pnl", "get_account_summary",
-        "get_trades", "sync_flex_trades", "create_price_alert", "modify_price_alert",
+        "get_positions",
+        "get_live_orders",
+        "get_pnl",
+        "get_account_summary",
+        "get_trades",
+        "sync_flex_trades",
+        "create_price_alert",
+        "modify_price_alert",
         "fetch_market_data",
     }
     missing = required - _TOOL_LABELS.keys()
@@ -204,7 +221,10 @@ def test_key_ibkr_tools_have_labels():
 def test_key_tv_tools_have_labels():
     """High-frequency TradingView tools must have readable labels."""
     required = {
-        "chart_get_state", "quote_get", "pine_set_source", "pine_smart_compile",
+        "chart_get_state",
+        "quote_get",
+        "pine_set_source",
+        "pine_smart_compile",
         "capture_screenshot",
     }
     missing = required - _TOOL_LABELS.keys()

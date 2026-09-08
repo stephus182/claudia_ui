@@ -128,11 +128,11 @@ class GatewayState:
 
 
 # Exit codes — distinct so this can gate a shell script, not just inform a human.
-EXIT_READY = 0        # a working session already exists; do NOT log in again
+EXIT_READY = 0  # a working session already exists; do NOT log in again
 EXIT_UNREACHABLE = 1  # gateway process is not answering at all
-EXIT_FREE = 2         # nothing holds the session; a login now should succeed
-EXIT_CONTESTED = 3    # another IBKR client holds it; logging in now starts a fight
-EXIT_BORROWED = 4     # the gateway holds an SSO session issued to a different client app
+EXIT_FREE = 2  # nothing holds the session; a login now should succeed
+EXIT_CONTESTED = 3  # another IBKR client holds it; logging in now starts a fight
+EXIT_BORROWED = 4  # the gateway holds an SSO session issued to a different client app
 
 
 def read_state(gateway_url: str, timeout: float = 5.0) -> GatewayState:
@@ -356,8 +356,13 @@ def warn_if_session_borrowed(url: str | None = None) -> str | None:
     return state.client_app
 
 
-_MARK = {EXIT_READY: "OK", EXIT_UNREACHABLE: "DOWN", EXIT_FREE: "FREE",
-         EXIT_CONTESTED: "BUSY", EXIT_BORROWED: "BORROWED"}
+_MARK = {
+    EXIT_READY: "OK",
+    EXIT_UNREACHABLE: "DOWN",
+    EXIT_FREE: "FREE",
+    EXIT_CONTESTED: "BUSY",
+    EXIT_BORROWED: "BORROWED",
+}
 
 
 def _report(state: GatewayState) -> int:
@@ -366,8 +371,10 @@ def _report(state: GatewayState) -> int:
     print(f"[{_MARK[code]}] {headline}\n")
     print(f"  {guidance}\n")
     if state.reachable:
-        print(f"  authenticated={state.authenticated}  connected={state.connected}  "
-              f"competing={state.competing}  collision={state.collision}")
+        print(
+            f"  authenticated={state.authenticated}  connected={state.connected}  "
+            f"competing={state.competing}  collision={state.collision}"
+        )
         if state.client_app:
             print(f"  sso owner={state.client_app}  user={state.sso_user}")
         if state.sso_expires_ms is not None:

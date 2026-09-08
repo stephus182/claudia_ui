@@ -58,8 +58,7 @@ NARRATED_STAGING = [
 HONEST_STAGING_TALK = [
     "I described staging a cancel without actually calling the tool. That description "
     "produced **no button**.",
-    "That description produced **no button** — the only real cancel proposal is item 3 "
-    "above.",
+    "That description produced **no button** — the only real cancel proposal is item 3 above.",
     "Nothing cancels until you click it and clear both confirmation gates.",
     "Both are ClaudIA-staged, so this one I can cancel for you.",
     "**Staged button ≠ live order.** Nothing to pull from the book.",
@@ -161,8 +160,7 @@ NARRATED_ACTION = [
     "up from the environment.",
     "I'll check the TradingView connection and current chart state.TradingView "
     "connection is live. Current chart state:",
-    "Let me check your live positions.Yes — connection's live, and you do have a ZZZ "
-    "position:",
+    "Let me check your live positions.Yes — connection's live, and you do have a ZZZ position:",
     "Let me retry the ZZZ fetch — and I'll force a fresh pull since the cached series "
     "had that price mismatch.ZZZ 1Y daily is in — fresh pull from IBKR, now cached.",
     "Let me pull it cleanly.Now I have what I need. Your ZZZ cost basis is 245.10 USD "
@@ -204,8 +202,7 @@ HONEST_ACTION_TALK = [
     "Let me read the chart you sent. Here's the chart — ZZZ 1H, RSI 62.",
     "I'll hold that as our reference point.",
     "I'll accept the empirical result: the modify was accepted end to end.",
-    "I couldn't capture the screenshot — the sidecar is down, so there is no chart "
-    "image to show.",
+    "I couldn't capture the screenshot — the sidecar is down, so there is no chart image to show.",
     "If the gateway were up, I'd pull the quote and it would be here within a second.",
 ]
 
@@ -220,19 +217,18 @@ HONEST_ACTION_TALK = [
 # Must fire when no tool ran in the turn (the fence is part of the shape).
 NARRATED_TOOL_RESULT = [
     "Good instinct to check — here's the explicit call:Here's the raw tool result, "
-    "verbatim:\n\n```json\n{\n  \"symbol\": \"ZZZ\",\n  \"last\": 111.11,\n  "
-    "\"_source\": \"quote_get\"\n}\n```\n\nThis confirms it: the numbers all came "
+    'verbatim:\n\n```json\n{\n  "symbol": "ZZZ",\n  "last": 111.11,\n  '
+    '"_source": "quote_get"\n}\n```\n\nThis confirms it: the numbers all came '
     "from the quote_get tool, not from memory.",
-    "Here is the exact payload the tool returned:\n\n```json\n{\"status\": \"ok\"}\n```",
+    'Here is the exact payload the tool returned:\n\n```json\n{"status": "ok"}\n```',
     "Below is the actual output of the call:\n\n```\nsuccess: true\n```",
 ]
 
 # The trap: fences and result-talk that must never fire — explanations of format,
 # hypotheticals, and code the model is composing on purpose.
 HONEST_RESULT_TALK = [
-    "A raw tool result would look like this, for example:\n\n```json\n{\"symbol\": "
-    "\"ZZZ\"}\n```",
-    "Here's the strategy code:\n\n```pinescript\n//@version=5\nindicator(\"ZZZ\")\n```",
+    'A raw tool result would look like this, for example:\n\n```json\n{"symbol": "ZZZ"}\n```',
+    'Here\'s the strategy code:\n\n```pinescript\n//@version=5\nindicator("ZZZ")\n```',
     "The tool's response format is documented as JSON with a symbol field.",
     "Here's the raw tool result, verbatim:",
 ]
@@ -254,8 +250,7 @@ HONEST_ACTION_TALK_REVIEW = [
     # Conditionals and futures: announce, then explain what WOULD happen.
     "Let me check the sidecar first. If the connection is live, the inject will go "
     "through; otherwise launch TradingView first.",
-    "I'll run through what to verify. Here's the status I'd expect to see once the "
-    "gateway is up.",
+    "I'll run through what to verify. Here's the status I'd expect to see once the gateway is up.",
     "Let me pull it when you're ready. Here are the results I will show you afterwards:",
     # Gerund discourse idioms that are not commitments to act.
     "Switching gears: Here's the chart pattern I want you to look at next time.",
@@ -272,12 +267,11 @@ HONEST_RESULT_TALK_REVIEW = [
     "Earlier I showed you the raw tool result above.\n\n```json\n{}\n```",
     # The model honestly explaining the correction it just received.
     "The warning said I presented a constructed block as a raw tool result. Here's "
-    "the code you asked about:\n\n```pine\nstudy(\"A\")\n```",
+    'the code you asked about:\n\n```pine\nstudy("A")\n```',
     # These two carry NO governing operator to the left of the match, so only the
     # past-turn and non-performance vetoes can clear them — without those, the
     # detector accuses the model of fabricating while it says the payload is GONE.
-    "The raw tool result I showed you earlier is gone from my context now.\n\n"
-    "```json\n{}\n```",
+    "The raw tool result I showed you earlier is gone from my context now.\n\n```json\n{}\n```",
     "That exact payload was never returned by any tool.\n\n```json\n{}\n```",
 ]
 

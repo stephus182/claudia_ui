@@ -84,7 +84,10 @@ async def test_tool_step_success_streams_input_then_output_with_separator():
     # serialize_recursively: `string = f"{label}={string!r}"`), so the two real newline
     # bytes our separator inserts show up here as the *escaped text* \n\n — hence the
     # doubled backslashes below to encode that escaped text correctly as a source literal.
-    assert sent_step.serialize() == 'ChatStep(Markdown=\'Input: `{"foo": "bar"}`\\n\\nOutput: 100 AAPL\')'
+    assert (
+        sent_step.serialize()
+        == 'ChatStep(Markdown=\'Input: `{"foo": "bar"}`\\n\\nOutput: 100 AAPL\')'
+    )
 
 
 @pytest.mark.asyncio
@@ -105,6 +108,7 @@ async def test_tool_step_exception_sets_failed_status_and_reraises():
 async def test_tool_step_sends_a_real_chatstep_not_a_plain_message():
     """The step is a real ChatStep, which is what gives it status transitions."""
     import panel as pn
+
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1")
     async with sink.tool_step("get_positions"):

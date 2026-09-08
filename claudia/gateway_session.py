@@ -313,9 +313,7 @@ def describe(phase: SessionPhase, state: GatewayState | None = None) -> str:
     return detail
 
 
-def observe(
-    state: GatewayState, data_ok: bool, now: datetime | None = None
-) -> SessionState:
+def observe(state: GatewayState, data_ok: bool, now: datetime | None = None) -> SessionState:
     """Build a complete `SessionState` from a reading. The normal way to make one."""
     phase = classify(state, data_ok)
     return SessionState(
@@ -409,7 +407,9 @@ class GatewaySession:
         if previous.phase is state.phase:
             return False
         log.info(
-            "Gateway session %s -> %s (%s)", previous.phase.value, state.phase.value,
+            "Gateway session %s -> %s (%s)",
+            previous.phase.value,
+            state.phase.value,
             state.detail,
         )
         for callback in list(self._subscribers):
@@ -443,9 +443,7 @@ class GatewaySession:
         self.publish(observe(reading, data_ok))
         return self._state
 
-    def establish(
-        self, manager: GatewayManagerLike, **kwargs: object
-    ) -> SessionState:
+    def establish(self, manager: GatewayManagerLike, **kwargs: object) -> SessionState:
         """Bring the session to `LIVE`, or explain why it cannot get there.
 
         The **only** entry point in the codebase that opens a login page or starts a
@@ -453,9 +451,7 @@ class GatewaySession:
         """
         return _establish(self, manager, **kwargs)  # type: ignore[arg-type]
 
-    def recover(
-        self, manager: GatewayManagerLike, **kwargs: object
-    ) -> SessionState:
+    def recover(self, manager: GatewayManagerLike, **kwargs: object) -> SessionState:
         """Clear an unusable session by recreating the container.
 
         The **only** entry point that mutates a container holding a session. Deliberately
@@ -528,9 +524,7 @@ class GatewaySession:
             and state.gateway is not None
             and state.gateway.connected
             and not state.gateway.authenticated
-            and await asyncio.to_thread(
-                attempt_soft_recovery, self._poll_url or gateway_url()
-            )
+            and await asyncio.to_thread(attempt_soft_recovery, self._poll_url or gateway_url())
         ):
             log.info("GatewaySession: soft timeout recovered via ssodh/init")
             await asyncio.to_thread(self.read_now, self._poll_url)
@@ -1005,6 +999,7 @@ def get_session() -> GatewaySession:
 # ══════════════════════════════════════════════════════════════════════════════
 # Stage 3 — the owner polls, and owns the last session-affecting write.
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def attempt_soft_recovery(url: str, timeout: float = 5.0) -> bool:
     """`POST /iserver/auth/ssodh/init` — raise the brokerage bridge after a soft timeout.

@@ -47,8 +47,6 @@ def _ibkr_down(checker):
         checker._session.is_live.return_value = previous
 
 
-
-
 @pytest.fixture
 def session():
     """A stand-in session owner. `is_live()` is the only thing the checker asks it."""
@@ -116,6 +114,7 @@ def test_check_gdrive_token_file_missing_no_sync(checker, tmp_path):
 def test_check_gdrive_uses_ping_when_sync_provided(checker):
     """With a sync wired, a real ping outranks the token file."""
     from unittest.mock import MagicMock
+
     sync = MagicMock()
     sync.ping.return_value = True
     checker._gdrive_sync = sync
@@ -126,6 +125,7 @@ def test_check_gdrive_uses_ping_when_sync_provided(checker):
 def test_check_gdrive_ping_failure_returns_false(checker):
     """A failed ping is reported as down."""
     from unittest.mock import MagicMock
+
     sync = MagicMock()
     sync.ping.return_value = False
     checker._gdrive_sync = sync
@@ -157,9 +157,9 @@ def test_get_status_initial(checker):
     """Before the first poll every service reads UNKNOWN, not an error."""
     s = checker.get_status()
     assert s == {
-        "ibkr":   ServiceStatus.UNKNOWN,
+        "ibkr": ServiceStatus.UNKNOWN,
         "gdrive": ServiceStatus.UNKNOWN,
-        "tv":     ServiceStatus.UNKNOWN,
+        "tv": ServiceStatus.UNKNOWN,
     }
 
 
@@ -172,6 +172,7 @@ def test_get_status_returns_copy(checker):
 
 # ── TradingView UNKNOWN when not configured ────────────────────────────────
 
+
 def test_check_tradingview_no_bridge_returns_false(checker):
     """No bridge → False; _run_checks maps this to UNKNOWN, not ERROR."""
     assert checker.check_tradingview() is False
@@ -180,12 +181,15 @@ def test_check_tradingview_no_bridge_returns_false(checker):
 
 # ── Subscriber registry ─────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_subscribe_returns_unsubscribe_callable(checker):
     """Subscribing hands back the callable that undoes it."""
+
     async def _subscriber(msg: str) -> None:
         """Record the alert text this subscriber received."""
         pass
+
     unsubscribe = checker.subscribe(_subscriber)
     assert callable(unsubscribe)
     assert _subscriber in checker._subscribers
@@ -195,12 +199,15 @@ async def test_subscribe_returns_unsubscribe_callable(checker):
 async def test_send_alert_notifies_all_subscribers_with_formatted_message(checker):
     """Every subscriber receives the same pre-formatted alert text."""
     received_a, received_b = [], []
+
     async def _sub_a(msg: str) -> None:
         """Record the alert text this subscriber received."""
         received_a.append(msg)
+
     async def _sub_b(msg: str) -> None:
         """Record the alert text this subscriber received."""
         received_b.append(msg)
+
     checker.subscribe(_sub_a)
     checker.subscribe(_sub_b)
 
@@ -215,9 +222,11 @@ async def test_send_alert_unknown_to_ok_notifies_no_subscribers(checker):
     """Mirrors the pre-existing test_run_checks_unknown_to_ok_no_alert's intent —
     startup settling into a good state is silent, not an alert-worthy transition."""
     received = []
+
     async def _subscriber(msg: str) -> None:
         """Record the alert text this subscriber received."""
         received.append(msg)
+
     checker.subscribe(_subscriber)
 
     await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.OK)
@@ -229,9 +238,11 @@ async def test_send_alert_unknown_to_ok_notifies_no_subscribers(checker):
 async def test_send_alert_unsubscribed_callback_stops_receiving(checker):
     """An unsubscribed callback receives nothing further."""
     received = []
+
     async def _subscriber(msg: str) -> None:
         """Record the alert text this subscriber received."""
         received.append(msg)
+
     unsubscribe = checker.subscribe(_subscriber)
     unsubscribe()
 
@@ -248,15 +259,18 @@ async def test_send_alert_subscriber_unsubscribing_itself_midloop_does_not_skip_
     guarantees a second subscriber, registered after it, still gets notified in the same
     _send_alert call. (Fails if _send_alert iterates the live list instead of a copy.)"""
     received = []
+
     async def _self_unsubscribing(msg: str) -> None:
         """Unsubscribe from inside the callback, exercising mutation during iteration."""
         received.append(("first", msg))
         unsubscribe_first()  # mutate the subscriber list mid-notify
+
     unsubscribe_first = checker.subscribe(_self_unsubscribing)
 
     async def _second(msg: str) -> None:
         """Record that this subscriber still ran after the first unsubscribed itself."""
         received.append(("second", msg))
+
     checker.subscribe(_second)
 
     await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
@@ -273,12 +287,15 @@ async def test_send_alert_one_subscriber_exception_does_not_block_others(checker
     single external call site today — a failing subscriber must not prevent other
     subscribers (or the status update itself) from proceeding."""
     received = []
+
     async def _broken_subscriber(msg: str) -> None:
         """Raise, so a failing subscriber cannot silence the others."""
         raise RuntimeError("subscriber blew up")
+
     async def _good_subscriber(msg: str) -> None:
         """Record delivery, proving the broken subscriber did not stop the fan-out."""
         received.append(msg)
+
     checker.subscribe(_broken_subscriber)
     checker.subscribe(_good_subscriber)
 
@@ -288,6 +305,7 @@ async def test_send_alert_one_subscriber_exception_does_not_block_others(checker
 
 
 # ── State transition tests (async) ────────────────────────────────────────
+
 
 @pytest.fixture
 def checker_with_token(tmp_path, session):
@@ -305,9 +323,11 @@ def checker_with_token(tmp_path, session):
 async def test_run_checks_unknown_to_ok_no_alert(checker_with_token):
     """UNKNOWN → OK at startup: _send_alert runs but notifies no subscribers."""
     received = []
+
     async def _subscriber(msg: str) -> None:
         """Record the alert text this subscriber received."""
         received.append(msg)
+
     checker_with_token.subscribe(_subscriber)
 
     with _ibkr_up(checker_with_token):
@@ -322,8 +342,10 @@ async def test_run_checks_unknown_to_ok_no_alert(checker_with_token):
 @pytest.mark.asyncio
 async def test_run_checks_unknown_to_error_emits_alert(checker):
     """UNKNOWN → ERROR at startup: _send_alert called for each failing service."""
-    with _ibkr_down(checker), \
-         patch.object(checker, "_send_alert", new_callable=AsyncMock) as mock_alert:
+    with (
+        _ibkr_down(checker),
+        patch.object(checker, "_send_alert", new_callable=AsyncMock) as mock_alert,
+    ):
         await checker._run_checks()
 
     assert checker.get_status()["ibkr"] == ServiceStatus.ERROR
@@ -339,8 +361,10 @@ async def test_run_checks_ok_to_error_emits_disconnect(checker_with_token):
     # Seed IBKR as OK
     checker_with_token._status["ibkr"] = ServiceStatus.OK
 
-    with _ibkr_down(checker_with_token), \
-         patch.object(checker_with_token, "_send_alert", new_callable=AsyncMock) as mock_alert:
+    with (
+        _ibkr_down(checker_with_token),
+        patch.object(checker_with_token, "_send_alert", new_callable=AsyncMock) as mock_alert,
+    ):
         await checker_with_token._run_checks()
 
     assert checker_with_token.get_status()["ibkr"] == ServiceStatus.ERROR
@@ -356,8 +380,10 @@ async def test_run_checks_error_to_ok_emits_reconnect(checker):
     checker._status["ibkr"] = ServiceStatus.ERROR
     checker._status["gdrive"] = ServiceStatus.ERROR
 
-    with _ibkr_up(checker), \
-         patch.object(checker, "_send_alert", new_callable=AsyncMock) as mock_alert:
+    with (
+        _ibkr_up(checker),
+        patch.object(checker, "_send_alert", new_callable=AsyncMock) as mock_alert,
+    ):
         # gdrive token doesn't exist in base checker fixture → stays ERROR
         await checker._run_checks()
 
@@ -373,8 +399,10 @@ async def test_run_checks_repeated_error_no_extra_alert(checker_with_token):
     """ERROR → ERROR: no alert when state is already ERROR."""
     checker_with_token._status["ibkr"] = ServiceStatus.ERROR
 
-    with _ibkr_down(checker_with_token), \
-         patch.object(checker_with_token, "_send_alert", new_callable=AsyncMock) as mock_alert:
+    with (
+        _ibkr_down(checker_with_token),
+        patch.object(checker_with_token, "_send_alert", new_callable=AsyncMock) as mock_alert,
+    ):
         await checker_with_token._run_checks()
 
     ibkr_calls = [c for c in mock_alert.call_args_list if c.args[0] == "ibkr"]
@@ -384,8 +412,7 @@ async def test_run_checks_repeated_error_no_extra_alert(checker_with_token):
 @pytest.mark.asyncio
 async def test_run_checks_tv_unknown_when_no_bridge(checker):
     """TV without a bridge stays UNKNOWN, not ERROR."""
-    with _ibkr_up(checker), \
-         patch.object(checker, "_send_alert", new_callable=AsyncMock):
+    with _ibkr_up(checker), patch.object(checker, "_send_alert", new_callable=AsyncMock):
         await checker._run_checks()
 
     assert checker.get_status()["tv"] == ServiceStatus.UNKNOWN
@@ -394,6 +421,7 @@ async def test_run_checks_tv_unknown_when_no_bridge(checker):
 # ── Poll-loop lifecycle ─────────────────────────────────────────────────────
 # (The soft-recovery tests that used to sit under this banner moved to
 #  tests/test_gateway_session.py on 2026-08-06 with the write itself.)
+
 
 @pytest.mark.asyncio
 async def test_stop_cancels_task(checker):
@@ -404,7 +432,8 @@ async def test_stop_cancels_task(checker):
         assert not checker._task.done()
         checker.stop()
         import asyncio
-        await asyncio.sleep(0)   # let cancellation propagate
+
+        await asyncio.sleep(0)  # let cancellation propagate
         assert checker._task.done()
         # restart works after cancellation
         checker.start()

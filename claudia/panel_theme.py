@@ -95,9 +95,7 @@ def resolve_theme(env_value: str | None, session_args: Mapping[str, Any] | None)
             continue
         if candidate in THEMES:
             return candidate
-        log.warning(
-            "Ignoring %s=%r — not one of %s", source, raw, "/".join(THEMES)
-        )
+        log.warning("Ignoring %s=%r — not one of %s", source, raw, "/".join(THEMES))
     return "default"
 
 
@@ -145,7 +143,9 @@ def register_claudia_avatar(path: Path = CLAUDIA_AVATAR_PATH) -> bool:
         log.warning(
             "ClaudIA avatar %s is %d KB; it is embedded in every message — resize it "
             "(e.g. `sips -Z 128 <src> --out %s`)",
-            path, size // 1024, path,
+            path,
+            size // 1024,
+            path,
         )
     # The bytes, not the path: Panel runs `.format(dist_path=…)` on a *string* avatar
     # (panel/chat/utils.py `avatar_lookup`), so a checkout path containing `{`/`}` would

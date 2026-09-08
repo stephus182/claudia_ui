@@ -157,10 +157,14 @@ class PanelMessageSink:
         # and agent.py stays untouched (detection lives in the sink path). See
         # claudia/panel_pinescript.py.
         from claudia.panel_pinescript import extract_pine_blocks, render_pinescript_blocks
+
         if extract_pine_blocks(text):
             await render_pinescript_blocks(
-                self._chat, text, self._tv_bridge_getter,
-                store=self._store, session_id=self._session_id,
+                self._chat,
+                text,
+                self._tv_bridge_getter,
+                store=self._store,
+                session_id=self._session_id,
             )
 
     def tool_step(self, name: str) -> _PanelToolStepHandle:
@@ -190,14 +194,23 @@ class PanelMessageSink:
     async def send_order_proposal(self, proposal: dict) -> None:
         """Render the staging button for a new order. Places nothing — see MessageSink."""
         from claudia.panel_order_flow import render_order_proposal
-        await render_order_proposal(self._chat, proposal, session_id=self._session_id, store=self._store)
+
+        await render_order_proposal(
+            self._chat, proposal, session_id=self._session_id, store=self._store
+        )
 
     async def send_cancel_proposal(self, proposal: dict) -> None:
         """Render the cancel button for a live order. Cancels nothing — see MessageSink."""
         from claudia.panel_order_flow import render_cancel_proposal
-        await render_cancel_proposal(self._chat, proposal, session_id=self._session_id, store=self._store)
+
+        await render_cancel_proposal(
+            self._chat, proposal, session_id=self._session_id, store=self._store
+        )
 
     async def send_modify_proposal(self, proposal: dict) -> None:
         """Render the modify button for a live order. Modifies nothing — see MessageSink."""
         from claudia.panel_order_flow import render_modify_proposal
-        await render_modify_proposal(self._chat, proposal, session_id=self._session_id, store=self._store)
+
+        await render_modify_proposal(
+            self._chat, proposal, session_id=self._session_id, store=self._store
+        )

@@ -122,7 +122,9 @@ def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | 
     except (KeyError, TypeError, ValueError):
         multiplier = None
     raw_ccy = info.get("currency")
-    currency = str(raw_ccy).strip().upper() if isinstance(raw_ccy, str) and raw_ccy.strip() else None
+    currency = (
+        str(raw_ccy).strip().upper() if isinstance(raw_ccy, str) and raw_ccy.strip() else None
+    )
     parts: list[str] = []
     local_symbol = info.get("local_symbol")
     if isinstance(local_symbol, str) and local_symbol.strip():
@@ -204,7 +206,9 @@ def _format_order_summary(proposal: dict) -> str:
     otype = proposal.get("order_type", "MKT")
     limit = proposal.get("limit_price")
     stop = proposal.get("stop_price")
-    tif = (proposal.get("tif") or proposal.get("time_in_force") or proposal.get("timeInForce") or "DAY").upper()
+    tif = (
+        proposal.get("tif") or proposal.get("time_in_force") or proposal.get("timeInForce") or "DAY"
+    ).upper()
     sec_type = proposal.get("sec_type", "STK").upper()
     reason = proposal.get("reason", "")
 
@@ -262,7 +266,11 @@ def _classify_execution_error(exc: Exception) -> str:
         )
     if "timed out" in error_msg.lower() and "touch" not in error_msg.lower():
         return "Confirmation dialog timed out (60 seconds) — no action was taken."
-    if "authentication" in error_msg.lower() or "touch" in error_msg.lower() or "HumanAuth" in exc_type:
+    if (
+        "authentication" in error_msg.lower()
+        or "touch" in error_msg.lower()
+        or "HumanAuth" in exc_type
+    ):
         return "Touch ID authentication failed or was cancelled."
     if "403" in error_msg:
         return (
@@ -519,7 +527,9 @@ async def _read_back(ibkr: Any, order_id: str, action: str) -> tuple[bool, str, 
     return await _read_order_status(ibkr, order_id, action)
 
 
-async def _read_order_status(ibkr: Any, order_id: str, action: str) -> tuple[bool, str, dict | None]:
+async def _read_order_status(
+    ibkr: Any, order_id: str, action: str
+) -> tuple[bool, str, dict | None]:
     """Read the per-order status endpoint. Returns (confirmed, human line, status dict).
 
     No wait of its own — callers own the settle delay, so a path that has already waited
@@ -540,17 +550,25 @@ async def _read_order_status(ibkr: Any, order_id: str, action: str) -> tuple[boo
         status = await asyncio.to_thread(ibkr.get_order_status, order_id)
     except Exception as exc:
         log.warning("Read-back failed for order %s: %s", order_id, exc)
-        return False, (
-            f"⚠️ Dispatch accepted, but the live state of order {order_id} **could not be "
-            f"verified** ({exc}). Do not assume this order is working — check IBKR directly."
-        ), None
+        return (
+            False,
+            (
+                f"⚠️ Dispatch accepted, but the live state of order {order_id} **could not be "
+                f"verified** ({exc}). Do not assume this order is working — check IBKR directly."
+            ),
+            None,
+        )
 
     if not isinstance(status, dict):
         log.warning("Read-back for order %s returned %r", order_id, type(status).__name__)
-        return False, (
-            f"⚠️ The read-back for order {order_id} returned an unexpected shape "
-            f"({type(status).__name__}) — **not confirmed**. Check IBKR directly."
-        ), None
+        return (
+            False,
+            (
+                f"⚠️ The read-back for order {order_id} returned an unexpected shape "
+                f"({type(status).__name__}) — **not confirmed**. Check IBKR directly."
+            ),
+            None,
+        )
 
     state = status.get("order_status") or "unknown"
     desc = status.get("order_status_description", "")
@@ -558,11 +576,15 @@ async def _read_order_status(ibkr: Any, order_id: str, action: str) -> tuple[boo
     if state in _CONFIRMED.get(action, frozenset()):
         return True, f"✅ Verified via get_order_status: **{state}** ({desc})", status
     if state in _PENDING_CANCEL:
-        return False, (
-            f"⚠️ Order {order_id} is **{state}** — the cancel is **not confirmed**. "
-            "IBKR documents that you may still receive an execution while a cancellation "
-            "request is pending."
-        ), status
+        return (
+            False,
+            (
+                f"⚠️ Order {order_id} is **{state}** — the cancel is **not confirmed**. "
+                "IBKR documents that you may still receive an execution while a cancellation "
+                "request is pending."
+            ),
+            status,
+        )
     return False, f"⚠️ Order {order_id} reads **{state}** ({desc}) — not confirmed.", status
 
 
@@ -666,18 +688,27 @@ async def _read_back_place(ibkr: Any, order_id: str) -> tuple[bool, str, dict | 
             "live_order": row,
         }
         if state in _CONFIRMED["place"]:
-            return True, (
-                f"✅ Verified via get_live_orders: order {order_id} is **present in the "
-                f"live order book** — **{state}**. The order exists at IBKR and is working."
-            ), observed
-        return False, (
-            f"⚠️ Order {order_id} is **present in the live order book** — so it exists at "
-            f"IBKR — but reads **{state}**, which is not a working order: **not "
-            f"confirmed**. Check IBKR directly."
-        ), observed
+            return (
+                True,
+                (
+                    f"✅ Verified via get_live_orders: order {order_id} is **present in the "
+                    f"live order book** — **{state}**. The order exists at IBKR and is working."
+                ),
+                observed,
+            )
+        return (
+            False,
+            (
+                f"⚠️ Order {order_id} is **present in the live order book** — so it exists at "
+                f"IBKR — but reads **{state}**, which is not a working order: **not "
+                f"confirmed**. Check IBKR directly."
+            ),
+            observed,
+        )
 
     note = (
-        _LIVE_BOOK_ABSENCE_NOTE.format(order_id=order_id) if verdict == "absent"
+        _LIVE_BOOK_ABSENCE_NOTE.format(order_id=order_id)
+        if verdict == "absent"
         else _LIVE_BOOK_UNAVAILABLE_NOTE.format(detail=detail)
     )
     confirmed, line, status = await _read_order_status(ibkr, order_id, "place")
@@ -738,9 +769,9 @@ def _price_readback_fields(order_body: dict) -> tuple[tuple[str, str, str], ...]
 # a wrong order state. Add a pair when it has been *observed*, not when it seems obvious —
 # stop and market types are deliberately not guessed at.
 _FIELD_SYNONYMS: dict[str, str] = {
-    "b": "buy",       # measured: get_order_status returns "B" for a BUY
-    "s": "sell",      # the symmetric counterpart of the above, not separately measured
-    "limit": "lmt",   # measured: "LIMIT" read back for a request of "LMT"
+    "b": "buy",  # measured: get_order_status returns "B" for a BUY
+    "s": "sell",  # the symmetric counterpart of the above, not separately measured
+    "limit": "lmt",  # measured: "LIMIT" read back for a request of "LMT"
 }
 
 
@@ -889,9 +920,12 @@ async def _execute_staged_order_core(
     try:
         from dotenv import load_dotenv
         from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+
         load_dotenv(override=False)
         config = Config.from_env()
-        ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))
+        ibkr = IBKRClient(
+            config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome"))
+        )
 
         # Resolve conid — routing depends on sec_type and optional conid override.
         # Only two routes reach an order body: a conid the caller pre-resolved, or the
@@ -939,7 +973,12 @@ async def _execute_staged_order_core(
                 company_name = contract_label
 
         claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"
-        tif = (proposal.get("tif") or proposal.get("time_in_force") or proposal.get("timeInForce") or "DAY").upper()
+        tif = (
+            proposal.get("tif")
+            or proposal.get("time_in_force")
+            or proposal.get("timeInForce")
+            or "DAY"
+        ).upper()
 
         # ----------------------------------------------------------------
         # Order body — field spec from IBKR CP API docs (2026-07-02)
@@ -969,15 +1008,15 @@ async def _execute_staged_order_core(
         # Source (536-B): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
         # ----------------------------------------------------------------
         order_body: dict = {
-            "conid":     conid,                       # int
-            "orderType": otype,                       # str
-            "side":      action_str,                  # str: BUY | SELL
-            "tif":       tif,                         # str: DAY | GTC | OPG | IOC
-            "quantity":  int(qty),                    # int (docs say float, example uses int)
-            "ticker":    symbol,                      # str — display + valid IBKR field
-            "acctId":    "",                          # filled below after account lookup
-            "cOID":      claudia_ref,                 # str — max 64 chars
-            "_companyName": company_name,             # display only — underscore prefix → stripped
+            "conid": conid,  # int
+            "orderType": otype,  # str
+            "side": action_str,  # str: BUY | SELL
+            "tif": tif,  # str: DAY | GTC | OPG | IOC
+            "quantity": int(qty),  # int (docs say float, example uses int)
+            "ticker": symbol,  # str — display + valid IBKR field
+            "acctId": "",  # filled below after account lookup
+            "cOID": claudia_ref,  # str — max 64 chars
+            "_companyName": company_name,  # display only — underscore prefix → stripped
         }
         if sec_type in ("FUT", "FOP"):
             # CME Group Rule 536-B — manualIndicator=True: order submitted through a
@@ -988,17 +1027,17 @@ async def _execute_staged_order_core(
             # docs/plans/2026-07-23-futures-order-field-8089-bug.md
             order_body["manualIndicator"] = True
             if multiplier is not None:
-                order_body["_multiplier"] = multiplier   # display only — stripped by client.py
+                order_body["_multiplier"] = multiplier  # display only — stripped by client.py
             else:
                 # Gate 2 must not fall back to price x qty on a future: that is not an
                 # estimate, it is the notional divided by the multiplier.
                 order_body["_multiplier_unknown"] = True
             if currency:
-                order_body["_currency"] = currency       # display only — ISO code, never "$"
+                order_body["_currency"] = currency  # display only — ISO code, never "$"
         if otype == "LMT" and limit_price is not None:
-            order_body["price"] = float(limit_price)          # float
+            order_body["price"] = float(limit_price)  # float
         elif otype == "STP" and proposal.get("stop_price") is not None:
-            order_body["price"] = float(proposal["stop_price"])   # float (STP uses price field)
+            order_body["price"] = float(proposal["stop_price"])  # float (STP uses price field)
         elif otype == "STOP_LIMIT":
             if limit_price is not None:
                 order_body["price"] = float(limit_price)
@@ -1010,7 +1049,9 @@ async def _execute_staged_order_core(
         accounts = ibkr.get_accounts()
         account_id = _resolve_account_id(accounts)
         order_body["acctId"] = account_id
-        log.info("Placing order: %s", {k: v for k, v in order_body.items() if not k.startswith("_")})
+        log.info(
+            "Placing order: %s", {k: v for k, v in order_body.items() if not k.startswith("_")}
+        )
         result = ibkr.place_order_and_confirm(account_id, order_body)
         dispatched = True
 
@@ -1093,6 +1134,7 @@ async def _execute_staged_order_core(
 
 # ── Order cancellation ───────────────────────────────────────────────────────
 
+
 def _format_cancel_summary(proposal: dict) -> str:
     """Build the human-approval text for cancelling a live order.
 
@@ -1165,9 +1207,12 @@ async def _execute_cancel_order_core(
     try:
         from dotenv import load_dotenv
         from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+
         load_dotenv(override=False)
         config = Config.from_env()
-        ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))
+        ibkr = IBKRClient(
+            config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome"))
+        )
 
         accounts = ibkr.get_accounts()
         account_id = _resolve_account_id(accounts)
@@ -1233,10 +1278,13 @@ async def _execute_cancel_order_core(
         if dispatched:
             await send_status(_post_dispatch_failure_text(exc, "cancel request"), "System")
         else:
-            await send_status(f"**Order not cancelled:** {_classify_execution_error(exc)}", "System")
+            await send_status(
+                f"**Order not cancelled:** {_classify_execution_error(exc)}", "System"
+            )
 
 
 # ── Order modification ───────────────────────────────────────────────────────
+
 
 def _format_modify_summary(proposal: dict) -> str:
     """Build the human-approval text for modifying a live order, as a field-by-field diff.
@@ -1284,9 +1332,7 @@ def _format_modify_summary(proposal: dict) -> str:
                 lines.append(f"- (malformed change entry: {change!r})")
                 continue
             field = change.get("field")
-            lines.append(
-                f"- {field}: {change.get('previous_value')} → {proposal.get(field)}"
-            )
+            lines.append(f"- {field}: {change.get('previous_value')} → {proposal.get(field)}")
     else:
         lines.append("(no changed fields listed)")
     if reason:
@@ -1345,9 +1391,12 @@ async def _execute_modify_order_core(
     try:
         from dotenv import load_dotenv
         from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+
         load_dotenv(override=False)
         config = Config.from_env()
-        ibkr = IBKRClient(config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")))
+        ibkr = IBKRClient(
+            config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome"))
+        )
 
         action_str = proposal.get("action", "?")
         qty = proposal.get("quantity", 0)
@@ -1360,12 +1409,12 @@ async def _execute_modify_order_core(
         # Fresh order body — field spec mirrors place_order's (CLAUDE.md Order Staging Flow).
         # modify_order() does no _-prefix stripping, so only genuine IBKR fields go in here.
         order_body: dict = {
-            "conid":     int(conid),
+            "conid": int(conid),
             "orderType": otype,
-            "side":      action_str,
-            "tif":       tif,
-            "quantity":  int(qty),
-            "ticker":    symbol,
+            "side": action_str,
+            "tif": tif,
+            "quantity": int(qty),
+            "ticker": symbol,
         }
         if sec_type in ("FUT", "FOP"):
             # CME Rule 536-B — manualIndicator only, same as the place path above.

@@ -161,9 +161,9 @@ def validate_dataset(sqlite_path: str | Path) -> DatasetValidity:
         realised = conn.execute(
             "SELECT COALESCE(SUM(fifo_pnl_realized), 0) FROM flex_trade WHERE source='flex'"
         ).fetchone()[0]
-        lots = conn.execute(
-            "SELECT COALESCE(SUM(fifo_pnl_realized), 0) FROM flex_lot"
-        ).fetchone()[0]
+        lots = conn.execute("SELECT COALESCE(SUM(fifo_pnl_realized), 0) FROM flex_lot").fetchone()[
+            0
+        ]
         wash = conn.execute(
             "SELECT COALESCE(SUM(fifo_pnl_realized), 0) FROM flex_wash_sale"
         ).fetchone()[0]
@@ -172,9 +172,7 @@ def validate_dataset(sqlite_path: str | Path) -> DatasetValidity:
         return DatasetValidity(
             (
                 DatasetCheck("file integrity", True, "PRAGMA integrity_check: ok"),
-                DatasetCheck(
-                    "execution_key is unique", dupes == 0, f"{dupes:,} duplicated key(s)"
-                ),
+                DatasetCheck("execution_key is unique", dupes == 0, f"{dupes:,} duplicated key(s)"),
                 DatasetCheck(
                     "execution_key is present", nulls == 0, f"{nulls:,} row(s) without a key"
                 ),
@@ -213,9 +211,9 @@ def dataset_fingerprint(sqlite_path: str | Path) -> tuple[int, int, str | None] 
         if not _has_flex_tables(conn):
             return None
         total = conn.execute("SELECT COUNT(*) FROM flex_trade").fetchone()[0]
-        flex_rows = conn.execute(
-            "SELECT COUNT(*) FROM flex_trade WHERE source='flex'"
-        ).fetchone()[0]
+        flex_rows = conn.execute("SELECT COUNT(*) FROM flex_trade WHERE source='flex'").fetchone()[
+            0
+        ]
         newest = conn.execute(
             "SELECT MAX(trade_date_iso) FROM flex_trade WHERE source='flex'"
         ).fetchone()[0]

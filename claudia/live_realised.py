@@ -220,8 +220,11 @@ class Reconstruction:
         wins = [r.pnl for r in rts if r.pnl > 0]
         losses = [r.pnl for r in rts if r.pnl < 0]
         return (
-            len(wins), len(losses), len(rts) - len(wins) - len(losses),
-            round(sum(wins), 2), round(sum(losses), 2),
+            len(wins),
+            len(losses),
+            len(rts) - len(wins) - len(losses),
+            round(sum(wins), 2),
+            round(sum(losses), 2),
         )
 
     def total_for_day(self, day: str) -> float | None:
@@ -267,7 +270,7 @@ def reconstruct(
         book = books[fill.conid]
         key = (fill.trade_day, fill.asset_class)
         remaining = fill.signed_quantity
-        closing_total = 0.0   # how much of this fill closed, for commission apportioning
+        closing_total = 0.0  # how much of this fill closed, for commission apportioning
         trips_this_fill: list[list] = []
         running[fill.conid] += fill.signed_quantity
         per_contract_days[fill.conid].add(fill.trade_day)
@@ -300,8 +303,13 @@ def reconstruct(
             for qty, entry, pnl in trips_this_fill:
                 share = fill.commission * (qty / closing_total) if closing_total else 0.0
                 trip = RoundTrip(
-                    day=fill.trade_day, asset_class=fill.asset_class, symbol=fill.symbol,
-                    quantity=qty, entry=entry, exit=fill.price, pnl=round(pnl - share, 2),
+                    day=fill.trade_day,
+                    asset_class=fill.asset_class,
+                    symbol=fill.symbol,
+                    quantity=qty,
+                    entry=entry,
+                    exit=fill.price,
+                    pnl=round(pnl - share, 2),
                 )
                 round_trips.append(trip)
                 per_contract_trips[fill.conid].append(trip)

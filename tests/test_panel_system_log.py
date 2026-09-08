@@ -76,9 +76,9 @@ def test_every_chat_feed_in_the_package_installs_the_safe_renderer():
     for path in sorted(Path("claudia").glob("*.py")):
         src = path.read_text()
         for m in re.finditer(r"pn\.chat\.(ChatFeed|ChatInterface)\(", src):
-            window = src[m.end():m.end() + 800]
+            window = src[m.end() : m.end() + 800]
             if "renderers=[safe_markdown]" not in window:
-                misses.append(f"{path}:{src[:m.start()].count(chr(10)) + 1}")
+                misses.append(f"{path}:{src[: m.start()].count(chr(10)) + 1}")
     assert not misses, f"ChatFeed/ChatInterface without renderers=[safe_markdown]: {misses}"
 
 

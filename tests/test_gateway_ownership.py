@@ -91,9 +91,7 @@ def _offenders(pattern: re.Pattern[str], allowed: dict[str, str]) -> list[str]:
                 continue
             segment = ast.get_source_segment(source, node) or ""
             called_endpoint = pattern.search(node.func.attr) is not None
-            sent_to_endpoint = (
-                node.func.attr in _HTTP_VERBS and pattern.search(segment) is not None
-            )
+            sent_to_endpoint = node.func.attr in _HTTP_VERBS and pattern.search(segment) is not None
             if called_endpoint or sent_to_endpoint:
                 hits.append(f"{path.name}:{node.lineno}: {segment.splitlines()[0][:90]}")
     return hits
@@ -111,10 +109,7 @@ def _dotted(node: ast.AST) -> str:
 
 def _is_manager_construction(node: ast.AST) -> bool:
     """Whether `node` constructs a `GatewayManager`, however the class was imported."""
-    return (
-        isinstance(node, ast.Call)
-        and _dotted(node.func).split(".")[-1] == "GatewayManager"
-    )
+    return isinstance(node, ast.Call) and _dotted(node.func).split(".")[-1] == "GatewayManager"
 
 
 def _manager_driver_offenders() -> list[str]:
@@ -150,9 +145,7 @@ def _manager_driver_offenders() -> list[str]:
                 continue
             receiver = node.func.value
             if _is_manager_construction(receiver) or _dotted(receiver) in bound:
-                hits.append(
-                    f"{path.name}:{node.lineno}: .{node.func.attr}() on a GatewayManager"
-                )
+                hits.append(f"{path.name}:{node.lineno}: .{node.func.attr}() on a GatewayManager")
     return hits
 
 
@@ -167,7 +160,7 @@ def test_only_the_owner_writes_to_a_session_endpoint():
         "Session-affecting write outside claudia/gateway_session.py:\n  "
         + "\n  ".join(offenders)
         + "\n\nMove it into the owner, or add it to _SESSION_WRITE_ALLOWED with the "
-          "stage that removes it."
+        "stage that removes it."
     )
 
 
@@ -194,9 +187,10 @@ def test_only_the_owner_mutates_the_container():
     pattern = re.compile(r"""docker["'\s,\]]+\s*["']?(stop|rm|restart|run)\b""")
     offenders = _offenders(pattern, {}) + _manager_driver_offenders()
     assert not offenders, (
-        "Container mutation outside claudia/gateway_session.py:\n  " + "\n  ".join(offenders)
+        "Container mutation outside claudia/gateway_session.py:\n  "
+        + "\n  ".join(offenders)
         + "\n\nConstruct the manager and hand it to GatewaySession.establish/recover "
-          "instead — the owner reads the session before anything touches the container."
+        "instead — the owner reads the session before anything touches the container."
     )
 
 
@@ -208,8 +202,8 @@ def test_the_login_page_is_opened_from_exactly_one_place():
     stating it in prose has already been shown to be insufficient.
     """
     offenders = _offenders(re.compile(r"open_login_page|webbrowser\.open"), {})
-    assert not offenders, (
-        "The login page is opened outside the session owner:\n  " + "\n  ".join(offenders)
+    assert not offenders, "The login page is opened outside the session owner:\n  " + "\n  ".join(
+        offenders
     )
 
 
@@ -317,18 +311,14 @@ def test_the_launcher_blocks_until_the_session_is_resolved():
     live. `&&` is a conditional, not a background operator, so it is excluded too.
     """
     invocations = [
-        (n, line)
-        for n, line in _shell_code_lines(_LAUNCHER)
-        if "claudia.gateway_launch" in line
+        (n, line) for n, line in _shell_code_lines(_LAUNCHER) if "claudia.gateway_launch" in line
     ]
     assert invocations, (
         "start-claudia.sh no longer invokes claudia.gateway_launch. If the gateway is "
         "started some other way now, that way must still pre-flight and still block."
     )
     backgrounded = [
-        f"{n}: {line.strip()}"
-        for n, line in invocations
-        if re.search(r"(?<!&)&\s*$", line)
+        f"{n}: {line.strip()}" for n, line in invocations if re.search(r"(?<!&)&\s*$", line)
     ]
     assert not backgrounded, (
         "start-claudia.sh backgrounds the gateway launcher, so ClaudIA starts polling a "

@@ -91,8 +91,7 @@ def _find_tv_mcp_bin() -> str | None:
     vendor_js = vendor_base / "src" / "server.js"
     if vendor_js.exists() and (vendor_base / "node_modules").exists():
         log.warning(
-            "Using archived vendor tradingview-mcp — "
-            "run scripts/archive-tv-mcp.sh after upgrading."
+            "Using archived vendor tradingview-mcp — run scripts/archive-tv-mcp.sh after upgrading."
         )
         return str(vendor_js)
     vendor_bundle = vendor_base / "index.js"
@@ -139,8 +138,8 @@ _CURATED_TOOLS = {
     "pine_get_source",
     # Strategy results
     "data_get_strategy_results",
-    "data_get_equity",       # renamed from data_get_equity_curve in current sidecar
-    "data_get_trades",       # trade list from Strategy Tester
+    "data_get_equity",  # renamed from data_get_equity_curve in current sidecar
+    "data_get_trades",  # trade list from Strategy Tester
     # Utility
     "tv_health_check",
     "capture_screenshot",
@@ -459,6 +458,7 @@ def _post_process(name: str, raw: str) -> str:
 
 # ── CDP health check + launch helpers ────────────────────────────────────────
 
+
 def check_cdp_running() -> bool:
     """TCP check if TradingView Desktop's CDP debug port is accepting connections."""
     try:
@@ -486,10 +486,7 @@ _TV_KILL_SETTLE_S = 2.0
 def _tv_process_running() -> bool:
     """True if a TradingView Desktop process exists (`pgrep -x`, the app's process name)."""
     try:
-        result = subprocess.run(
-            ["pgrep", "-x", _TV_APP_NAME],
-            capture_output=True, text=True
-        )
+        result = subprocess.run(["pgrep", "-x", _TV_APP_NAME], capture_output=True, text=True)
         return result.returncode == 0
     except OSError:
         return False
@@ -500,7 +497,9 @@ def _tv_already_running_without_debug() -> bool:
     return _tv_process_running() and not check_cdp_running()
 
 
-async def _wait_for(predicate: Callable[[], bool], timeout_s: float, interval_s: float = 1.0) -> bool:
+async def _wait_for(
+    predicate: Callable[[], bool], timeout_s: float, interval_s: float = 1.0
+) -> bool:
     """Poll `predicate` (a blocking, sub-second check) until true or `timeout_s` elapses.
 
     Checks once before any sleep, so a zero timeout is exactly one check — what the tests
@@ -532,7 +531,9 @@ async def _quit_tradingview() -> bool:
         await asyncio.to_thread(
             subprocess.run,
             ["osascript", "-e", f'quit app "{_TV_APP_NAME}"'],
-            capture_output=True, text=True, timeout=_TV_QUIT_WAIT_S,
+            capture_output=True,
+            text=True,
+            timeout=_TV_QUIT_WAIT_S,
         )
     except subprocess.TimeoutExpired:
         log.warning("`osascript quit` did not return within %.0fs", _TV_QUIT_WAIT_S)
@@ -540,8 +541,11 @@ async def _quit_tradingview() -> bool:
         return True
     log.warning("TradingView did not quit gracefully within %.0fs — forcing", _TV_QUIT_WAIT_S)
     await asyncio.to_thread(
-        subprocess.run, ["pkill", "-x", _TV_APP_NAME],
-        capture_output=True, text=True, timeout=_TV_KILL_SETTLE_S,
+        subprocess.run,
+        ["pkill", "-x", _TV_APP_NAME],
+        capture_output=True,
+        text=True,
+        timeout=_TV_KILL_SETTLE_S,
     )
     await asyncio.sleep(_TV_KILL_SETTLE_S)
     return not await asyncio.to_thread(_tv_process_running)
@@ -604,7 +608,8 @@ async def launch_tradingview(emit: Callable[[str], None] | None = None) -> bool:
     opened = await asyncio.to_thread(
         subprocess.run,
         ["open", "-a", _TV_APP_NAME, "--args", f"--remote-debugging-port={_TV_DEBUG_PORT}"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if opened.returncode != 0:
         detail = opened.stderr.strip() or opened.stdout.strip() or "no error text"
@@ -613,7 +618,9 @@ async def launch_tradingview(emit: Callable[[str], None] | None = None) -> bool:
     if not await _wait_for(_tv_process_running, _TV_START_WAIT_S):
         log.error(
             "TradingView Desktop never started: `open` accepted the launch but no %s process "
-            "appeared within %.0fs", _TV_APP_NAME, _TV_START_WAIT_S,
+            "appeared within %.0fs",
+            _TV_APP_NAME,
+            _TV_START_WAIT_S,
         )
         raise RuntimeError(
             "TradingView Desktop never started: `open` accepted the launch but no TradingView "
@@ -629,12 +636,14 @@ async def launch_tradingview(emit: Callable[[str], None] | None = None) -> bool:
         return True
     log.warning(
         "TradingView Desktop is running but did not open CDP port %d within %.0fs",
-        _TV_DEBUG_PORT, _TV_CDP_WAIT_S,
+        _TV_DEBUG_PORT,
+        _TV_CDP_WAIT_S,
     )
     return False
 
 
 # ── TradingViewBridge ─────────────────────────────────────────────────────────
+
 
 class TradingViewBridge:
     """Manages the tradingview-mcp sidecar and exposes its tools to ClaudIA.
@@ -682,8 +691,17 @@ class TradingViewBridge:
         # which would leak ANTHROPIC_API_KEY and all other secrets to the Node subprocess.
         env = {
             k: os.environ[k]
-            for k in ("PATH", "HOME", "USER", "TMPDIR", "TEMP", "TMP",
-                      "NODE_PATH", "NODE_ENV", "XDG_RUNTIME_DIR")
+            for k in (
+                "PATH",
+                "HOME",
+                "USER",
+                "TMPDIR",
+                "TEMP",
+                "TMP",
+                "NODE_PATH",
+                "NODE_ENV",
+                "XDG_RUNTIME_DIR",
+            )
             if k in os.environ
         }
         # Which CDP port the sidecar connects to (default 9222, overridable in .env via
@@ -719,7 +737,9 @@ class TradingViewBridge:
         try:
             result = subprocess.run(
                 ["git", "-C", sidecar_dir, "rev-parse", "--short", "HEAD"],
-                capture_output=True, text=True, timeout=3,
+                capture_output=True,
+                text=True,
+                timeout=3,
             )
             sidecar_commit = result.stdout.strip() if result.returncode == 0 else "unknown"
         except Exception:
@@ -741,7 +761,8 @@ class TradingViewBridge:
                 {
                     "name": t.name,
                     "description": t.description or "",
-                    "input_schema": t.inputSchema or {"type": "object", "properties": {}, "required": []},
+                    "input_schema": t.inputSchema
+                    or {"type": "object", "properties": {}, "required": []},
                 }
                 for t in response.tools
             ]
@@ -785,7 +806,7 @@ class TradingViewBridge:
             result = await self._session.call_tool(name, inputs)
             # Extract text from result content
             parts = []
-            for item in (result.content or []):
+            for item in result.content or []:
                 if hasattr(item, "text"):
                     parts.append(item.text)
                 # Unreachable per the mcp SDK's declared content types (TextContent etc., never

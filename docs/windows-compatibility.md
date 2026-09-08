@@ -86,7 +86,9 @@ cross-platform; only the shell syntax needs porting.
 
 **Problem:**
 ```python
-subprocess.Popen(["open", "-a", _TV_APP_NAME, "--args", f"--remote-debugging-port={_TV_DEBUG_PORT}"])
+subprocess.Popen(
+    ["open", "-a", _TV_APP_NAME, "--args", f"--remote-debugging-port={_TV_DEBUG_PORT}"]
+)
 ```
 `open -a` is macOS-only (`_TV_APP_NAME = "TradingView"`, no space — an earlier version of this
 code had a space-containing "Trading View" app name bug, fixed 2026-06-30, see

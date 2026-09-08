@@ -262,12 +262,14 @@ _OPERATOR_NOTE = (
 """Operator-channel body for a failed render — see `_append_operator_message` for the why."""
 
 
-_OPERATOR_CHANNEL_MODELS = frozenset({
-    "claude-opus-5",
-    "claude-opus-4-8",
-    "claude-fable-5",
-    "claude-mythos-5",
-})
+_OPERATOR_CHANNEL_MODELS = frozenset(
+    {
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-fable-5",
+        "claude-mythos-5",
+    }
+)
 """Models that accept a mid-conversation `role: "system"` message.
 
 Documented on the official prompt-caching page (read 2026-08-05), which names exactly
@@ -696,11 +698,16 @@ merely co-present in 76 of 169 messages, and adjacent in 2."""
 # open orders"), so neither alternative below can reach one — the false-positive class this
 # corpus happens not to contain, which is exactly why it is excluded by construction.
 _BOOK_CLAIM = re.compile(
-    r"(?:^(?:just\s+)?" + _BOOK_VERB
+    r"(?:^(?:just\s+)?"
+    + _BOOK_VERB
     # `\u2019` (curly apostrophe) per this file's convention: a curly and a straight
     # apostrophe are indistinguishable on screen inside a character class.
-    + r"|\bI(?:['\u2019]ve|\s+have|\s+just|\s+already|\s+also)*\s+" + _BOOK_VERB
-    + r")\b" + _BOOK_LINK + r"\s+" + _BOOK,
+    + r"|\bI(?:['\u2019]ve|\s+have|\s+just|\s+already|\s+also)*\s+"
+    + _BOOK_VERB
+    + r")\b"
+    + _BOOK_LINK
+    + r"\s+"
+    + _BOOK,
     re.I,
 )
 """Claim shape: "I looked at the order book", asserted about *this* turn."""
@@ -794,8 +801,7 @@ participle from this string and asserts `_REPORTED_COMPLETE` carries it.
 """
 
 _TOOL_ACTION_GERUND = (
-    "(?:check|fetch|pull|compil|captur|inject|verify|retry|"
-    "sync|query|grabb|scann)ing"
+    "(?:check|fetch|pull|compil|captur|inject|verify|retry|sync|query|grabb|scann)ing"
 )
 """The same verbs as segment-opening gerunds — "Checking cache first, then fetching."
 
@@ -1266,7 +1272,6 @@ def _ibkr_unavailable() -> str | None:
     )
 
 
-
 _LOCALLY_HANDLED: frozenset[str] = _LOCAL_TOOL_NAMES | PROPOSAL_TOOL_NAMES
 """Every tool the agent executes itself rather than routing to the toolkit or TradingView.
 
@@ -1350,9 +1355,7 @@ def _log_cache_usage(usage) -> None:
     uncached = getattr(usage, "input_tokens", None) or 0
     log.info("prompt cache: created=%d read=%d uncached=%d", created, read, uncached)
     if created == 0 and read == 0:
-        log.warning(
-            "prompt cache inactive (created=0, read=0) — check cache_control placement"
-        )
+        log.warning("prompt cache inactive (created=0, read=0) — check cache_control placement")
 
 
 def _log_thinking_usage(usage) -> None:
@@ -1523,7 +1526,9 @@ class ClaudIAAgent:
         count = self._loader.reload_count
         if self._system_blocks_cache is None or count != self._system_reload_seen:
             prompt = _build_system_prompt(
-                self._loader.load_system_prompt(), self._doc_version, self._store,
+                self._loader.load_system_prompt(),
+                self._doc_version,
+                self._store,
                 self._trade_context,
             )
             self._system_blocks_cache = _system_blocks(prompt)
@@ -1640,11 +1645,13 @@ class ClaudIAAgent:
                     elif event.type == "content_block_start":
                         block = event.content_block
                         if block.type == "tool_use":
-                            tool_calls.append({
-                                "id": block.id,
-                                "name": block.name,
-                                "input_json": "",
-                            })
+                            tool_calls.append(
+                                {
+                                    "id": block.id,
+                                    "name": block.name,
+                                    "input_json": "",
+                                }
+                            )
                         elif block.type == "thinking":
                             thinking_blocks.append(
                                 {"type": "thinking", "thinking": "", "signature": ""}
@@ -1708,15 +1715,21 @@ class ClaudIAAgent:
                 try:
                     inp = json.loads(tc["input_json"]) if tc["input_json"] else {}
                 except json.JSONDecodeError as exc:
-                    log.warning("Tool %r: could not parse input JSON (%s) — sending empty input", tc["name"], exc)
+                    log.warning(
+                        "Tool %r: could not parse input JSON (%s) — sending empty input",
+                        tc["name"],
+                        exc,
+                    )
                     inp = {}
                 tc["input"] = inp
-                assistant_content.append({
-                    "type": "tool_use",
-                    "id": tc["id"],
-                    "name": tc["name"],
-                    "input": inp,
-                })
+                assistant_content.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": inp,
+                    }
+                )
             messages.append({"role": "assistant", "content": assistant_content})
 
             if response_text:
@@ -1756,11 +1769,13 @@ class ClaudIAAgent:
                     tool_result=result_text,
                 )
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tc["id"],
-                    "content": result_text,
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tc["id"],
+                        "content": result_text,
+                    }
+                )
 
             messages.append({"role": "user", "content": tool_results})  # type: ignore[typeddict-item]
 
@@ -1778,9 +1793,7 @@ class ClaudIAAgent:
         stale: str | None = None
 
         # Persist final assistant message
-        msg_id = self._store.add_message(
-            self._session_id, "assistant", display_text
-        )
+        msg_id = self._store.add_message(self._session_id, "assistant", display_text)
 
         # Render text response
         if display_text:
@@ -1800,9 +1813,7 @@ class ClaudIAAgent:
             }.get(kind or "")
             rendered = False
             if render is None:
-                log.error(
-                    "Proposal kind %r routes to no renderer — nothing was rendered", kind
-                )
+                log.error("Proposal kind %r routes to no renderer — nothing was rendered", kind)
             else:
                 try:
                     await render(proposal)
@@ -1865,8 +1876,7 @@ class ClaudIAAgent:
                 # earns its own correction.
                 narrated = _claims_completed_action(display_text)
                 if narrated is not None and not any(
-                    s is not None and (narrated in s or s in narrated)
-                    for s in (claim, stale)
+                    s is not None and (narrated in s or s in narrated) for s in (claim, stale)
                 ):
                     await self._emit_unbacked_action_notice(msg_id, narrated)
 
@@ -1941,7 +1951,8 @@ class ClaudIAAgent:
                 out of the decision row and every surface that leaves this machine.
         """
         await self._emit_correction(
-            msg_id, claim,
+            msg_id,
+            claim,
             log_message="Book-check claim with no order-book tool called: %r",
             notice=_STALE_BOOK_CLAIM_NOTICE,
             decision_type="book_claim_unverified",
@@ -1969,7 +1980,8 @@ class ClaudIAAgent:
                 out of the decision row and every surface that leaves this machine.
         """
         await self._emit_correction(
-            msg_id, claim,
+            msg_id,
+            claim,
             log_message="Action reported with no tool call this turn: %r",
             notice=_UNBACKED_ACTION_NOTICE,
             decision_type="action_claim_unbacked",
@@ -1995,7 +2007,8 @@ class ClaudIAAgent:
             claim: The vouching sentence. **Logged only**, as with its siblings.
         """
         await self._emit_correction(
-            msg_id, claim,
+            msg_id,
+            claim,
             log_message="Constructed payload presented as a tool result: %r",
             notice=_UNBACKED_RESULT_NOTICE,
             decision_type="result_claim_unbacked",
@@ -2024,7 +2037,8 @@ class ClaudIAAgent:
                 surface that leaves this machine.
         """
         await self._emit_correction(
-            msg_id, claim,
+            msg_id,
+            claim,
             log_message="Unbacked staging claim, no proposal tool called: %r",
             notice=_UNBACKED_CLAIM_NOTICE,
             decision_type="proposal_claim_unbacked",
@@ -2183,7 +2197,9 @@ class ClaudIAAgent:
             order_id = str(order.get("order_id") or "").strip()
             if order_id:
                 # cancel/modify: the id is the identity; the symbol only disambiguates.
-                lines.append(f"  - {tool} for order {order_id}" + (f" ({symbol})" if symbol else ""))
+                lines.append(
+                    f"  - {tool} for order {order_id}" + (f" ({symbol})" if symbol else "")
+                )
             else:
                 # A new-order proposal has no order id — the order does not exist until the
                 # user clicks through both gates. The symbol is all the identity there is.
@@ -2243,7 +2259,9 @@ class ClaudIAAgent:
             symbol = (row.get("symbol") or "").strip()
             # No id is the least verifiable outcome there is, and the one where silence
             # would be most dangerous — it is named, not skipped.
-            identity = f"order {order_id}" if order_id else "an order for which IBKR returned no order id"
+            identity = (
+                f"order {order_id}" if order_id else "an order for which IBKR returned no order id"
+            )
             if symbol:
                 identity += f" ({symbol})"
             state = str(meta.get("readback_order_status") or "").strip()
@@ -2465,8 +2483,7 @@ class ClaudIAAgent:
             if data is None:
                 available = [v["version"] for v in self._store.list_doc_versions()]
                 return (
-                    f"Version '{version}' not found. "
-                    f"Available: {', '.join(available) or 'none'}."
+                    f"Version '{version}' not found. Available: {', '.join(available) or 'none'}."
                 )
             return (
                 f"## context.md ({data['version']}, as of {data['created_at'][:10]})\n\n"
@@ -2509,6 +2526,7 @@ class ClaudIAAgent:
         """Best-available live P&L text — see execution_listener.get_live_pnl_text
         for the cache-then-ledger-fallback logic. Never raises."""
         from claudia.execution_listener import get_live_pnl_text
+
         return get_live_pnl_text(self._toolkit)
 
     @staticmethod
@@ -2523,6 +2541,7 @@ class ClaudIAAgent:
         """
         import ipaddress
         import urllib.parse
+
         try:
             parsed = urllib.parse.urlparse(url)
             if parsed.scheme not in ("http", "https"):
@@ -2530,7 +2549,11 @@ class ClaudIAAgent:
             host = (parsed.hostname or "").lower()
             if not host:
                 return "Blocked: URL has no hostname."
-            if host in ("localhost", "0.0.0.0") or host.startswith("127.") or host.startswith("169.254."):
+            if (
+                host in ("localhost", "0.0.0.0")
+                or host.startswith("127.")
+                or host.startswith("169.254.")
+            ):
                 return "Blocked: cannot fetch from localhost or link-local addresses."
             try:
                 addr = ipaddress.ip_address(host)
@@ -2541,10 +2564,16 @@ class ClaudIAAgent:
                 # Catches decimal (2130706433) and hex (0x7f000001) encoded IPs that
                 # bypass string-prefix checks but resolve to private addresses on Linux.
                 import socket as _socket
+
                 try:
                     resolved_ip = _socket.gethostbyname(host)
                     addr = ipaddress.ip_address(resolved_ip)
-                    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                    if (
+                        addr.is_private
+                        or addr.is_loopback
+                        or addr.is_link_local
+                        or addr.is_reserved
+                    ):
                         return "Blocked: URL resolves to a private or reserved IP address."
                 except _socket.gaierror:
                     pass  # unresolvable hostname — let requests handle the error
@@ -2586,6 +2615,7 @@ class ClaudIAAgent:
 
         import html2text
         import requests as _req
+
         url = inputs.get("url", "").strip()
         if not url:
             return "No URL provided."

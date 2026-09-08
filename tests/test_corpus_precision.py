@@ -32,10 +32,30 @@ _FROZEN_LAST_ID = 768
 # rows normally elsewhere). The two known misses, ids 345 and 475, are the detector's
 # documented give-ups; the equality assertion below covers them by construction, since
 # a widening that "fixes" one changes the set and fails.
-_VERIFIED_ACTION_FIRES = frozenset({
-    184, 192, 194, 196, 211, 258, 306, 308, 310, 349, 351, 368, 378, 387,
-    562, 720, 722, 748, 750, 752,
-})
+_VERIFIED_ACTION_FIRES = frozenset(
+    {
+        184,
+        192,
+        194,
+        196,
+        211,
+        258,
+        306,
+        308,
+        310,
+        349,
+        351,
+        368,
+        378,
+        387,
+        562,
+        720,
+        722,
+        748,
+        750,
+        752,
+    }
+)
 _DOCUMENTED_MISSES = frozenset({345, 475})
 _VERIFIED_RESULT_FIRES = frozenset({380})
 
@@ -85,7 +105,8 @@ def test_action_detector_precision_is_frozen():
     from claudia.agent import _claims_completed_action
 
     fired = {
-        mid for mid, text, tools in _frozen_turns()
+        mid
+        for mid, text, tools in _frozen_turns()
         if tools == 0 and _claims_completed_action(text) is not None
     }
     assert fired == _VERIFIED_ACTION_FIRES
@@ -96,7 +117,8 @@ def test_result_detector_precision_is_frozen():
     from claudia.agent import _claims_verbatim_tool_result
 
     fired = {
-        mid for mid, text, tools in _frozen_turns()
+        mid
+        for mid, text, tools in _frozen_turns()
         if tools == 0 and _claims_verbatim_tool_result(text) is not None
     }
     assert fired == _VERIFIED_RESULT_FIRES
@@ -110,7 +132,8 @@ def test_evidence_cleared_turns_stay_cleared():
     from claudia.agent import _claims_completed_action
 
     matched_with_tools = {
-        mid for mid, text, tools in _frozen_turns()
+        mid
+        for mid, text, tools in _frozen_turns()
         if tools > 0 and _claims_completed_action(text) is not None
     }
     assert 746 in matched_with_tools

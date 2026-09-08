@@ -217,13 +217,17 @@ def breakdown_table(window: Any, currency: str = "", note: str = _FLEX_SOURCE_NO
     if window is None or not window.rows:
         return "_No closed trades in this window._"
     ccy = f" ({currency})" if currency else ""
-    flag = "  ⚠ **incomplete** — a contract could not be reconstructed\n\n" if getattr(
-        window, "incomplete", False) else ""
+    flag = (
+        "  ⚠ **incomplete** — a contract could not be reconstructed\n\n"
+        if getattr(window, "incomplete", False)
+        else ""
+    )
     lines = [
         flag,
         f"| Type | Net{ccy} | Gross win | Gross loss | W | L | Win % | Avg win | Avg loss |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
+
     def num(v: float | None) -> str:
         """A money cell, or an em dash when the figure does not exist.
 
@@ -490,12 +494,8 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     cumulative = df.hvplot.area(
         x="day", y="cumulative", alpha=0.20, color=_UP_COLOR, hover=False
     ) * df.hvplot.line(x="day", y="cumulative", color=_UP_COLOR, line_width=2)
-    daily = df.hvplot.bar(
-        x="day", y="realised", height=_BAR_ROW_HEIGHT, color=_FLAT_COLOR
-    )
-    return (
-        cumulative.opts(title=title, height=_CHART_HEIGHT) + daily.opts(title="")
-    ).cols(1)
+    daily = df.hvplot.bar(x="day", y="realised", height=_BAR_ROW_HEIGHT, color=_FLAT_COLOR)
+    return (cumulative.opts(title=title, height=_CHART_HEIGHT) + daily.opts(title="")).cols(1)
 
 
 # ── Positions table ───────────────────────────────────────────────────────────
@@ -511,9 +511,20 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
 # on from an ambiguous symbol — a ticker is not a unique key, and IGV once priced a US
 # ETF in MXN on exactly that assumption.
 _POSITION_COLUMNS = [
-    "Symbol", "Name", "Qty", "Avg entry", "IBKR basis", "Basis Δ",
-    "Last", "Change", "% Change", "Market value", "Unrealised", "% Unrealised",
-    "Class", "Ccy",
+    "Symbol",
+    "Name",
+    "Qty",
+    "Avg entry",
+    "IBKR basis",
+    "Basis Δ",
+    "Last",
+    "Change",
+    "% Change",
+    "Market value",
+    "Unrealised",
+    "% Unrealised",
+    "Class",
+    "Ccy",
 ]
 # The columns `.style.map` colours by sign. Named once so the styler and the empty-frame
 # builder cannot disagree about which columns exist.
@@ -621,6 +632,7 @@ def _money_formats(currency: str) -> dict[str, str]:
         "Unrealised": f"{sym}{_MONEY_FORMAT}",
     }
 
+
 # Rows per displayed page. Distinct from `dashboard_data._POSITIONS_PAGE_SIZE`, which is
 # IBKR's own 30-per-request paging — this is purely how many rows the table shows at once.
 # Paginate rather than grow: the data layer follows every IBKR page, so a large book would
@@ -633,34 +645,34 @@ _POSITIONS_ROWS_PER_PAGE = 15
 # contract including the multiplier, and "Unrealised" is open P&L, not the day's move.
 _POSITION_TOOLTIPS = {
     "Name": "IBKR's own instrument name, so a row is never acted on from an ambiguous "
-            "ticker alone. IBKR truncates this field itself (IGV arrives as 'ISHARES "
-            "EXPANDED TECH-SOFTWA'); a short name is theirs, not a display limit. Blank "
-            "when IBKR omits it, which happens on the same lean rows that omit ticker.",
+    "ticker alone. IBKR truncates this field itself (IGV arrives as 'ISHARES "
+    "EXPANDED TECH-SOFTWA'); a short name is theirs, not a display limit. Blank "
+    "when IBKR omits it, which happens on the same lean rows that omit ticker.",
     "Qty": "Signed position size. Negative is short.",
     "Avg entry": "Where the position was actually entered: average price of the open "
-                 "lots, FIFO over this account's own fills, excluding commission. Blank "
-                 "when it could not be reconstructed exactly — never estimated.",
+    "lots, FIFO over this account's own fills, excluding commission. Blank "
+    "when it could not be reconstructed exactly — never estimated.",
     "IBKR basis": "IBKR avgPrice — the cost basis their P&L uses. Includes commission "
-                  "and any cost-basis adjustment, so it is a fiscal figure, not a level "
-                  "that was ever traded at.",
+    "and any cost-basis adjustment, so it is a fiscal figure, not a level "
+    "that was ever traded at.",
     "Basis Δ": "(IBKR basis - avg entry) * qty * multiplier: exactly how much of the "
-               "Unrealised column comes from the basis rather than from the market.",
+    "Unrealised column comes from the basis rather than from the market.",
     "Last": "Live top-of-book (snapshot field 31) when available, otherwise IBKR's "
-            "cached mktPrice. Market value and Unrealised beside it are IBKR's own, "
-            "computed on their cached price, so they lag this column slightly.",
+    "cached mktPrice. Market value and Unrealised beside it are IBKR's own, "
+    "computed on their cached price, so they lag this column slightly.",
     "Change": "Snapshot field 82 — last price minus the previous trading day's close. "
-              "IBKR's figure, not computed here. Blank until the contract's stream has "
-              "opened, which takes one poll.",
+    "IBKR's figure, not computed here. Blank until the contract's stream has "
+    "opened, which takes one poll.",
     "% Change": "Snapshot field 83 — the same difference as a percentage, IBKR's own. "
-                "This is the DAY's move; Unrealised is the move since you entered.",
+    "This is the DAY's move; Unrealised is the move since you entered.",
     "Market value": "IBKR mktValue. For futures the ledger reports this as open P&L "
-                    "rather than notional.",
+    "rather than notional.",
     "Unrealised": "Open P&L on the position. Not the day's change, and not realised.",
     "% Unrealised": "Unrealised over IBKR's cost basis (avgCost x qty). BOTH halves are "
-                    "IBKR's, so this ties to their screen. A percentage against 'Avg "
-                    "entry' would be a different number — on IGV the two bases differ by "
-                    "669.62. Short positions divide by the absolute basis, so a "
-                    "profitable short reads positive.",
+    "IBKR's, so this ties to their screen. A percentage against 'Avg "
+    "entry' would be a different number — on IGV the two bases differ by "
+    "669.62. Short positions divide by the absolute basis, so a "
+    "profitable short reads positive.",
     "Class": "IBKR assetClass — STK, FUT, OPT, CASH.",
     "Ccy": "The position's own currency — it need not be the account's base currency.",
 }
@@ -675,8 +687,18 @@ _EMPTY = DashboardSnapshot(as_of=datetime.min.replace(tzinfo=UTC))
 
 
 _ORDER_COLUMNS = [
-    "Order", "Symbol", "Side", "Qty", "Filled", "Limit", "Stop", "Type", "TIF", "Outside RTH",
-    "Status", "Origin",
+    "Order",
+    "Symbol",
+    "Side",
+    "Qty",
+    "Filled",
+    "Limit",
+    "Stop",
+    "Type",
+    "TIF",
+    "Outside RTH",
+    "Status",
+    "Origin",
 ]
 
 _ORDER_NUMERIC = ["Qty", "Filled", "Limit", "Stop"]
@@ -696,17 +718,17 @@ _ORDER_TOOLTIPS = {
     "Order": "IBKR's order id — the identity `propose_cancel` / `propose_modify` need.",
     "Qty": "Total order size, not the remainder.",
     "Filled": "How much has executed. Shows 0 when IBKR reports no remaining quantity, "
-              "which is the safe direction to be wrong in.",
+    "which is the safe direction to be wrong in.",
     "Limit": "The resting limit price where the order type has one. No currency: the "
-             "live-order feed does not carry one, so none is claimed.",
+    "live-order feed does not carry one, so none is claimed.",
     "Stop": "The stop (trigger) price, from IBKR's auxPrice / stop_price — a stop's price is "
-            "not a limit, so it has its own column (2026-09-04).",
+    "not a limit, so it has its own column (2026-09-04).",
     "Outside RTH": "Whether the order may act outside regular trading hours, as IBKR reports it. "
-                   "Decides when a stop on a US future can trigger. '—' = not reported by IBKR "
-                   "for this order (measured on futures rows) — not 'No'.",
+    "Decides when a stop on a US future can trigger. '—' = not reported by IBKR "
+    "for this order (measured on futures rows) — not 'No'.",
     "Status": "IBKR's own status string, verbatim.",
     "Origin": "ClaudIA for orders staged through this app; external for TWS, mobile or the "
-              "web portal — those cannot be modified or cancelled through the API.",
+    "web portal — those cannot be modified or cancelled through the API.",
 }
 
 
@@ -866,10 +888,7 @@ def quote_note(snapshot: DashboardSnapshot) -> str:
     if not snapshot.positions:
         return ""
     if not quoted:
-        return (
-            "_Last is IBKR's cached price — no live quote yet. Streams open on the "
-            "next poll._"
-        )
+        return "_Last is IBKR's cached price — no live quote yet. Streams open on the next poll._"
     stale = [p.symbol for p in quoted if not p.quote.is_live]  # type: ignore[union-attr]
     closes = [p.symbol for p in quoted if p.quote.last_is_close]  # type: ignore[union-attr]
     halted = [p.symbol for p in quoted if p.quote.halted]  # type: ignore[union-attr]
@@ -906,8 +925,7 @@ def basis_note(snapshot: DashboardSnapshot) -> str:
         (
             (p, value)
             for p in snapshot.positions
-            if (value := p.basis_delta_value) is not None
-            and abs(value) >= _BASIS_NOTE_THRESHOLD
+            if (value := p.basis_delta_value) is not None and abs(value) >= _BASIS_NOTE_THRESHOLD
         ),
         key=lambda pair: abs(pair[1]),
         reverse=True,
@@ -1094,8 +1112,8 @@ def ledger_markdown(snapshot: DashboardSnapshot) -> str:
         f"| {realised_ledger_label()} | **{fmt_signed(led.realised_pnl, led.currency)}** |"
         f"{extra}\n\n"
         "_`realizedpnl` is today's realised P&L on IBKR's real-time average cost — it "
-        "equals the sum of the per-position `realizedPnl`, which IBKR defines as \"the "
-        "total profit made today through trades\" (measured and cross-checked "
+        'equals the sum of the per-position `realizedPnl`, which IBKR defines as "the '
+        'total profit made today through trades" (measured and cross-checked '
         "2026-08-04). `futuresonlypnl` still carries no published description. Measured "
         "live the same day, `futuresonlypnl` was **exactly** "
         "`futuremarketvalue` and four times the realised figure, so it is listed here "
@@ -1190,8 +1208,18 @@ class DashboardView:
                 "% Change": NumberFormatter(format=_PERCENT_FORMAT),
             },
             text_align=dict.fromkeys(
-                ["Qty", "Avg entry", "IBKR basis", "Basis Δ", "Last", "Change",
-                 "% Change", "Market value", "Unrealised", "% Unrealised"],
+                [
+                    "Qty",
+                    "Avg entry",
+                    "IBKR basis",
+                    "Basis Δ",
+                    "Last",
+                    "Change",
+                    "% Change",
+                    "Market value",
+                    "Unrealised",
+                    "% Unrealised",
+                ],
                 "right",
             ),
             # Read-only affordances only. Filtering, sorting and paging change what is
@@ -1225,7 +1253,10 @@ class DashboardView:
         self._window = pn.widgets.RadioButtonGroup(
             # color=, not button_type=: `button_type` PendingDeprecationWarns on panel
             # 1.9 and the suite gates on warnings (same finding as Widget.name).
-            label="Window", options=list(_WINDOW_LABELS), value="Weekly", color="light"
+            label="Window",
+            options=list(_WINDOW_LABELS),
+            value="Weekly",
+            color="light",
         )
         # Same Hard Rule 1 shape as the positions table: disabled=True and NO on_click /
         # on_edit handler bound anywhere. An order row is the one place in this app where
@@ -1269,15 +1300,32 @@ class DashboardView:
         # is activated again — `refresh` can keep writing to all three unconditionally.
         self.tabs = pn.Tabs(
             ("Chart", chart_pane if chart_pane is not None else pn.Column()),
-            ("Positions", pn.Column(self._positions_status, self._reconciliation,
-                                    self._basis_note, self._quote_note, self._positions,
-                                    sizing_mode="stretch_both")),
-            ("Orders", pn.Column(self._orders_status, self._orders,
-                                 sizing_mode="stretch_both")),
-            ("P&L", pn.Column(self._window, self._pnl_source_note, self._pnl_breakdown,
-                              self._pnl_chart, self._pnl_chart_note,
-                              self._pnl_stats, self._pnl_coverage, self._ledger_detail,
-                              sizing_mode="stretch_both")),
+            (
+                "Positions",
+                pn.Column(
+                    self._positions_status,
+                    self._reconciliation,
+                    self._basis_note,
+                    self._quote_note,
+                    self._positions,
+                    sizing_mode="stretch_both",
+                ),
+            ),
+            ("Orders", pn.Column(self._orders_status, self._orders, sizing_mode="stretch_both")),
+            (
+                "P&L",
+                pn.Column(
+                    self._window,
+                    self._pnl_source_note,
+                    self._pnl_breakdown,
+                    self._pnl_chart,
+                    self._pnl_chart_note,
+                    self._pnl_stats,
+                    self._pnl_coverage,
+                    self._ledger_detail,
+                    sizing_mode="stretch_both",
+                ),
+            ),
             dynamic=True,
             sizing_mode="stretch_both",
         )
@@ -1352,9 +1400,7 @@ class DashboardView:
         """
         return bool(snapshot.error) or snapshot.age_seconds(now) > STALE_AFTER
 
-    def _notify_staleness(
-        self, snapshot: DashboardSnapshot, now: datetime | None = None
-    ) -> None:
+    def _notify_staleness(self, snapshot: DashboardSnapshot, now: datetime | None = None) -> None:
         """Toast on the fresh↔stale transition only — never on every poll.
 
         The status line is always right, but only if you are looking at it. A trading
@@ -1399,14 +1445,19 @@ class DashboardView:
         """
         led = snapshot.ledger
         ccy = led.currency if led else ""
-        self._set(self._tiles["net_liq"], led.net_liquidation if led else None,
-                  f"{{value:,.2f}} {ccy}")
+        self._set(
+            self._tiles["net_liq"], led.net_liquidation if led else None, f"{{value:,.2f}} {ccy}"
+        )
         self._set(self._tiles["cash"], led.cash if led else None, f"{{value:,.2f}} {ccy}")
-        self._set(self._tiles["unrealised"], led.unrealised_pnl if led else None,
-                  f"{{value:+,.2f}} {ccy}")
+        self._set(
+            self._tiles["unrealised"], led.unrealised_pnl if led else None, f"{{value:+,.2f}} {ccy}"
+        )
         self._tiles["realised_ledger"].label = realised_ledger_label()
-        self._set(self._tiles["realised_ledger"], led.realised_pnl if led else None,
-                  f"{{value:+,.2f}} {ccy}")
+        self._set(
+            self._tiles["realised_ledger"],
+            led.realised_pnl if led else None,
+            f"{{value:+,.2f}} {ccy}",
+        )
 
         # An empty week has no currency of its own (`currency_label` returns ""), so the
         # account's own base currency stands in — known, not assumed.
@@ -1422,8 +1473,7 @@ class DashboardView:
         bridged = snapshot.breakdowns.get("week")
         week_ccy = (week.currency_label or ccy) if week else ccy
         week_total = bridged.net if bridged and bridged.rows else (week.total if week else None)
-        self._set(self._tiles["realised_week"], week_total,
-                  f"{{value:+,.2f}} {week_ccy}".rstrip())
+        self._set(self._tiles["realised_week"], week_total, f"{{value:+,.2f}} {week_ccy}".rstrip())
         self._freshness.object = freshness_line(snapshot, now)
 
     @staticmethod
@@ -1531,9 +1581,7 @@ class DashboardView:
         self._pnl_coverage.object = coverage_line(snapshot)
         self._ledger_detail.object = ledger_markdown(snapshot)
 
-    def _refresh_pnl(
-        self, snapshot: DashboardSnapshot, now: datetime | None = None
-    ) -> None:
+    def _refresh_pnl(self, snapshot: DashboardSnapshot, now: datetime | None = None) -> None:
         """P&L tab: the realised chart for the selected window, stats, and disclosures.
 
         An empty window reports no currency of its own, so the account's base currency

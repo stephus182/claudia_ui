@@ -99,9 +99,7 @@ def _infer_bar_label(index: pd.DatetimeIndex) -> str:
     """
     if len(index) < 2:
         return ""
-    minutes = float(
-        pd.Series(index).diff().dropna().median() / pd.Timedelta(minutes=1)
-    )
+    minutes = float(pd.Series(index).diff().dropna().median() / pd.Timedelta(minutes=1))
     exact = {30.0: "30m", 60.0: "1h", 1440.0: "1d"}
     if minutes in exact:
         return exact[minutes]
@@ -214,9 +212,7 @@ def build_chart_pane() -> pn.Column:
     # label= (not name=): panel 1.9 PendingDeprecationWarns on Widget.name, which
     # would break the suite's 1-warning gate — label is its supported replacement.
     symbol = pn.widgets.TextInput(label="Symbol", value="AAPL")
-    period = pn.widgets.Select(
-        label="Period", options=["1m", "3m", "6m", "1y", "2y"], value="6m"
-    )
+    period = pn.widgets.Select(label="Period", options=["1m", "3m", "6m", "1y", "2y"], value="6m")
     bar = pn.widgets.Select(label="Bar", options=["1d", "1h", "30m"], value="1d")
     load_btn = pn.widgets.Button(label="Load chart", color="primary")
     status = safe_markdown("STK only. Enter a symbol and click **Load chart**.")
@@ -264,9 +260,7 @@ def build_chart_pane() -> pn.Column:
 
             # Blocking Drive/IBKR calls go through to_thread so the event loop (and the
             # loading spinner) stay responsive.
-            if not await asyncio.to_thread(
-                toolkit._cache.check, sym, tf, period.value, end
-            ):
+            if not await asyncio.to_thread(toolkit._cache.check, sym, tf, period.value, end):
                 status.object = f"Fetching {sym}…"
                 # execute returns (text_result, None) -- ClaudeToolkit.execute's declared
                 # signature is `-> tuple[str, None]`, the second slot a legacy figure
@@ -281,9 +275,7 @@ def build_chart_pane() -> pn.Column:
                     "fetch_market_data",
                     {"symbol": sym, "period": period.value, "bar": bar.value},
                 )
-            df = await asyncio.to_thread(
-                toolkit._cache.load, sym, tf, period.value, end
-            )
+            df = await asyncio.to_thread(toolkit._cache.load, sym, tf, period.value, end)
             if df is None or df.empty:
                 status.object = f"No data for {sym}."
                 return

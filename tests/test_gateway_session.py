@@ -57,8 +57,13 @@ def _authenticated() -> GatewayState:
 def _borrowed() -> GatewayState:
     """The 2026-08-05 diagnosis: SSO valid, owned by IBKR Mobile, unauthenticated here."""
     return GatewayState(
-        reachable=True, authenticated=False, connected=False, sso_valid=True,
-        client_app="IBKRMOBILE_000.a-000", sso_user="ibkruser", user_id=10541387,
+        reachable=True,
+        authenticated=False,
+        connected=False,
+        sso_valid=True,
+        client_app="IBKRMOBILE_000.a-000",
+        sso_user="ibkruser",
+        user_id=10541387,
     )
 
 
@@ -203,7 +208,7 @@ def test_observe_keeps_the_evidence_the_phase_came_from():
 
 
 def test_starts_down_and_says_it_has_not_read_yet():
-    """"Not read yet" and "the gateway is down" must not look identical to a consumer."""
+    """ "Not read yet" and "the gateway is down" must not look identical to a consumer."""
     session = GatewaySession()
     assert session.phase is SessionPhase.DOWN
     assert "not been read" in session.state().detail
@@ -359,8 +364,13 @@ def _clock():
 def _establish(session, gm, lock, **kw):
     """Run establish with sleeping and clocks stubbed out."""
     return session.establish(
-        gm, url="https://x/v1/api", emit=lambda _: None, lock=lock,
-        sleep=lambda _: None, monotonic=_clock(), **kw,
+        gm,
+        url="https://x/v1/api",
+        emit=lambda _: None,
+        lock=lock,
+        sleep=lambda _: None,
+        monotonic=_clock(),
+        **kw,
     )
 
 
@@ -603,8 +613,13 @@ def test_an_unreachable_gateway_is_never_sent_a_login_page(wire):
 
 @pytest.mark.parametrize(
     "reading,confirm",
-    [(_authenticated(), True), (_authenticated(), False), (_free(), True),
-     (_contested(), False), (_borrowed(), False)],
+    [
+        (_authenticated(), True),
+        (_authenticated(), False),
+        (_free(), True),
+        (_contested(), False),
+        (_borrowed(), False),
+    ],
 )
 def test_the_login_page_is_never_opened_without_a_read_first(wire, reading, confirm):
     """The CLAUDE.md rule, asserted over every branch rather than one of them."""
@@ -677,6 +692,7 @@ def test_soft_recovery_non_200_is_a_failure(monkeypatch):
 
 def test_soft_recovery_never_raises(monkeypatch):
     """It runs when things are already broken, so it must survive that."""
+
     def boom(*a, **k):
         """Fail the way an unreachable gateway does."""
         raise OSError("refused")
@@ -728,8 +744,10 @@ async def test_soft_recovery_fires_only_from_a_previously_live_session(monkeypat
     """
     soft = GatewayState(reachable=True, authenticated=False, connected=True)
     calls: list[str] = []
-    monkeypatch.setattr("claudia.gateway_session.attempt_soft_recovery",
-                        lambda *a, **k: calls.append("tried") or False)
+    monkeypatch.setattr(
+        "claudia.gateway_session.attempt_soft_recovery",
+        lambda *a, **k: calls.append("tried") or False,
+    )
 
     # From FREE: no recovery — nothing was ever established.
     session = GatewaySession()
@@ -749,8 +767,10 @@ async def test_soft_recovery_fires_only_from_a_previously_live_session(monkeypat
 async def test_no_soft_recovery_on_a_hard_disconnect(monkeypatch):
     """`connected` false is not a soft timeout; init cannot help and must not be sent."""
     calls: list[str] = []
-    monkeypatch.setattr("claudia.gateway_session.attempt_soft_recovery",
-                        lambda *a, **k: calls.append("tried") or False)
+    monkeypatch.setattr(
+        "claudia.gateway_session.attempt_soft_recovery",
+        lambda *a, **k: calls.append("tried") or False,
+    )
     session = GatewaySession()
     session.publish(observe(_authenticated(), True))
 
@@ -803,15 +823,36 @@ def test_classify_and_verdict_agree_over_every_possible_reading():
     }
 
     readings = 0
-    for (reachable, authenticated, connected, competing, collision, sso_valid,
-         client_app, user_id, data_ok) in product(
-        (False, True), (False, True), (False, True), (False, True), (False, True),
-        (False, True), ("", "IBKRMOBILE_000.a-000"), (None, 10541387), (False, True),
+    for (
+        reachable,
+        authenticated,
+        connected,
+        competing,
+        collision,
+        sso_valid,
+        client_app,
+        user_id,
+        data_ok,
+    ) in product(
+        (False, True),
+        (False, True),
+        (False, True),
+        (False, True),
+        (False, True),
+        (False, True),
+        ("", "IBKRMOBILE_000.a-000"),
+        (None, 10541387),
+        (False, True),
     ):
         state = GatewayState(
-            reachable=reachable, authenticated=authenticated, connected=connected,
-            competing=competing, collision=collision, sso_valid=sso_valid,
-            client_app=client_app, user_id=user_id,
+            reachable=reachable,
+            authenticated=authenticated,
+            connected=connected,
+            competing=competing,
+            collision=collision,
+            sso_valid=sso_valid,
+            client_app=client_app,
+            user_id=user_id,
         )
         code, _, _ = verdict(state)
         phase = classify(state, data_ok)

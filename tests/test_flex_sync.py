@@ -49,13 +49,9 @@ def _make_db(path, *, trades=1, lots=True, wash=True) -> None:
             (f"key-{i}", -100.0, "2026-08-04"),
         )
     if lots:
-        conn.executemany(
-            "INSERT INTO flex_lot VALUES (?)", [(-250.0,)] * trades
-        )
+        conn.executemany("INSERT INTO flex_lot VALUES (?)", [(-250.0,)] * trades)
     if wash:
-        conn.executemany(
-            "INSERT INTO flex_wash_sale VALUES (?)", [(150.0,)] * trades
-        )
+        conn.executemany("INSERT INTO flex_wash_sale VALUES (?)", [(150.0,)] * trades)
     conn.commit()
     conn.close()
 
@@ -274,7 +270,7 @@ def test_the_second_run_reuses_the_verdict_without_rechecking(good_db):
     validate_dataset_daily(good_db, now=_NOW)
     with patch("claudia.flex_sync.validate_dataset") as never:
         outcome = validate_dataset_daily(good_db, now=_NOW + timedelta(hours=2))
-    never.assert_not_called()          # the whole point: no work, not merely a fast path
+    never.assert_not_called()  # the whole point: no work, not merely a fast path
     assert outcome.reused is True
     assert outcome.validity.ok is True
     assert outcome.validated_at == _NOW  # reports when it was PROVEN, not when it was asked
@@ -376,7 +372,7 @@ def test_an_unreadable_path_writes_no_sidecar_at_all(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     outcome = validate_dataset_daily(str(tmp_path / "does-not-exist.db"), now=_NOW)
 
-    assert outcome.validity.ok is False   # still reports honestly
+    assert outcome.validity.ok is False  # still reports honestly
     assert outcome.reused is False
     assert list(tmp_path.glob("*.validation.json")) == []
     assert list(tmp_path.iterdir()) == []  # nothing dropped anywhere

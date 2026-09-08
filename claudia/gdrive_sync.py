@@ -7,6 +7,7 @@ Enabled automatically when GOOGLE_DRIVE_FOLDER_ID is set.
 Does NOT run an interactive OAuth flow — requires an existing valid token file.
 Authenticate first via GDriveCache (ibkr_core_mcp / market data sync).
 """
+
 from __future__ import annotations
 
 import io
@@ -206,7 +207,8 @@ class GDriveSync:
                     log.warning(
                         "claudia.db on Drive (%s) is older than local (%s) — keeping "
                         "local; it will sync to Drive at session end",
-                        drive_mtime.isoformat(), local_mtime.isoformat(),
+                        drive_mtime.isoformat(),
+                        local_mtime.isoformat(),
                     )
                     return False
 
@@ -219,9 +221,7 @@ class GDriveSync:
             )
             tmp_path = Path(tmp_fd.name)
             try:
-                downloader = MediaIoBaseDownload(
-                    tmp_fd, svc.files().get_media(fileId=file_id)
-                )
+                downloader = MediaIoBaseDownload(tmp_fd, svc.files().get_media(fileId=file_id))
                 self._download_chunked(downloader)
                 tmp_fd.flush()
                 tmp_fd.close()
@@ -356,14 +356,18 @@ class GDriveSync:
                     log.warning(
                         "GDriveSync.read_text(%r): Drive copy (%s) is not newer than local "
                         "(%s) — keeping local",
-                        filename, drive_mtime.isoformat(), local_mtime.isoformat(),
+                        filename,
+                        drive_mtime.isoformat(),
+                        local_mtime.isoformat(),
                     )
                     return None
             size = int(meta.get("size", 0))
             if size > self._MAX_TEXT_BYTES:
                 log.warning(
                     "GDriveSync.read_text(%r): file is %d bytes (limit %d) — skipping",
-                    filename, size, self._MAX_TEXT_BYTES,
+                    filename,
+                    size,
+                    self._MAX_TEXT_BYTES,
                 )
                 return None
             buf = io.BytesIO()
@@ -371,7 +375,5 @@ class GDriveSync:
             self._download_chunked(downloader)
             return buf.getvalue().decode("utf-8", errors="replace")
         except Exception as exc:
-            log.warning(
-                "GDriveSync.read_text(%r) failed: %s — using local fallback", filename, exc
-            )
+            log.warning("GDriveSync.read_text(%r) failed: %s — using local fallback", filename, exc)
             return None

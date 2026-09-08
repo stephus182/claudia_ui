@@ -47,8 +47,7 @@ so quotes/backticks/newlines are safe), then reference it by name:
 
 ```python
 copy_btn = pn.widgets.Button(label="Copy PineScript", color="light")
-copy_btn.js_on_click(args={"code": pine_code},
-                     code="navigator.clipboard.writeText(code)")
+copy_btn.js_on_click(args={"code": pine_code}, code="navigator.clipboard.writeText(code)")
 ```
 
 **`navigator.clipboard.writeText` — MDN (authoritative,**

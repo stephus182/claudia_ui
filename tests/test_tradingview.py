@@ -15,6 +15,7 @@ from claudia.tradingview import (
 
 # ── _find_tv_mcp_bin — TRADINGVIEW_MCP_PATH env var ──────────────────────────
 
+
 def test_find_bin_env_var_valid_js(tmp_path, monkeypatch):
     """An env-var path pointing at a real .js entry point is used as-is."""
     fake = tmp_path / "server.js"
@@ -53,6 +54,7 @@ def test_find_bin_env_var_not_js_falls_through(tmp_path, monkeypatch):
 
 # ── _find_tv_mcp_bin — shutil.which ──────────────────────────────────────────
 
+
 def test_find_bin_uses_which_when_env_unset(tmp_path, monkeypatch):
     """With no env var, a binary on PATH is used."""
     monkeypatch.delenv("TRADINGVIEW_MCP_PATH", raising=False)
@@ -65,6 +67,7 @@ def test_find_bin_uses_which_when_env_unset(tmp_path, monkeypatch):
 
 
 # ── _find_tv_mcp_bin — home-based paths ──────────────────────────────────────
+
 
 def test_find_bin_js_src_in_home(tmp_path, monkeypatch):
     """A JS source checkout in the home directory is found."""
@@ -106,6 +109,7 @@ def test_find_bin_prefers_js_src_over_ts_build(tmp_path, monkeypatch):
 
 
 # ── _find_tv_mcp_bin — vendor fallback paths ─────────────────────────────────
+
 
 def test_find_bin_vendor_js_requires_node_modules(tmp_path, monkeypatch):
     """A vendored copy without installed dependencies is not usable and is skipped."""
@@ -169,6 +173,7 @@ def test_find_bin_returns_none_when_nothing_found(tmp_path, monkeypatch):
 
 # ── check_cdp_running ─────────────────────────────────────────────────────────
 
+
 def test_check_cdp_running_true_when_port_open():
     """An open CDP port means TradingView Desktop is reachable."""
     with patch("claudia.tradingview.socket.create_connection"):
@@ -182,6 +187,7 @@ def test_check_cdp_running_false_when_port_closed():
 
 
 # ── TradingViewBridge — tool filtering ───────────────────────────────────────
+
 
 def test_get_tools_returns_only_curated_subset():
     """Only the curated tools are offered to the model, not the sidecar's full surface."""
@@ -276,9 +282,7 @@ def test_empty_result_guards_only_name_curated_tools():
 
     mentioned: set[str] = set()
     for _field, message in tv_module._EMPTY_RESULT_GUARDS.values():
-        mentioned.update(
-            token for token in _SNAKE_TOKEN.findall(message) if token not in non_tool
-        )
+        mentioned.update(token for token in _SNAKE_TOKEN.findall(message) if token not in non_tool)
 
     # Non-vacuity: the extraction itself must still be finding something.
     assert mentioned, "no tool name extracted from any guard message"
@@ -288,6 +292,7 @@ def test_empty_result_guards_only_name_curated_tools():
 
 
 # ── TradingViewBridge — subprocess env allowlist ─────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_start_env_excludes_secrets(tmp_path, monkeypatch):
@@ -308,9 +313,11 @@ async def test_start_env_excludes_secrets(tmp_path, monkeypatch):
 
     class FakeCM:
         """A stand-in for the sidecar's stdio context manager."""
+
         async def __aenter__(self):
             """Hand back a read/write pair, as the real stdio client does."""
             return (AsyncMock(), AsyncMock())
+
         async def __aexit__(self, *a):
             """Nothing to tear down for the stub."""
             pass
@@ -321,10 +328,12 @@ async def test_start_env_excludes_secrets(tmp_path, monkeypatch):
     fake_session.initialize = AsyncMock()
     fake_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
 
-    with patch("claudia.tradingview.StdioServerParameters", side_effect=fake_params), \
-         patch("claudia.tradingview.stdio_client", return_value=FakeCM()), \
-         patch("claudia.tradingview.ClientSession", return_value=fake_session), \
-         patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)):
+    with (
+        patch("claudia.tradingview.StdioServerParameters", side_effect=fake_params),
+        patch("claudia.tradingview.stdio_client", return_value=FakeCM()),
+        patch("claudia.tradingview.ClientSession", return_value=fake_session),
+        patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)),
+    ):
         bridge = TradingViewBridge()
         await bridge.start()
 
@@ -358,9 +367,11 @@ async def test_start_sets_every_cdp_port_name(tmp_path, monkeypatch):
 
     class FakeCM:
         """A stand-in for the sidecar's stdio context manager."""
+
         async def __aenter__(self):
             """Hand back a read/write pair, as the real stdio client does."""
             return (AsyncMock(), AsyncMock())
+
         async def __aexit__(self, *a):
             """Nothing to tear down for the stub."""
             pass
@@ -371,10 +382,12 @@ async def test_start_sets_every_cdp_port_name(tmp_path, monkeypatch):
     fake_session.initialize = AsyncMock()
     fake_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
 
-    with patch("claudia.tradingview.StdioServerParameters", side_effect=fake_params), \
-         patch("claudia.tradingview.stdio_client", return_value=FakeCM()), \
-         patch("claudia.tradingview.ClientSession", return_value=fake_session), \
-         patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)):
+    with (
+        patch("claudia.tradingview.StdioServerParameters", side_effect=fake_params),
+        patch("claudia.tradingview.stdio_client", return_value=FakeCM()),
+        patch("claudia.tradingview.ClientSession", return_value=fake_session),
+        patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)),
+    ):
         bridge = TradingViewBridge()
         await bridge.start()
 
@@ -383,6 +396,7 @@ async def test_start_sets_every_cdp_port_name(tmp_path, monkeypatch):
 
 
 # ── result post-processing at the execute() seam ──────────────────────────────
+
 
 def test_post_process_annotates_epoch_seconds_with_utc_iso():
     """A bare epoch gets an unambiguous sibling; the original integer is untouched."""
@@ -444,11 +458,13 @@ def test_post_process_annotates_the_ohlcv_summary_period():
     those two are not dates. Two generic key names are safe here only because both guards
     apply — exact key match AND the range check.
     """
-    raw = json.dumps({
-        "bar_count": 500,
-        "period": {"from": 1786368600, "to": 1786455000},
-        "last_5_bars": [{"time": 1786455000, "close": 196.6749}],
-    })
+    raw = json.dumps(
+        {
+            "bar_count": 500,
+            "period": {"from": 1786368600, "to": 1786455000},
+            "last_5_bars": [{"time": 1786455000, "close": 196.6749}],
+        }
+    )
     out = json.loads(tv_module._post_process("data_get_ohlcv", raw))
     assert out["period"]["from_utc"] == "2026-08-10T13:30:00Z"
     assert out["period"]["to_utc"] == "2026-08-11T13:30:00Z"
@@ -539,21 +555,25 @@ def test_post_process_drops_a_sidecar_supplied_warning_on_a_guarded_tool():
     be false whenever our own warning is legitimately present, coupling this test to the
     guard's firing rule — a mutation to that rule killed it while the reservation was intact.
     """
-    raw = json.dumps({
-        "success": True,
-        "updated_inputs": {"in_0": 21},
-        "claudia_warning": "SIDECAR-CONTROLLED TEXT",
-    })
+    raw = json.dumps(
+        {
+            "success": True,
+            "updated_inputs": {"in_0": 21},
+            "claudia_warning": "SIDECAR-CONTROLLED TEXT",
+        }
+    )
     out = json.loads(tv_module._post_process("indicator_set_inputs", raw))
     assert "SIDECAR-CONTROLLED TEXT" not in json.dumps(out)
 
 
 def test_post_process_drops_a_sidecar_supplied_warning_on_an_unguarded_tool():
     """The key is reserved for every tool, not only the ones in the guard table."""
-    raw = json.dumps({
-        "bars": [{"time": 1786455000}],
-        "claudia_warning": "SIDECAR-CONTROLLED TEXT",
-    })
+    raw = json.dumps(
+        {
+            "bars": [{"time": 1786455000}],
+            "claudia_warning": "SIDECAR-CONTROLLED TEXT",
+        }
+    )
     out = json.loads(tv_module._post_process("data_get_ohlcv", raw))
     assert "SIDECAR-CONTROLLED TEXT" not in json.dumps(out)
     assert out["bars"][0]["time_utc"] == "2026-08-11T13:30:00Z"  # the rest still post-processed
@@ -619,10 +639,14 @@ def test_post_process_strips_a_sidecar_warning_at_any_depth():
     2026-08-11: with a top-level-only scrub, two forged warnings reached the model dressed as
     ClaudIA's own voice on the one channel that exists to say "distrust this payload".
     """
-    raw = json.dumps({
-        "success": True,
-        "studies": [{"inputs": {"claudia_warning": "FORGED"}, "values": {"claudia_warning": "FORGED"}}],
-    })
+    raw = json.dumps(
+        {
+            "success": True,
+            "studies": [
+                {"inputs": {"claudia_warning": "FORGED"}, "values": {"claudia_warning": "FORGED"}}
+            ],
+        }
+    )
     out = tv_module._post_process("data_get_study_values", raw)
     assert "FORGED" not in out
 
@@ -676,7 +700,9 @@ async def test_launch_returns_true_without_opening_when_cdp_is_already_up():
 async def test_launch_reports_open_failure_with_its_stderr(monkeypatch):
     """A non-zero `open` is an honest error carrying LaunchServices' own text."""
     _fast_waits(monkeypatch)
-    failed = MagicMock(returncode=1, stderr="Unable to find application named 'TradingView'", stdout="")
+    failed = MagicMock(
+        returncode=1, stderr="Unable to find application named 'TradingView'", stdout=""
+    )
     with (
         patch("claudia.tradingview.platform.system", return_value="Darwin"),
         patch("claudia.tradingview.check_cdp_running", return_value=False),
@@ -688,7 +714,9 @@ async def test_launch_reports_open_failure_with_its_stderr(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_launch_that_never_starts_a_process_says_so_and_names_the_terminal_route(monkeypatch, caplog):
+async def test_launch_that_never_starts_a_process_says_so_and_names_the_terminal_route(
+    monkeypatch, caplog
+):
     """`open` accepted but no TradingView process appears: 'never started', not 'no debug
     port' — and the way out is a launch from a real Terminal, not the quit+relaunch helper."""
     _fast_waits(monkeypatch)

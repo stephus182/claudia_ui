@@ -97,7 +97,7 @@ can only retrieve more or fewer rows from the user's own conversation history.
 
 `_find_file` constructs the Drive API query with f-strings:
 ```python
-q=f"name='{name}' and '{fid}' in parents and trashed=false"
+q = f"name='{name}' and '{fid}' in parents and trashed=false"
 ```
 
 A `name` value containing a single quote would break the query and could, in theory, inject

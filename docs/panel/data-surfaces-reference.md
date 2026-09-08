@@ -178,7 +178,8 @@ example does exactly this **[S]**:
 
 ```python
 def color_negative_red(val):
-    return 'color: %s' % ('red' if val < 0 else 'green')
+    return "color: %s" % ("red" if val < 0 else "green")
+
 
 tabulator.style.map(color_negative_red)
 ```
@@ -297,8 +298,10 @@ regular Panel layout (e.g. a `Column` or `Placeholder`) and mutate *that* **[S]*
 (`panels: TViewableFuncOrPath | dict[str, TViewableFuncOrPath]`) **[P]**:
 
 ```python
-pn.serve({'claudia': _build_session_root, 'charts': _build_charts_root},
-         title={'claudia': 'ClaudIA', 'charts': 'ClaudIA — Charts'})
+pn.serve(
+    {"claudia": _build_session_root, "charts": _build_charts_root},
+    title={"claudia": "ClaudIA", "charts": "ClaudIA — Charts"},
+)
 ```
 
 This is how a chart/table window opens in its **own browser tab** at its own URL **[S]**.

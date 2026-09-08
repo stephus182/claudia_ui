@@ -56,7 +56,7 @@ def test_extract_pine_blocks_ignores_non_pine_fences():
 
 def test_extract_pine_blocks_single():
     """One fenced block is extracted with its body intact."""
-    text = "Here you go:\n```pine\n//@version=5\nstrategy(\"X\")\n```\nEnjoy."
+    text = 'Here you go:\n```pine\n//@version=5\nstrategy("X")\n```\nEnjoy.'
     assert extract_pine_blocks(text) == ['//@version=5\nstrategy("X")']
 
 
@@ -69,7 +69,7 @@ def test_extract_pine_blocks_strips_surrounding_whitespace():
 
 def test_extract_pine_blocks_tolerates_info_string_after_pine():
     """An info string after the language tag still parses as a pine block."""
-    text = "```pine version=5 title=foo\nindicator(\"RSI\")\n```"
+    text = '```pine version=5 title=foo\nindicator("RSI")\n```'
     assert extract_pine_blocks(text) == ['indicator("RSI")']
 
 
@@ -83,20 +83,20 @@ def test_extract_pine_blocks_matches_the_pinescript_tag():
     the Copy/Inject buttons silently never rendered. It used `pine` minutes later and they
     did, which is why the defect reads as intermittent rather than broken.
     """
-    text = "```pinescript\nindicator(\"RSI\")\n```"
+    text = '```pinescript\nindicator("RSI")\n```'
     assert extract_pine_blocks(text) == ['indicator("RSI")']
 
 
 def test_extract_pine_blocks_matches_the_hyphenated_tag():
     """`pine-script` is the third spelling in the wild."""
-    text = "```pine-script\nindicator(\"RSI\")\n```"
+    text = '```pine-script\nindicator("RSI")\n```'
     assert extract_pine_blocks(text) == ['indicator("RSI")']
 
 
 def test_extract_pine_blocks_matches_regardless_of_tag_case():
     """Fence tags are conventionally lowercase, but a model is free to capitalise."""
     for tag in ("Pine", "PINE", "PineScript"):
-        text = f"```{tag}\nindicator(\"RSI\")\n```"
+        text = f'```{tag}\nindicator("RSI")\n```'
         assert extract_pine_blocks(text) == ['indicator("RSI")'], tag
 
 
@@ -112,10 +112,7 @@ def test_extract_pine_blocks_does_not_match_an_unrelated_tag_beginning_with_pine
 
 def test_extract_pine_blocks_multiple():
     """Several blocks in one message are all extracted, in order."""
-    text = (
-        "First:\n```pine\nstudy(\"A\")\n```\n"
-        "Second:\n```pine v5\nstudy(\"B\")\n```\n"
-    )
+    text = 'First:\n```pine\nstudy("A")\n```\nSecond:\n```pine v5\nstudy("B")\n```\n'
     assert extract_pine_blocks(text) == ['study("A")', 'study("B")']
 
 
@@ -126,7 +123,7 @@ def test_extract_pine_blocks_multiple():
 async def test_render_sends_one_row_of_two_buttons_per_block():
     """Each block gets its own copy and inject buttons."""
     chat = _make_chat()
-    text = "```pine\nstudy(\"A\")\n```\n```pine\nstudy(\"B\")\n```"
+    text = '```pine\nstudy("A")\n```\n```pine\nstudy("B")\n```'
     await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: None)
 
     assert chat.send.call_count == 2  # one Row per block
@@ -165,7 +162,7 @@ async def test_render_multiple_blocks_each_copy_button_has_its_own_code():
     correct even if the loop-closure bug is present. The inject-path guard (the
     thing _render_pine_block actually protects) is the separate test below."""
     chat = _make_chat()
-    text = "```pine\nstudy(\"A\")\n```\n```pine\nstudy(\"B\")\n```"
+    text = '```pine\nstudy("A")\n```\n```pine\nstudy("B")\n```'
     await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: None)
 
     copy_a = chat.send.call_args_list[0].args[0][0]
@@ -182,7 +179,7 @@ async def test_render_multiple_blocks_each_inject_button_sends_its_own_source():
     The copy-args test above can't catch this — only the async inject handler
     closes over the per-block variable."""
     chat = _make_chat()
-    text = "```pine\nstudy(\"A\")\n```\n```pine\nstudy(\"B\")\n```"
+    text = '```pine\nstudy("A")\n```\n```pine\nstudy("B")\n```'
     bridge = MagicMock()
     bridge.execute = AsyncMock(return_value='{"success": true}')
     await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: bridge)
@@ -200,7 +197,7 @@ async def test_render_multiple_blocks_each_inject_button_sends_its_own_source():
 async def test_inject_when_bridge_none_sends_not_connected_and_never_calls_execute():
     """With no TradingView bridge, inject reports not-connected and calls nothing."""
     chat = _make_chat()
-    text = "```pine\nstudy(\"A\")\n```"
+    text = '```pine\nstudy("A")\n```'
     await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: None)
 
     inject_btn = _first_row(chat)[1]
@@ -219,7 +216,7 @@ async def test_inject_when_getter_itself_none_sends_not_connected():
     # The sink default is tv_bridge_getter=None (not a getter returning None).
     """With no bridge getter at all, inject reports not-connected."""
     chat = _make_chat()
-    text = "```pine\nstudy(\"A\")\n```"
+    text = '```pine\nstudy("A")\n```'
     await render_pinescript_blocks(chat, text, tv_bridge_getter=None)
 
     inject_btn = _first_row(chat)[1]
@@ -269,7 +266,7 @@ async def test_inject_sidecar_reports_failure_is_not_reported_as_success():
     """The false-success fix: a {"success": false} sidecar result must NOT be prefixed
     'Injected'. It surfaces the honest failure + the raw error, as a System message."""
     chat = _make_chat()
-    text = "```pine\nstudy(\"A\")\n```"
+    text = '```pine\nstudy("A")\n```'
     bridge = MagicMock()
     bridge.execute = AsyncMock(
         return_value='{"success": false, "error": "CDP connection failed after 5 attempts"}'
@@ -293,7 +290,7 @@ async def test_inject_non_json_status_string_is_treated_as_failure():
     """execute()'s no-session path returns the literal 'TradingView is not connected.'
     string (not JSON) — fail-safe classifies it as a failure, never 'Injected'."""
     chat = _make_chat()
-    text = "```pine\nstudy(\"A\")\n```"
+    text = '```pine\nstudy("A")\n```'
     bridge = MagicMock()
     bridge.execute = AsyncMock(return_value="TradingView is not connected.")
     await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: bridge)
@@ -311,7 +308,7 @@ async def test_inject_non_json_status_string_is_treated_as_failure():
 async def test_inject_failure_sends_honest_message_and_does_not_raise():
     """A failed inject reports honestly and never raises — injection can be retried."""
     chat = _make_chat()
-    text = "```pine\nstudy(\"A\")\n```"
+    text = '```pine\nstudy("A")\n```'
     bridge = MagicMock()
     bridge.execute = AsyncMock(side_effect=RuntimeError("boom"))
     await render_pinescript_blocks(chat, text, tv_bridge_getter=lambda: bridge)
@@ -337,7 +334,7 @@ def test_extract_pine_blocks_drops_an_empty_fence():
     assert extract_pine_blocks(f + "pine\n" + f) == []
     assert extract_pine_blocks(f + "pinescript\n   \n" + f) == []
     # A real block alongside an empty one still comes through.
-    text = f + "pine\n\n" + f + "\n" + f + "pine\nindicator(\"X\")\n" + f
+    text = f + "pine\n\n" + f + "\n" + f + 'pine\nindicator("X")\n' + f
     assert extract_pine_blocks(text) == ['indicator("X")']
 
 
@@ -360,15 +357,19 @@ async def test_inject_persists_a_tool_row_on_success():
     bridge.execute = AsyncMock(return_value='{"success": true}')
     store = MagicMock()
     await render_pinescript_blocks(
-        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
-        store=store, session_id="s-1",
+        chat,
+        '```pine\nstudy("A")\n```',
+        tv_bridge_getter=lambda: bridge,
+        store=store,
+        session_id="s-1",
     )
     await _get_click_callback(_first_row(chat)[1])(None)
 
     from claudia.panel_pinescript import UI_BUTTON_ORIGIN
 
     store.add_message.assert_called_once_with(
-        "s-1", "tool",
+        "s-1",
+        "tool",
         content=UI_BUTTON_ORIGIN,
         tool_name="pine_set_source",
         tool_input={"source": 'study("A")'},
@@ -385,8 +386,11 @@ async def test_inject_persists_the_failure_result_too():
     bridge.execute = AsyncMock(return_value='{"success": false, "error": "no editor"}')
     store = MagicMock()
     await render_pinescript_blocks(
-        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
-        store=store, session_id="s-1",
+        chat,
+        '```pine\nstudy("A")\n```',
+        tv_bridge_getter=lambda: bridge,
+        store=store,
+        session_id="s-1",
     )
     await _get_click_callback(_first_row(chat)[1])(None)
 
@@ -403,7 +407,9 @@ async def test_inject_without_a_store_still_injects():
     bridge = MagicMock()
     bridge.execute = AsyncMock(return_value='{"success": true}')
     await render_pinescript_blocks(
-        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
+        chat,
+        '```pine\nstudy("A")\n```',
+        tv_bridge_getter=lambda: bridge,
     )
     await _get_click_callback(_first_row(chat)[1])(None)
 
@@ -421,8 +427,11 @@ async def test_inject_still_reports_success_when_the_record_fails():
     store = MagicMock()
     store.add_message = MagicMock(side_effect=RuntimeError("db locked"))
     await render_pinescript_blocks(
-        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
-        store=store, session_id="s-1",
+        chat,
+        '```pine\nstudy("A")\n```',
+        tv_bridge_getter=lambda: bridge,
+        store=store,
+        session_id="s-1",
     )
     await _get_click_callback(_first_row(chat)[1])(None)
 
@@ -442,8 +451,11 @@ async def test_inject_row_is_stamped_as_a_button_click():
     bridge.execute = AsyncMock(return_value='{"success": true}')
     store = MagicMock()
     await render_pinescript_blocks(
-        chat, "```pine\nstudy(\"A\")\n```", tv_bridge_getter=lambda: bridge,
-        store=store, session_id="s-1",
+        chat,
+        '```pine\nstudy("A")\n```',
+        tv_bridge_getter=lambda: bridge,
+        store=store,
+        session_id="s-1",
     )
     await _get_click_callback(_first_row(chat)[1])(None)
 

@@ -48,11 +48,13 @@ def test_repaint_maps_status_to_colour():
     """OK → success (green), ERROR → danger (red), UNKNOWN → default (white with a real
     border — `light` is Bokeh's borderless style and melted into the page, user 2026-09-04)."""
     bar, _ = _bar()
-    bar.repaint({
-        "ibkr": ServiceStatus.OK,
-        "tv": ServiceStatus.ERROR,
-        "gdrive": ServiceStatus.UNKNOWN,
-    })
+    bar.repaint(
+        {
+            "ibkr": ServiceStatus.OK,
+            "tv": ServiceStatus.ERROR,
+            "gdrive": ServiceStatus.UNKNOWN,
+        }
+    )
     assert bar.buttons["ibkr"].color == "success"
     assert bar.buttons["tv"].color == "danger"
     assert bar.buttons["gdrive"].color == "default"
@@ -121,10 +123,13 @@ async def test_button_is_disabled_and_loading_while_its_reconnect_runs():
 @pytest.mark.asyncio
 async def test_a_raising_reconnect_reports_the_error_and_re_enables_the_button():
     """Never a stuck button, never a crash: the error goes to `on_error`, the button comes back."""
-    bar, kw = _bar(reconnect={
-        "ibkr": AsyncMock(side_effect=RuntimeError("docker gone")),
-        "tv": AsyncMock(), "gdrive": AsyncMock(),
-    })
+    bar, kw = _bar(
+        reconnect={
+            "ibkr": AsyncMock(side_effect=RuntimeError("docker gone")),
+            "tv": AsyncMock(),
+            "gdrive": AsyncMock(),
+        }
+    )
     await _get_click_callback(bar.buttons["ibkr"])(None)
     kw["on_error"].assert_called_once()
     assert "docker gone" in kw["on_error"].call_args.args[0]

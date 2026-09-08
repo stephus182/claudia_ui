@@ -47,14 +47,14 @@ class ServiceStatus(StrEnum):
 
 
 _DISCONNECT_MESSAGES = {
-    "ibkr":   "⚠️ **IBKR Gateway disconnected** — check the Client Portal and log in.",
+    "ibkr": "⚠️ **IBKR Gateway disconnected** — check the Client Portal and log in.",
     "gdrive": "⚠️ **Google Drive disconnected** — check credentials or network.",
-    "tv":     "⚠️ **TradingView sidecar stopped** — TradingView tools unavailable.",
+    "tv": "⚠️ **TradingView sidecar stopped** — TradingView tools unavailable.",
 }
 _RECONNECT_MESSAGES = {
-    "ibkr":   "✅ **IBKR Gateway reconnected.**",
+    "ibkr": "✅ **IBKR Gateway reconnected.**",
     "gdrive": "✅ **Google Drive reconnected.**",
-    "tv":     "✅ **TradingView reconnected.**",
+    "tv": "✅ **TradingView reconnected.**",
 }
 
 
@@ -94,9 +94,9 @@ class ConnectivityChecker:
             session = get_session()
         self._session = session
         self._status: dict[str, ServiceStatus] = {
-            "ibkr":   ServiceStatus.UNKNOWN,
+            "ibkr": ServiceStatus.UNKNOWN,
             "gdrive": ServiceStatus.UNKNOWN,
-            "tv":     ServiceStatus.UNKNOWN,
+            "tv": ServiceStatus.UNKNOWN,
         }
 
         self._last_ibkr_auth_status: dict = {}
@@ -193,10 +193,12 @@ class ConnectivityChecker:
         _DISCONNECT_MESSAGES/_RECONNECT_MESSAGES already produce today). Returns an
         unsubscribe function."""
         self._subscribers.append(callback)
+
         def _unsubscribe() -> None:
             """Detach this callback. Safe to call twice — a missing entry is ignored."""
             with suppress(ValueError):
                 self._subscribers.remove(callback)
+
         return _unsubscribe
 
     # ── Internal ────────────────────────────────────────────────────────────
@@ -209,7 +211,7 @@ class ConnectivityChecker:
         of the session.
         """
         try:
-            await self._run_checks()      # run once immediately on start
+            await self._run_checks()  # run once immediately on start
         except Exception as exc:
             log.warning("ConnectivityChecker initial poll error: %s", exc)
         while True:
@@ -243,16 +245,20 @@ class ConnectivityChecker:
         gdrive_ok = gdrive_configured and await asyncio.to_thread(self.check_gdrive)
         tv_ok = await asyncio.to_thread(self.check_tradingview)
         new = {
-            "ibkr":   ServiceStatus.OK if ibkr_ok else ServiceStatus.ERROR,
+            "ibkr": ServiceStatus.OK if ibkr_ok else ServiceStatus.ERROR,
             # Not configured → UNKNOWN (neutral), not ERROR (red) — for Drive and TV alike
             "gdrive": (
-                ServiceStatus.OK if gdrive_ok
-                else ServiceStatus.UNKNOWN if not gdrive_configured
+                ServiceStatus.OK
+                if gdrive_ok
+                else ServiceStatus.UNKNOWN
+                if not gdrive_configured
                 else ServiceStatus.ERROR
             ),
             "tv": (
-                ServiceStatus.OK if tv_ok
-                else ServiceStatus.UNKNOWN if self._tv_bridge is None
+                ServiceStatus.OK
+                if tv_ok
+                else ServiceStatus.UNKNOWN
+                if self._tv_bridge is None
                 else ServiceStatus.ERROR
             ),
         }
@@ -276,9 +282,11 @@ class ConnectivityChecker:
         else:
             return  # UNKNOWN → OK at startup: silent
         for subscriber in list(self._subscribers):  # copy: a subscriber unsubscribing
-                                                       # itself mid-notify must not skip
-                                                       # or corrupt the remaining iteration
+            # itself mid-notify must not skip
+            # or corrupt the remaining iteration
             try:
                 await subscriber(msg)
             except Exception as exc:
-                log.warning("Could not push connectivity alert to a subscriber: %s", exc, exc_info=True)
+                log.warning(
+                    "Could not push connectivity alert to a subscriber: %s", exc, exc_info=True
+                )

@@ -246,9 +246,7 @@ class DashboardPoller:
 
         # Positions in hand, so the reconstruction can be trust-checked against them.
         reconstruction = await asyncio.to_thread(self._reconstruct, positions, ledger)
-        flex = self._flex_sections(
-            await asyncio.to_thread(self._read_flex, reconstruction)
-        )
+        flex = self._flex_sections(await asyncio.to_thread(self._read_flex, reconstruction))
         positions = await asyncio.to_thread(self._read_entries, positions, reconstruction)
         positions = await asyncio.to_thread(self._read_quotes, positions)
         # Deliberately NOT inside `_read_account`: orders come from `/iserver/*` and the
@@ -421,9 +419,7 @@ class DashboardPoller:
         fills = getattr(reconstruction, "fills", None)
         try:
             with closing(connect(self._db_path)) as conn:
-                return with_economic_entries(
-                    positions, economic_entries(conn, positions, fills)
-                )
+                return with_economic_entries(positions, economic_entries(conn, positions, fills))
         except Exception as exc:
             log.warning("Dashboard economic-entry reconstruction failed: %s", exc)
             return positions
@@ -479,7 +475,8 @@ class DashboardPoller:
                 self._base_currency = str(entry.get("currency") or "").strip().upper() or None
                 log.info(
                     "DashboardPoller resolved account %s (base currency %s)",
-                    account_id, self._base_currency or "unknown",
+                    account_id,
+                    self._base_currency or "unknown",
                 )
                 return account_id, self._base_currency
         raise RuntimeError("No IBKR account available (is the gateway authenticated?)")

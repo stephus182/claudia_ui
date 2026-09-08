@@ -39,28 +39,43 @@ _TODAY = date(2026, 8, 6)
 def _window(start, end, total, count, by_asset=None, currencies=("USD",)):
     """A `RealisedWindow` with sensible defaults for the fields a test does not pin."""
     return dd.RealisedWindow(
-        start=start, end=end, total=total, trade_count=count,
-        by_asset=by_asset or {"FUT": total}, currencies=currencies,
+        start=start,
+        end=end,
+        total=total,
+        trade_count=count,
+        by_asset=by_asset or {"FUT": total},
+        currencies=currencies,
     )
 
 
 def _stats(lots=4, wins=2, losses=2, scratches=0, gross_win=1322.0, gross_loss=-4329.38):
     """A `RoundTripStats` with defaults matching the data-layer fixture."""
     return dd.RoundTripStats(
-        start=date(2026, 8, 3), end=_TODAY, closed_lots=lots, winners=wins,
-        losers=losses, scratches=scratches, gross_win=gross_win, gross_loss=gross_loss,
+        start=date(2026, 8, 3),
+        end=_TODAY,
+        closed_lots=lots,
+        winners=wins,
+        losers=losses,
+        scratches=scratches,
+        gross_win=gross_win,
+        gross_loss=gross_loss,
     )
 
 
 def _ledger(**over):
     """A `LedgerSnapshot` in USD with the fields the KPI strip reads."""
     fields = {
-        "currency": "USD", "net_liquidation": 100000.0, "cash": 25000.0,
-        "settled_cash": 24000.0, "stock_market_value": 60000.0,
+        "currency": "USD",
+        "net_liquidation": 100000.0,
+        "cash": 25000.0,
+        "settled_cash": 24000.0,
+        "stock_market_value": 60000.0,
         # Matches the default position book below, so the fixture reconciles. A
         # non-reconciling case is built explicitly by the test that wants one.
-        "futures_market_value": 0.0, "unrealised_pnl": -1000.0,
-        "realised_pnl": 412.10, "futures_only_pnl": -3516.98,
+        "futures_market_value": 0.0,
+        "unrealised_pnl": -1000.0,
+        "realised_pnl": 412.10,
+        "futures_only_pnl": -3516.98,
     }
     fields.update(over)
     return dd.LedgerSnapshot(**fields)
@@ -74,13 +89,26 @@ def _positions(*specs):
     the wrong one fails here rather than on screen.
     """
     specs = specs or (("ESU6", 1.0, -1000.0),)
-    return dd.parse_positions([
-        {"conid": i, "ticker": sym, "contractDesc": sym, "assetClass": "FUT",
-         "position": qty, "avgCost": 324000.0, "avgPrice": 6480.0, "multiplier": 50.0,
-         "mktPrice": 6480.0, "mktValue": 324000.0,
-         "unrealizedPnl": upl, "realizedPnl": 0.0, "currency": "USD"}
-        for i, (sym, qty, upl) in enumerate(specs)
-    ])
+    return dd.parse_positions(
+        [
+            {
+                "conid": i,
+                "ticker": sym,
+                "contractDesc": sym,
+                "assetClass": "FUT",
+                "position": qty,
+                "avgCost": 324000.0,
+                "avgPrice": 6480.0,
+                "multiplier": 50.0,
+                "mktPrice": 6480.0,
+                "mktValue": 324000.0,
+                "unrealizedPnl": upl,
+                "realizedPnl": 0.0,
+                "currency": "USD",
+            }
+            for i, (sym, qty, upl) in enumerate(specs)
+        ]
+    )
 
 
 def _with_entry(positions, **entries):
@@ -97,17 +125,29 @@ def _snapshot(**over):
         "as_of": _NOW,
         "ledger": _ledger(),
         "positions": _positions(),
-        "week": _window(date(2026, 8, 3), _TODAY, -2194.98, 5,
-                        {"FUT": -3516.98, "STK": 1322.0}),
+        "week": _window(date(2026, 8, 3), _TODAY, -2194.98, 5, {"FUT": -3516.98, "STK": 1322.0}),
         "month": _window(date(2026, 8, 1), _TODAY, -2294.98, 6),
-        "ytd": _window(date(2026, 1, 1), _TODAY, -4006.18, 8,
-                       {"FUT": -3616.98, "STK": 1122.0, "OPT": -1511.20},
-                       currencies=("EUR", "USD")),
-        "stats": {"week": _stats(), "month": _stats(lots=5), "ytd": _stats(lots=42, wins=20, losses=22)},
+        "ytd": _window(
+            date(2026, 1, 1),
+            _TODAY,
+            -4006.18,
+            8,
+            {"FUT": -3616.98, "STK": 1122.0, "OPT": -1511.20},
+            currencies=("EUR", "USD"),
+        ),
+        "stats": {
+            "week": _stats(),
+            "month": _stats(lots=5),
+            "ytd": _stats(lots=42, wins=20, losses=22),
+        },
         "series": tuple(
             dd.RealisedPoint(date(2026, 8, d), v, c)
-            for d, v, c in [(3, -3516.98, -3516.98), (4, 1071.75, -2445.23),
-                            (5, 0.0, -2445.23), (6, 250.25, -2194.98)]
+            for d, v, c in [
+                (3, -3516.98, -3516.98),
+                (4, 1071.75, -2445.23),
+                (5, 0.0, -2445.23),
+                (6, 250.25, -2194.98),
+            ]
         ),
         "coverage": dd.FlexCoverage(through=date(2026, 8, 5), live_pending=9),
         "error": None,
@@ -166,13 +206,25 @@ def test_module_reaches_no_order_path_and_no_io():
         elif isinstance(node, ast.Attribute):
             identifiers.add(node.attr)
 
-    for forbidden in ("claudia.order_flow", "claudia.panel_order_flow", "ibkr_core_mcp",
-                      "sqlite3", "requests"):
+    for forbidden in (
+        "claudia.order_flow",
+        "claudia.panel_order_flow",
+        "ibkr_core_mcp",
+        "sqlite3",
+        "requests",
+    ):
         assert not any(m == forbidden or m.startswith(forbidden + ".") for m in imported), (
             f"panel_dashboard imports {forbidden}"
         )
-    for forbidden in ("place_order", "modify_order", "cancel_order", "reply_order",
-                      "execute", "get_positions", "get_account_ledger"):
+    for forbidden in (
+        "place_order",
+        "modify_order",
+        "cancel_order",
+        "reply_order",
+        "execute",
+        "get_positions",
+        "get_account_ledger",
+    ):
         assert forbidden not in identifiers, f"panel_dashboard calls {forbidden}"
 
 
@@ -205,7 +257,7 @@ def test_a_long_connection_error_does_not_bury_the_word_stale():
         "IBKR unavailable: HTTPSConnectionPool(host='localhost', port=59999): Max "
         "retries exceeded with url: /v1/api/portfolio/accounts (Caused by "
         "NewConnectionError(\"HTTPSConnection(host='localhost', port=59999): Failed to "
-        "establish a new connection: [Errno 61] Connection refused\"))"
+        'establish a new connection: [Errno 61] Connection refused"))'
     )
     line = pdash.freshness_line(_snapshot(error=real), _NOW)
     assert "STALE" in line
@@ -372,10 +424,15 @@ def test_realised_ledger_tile_follows_the_measured_window(view):
 def test_every_money_string_carries_an_iso_code_and_no_bare_dollar(view):
     """`$` is shared by USD/MXN/CAD/AUD/HKD/SGD — a wrong-currency price looks ordinary."""
     view._window.value = "Weekly"
-    rendered = "\n".join([
-        view._freshness.object, view._positions_status.object,
-        view._pnl_stats.object, view._pnl_coverage.object, view._ledger_detail.object,
-    ])
+    rendered = "\n".join(
+        [
+            view._freshness.object,
+            view._positions_status.object,
+            view._pnl_stats.object,
+            view._pnl_coverage.object,
+            view._ledger_detail.object,
+        ]
+    )
     assert "$" not in rendered
     assert "USD" in rendered
     for tile in view._tiles.values():
@@ -432,8 +489,16 @@ def test_signed_figures_always_show_their_sign():
 
 @pytest.mark.parametrize(
     ("seconds", "expected"),
-    [(0, "0s"), (3.4, "3s"), (59.9, "60s"), (60, "1m 00s"), (134, "2m 14s"),
-     (3600, "1h 00m"), (4500, "1h 15m"), (-5, "0s")],
+    [
+        (0, "0s"),
+        (3.4, "3s"),
+        (59.9, "60s"),
+        (60, "1m 00s"),
+        (134, "2m 14s"),
+        (3600, "1h 00m"),
+        (4500, "1h 15m"),
+        (-5, "0s"),
+    ],
 )
 def test_age_formatting(seconds, expected):
     """Poll ages render compactly across seconds, minutes and hours."""
@@ -461,7 +526,10 @@ def test_kpi_strip_holds_five_number_tiles_and_nothing_else(view):
     row = list(view.kpi_strip[0])
     tiles = [o for o in row if isinstance(o, pn.indicators.Number)]
     assert [t.label for t in tiles] == [
-        "Net liquidation", "Cash", "Unrealised P&L", dd.realised_ledger_label(),
+        "Net liquidation",
+        "Cash",
+        "Unrealised P&L",
+        dd.realised_ledger_label(),
         "Realised this week",
     ]
     assert len(row) == len(tiles)
@@ -525,17 +593,18 @@ def test_numeric_columns_are_formatted_and_right_aligned(view):
     # (2026-08-07). `_money_formats` is the single source of that decision, and the
     # bare format is still the tail of each — the symbol is a prefix, not a rewrite.
     usd = pdash._money_formats("USD")
-    for col, bare in (("Market value", pdash._MONEY_FORMAT),
-                      ("Unrealised", pdash._MONEY_FORMAT),
-                      ("Avg entry", pdash._PRICE_FORMAT),
-                      ("IBKR basis", pdash._PRICE_FORMAT),
-                      ("Basis Δ", pdash._MONEY_FORMAT)):
+    for col, bare in (
+        ("Market value", pdash._MONEY_FORMAT),
+        ("Unrealised", pdash._MONEY_FORMAT),
+        ("Avg entry", pdash._PRICE_FORMAT),
+        ("IBKR basis", pdash._PRICE_FORMAT),
+        ("Basis Δ", pdash._MONEY_FORMAT),
+    ):
         assert fmts[col].format == usd[col], col
         assert fmts[col].format.endswith(bare), col
     assert view._positions.text_align["Unrealised"] == "right"
     # The underlying frame is untouched — display precision must not become data.
     assert view._positions.value["Unrealised"].dtype.kind == "f"
-
 
 
 # ── The economic entry: the real level, beside IBKR's fiscal one ──────────────
@@ -617,7 +686,6 @@ def test_basis_note_reaches_the_positions_tab(view):
     assert view._basis_note in list(view.tabs[1])
 
 
-
 # ── Offline is blank, not last-known ─────────────────────────────────────────
 
 
@@ -695,7 +763,9 @@ def test_a_failed_reconciliation_leads_with_lag_not_with_a_data_error():
     """The usual cause is `get_positions` going stale while a futures leg keeps ticking."""
     v = pdash.build_dashboard()
     v.refresh(
-        _snapshot(positions=_positions(("CL", 1.0, -1000.0)), ledger=_ledger(unrealised_pnl=-5000.0)),
+        _snapshot(
+            positions=_positions(("CL", 1.0, -1000.0)), ledger=_ledger(unrealised_pnl=-5000.0)
+        ),
         now=_NOW,
     )
     text = v._reconciliation.object
@@ -713,10 +783,12 @@ def test_an_unrun_reconciliation_does_not_claim_a_pass():
 
 def test_a_cross_currency_book_claims_no_reconciliation():
     """A book spanning currencies cannot be summed against one ledger, so no delta is claimed."""
-    rows = dd.parse_positions([
-        {"ticker": "AAPL", "position": 1.0, "unrealizedPnl": 10.0, "currency": "USD"},
-        {"ticker": "SAP", "position": 1.0, "unrealizedPnl": -4.0, "currency": "EUR"},
-    ])
+    rows = dd.parse_positions(
+        [
+            {"ticker": "AAPL", "position": 1.0, "unrealizedPnl": 10.0, "currency": "USD"},
+            {"ticker": "SAP", "position": 1.0, "unrealizedPnl": -4.0, "currency": "EUR"},
+        ]
+    )
     v = pdash.build_dashboard()
     v.refresh(_snapshot(positions=rows), now=_NOW)
     assert "No reconciliation claimed" in v._reconciliation.object
@@ -803,7 +875,7 @@ def test_recovery_toasts_once(toasts):
 
 
 def test_the_first_seconds_of_a_session_do_not_toast(toasts):
-    """"Has not polled yet" is the normal first second of every session, not an incident."""
+    """ "Has not polled yet" is the normal first second of every session, not an incident."""
     v = pdash.build_dashboard()
     v.refresh(dd.empty_snapshot(now=_NOW, error="Dashboard has not polled yet."), now=_NOW)
     v.refresh(dd.empty_snapshot(now=_NOW, error="Dashboard has not polled yet."), now=_NOW)
@@ -847,9 +919,20 @@ def test_position_columns_are_pinned_in_reading_order():
     `Class` sits by `Ccy` at the end: factual metadata, not a number acted on (user).
     """
     assert pdash._POSITION_COLUMNS == [
-        "Symbol", "Name", "Qty", "Avg entry", "IBKR basis", "Basis Δ",
-        "Last", "Change", "% Change", "Market value", "Unrealised", "% Unrealised",
-        "Class", "Ccy",
+        "Symbol",
+        "Name",
+        "Qty",
+        "Avg entry",
+        "IBKR basis",
+        "Basis Δ",
+        "Last",
+        "Change",
+        "% Change",
+        "Market value",
+        "Unrealised",
+        "% Unrealised",
+        "Class",
+        "Ccy",
     ]
 
 
@@ -865,13 +948,26 @@ def test_pct_unrealised_is_ibkr_over_ibkr_and_ties_to_their_screen():
     at 2dp — and the identity missed by 0.25. IBKR's actual figure is 383.215004. A
     fixture built from rounded output tests the rounding, not the arithmetic.
     """
-    p = dd.parse_positions([{
-        "conid": 1, "ticker": "GLD", "name": "SPDR GOLD SHARES", "contractDesc": "GLD",
-        "assetClass": "STK", "position": 50, "avgCost": 383.215004,
-        "avgPrice": 383.215004, "multiplier": 0.0, "mktPrice": 398.869812,
-        "mktValue": 19943.49, "unrealizedPnl": 782.74, "realizedPnl": 0,
-        "currency": "USD",
-    }])[0]
+    p = dd.parse_positions(
+        [
+            {
+                "conid": 1,
+                "ticker": "GLD",
+                "name": "SPDR GOLD SHARES",
+                "contractDesc": "GLD",
+                "assetClass": "STK",
+                "position": 50,
+                "avgCost": 383.215004,
+                "avgPrice": 383.215004,
+                "multiplier": 0.0,
+                "mktPrice": 398.869812,
+                "mktValue": 19943.49,
+                "unrealizedPnl": 782.74,
+                "realizedPnl": 0,
+                "currency": "USD",
+            }
+        ]
+    )[0]
     assert p.cost_basis == pytest.approx(19160.7502)
     assert p.pct_unrealised == pytest.approx(4.085, abs=0.001)
     # The identity that licenses the denominator.
@@ -883,23 +979,50 @@ def test_pct_unrealised_is_ibkr_over_ibkr_and_ties_to_their_screen():
 
 def test_a_profitable_short_reads_positive_not_inverted():
     """Dividing by a negative basis would render a gain as a loss."""
-    p = dd.parse_positions([{
-        "conid": 2, "ticker": "SH", "name": "SHORT S&P500", "contractDesc": "SH",
-        "assetClass": "STK", "position": -10, "avgCost": -100.0, "avgPrice": 100.0,
-        "multiplier": 1, "mktPrice": 90.0, "mktValue": -900.0,
-        "unrealizedPnl": 100.0, "realizedPnl": 0, "currency": "USD",
-    }])[0]
+    p = dd.parse_positions(
+        [
+            {
+                "conid": 2,
+                "ticker": "SH",
+                "name": "SHORT S&P500",
+                "contractDesc": "SH",
+                "assetClass": "STK",
+                "position": -10,
+                "avgCost": -100.0,
+                "avgPrice": 100.0,
+                "multiplier": 1,
+                "mktPrice": 90.0,
+                "mktValue": -900.0,
+                "unrealizedPnl": 100.0,
+                "realizedPnl": 0,
+                "currency": "USD",
+            }
+        ]
+    )[0]
     assert p.pct_unrealised == pytest.approx(10.0)
 
 
 def test_a_zero_basis_yields_no_percentage_rather_than_a_division():
     """A basis of zero is not a basis — and it is this column's denominator."""
-    p = dd.parse_positions([{
-        "conid": 3, "ticker": "X", "contractDesc": "X", "assetClass": "STK",
-        "position": 10, "avgCost": 0.0, "avgPrice": 0.0, "multiplier": 1,
-        "mktPrice": 5.0, "mktValue": 50.0, "unrealizedPnl": 50.0,
-        "realizedPnl": 0, "currency": "USD",
-    }])[0]
+    p = dd.parse_positions(
+        [
+            {
+                "conid": 3,
+                "ticker": "X",
+                "contractDesc": "X",
+                "assetClass": "STK",
+                "position": 10,
+                "avgCost": 0.0,
+                "avgPrice": 0.0,
+                "multiplier": 1,
+                "mktPrice": 5.0,
+                "mktValue": 50.0,
+                "unrealizedPnl": 50.0,
+                "realizedPnl": 0,
+                "currency": "USD",
+            }
+        ]
+    )[0]
     assert p.cost_basis is None
     assert p.pct_unrealised is None
 
@@ -911,18 +1034,42 @@ def test_name_is_ibkrs_description_and_blank_when_absent():
     name='Light Sweet Crude Oil' fullName="CL Sep'26". The lean futures row that omits
     `ticker` can omit `name` too, and a blank cell is the honest rendering of that.
     """
-    full, lean = dd.parse_positions([
-        {"conid": 1, "ticker": "CL", "name": "Light Sweet Crude Oil",
-         "fullName": "CL Sep'26", "contractDesc": "CL SEP2026", "assetClass": "FUT",
-         "position": 2, "avgCost": 76697.36, "avgPrice": 76.69736, "multiplier": 1000,
-         "mktPrice": 77.73, "mktValue": 155460.01, "unrealizedPnl": 2065.29,
-         "realizedPnl": 0, "currency": "USD"},
-        {"conid": 2, "contractDesc": "CL SEP2026", "assetClass": "FUT", "position": 1,
-         "avgCost": 0.0, "avgPrice": 0.0, "mktPrice": 77.73, "mktValue": 77730.0,
-         "unrealizedPnl": 0.0, "realizedPnl": 0, "currency": "USD"},
-    ])
-    assert full.name == "Light Sweet Crude Oil"   # not "CL Sep'26"
-    assert lean.name == ""                        # absent, not guessed from contractDesc
+    full, lean = dd.parse_positions(
+        [
+            {
+                "conid": 1,
+                "ticker": "CL",
+                "name": "Light Sweet Crude Oil",
+                "fullName": "CL Sep'26",
+                "contractDesc": "CL SEP2026",
+                "assetClass": "FUT",
+                "position": 2,
+                "avgCost": 76697.36,
+                "avgPrice": 76.69736,
+                "multiplier": 1000,
+                "mktPrice": 77.73,
+                "mktValue": 155460.01,
+                "unrealizedPnl": 2065.29,
+                "realizedPnl": 0,
+                "currency": "USD",
+            },
+            {
+                "conid": 2,
+                "contractDesc": "CL SEP2026",
+                "assetClass": "FUT",
+                "position": 1,
+                "avgCost": 0.0,
+                "avgPrice": 0.0,
+                "mktPrice": 77.73,
+                "mktValue": 77730.0,
+                "unrealizedPnl": 0.0,
+                "realizedPnl": 0,
+                "currency": "USD",
+            },
+        ]
+    )
+    assert full.name == "Light Sweet Crude Oil"  # not "CL Sep'26"
+    assert lean.name == ""  # absent, not guessed from contractDesc
 
 
 def test_positions_table_is_populated_and_summarised(view):
@@ -944,10 +1091,12 @@ def test_positions_summary_distinguishes_empty_from_unavailable():
 
 def test_multi_currency_positions_are_labelled_mixed():
     """A cross-currency total is labelled mixed rather than stamped with one code."""
-    rows = dd.parse_positions([
-        {"ticker": "AAPL", "position": 1.0, "unrealizedPnl": 10.0, "currency": "USD"},
-        {"ticker": "SAP", "position": 1.0, "unrealizedPnl": -4.0, "currency": "EUR"},
-    ])
+    rows = dd.parse_positions(
+        [
+            {"ticker": "AAPL", "position": 1.0, "unrealizedPnl": 10.0, "currency": "USD"},
+            {"ticker": "SAP", "position": 1.0, "unrealizedPnl": -4.0, "currency": "EUR"},
+        ]
+    )
     v = pdash.build_dashboard()
     v.refresh(_snapshot(positions=rows), now=_NOW)
     assert "EUR, USD" in v._positions_status.object
@@ -963,8 +1112,13 @@ def test_pnl_colouring_is_bound_to_the_unrealised_column(view):
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(5.0, f"color: {pdash._UP_COLOR}"), (-5.0, f"color: {pdash._DOWN_COLOR}"),
-     (0.0, f"color: {pdash._FLAT_COLOR}"), ("text", ""), (True, "")],
+    [
+        (5.0, f"color: {pdash._UP_COLOR}"),
+        (-5.0, f"color: {pdash._DOWN_COLOR}"),
+        (0.0, f"color: {pdash._FLAT_COLOR}"),
+        ("text", ""),
+        (True, ""),
+    ],
 )
 def test_sign_style(value, expected):
     """Positive, negative and zero cells get their own colours, and non-numbers get none."""
@@ -1054,9 +1208,7 @@ def test_chart_layout_has_two_stacked_rows():
     """The realised chart is the cumulative curve over the daily bars."""
     import holoviews as hv
 
-    pts = tuple(
-        dd.RealisedPoint(date(2026, 8, d), 1.0 * d, 1.0 * d) for d in (3, 4, 5, 6)
-    )
+    pts = tuple(dd.RealisedPoint(date(2026, 8, d), 1.0 * d, 1.0 * d) for d in (3, 4, 5, 6))
     layout = pdash.build_realised_chart(pts, "title")
     assert isinstance(layout, hv.Layout)
     assert len(list(layout)) == 2
@@ -1119,9 +1271,16 @@ def _order(**kw):
     from claudia.dashboard_data import LiveOrder
 
     base = {
-        "order_id": "314390101", "symbol": "AAPL", "side": "BUY", "quantity": 1.0,
-        "filled": 0.0, "price": 100.0, "order_type": "LMT", "tif": "GTC",
-        "status": "Submitted", "origin": "",
+        "order_id": "314390101",
+        "symbol": "AAPL",
+        "side": "BUY",
+        "quantity": 1.0,
+        "filled": 0.0,
+        "price": 100.0,
+        "order_type": "LMT",
+        "tif": "GTC",
+        "status": "Submitted",
+        "origin": "",
     }
     base.update(kw)
     return LiveOrder(**base)
@@ -1200,7 +1359,10 @@ def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
     """
     assert set(view._orders.formatters) == {"Qty", "Filled", "Limit", "Stop"}
     assert view._orders.text_align == {
-        "Qty": "right", "Filled": "right", "Limit": "right", "Stop": "right",
+        "Qty": "right",
+        "Filled": "right",
+        "Limit": "right",
+        "Stop": "right",
     }
     assert set(view._orders.header_tooltips) <= set(pdash._ORDER_COLUMNS)
 
@@ -1210,19 +1372,28 @@ def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
 
 def _bd(asset, winners, losers, net=0.0):
     """One TypeBreakdown with just the fields these tables read."""
-    return dd.TypeBreakdown(asset_class=asset, net=net, gross_win=0.0, gross_loss=0.0,
-                            winners=winners, losers=losers, scratches=0)
+    return dd.TypeBreakdown(
+        asset_class=asset,
+        net=net,
+        gross_win=0.0,
+        gross_loss=0.0,
+        winners=winners,
+        losers=losers,
+        scratches=0,
+    )
 
 
-def _snap_with(day_rows=(), week_rows=(), incomplete=False, reconstructed=True,
-               ledger=None, as_of=None):
+def _snap_with(
+    day_rows=(), week_rows=(), incomplete=False, reconstructed=True, ledger=None, as_of=None
+):
     """A snapshot carrying only the bridged breakdowns these surfaces consume."""
     return dd.DashboardSnapshot(
         as_of=as_of or datetime.now(UTC),
         ledger=ledger,
         breakdowns={
-            "day": dd.BridgedWindow(rows=tuple(day_rows), incomplete=incomplete,
-                                    reconstructed=reconstructed),
+            "day": dd.BridgedWindow(
+                rows=tuple(day_rows), incomplete=incomplete, reconstructed=reconstructed
+            ),
             "week": dd.BridgedWindow(rows=tuple(week_rows), reconstructed=reconstructed),
         },
     )
@@ -1241,7 +1412,7 @@ def test_the_daily_tab_shows_todays_realised_by_asset_class():
 
 
 def test_a_gateway_outage_never_reads_as_a_flat_day():
-    """"Nothing closed" and "we could not look" are opposite claims.
+    """ "Nothing closed" and "we could not look" are opposite claims.
 
     No statement covers today, so an unreachable gateway leaves today genuinely
     unknowable — and it is the one day no later data can contradict.
@@ -1266,8 +1437,7 @@ def test_before_the_first_poll_the_daily_tab_claims_nothing():
 
 def test_an_incomplete_day_is_marked_not_silently_short():
     """A floor presented as a total is the failure this whole track exists to prevent."""
-    out = pdash.daily_table(_snap_with(day_rows=[_bd("FUT", 1, 0, net=100.0)],
-                                       incomplete=True))
+    out = pdash.daily_table(_snap_with(day_rows=[_bd("FUT", 1, 0, net=100.0)], incomplete=True))
     assert "⚠" in out and "incomplete" in out
 
 
@@ -1297,8 +1467,7 @@ def test_the_heading_names_the_window_it_labels_not_the_poll_time():
     """
     snap = dd.DashboardSnapshot(
         as_of=datetime(2026, 8, 6, 12, 0, tzinfo=UTC),
-        breakdowns={"day": dd.BridgedWindow(rows=(), reconstructed=True,
-                                            day=date(2026, 8, 7))},
+        breakdowns={"day": dd.BridgedWindow(rows=(), reconstructed=True, day=date(2026, 8, 7))},
     )
     assert "2026-08-07" in pdash.daily_heading(snap)
     assert "2026-08-06" not in pdash.daily_heading(snap)
@@ -1385,14 +1554,20 @@ def test_leaving_daily_clears_its_source_note():
     assert "Today —" not in v._pnl_stats.object
 
 
-
 # -- The P&L pane's per-type detail -------------------------------------------
 
 
 def _full_bd(asset, net, gw, gl, wins, losses):
     """A TypeBreakdown with every column the pane renders."""
-    return dd.TypeBreakdown(asset_class=asset, net=net, gross_win=gw, gross_loss=gl,
-                            winners=wins, losers=losses, scratches=0)
+    return dd.TypeBreakdown(
+        asset_class=asset,
+        net=net,
+        gross_win=gw,
+        gross_loss=gl,
+        winners=wins,
+        losers=losses,
+        scratches=0,
+    )
 
 
 def test_the_pane_shows_money_counts_and_averages_together():
@@ -1401,13 +1576,15 @@ def test_the_pane_shows_money_counts_and_averages_together():
     Measured on this account's own year: FUT won 55% of trades and still lost money,
     while STK won 14% and lost less. Either figure in isolation misleads.
     """
-    win = dd.BridgedWindow(rows=(
-        _full_bd("FUT", -17015.98, 161517.42, -178533.40, 159, 132),
-        _full_bd("STK", -3203.71, 11794.38, -27604.68, 14, 83),
-    ))
+    win = dd.BridgedWindow(
+        rows=(
+            _full_bd("FUT", -17015.98, 161517.42, -178533.40, 159, 132),
+            _full_bd("STK", -3203.71, 11794.38, -27604.68, 14, 83),
+        )
+    )
     out = pdash.breakdown_table(win, "USD")
-    assert "55%" in out and "1,015.83" in out and "-1,352.53" in out   # FUT
-    assert "14%" in out and "842.46" in out and "-332.59" in out       # STK
+    assert "55%" in out and "1,015.83" in out and "-1,352.53" in out  # FUT
+    assert "14%" in out and "842.46" in out and "-332.59" in out  # STK
     assert "**-20,219.69**" in out, "the total must be the sum of the rows"
 
 
@@ -1448,8 +1625,11 @@ def test_the_daily_tab_emits_no_html_tags():
     surface rather than being deleted with it.
     """
     snap = _snap_with(day_rows=[_bd("FUT", 2, 0, net=1841.04)])
-    for out in (pdash.daily_table(snap, "USD"), pdash.daily_heading(snap),
-                pdash.daily_heading(snap, stale=True)):
+    for out in (
+        pdash.daily_table(snap, "USD"),
+        pdash.daily_heading(snap),
+        pdash.daily_heading(snap, stale=True),
+    ):
         assert "<" not in out and ">" not in out
 
 
@@ -1460,10 +1640,12 @@ def test_the_week_tile_and_the_pnl_pane_report_the_same_week():
     bridged figure (-16,480.46) — a ten-thousand difference, visible side by side. Both
     must now come from the same bridged window.
     """
-    week = dd.BridgedWindow(rows=(
-        dd.TypeBreakdown("FUT", -13230.76, 4864.86, -18095.62, 5, 5, 0),
-        dd.TypeBreakdown("STK", -3249.70, 0.0, -3249.70, 0, 23, 0),
-    ))
+    week = dd.BridgedWindow(
+        rows=(
+            dd.TypeBreakdown("FUT", -13230.76, 4864.86, -18095.62, 5, 5, 0),
+            dd.TypeBreakdown("STK", -3249.70, 0.0, -3249.70, 0, 23, 0),
+        )
+    )
     v = pdash.build_dashboard()
     snap = dd.DashboardSnapshot(as_of=_NOW, breakdowns={"week": week})
     v.refresh(snap, now=_NOW)
@@ -1477,11 +1659,22 @@ def test_the_week_tile_and_the_pnl_pane_report_the_same_week():
 
 def _quoted(**over):
     """One position carrying a live quote, with the fields these tests read."""
-    base = {"conid": 1, "ticker": "GLD", "name": "SPDR GOLD SHARES",
-            "contractDesc": "GLD", "assetClass": "STK", "position": 50,
-            "avgCost": 383.215004, "avgPrice": 383.215004, "multiplier": 0.0,
-            "mktPrice": 398.7787, "mktValue": 19943.49, "unrealizedPnl": 782.74,
-            "realizedPnl": 0, "currency": "USD"}
+    base = {
+        "conid": 1,
+        "ticker": "GLD",
+        "name": "SPDR GOLD SHARES",
+        "contractDesc": "GLD",
+        "assetClass": "STK",
+        "position": 50,
+        "avgCost": 383.215004,
+        "avgPrice": 383.215004,
+        "multiplier": 0.0,
+        "mktPrice": 398.7787,
+        "mktValue": 19943.49,
+        "unrealizedPnl": 782.74,
+        "realizedPnl": 0,
+        "currency": "USD",
+    }
     p = dd.parse_positions([base])[0]
     return replace(p, quote=dd.Quote(conid=1, **over)) if over else p
 
@@ -1490,7 +1683,7 @@ def test_last_prefers_the_live_quote_over_ibkrs_cached_price():
     """The gap is real money: measured 398.7787 cached against 399.00 live."""
     p = _quoted(last=399.00, change=9.33, change_pct=2.39, status="RivB")
     assert p.last_price == 399.00
-    assert p.market_price == 398.7787   # IBKR's own is kept, not overwritten
+    assert p.market_price == 398.7787  # IBKR's own is kept, not overwritten
 
 
 def test_last_falls_back_to_ibkr_when_there_is_no_quote():
@@ -1507,8 +1700,9 @@ def test_change_columns_are_blank_without_a_quote_never_zero():
 
 def test_the_pane_states_that_ibkrs_figures_lag_the_live_price():
     """A lag stated is fine; a lag concealed is the failure this pane is written against."""
-    note = pdash.quote_note(_snapshot(positions=(
-        _quoted(last=399.00, change=9.33, change_pct=2.39, status="RivB"),)))
+    note = pdash.quote_note(
+        _snapshot(positions=(_quoted(last=399.00, change=9.33, change_pct=2.39, status="RivB"),))
+    )
     assert "lag" in note
     assert "Market value" in note and "Unrealised" in note
     # No warning rows when everything is a live real-time feed.
@@ -1517,17 +1711,18 @@ def test_the_pane_states_that_ibkrs_figures_lag_the_live_price():
 
 def test_a_non_live_feed_is_named_on_screen():
     """Delayed/frozen/unsubscribed rendered as live is a wrong number on a trade screen."""
-    note = pdash.quote_note(_snapshot(positions=(
-        _quoted(last=399.00, status="DZ"),)))
+    note = pdash.quote_note(_snapshot(positions=(_quoted(last=399.00, status="DZ"),)))
     assert "⚠" in note and "real-time" in note and "GLD" in note
 
 
 def test_a_prior_close_and_a_halt_are_reported_separately():
     """They mean different things: no trade today, versus no market right now."""
-    close = pdash.quote_note(_snapshot(positions=(
-        _quoted(last=399.00, status="RivB", last_is_close=True),)))
-    halt = pdash.quote_note(_snapshot(positions=(
-        _quoted(last=399.00, status="RivB", halted=True),)))
+    close = pdash.quote_note(
+        _snapshot(positions=(_quoted(last=399.00, status="RivB", last_is_close=True),))
+    )
+    halt = pdash.quote_note(
+        _snapshot(positions=(_quoted(last=399.00, status="RivB", halted=True),))
+    )
     assert "previous close" in close and "halted" not in close
     assert "halted" in halt and "previous close" not in halt
 
@@ -1564,7 +1759,7 @@ def test_percentages_are_stored_as_fractions_for_the_numbro_format():
     """
     p = _quoted(last=399.00, change=9.33, change_pct=2.39, status="RivB")
     frame = pdash.positions_frame(_snapshot(positions=(p,)))
-    assert p.pct_unrealised == pytest.approx(4.085, abs=0.001)      # property: percent
+    assert p.pct_unrealised == pytest.approx(4.085, abs=0.001)  # property: percent
     assert frame["% Unrealised"].iloc[0] == pytest.approx(0.04085, abs=0.00001)  # cell: fraction
     assert frame["% Change"].iloc[0] == pytest.approx(0.0239)
     assert pdash._PERCENT_FORMAT.endswith("%")
@@ -1575,16 +1770,29 @@ def test_percentages_are_stored_as_fractions_for_the_numbro_format():
 
 def _pos_ccy(ccy, conid=1):
     """One position in a given currency, for the book-currency tests."""
-    return dd.parse_positions([{
-        "conid": conid, "ticker": f"S{conid}", "contractDesc": f"S{conid}",
-        "assetClass": "STK", "position": 1, "avgCost": 10.0, "avgPrice": 10.0,
-        "multiplier": 1, "mktPrice": 11.0, "mktValue": 11.0, "unrealizedPnl": 1.0,
-        "realizedPnl": 0, "currency": ccy,
-    }])[0]
+    return dd.parse_positions(
+        [
+            {
+                "conid": conid,
+                "ticker": f"S{conid}",
+                "contractDesc": f"S{conid}",
+                "assetClass": "STK",
+                "position": 1,
+                "avgCost": 10.0,
+                "avgPrice": 10.0,
+                "multiplier": 1,
+                "mktPrice": 11.0,
+                "mktValue": 11.0,
+                "unrealizedPnl": 1.0,
+                "realizedPnl": 0,
+                "currency": ccy,
+            }
+        ]
+    )[0]
 
 
 def test_a_single_currency_book_gets_its_symbol():
-    """"When applicable" — the user's phrasing, and the safety property (2026-08-07)."""
+    """ "When applicable" — the user's phrasing, and the safety property (2026-08-07)."""
     assert pdash.book_currency(_snapshot(positions=(_pos_ccy("USD"),))) == "USD"
     assert pdash._money_formats("USD")["Market value"].startswith("$")
     assert pdash._money_formats("USD")["Change"].startswith("+$")
@@ -1631,11 +1839,15 @@ def test_order_columns_show_outside_rth_right_after_tif():
 
 def test_orders_frame_renders_outside_rth_as_yes_no_or_not_reported():
     """True → Yes, False → No, None → '—' (IBKR did not report it — never a bare 'No')."""
-    frame = pdash.orders_frame(_snapshot(orders=(
-        _order(order_id="1", outside_rth=True),
-        _order(order_id="2", outside_rth=False),
-        _order(order_id="3", outside_rth=None),
-    )))
+    frame = pdash.orders_frame(
+        _snapshot(
+            orders=(
+                _order(order_id="1", outside_rth=True),
+                _order(order_id="2", outside_rth=False),
+                _order(order_id="3", outside_rth=None),
+            )
+        )
+    )
     assert list(frame["Outside RTH"]) == ["Yes", "No", "—"]
     assert "not reported" in pdash._ORDER_TOOLTIPS["Outside RTH"].lower()
 
@@ -1649,9 +1861,19 @@ def test_order_columns_show_stop_right_after_limit():
 
 def test_orders_frame_renders_the_stop_price():
     """The live ES stop of 2026-09-04: no limit, stop 7735 — rendered in its own column."""
-    frame = pdash.orders_frame(_snapshot(orders=(
-        _order(order_id="853170745", symbol="ES", order_type="Stop", price=None, stop_price=7735.0),
-    )))
+    frame = pdash.orders_frame(
+        _snapshot(
+            orders=(
+                _order(
+                    order_id="853170745",
+                    symbol="ES",
+                    order_type="Stop",
+                    price=None,
+                    stop_price=7735.0,
+                ),
+            )
+        )
+    )
     row = frame.iloc[0]
     assert row["Stop"] == 7735.0
     assert pd.isna(row["Limit"])

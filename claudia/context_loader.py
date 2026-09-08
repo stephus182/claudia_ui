@@ -47,6 +47,7 @@ def _get_shared_observer() -> BaseObserver:
         _shared_observer.start()
     return _shared_observer
 
+
 _CONTEXT_HEADER = "# ROLE & CONTEXT\n\n"
 _PRINCIPLES_HEADER = "\n\n# TRADING PRINCIPLES & STRATEGIES\n\n"
 
@@ -231,8 +232,6 @@ class _DocChangeHandler(FileSystemEventHandler):
         with self._lock:
             if self._timer is not None:
                 self._timer.cancel()
-            self._timer = threading.Timer(
-                self._DEBOUNCE_SECS, self._on_change, args=(filename,)
-            )
+            self._timer = threading.Timer(self._DEBOUNCE_SECS, self._on_change, args=(filename,))
             self._timer.daemon = True
             self._timer.start()
