@@ -78,6 +78,8 @@ https://platform.claude.com/docs/en/build-with-claude/structured-outputs
 
 from __future__ import annotations
 
+from typing import Any
+
 _ACTION: dict[str, object] = {"type": "string", "enum": ["BUY", "SELL"]}
 _ORDER_TYPE: dict[str, object] = {"type": "string", "enum": ["MKT", "LMT", "STP", "STOP_LIMIT"]}
 _TIF: dict[str, object] = {"type": "string", "enum": ["DAY", "GTC", "IOC", "OPG"]}
@@ -296,5 +298,5 @@ PROPOSE_MODIFY: dict[str, object] = {
     },
 }
 
-PROPOSAL_TOOLS: list[dict] = [PROPOSE_ORDER, PROPOSE_CANCEL, PROPOSE_MODIFY]
+PROPOSAL_TOOLS: list[dict[str, Any]] = [PROPOSE_ORDER, PROPOSE_CANCEL, PROPOSE_MODIFY]
 PROPOSAL_TOOL_NAMES: frozenset[str] = frozenset(str(t["name"]) for t in PROPOSAL_TOOLS)

@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from claudia.tradingview import _TV_DEBUG_PORT
 
@@ -99,8 +99,8 @@ class ConnectivityChecker:
             "tv": ServiceStatus.UNKNOWN,
         }
 
-        self._last_ibkr_auth_status: dict = {}
-        self._task: asyncio.Task | None = None
+        self._last_ibkr_auth_status: dict[str, Any] = {}
+        self._task: asyncio.Task[None] | None = None
         self._subscribers: list[Callable[[str], Awaitable[None]]] = []
 
     def get_status(self) -> dict[str, ServiceStatus]:

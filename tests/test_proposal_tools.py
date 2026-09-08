@@ -48,7 +48,7 @@ def _walk_keys(node: Any) -> Iterator[str]:
         yield key
 
 
-def _walk_nodes(node: Any) -> Iterator[dict]:
+def _walk_nodes(node: Any) -> Iterator[dict[str, Any]]:
     """Yield every dict node at every depth, including the root."""
     if isinstance(node, dict):
         yield node

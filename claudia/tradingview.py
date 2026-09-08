@@ -664,8 +664,8 @@ class TradingViewBridge:
         subprocess down cleanly.
         """
         self._session: ClientSession | None = None
-        self._tools: list[dict] = []
-        self._curated_tools: list[dict] = []
+        self._tools: list[dict[str, Any]] = []
+        self._curated_tools: list[dict[str, Any]] = []
         self._cm: AbstractAsyncContextManager[Any] | None = None  # stdio_client's context manager
 
     async def start(self) -> None:
@@ -784,15 +784,15 @@ class TradingViewBridge:
             self._tools = []
             raise
 
-    def get_tools(self) -> list[dict]:
+    def get_tools(self) -> list[dict[str, Any]]:
         """Return the curated subset of tools for the Anthropic tools= list."""
         return list(self._curated_tools)
 
-    def get_all_tools(self) -> list[dict]:
+    def get_all_tools(self) -> list[dict[str, Any]]:
         """Return all available tools (bypasses the curated filter)."""
         return list(self._tools)
 
-    async def execute(self, name: str, inputs: dict) -> str:
+    async def execute(self, name: str, inputs: dict[str, Any]) -> str:
         """Call a tradingview-mcp tool via the MCP stdio session. Returns a string result.
 
         Never raises — on any error returns a user-facing error string so the agent

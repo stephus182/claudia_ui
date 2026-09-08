@@ -297,7 +297,7 @@ class ConversationStore:
                 (session_id, _utcnow(), context_hash, doc_version),
             )
 
-    def close_session(self, session_id: str, metadata: dict | None = None) -> None:
+    def close_session(self, session_id: str, metadata: dict[str, Any] | None = None) -> None:
         """Stamp ended_at and write session metadata (tool counts, connectivity) to the row."""
         with self._conn() as conn:
             conn.execute(
@@ -342,7 +342,7 @@ class ConversationStore:
             ).fetchone()
             return row["version"] if row else None
 
-    def get_doc_version(self, version: str) -> dict | None:
+    def get_doc_version(self, version: str) -> dict[str, Any] | None:
         """Return full snapshot for a version label, or None if not found."""
         with self._conn() as conn:
             row = conn.execute(
@@ -352,7 +352,7 @@ class ConversationStore:
             ).fetchone()
             return dict(row) if row else None
 
-    def list_doc_versions(self) -> list[dict]:
+    def list_doc_versions(self) -> list[dict[str, Any]]:
         """Return all registered versions ordered oldest first."""
         with self._conn() as conn:
             rows = conn.execute(
@@ -360,13 +360,13 @@ class ConversationStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def get_session(self, session_id: str) -> dict | None:
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Return a single session row as a dict, or None if the id is unknown."""
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
             return dict(row) if row else None
 
-    def list_sessions(self, limit: int = 20) -> list[dict]:
+    def list_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return the most recent sessions, newest first."""
         with self._conn() as conn:
             rows = conn.execute(
@@ -382,7 +382,7 @@ class ConversationStore:
         role: str,
         content: str = "",
         tool_name: str | None = None,
-        tool_input: dict | None = None,
+        tool_input: dict[str, Any] | None = None,
         tool_result: Any = None,
         tokens_used: int = 0,
     ) -> int:
@@ -410,7 +410,7 @@ class ConversationStore:
             )
             return cur.lastrowid  # type: ignore[return-value]
 
-    def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
+    def get_history(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """Return recent conversation messages for context injection."""
         with self._conn() as conn:
             rows = conn.execute(
@@ -433,7 +433,7 @@ class ConversationStore:
 
     def search_messages(
         self, query: str, max_results: int = 10, max_tokens: int = 2000
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """FTS5 full-text search across all conversation history.
 
         `query` is arbitrary user/model text and is converted by `_fts_query` before it
@@ -483,7 +483,7 @@ class ConversationStore:
         summary_text: str,
         symbol: str | None = None,
         message_id: int | None = None,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         """Record a trade proposal and return its primary key.
 
@@ -554,7 +554,7 @@ class ConversationStore:
             )
             return cur.lastrowid  # type: ignore[return-value]
 
-    def get_decisions(self, session_id: str) -> list[dict]:
+    def get_decisions(self, session_id: str) -> list[dict[str, Any]]:
         """Return all decisions recorded for a session, oldest first."""
         with self._conn() as conn:
             rows = conn.execute(
@@ -563,7 +563,7 @@ class ConversationStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def get_rendered_proposals(self, session_id: str) -> list[dict]:
+    def get_rendered_proposals(self, session_id: str) -> list[dict[str, Any]]:
         """Return the session's proposals that really rendered a staging button, oldest first.
 
         The source for the proposal-emission records `claudia/agent.py` replays on the
@@ -594,7 +594,7 @@ class ConversationStore:
             require_message_id=True,
         )
 
-    def get_completed_order_actions(self, session_id: str) -> list[dict]:
+    def get_completed_order_actions(self, session_id: str) -> list[dict[str, Any]]:
         """Return the session's order writes that really reached IBKR, oldest first.
 
         The source for the completed-action records `claudia/agent.py` replays on the
@@ -681,7 +681,7 @@ class ConversationStore:
         types: tuple[str, ...],
         *,
         require_message_id: bool,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Decision rows of the given types for one session, oldest first, metadata decoded.
 
         Shared by the two operator-channel queries above, which differ only in their
@@ -722,7 +722,7 @@ class ConversationStore:
             out.append(record)
         return out
 
-    def get_decisions_for_symbol(self, symbol: str, limit: int = 10) -> list[dict]:
+    def get_decisions_for_symbol(self, symbol: str, limit: int = 10) -> list[dict[str, Any]]:
         """Return decisions for a symbol ordered newest first, joined with the doc_version active at the time."""
         with self._conn() as conn:
             rows = conn.execute(

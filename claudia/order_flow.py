@@ -137,7 +137,7 @@ def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | 
     return multiplier, currency, " · ".join(parts)
 
 
-def _apply_outside_rth(order_body: dict, proposal: dict) -> None:
+def _apply_outside_rth(order_body: dict[str, Any], proposal: dict[str, Any]) -> None:
     """Copy the proposal's `outside_rth` into the body as IBKR's `outsideRTH` — only when stated.
 
     `None` (the user did not say) sends nothing, which is IBKR's default; `True`/`False` go
@@ -153,7 +153,7 @@ def _apply_outside_rth(order_body: dict, proposal: dict) -> None:
         order_body["outsideRTH"] = value
 
 
-def _outside_rth_line(proposal: dict) -> str | None:
+def _outside_rth_line(proposal: dict[str, Any]) -> str | None:
     """The approval line for the outside-RTH attribute, or None when nothing needs saying.
 
     A stop or stop-limit on a future ALWAYS gets the line: "no" is the dangerous default
@@ -178,7 +178,7 @@ def _outside_rth_line(proposal: dict) -> str | None:
     return None
 
 
-def _format_order_summary(proposal: dict) -> str:
+def _format_order_summary(proposal: dict[str, Any]) -> str:
     """Build the human-approval text for a new order.
 
     Safety surface: this string, plus the Gate 2 dialog, is everything the user sees before
@@ -365,7 +365,7 @@ def _needs_conid_text(sec_type: str, symbol: str) -> str:
     )
 
 
-def _resolve_account_id(accounts: list[dict]) -> str:
+def _resolve_account_id(accounts: list[dict[str, Any]]) -> str:
     """Extract an account ID from IBKRClient.get_accounts()'s response.
 
     IBKR's account objects have used different key names (accountId/acctId/id)
@@ -509,7 +509,9 @@ def _extract_order_id(result: object) -> str | None:
     return found
 
 
-async def _read_back(ibkr: Any, order_id: str, action: str) -> tuple[bool, str, dict | None]:
+async def _read_back(
+    ibkr: Any, order_id: str, action: str
+) -> tuple[bool, str, dict[str, Any] | None]:
     """Wait, then observe the order's state via get_order_status. See `_read_order_status`.
 
     The evidence rule for **cancel** and **modify**, and the fall-through for **place**
@@ -529,7 +531,7 @@ async def _read_back(ibkr: Any, order_id: str, action: str) -> tuple[bool, str, 
 
 async def _read_order_status(
     ibkr: Any, order_id: str, action: str
-) -> tuple[bool, str, dict | None]:
+) -> tuple[bool, str, dict[str, Any] | None]:
     """Read the per-order status endpoint. Returns (confirmed, human line, status dict).
 
     No wait of its own — callers own the settle delay, so a path that has already waited
@@ -588,7 +590,7 @@ async def _read_order_status(
     return False, f"⚠️ Order {order_id} reads **{state}** ({desc}) — not confirmed.", status
 
 
-async def _live_book_presence(ibkr: Any, order_id: str) -> tuple[str, dict | None, str]:
+async def _live_book_presence(ibkr: Any, order_id: str) -> tuple[str, dict[str, Any] | None, str]:
     """Look for `order_id` in the live order book. Returns (verdict, row, detail).
 
     verdict is one of:
@@ -643,7 +645,7 @@ _LIVE_BOOK_UNAVAILABLE_NOTE = (
 """The 2026-07-27 shape: get_live_orders 500s. A failed lookup is not a missing order."""
 
 
-async def _read_back_place(ibkr: Any, order_id: str) -> tuple[bool, str, dict | None]:
+async def _read_back_place(ibkr: Any, order_id: str) -> tuple[bool, str, dict[str, Any] | None]:
     """Validate a placement by presence in the live order book. Returns `_read_back`'s tuple.
 
     User rule, 2026-07-27: "each action must be validated by evidence: when placing an
@@ -740,7 +742,7 @@ present and caveated only when it is not. `outsideRTH` is likewise only sometime
 (see the tuple's comment); an absent field never counts as agreement."""
 
 
-def _price_readback_fields(order_body: dict) -> tuple[tuple[str, str, str], ...]:
+def _price_readback_fields(order_body: dict[str, Any]) -> tuple[tuple[str, str, str], ...]:
     """The (body key, status field, label) price pairs a modify of this order type sets.
 
     Measured 2026-09-04 on the live account: the order-status response carries
@@ -801,7 +803,9 @@ def _values_match(requested: object, observed: object) -> bool:
         return _canonical(requested) == _canonical(observed)
 
 
-def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]:
+def _compare_modify_readback(
+    order_body: dict[str, Any], status: dict[str, Any]
+) -> tuple[bool, str]:
     """Check the read-back's fields against the modify that was requested.
 
     A modify that silently did not apply still reads "Submitted" — the status proves the
@@ -889,7 +893,7 @@ def _compare_modify_readback(order_body: dict, status: dict) -> tuple[bool, str]
 
 
 async def _execute_staged_order_core(
-    proposal: dict,
+    proposal: dict[str, Any],
     send_status: SendStatus,
     session_id: str | None = None,
     store: ConversationStore | None = None,
@@ -1007,7 +1011,7 @@ async def _execute_staged_order_core(
         #                                    docs/plans/2026-07-23-futures-order-field-8089-bug.md
         # Source (536-B): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
         # ----------------------------------------------------------------
-        order_body: dict = {
+        order_body: dict[str, Any] = {
             "conid": conid,  # int
             "orderType": otype,  # str
             "side": action_str,  # str: BUY | SELL
@@ -1135,7 +1139,7 @@ async def _execute_staged_order_core(
 # ── Order cancellation ───────────────────────────────────────────────────────
 
 
-def _format_cancel_summary(proposal: dict) -> str:
+def _format_cancel_summary(proposal: dict[str, Any]) -> str:
     """Build the human-approval text for cancelling a live order.
 
     Same safety-surface role as `_format_order_summary`. Keys: `order_id` (the order being
@@ -1173,7 +1177,7 @@ def _format_cancel_summary(proposal: dict) -> str:
 
 
 async def _execute_cancel_order_core(
-    proposal: dict,
+    proposal: dict[str, Any],
     send_status: SendStatus,
     session_id: str | None = None,
     store: ConversationStore | None = None,
@@ -1286,7 +1290,7 @@ async def _execute_cancel_order_core(
 # ── Order modification ───────────────────────────────────────────────────────
 
 
-def _format_modify_summary(proposal: dict) -> str:
+def _format_modify_summary(proposal: dict[str, Any]) -> str:
     """Build the human-approval text for modifying a live order, as a field-by-field diff.
 
     The only consumer of `changes`, the array `propose_modify` carries alongside the
@@ -1332,6 +1336,9 @@ def _format_modify_summary(proposal: dict) -> str:
                 lines.append(f"- (malformed change entry: {change!r})")
                 continue
             field = change.get("field")
+            if not isinstance(field, str):
+                lines.append(f"- (malformed change entry: {change!r})")
+                continue
             lines.append(f"- {field}: {change.get('previous_value')} → {proposal.get(field)}")
     else:
         lines.append("(no changed fields listed)")
@@ -1345,7 +1352,7 @@ def _format_modify_summary(proposal: dict) -> str:
 
 
 async def _execute_modify_order_core(
-    proposal: dict,
+    proposal: dict[str, Any],
     send_status: SendStatus,
     session_id: str | None = None,
     store: ConversationStore | None = None,
@@ -1408,7 +1415,7 @@ async def _execute_modify_order_core(
 
         # Fresh order body — field spec mirrors place_order's (CLAUDE.md Order Staging Flow).
         # modify_order() does no _-prefix stripping, so only genuine IBKR fields go in here.
-        order_body: dict = {
+        order_body: dict[str, Any] = {
             "conid": int(conid),
             "orderType": otype,
             "side": action_str,

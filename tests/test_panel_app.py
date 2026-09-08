@@ -47,6 +47,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
 import panel as pn
@@ -1135,7 +1136,7 @@ async def _drain_flex_sync() -> None:
     await asyncio.sleep(0)  # done callbacks are scheduled via call_soon
 
 
-def _flex_toolkit(stale: bool, attempts: list[dict] | None = None) -> MagicMock:
+def _flex_toolkit(stale: bool, attempts: list[dict[str, Any]] | None = None) -> MagicMock:
     """A stub toolkit whose Flex coverage and sync log can be posed."""
     toolkit = MagicMock()
     toolkit._config.flex_token = "tok"

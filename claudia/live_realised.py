@@ -281,7 +281,7 @@ def reconstruct(
         key = (fill.trade_day, fill.asset_class)
         remaining = fill.signed_quantity
         closing_total = 0.0  # how much of this fill closed, for commission apportioning
-        trips_this_fill: list[list] = []
+        trips_this_fill: list[tuple[float, float, float]] = []  # (quantity, entry, pnl)
         running[fill.conid] += fill.signed_quantity
         per_contract_days[fill.conid].add(fill.trade_day)
 
@@ -296,7 +296,7 @@ def reconstruct(
             realised[key] += gain - released
             per_contract_realised[fill.conid][key] += gain - released
             closing_total += abs(taken)
-            trips_this_fill.append([abs(taken), lot.price, gain - released])
+            trips_this_fill.append((abs(taken), lot.price, gain - released))
             lot.quantity -= taken
             lot.commission -= released
             remaining += taken

@@ -45,10 +45,10 @@ import asyncio
 import json
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageDeltaUsage, MessageParam, Usage
+from anthropic.types import MessageDeltaUsage, Usage
 
 # Declaration-only tool schemas. Importing them does not couple agent.py to the
 # order-execution layer — that module reaches nothing (CLAUDE.md Hard Rule 1).
@@ -1082,7 +1082,7 @@ def _claims_verbatim_tool_result(text: str) -> str | None:
     return None
 
 
-def _proposal_defect(kind: str, inputs: dict) -> str | None:
+def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     """Return why a proposal must be rejected, or None when it carries no defect.
 
     `strict: true` already guarantees the types, enums, required keys and closed objects of
@@ -1152,7 +1152,7 @@ def _proposal_defect(kind: str, inputs: dict) -> str | None:
     return None
 
 
-_LOCAL_TOOLS: list[dict] = [
+_LOCAL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_doc_versions",
         "description": (
@@ -1281,7 +1281,7 @@ proposal for the render path and reach nothing.
 """
 
 
-def _with_cache_marker(tools: list[dict]) -> list[dict]:
+def _with_cache_marker(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return tools with a prompt-cache breakpoint on the last entry.
 
     The last dict is copied, never mutated — the inputs are shared module-level
@@ -1326,7 +1326,7 @@ def _build_system_prompt(
     return _build_version_note(doc_version, store) + context_prompt + trade_block + _SAFETY_BLOCK
 
 
-def _system_blocks(system_prompt: str) -> list[dict]:
+def _system_blocks(system_prompt: str) -> list[dict[str, Any]]:
     """Wrap the system prompt in block form with a prompt-cache breakpoint.
 
     The marker on the last (only) system block caches tools + system together.
@@ -1377,7 +1377,7 @@ def _log_thinking_usage(usage: MessageDeltaUsage) -> None:
         )
 
 
-def _history_to_messages(history: list[dict]) -> list[MessageParam]:
+def _history_to_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert ConversationStore rows to Anthropic message dicts.
 
     Args:
@@ -1395,7 +1395,7 @@ def _history_to_messages(history: list[dict]) -> list[MessageParam]:
         what compensates for it is the called-tool ledger on the operator channel, which
         tells the model the payloads are gone rather than pretending its prose replaced them.
     """
-    messages: list[MessageParam] = []
+    messages: list[dict[str, Any]] = []
     for row in history:
         role = row["role"]
         if role == "user":
@@ -1411,7 +1411,7 @@ def _history_to_messages(history: list[dict]) -> list[MessageParam]:
     return messages
 
 
-def _with_history_cache_marker(messages: list) -> list:
+def _with_history_cache_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return a copy of messages with a prompt-cache breakpoint on the final content block.
 
     Third breakpoint (after tools and system): caches the conversation prefix so
@@ -1433,14 +1433,14 @@ def _with_history_cache_marker(messages: list) -> list:
     if isinstance(content, str):
         if not content:
             return messages  # "empty text blocks cannot be cached" (official docs)
-        blocks = [{"type": "text", "text": content}]
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": content}]
     else:
         blocks = list(content)
         if not blocks:
             return messages
     # cache_control's nested dict alongside str fields is correct at runtime (same
     # plain-dict-request-body pattern as the SDK call in _run_turn) — not a str-only dict.
-    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}  # type: ignore[dict-item]
+    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
     last["content"] = blocks
     return [*messages[:-1], last]
 
@@ -1460,7 +1460,7 @@ class ClaudIAAgent:
         session_id: str,
         sink: MessageSink,
         model: str = "claude-opus-4-8",
-        extra_tools: list[dict] | None = None,
+        extra_tools: list[dict[str, Any]] | None = None,
         tv_bridge: TradingViewBridge | None = None,
         doc_version: str | None = None,
         trade_context: str | None = None,
@@ -1486,18 +1486,18 @@ class ClaudIAAgent:
         self._trade_context = trade_context
         self._tv_tool_names: set[str] = {t["name"] for t in self._extra_tools}
         self._client = AsyncAnthropic()
-        self._system_blocks_cache: list[dict] | None = None
+        self._system_blocks_cache: list[dict[str, Any]] | None = None
         self._system_reload_seen: int = -1
         # (kind, tool_use.input) for the one proposal this turn may make. Written only by
         # _record_proposal, cleared at the top of every handle_message.
-        self._pending_proposal: tuple[str, dict] | None = None
+        self._pending_proposal: tuple[str, dict[str, Any]] | None = None
         # Operator-channel notes awaiting delivery as `role: "system"` messages. Written
         # only by _emit_guardrail_notice, drained by _append_operator_message on the next
         # turn — deliberately NOT cleared per turn like _pending_proposal, since a note
         # queued by a turn that then raised must still reach the model.
         self._pending_operator_notes: list[str] = []
 
-    def set_tv_bridge(self, bridge: TradingViewBridge, tools: list[dict]) -> None:
+    def set_tv_bridge(self, bridge: TradingViewBridge, tools: list[dict[str, Any]]) -> None:
         """Update the TradingView connection mid-session, after a successful launch.
 
         Called by panel_app's "Launch TradingView" button handler
@@ -1514,7 +1514,7 @@ class ClaudIAAgent:
         self._extra_tools = tools
         self._tv_tool_names = {t["name"] for t in tools}
 
-    def _get_system_blocks(self) -> list[dict]:
+    def _get_system_blocks(self) -> list[dict[str, Any]]:
         """Return the cached system-prompt blocks, built at most once per session.
 
         Version note, documents, and market calendar are resolved when ClaudIA
@@ -1536,7 +1536,7 @@ class ClaudIAAgent:
         return self._system_blocks_cache
 
     @property
-    def _all_tools(self) -> list[dict]:
+    def _all_tools(self) -> list[dict[str, Any]]:
         """The full tool list for the Anthropic `tools=` parameter.
 
         Order is toolkit (42 IBKR tools) + TradingView extras + `_LOCAL_TOOLS` +
@@ -1549,7 +1549,9 @@ class ClaudIAAgent:
             self._toolkit.tools + self._extra_tools + _LOCAL_TOOLS + PROPOSAL_TOOLS
         )
 
-    async def handle_message(self, user_text: str, images: list[dict] | None = None) -> None:
+    async def handle_message(
+        self, user_text: str, images: list[dict[str, Any]] | None = None
+    ) -> None:
         """Process one user message end to end.
 
         Streams Claude's response, runs the multi-turn tool loop (stream → collect
@@ -1589,7 +1591,7 @@ class ClaudIAAgent:
                 content = last_user["content"]
                 if isinstance(content, str):
                     content = [{"type": "text", "text": content}]
-                content = list(content) + images  # type: ignore[operator]
+                content = list(content) + images
                 messages[-1] = {"role": "user", "content": content}
 
         # After the images, so the current user turn is still `messages[-1]` above.
@@ -1606,8 +1608,8 @@ class ClaudIAAgent:
 
         while True:
             response_text = ""
-            tool_calls: list[dict] = []
-            thinking_blocks: list[dict] = []
+            tool_calls: list[dict[str, Any]] = []
+            thinking_blocks: list[dict[str, Any]] = []
             stop_reason: str | None = None
 
             # system/tools/messages are built as plain dicts throughout this file rather than
@@ -1630,8 +1632,11 @@ class ClaudIAAgent:
                 #     populated. They are echoed back unchanged either way.
                 #     https://platform.claude.com/docs/en/build-with-claude/thinking-tool-workflows
                 thinking={"type": "adaptive"},
+                # The three request bodies are plain dicts by design (the operator channel's
+                # `role: "system"` has no SDK TypedDict — see `_append_operator_message`),
+                # so this is the one place they meet the SDK's parameter types.
                 system=system_blocks,  # type: ignore[arg-type]
-                messages=_with_history_cache_marker(messages),
+                messages=_with_history_cache_marker(messages),  # type: ignore[arg-type]
                 tools=self._all_tools,  # type: ignore[arg-type]
             ) as stream:
                 async for event in stream:
@@ -1708,7 +1713,7 @@ class ClaudIAAgent:
             # blocks inside one response. Order among the thinking/redacted_thinking
             # blocks themselves is preserved as streamed.
             # https://platform.claude.com/docs/en/build-with-claude/thinking-tool-workflows
-            assistant_content: list = [*thinking_blocks]
+            assistant_content: list[dict[str, Any]] = [*thinking_blocks]
             if response_text:
                 assistant_content.append({"type": "text", "text": response_text})
             for tc in tool_calls:
@@ -1777,7 +1782,7 @@ class ClaudIAAgent:
                     }
                 )
 
-            messages.append({"role": "user", "content": tool_results})  # type: ignore[typeddict-item]
+            messages.append({"role": "user", "content": tool_results})
 
         # --- Final response ---
         # Nothing is parsed out of the text any more: a proposal is a tool call the API
@@ -1890,7 +1895,7 @@ class ClaudIAAgent:
         decision_type: str,
         summary_text: str,
         operator_note: str,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Contradict one unbacked claim on all four surfaces, in the one safe order.
 
@@ -2295,7 +2300,7 @@ class ClaudIAAgent:
             f"action, not something you placed or verified this turn): {report_text}"
         )
 
-    def _append_operator_message(self, messages: list) -> None:
+    def _append_operator_message(self, messages: list[dict[str, Any]]) -> None:
         """Deliver the operator channel as one `role: "system"` message after the user turn.
 
         Four payloads share it: the called-tool ledger (`_called_tool_records`), the
@@ -2398,7 +2403,7 @@ class ClaudIAAgent:
         """
         self._pending_proposal = None
 
-    def _record_proposal(self, name: str, inputs: dict) -> str:
+    def _record_proposal(self, name: str, inputs: dict[str, Any]) -> str:
         """Record one `propose_*` call for the render path. Executes nothing.
 
         CLAUDE.md Hard Rule 1: this reaches no IBKR API, directly or indirectly. It stores
@@ -2460,7 +2465,7 @@ class ClaudIAAgent:
             "and the confirmation dialog."
         )
 
-    def _handle_local_tool(self, name: str, inputs: dict) -> str:
+    def _handle_local_tool(self, name: str, inputs: dict[str, Any]) -> str:
         """Dispatch every locally-executed tool and return a string result.
 
         Two groups, both listed in `_LOCALLY_HANDLED`: the three `propose_*` tools, which
@@ -2583,7 +2588,7 @@ class ClaudIAAgent:
 
     _MAX_REDIRECTS = 5
 
-    def _fetch_web_page(self, inputs: dict) -> str:
+    def _fetch_web_page(self, inputs: dict[str, Any]) -> str:
         """Fetch a public web page as Markdown for the LLM — the SSRF boundary.
 
         This is the only place the agent loop makes an LLM-directed outbound HTTP request,
@@ -2665,10 +2670,10 @@ class ClaudIAAgent:
     def _log_proposal(
         self,
         text: str,
-        order_proposal: dict | None,
+        order_proposal: dict[str, Any] | None,
         msg_id: int,
-        cancel_proposal: dict | None = None,
-        modify_proposal: dict | None = None,
+        cancel_proposal: dict[str, Any] | None = None,
+        modify_proposal: dict[str, Any] | None = None,
     ) -> None:
         """Log a user-directed trade proposal to the proposals table for future recall.
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -654,6 +655,7 @@ def test_a_timed_out_login_does_not_leave_the_session_suspended(wire):
 # re-establish a session is a second authority over it (plan invariant §3.1).
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 from claudia.gateway_session import attempt_soft_recovery  # noqa: E402
 
 
@@ -707,7 +709,7 @@ def test_soft_recovery_never_sets_compete_true(monkeypatch):
     The single brokerage session per username means eviction is a real consequence, not a
     theoretical one — this must never be flipped to win a race.
     """
-    captured: dict = {}
+    captured: dict[str, Any] = {}
 
     def capture(*args, **kwargs):
         """Record the JSON body the call would send."""

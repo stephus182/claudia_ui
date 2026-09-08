@@ -75,7 +75,7 @@ async def test_capture_pnl_once_records_and_returns_false_when_no_extra_executio
         uel=9000.0,
         mv=5000.0,
     )
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
     queue.put_nowait(pnl)
 
     ws = MagicMock()
@@ -106,7 +106,7 @@ async def test_capture_pnl_once_returns_true_when_execution_seen_mid_wait():
     listener, store = _make_listener()
     execution = TradeExecution(execution_id="E2")
     pnl = PnLUpdate(account="DU1234567.Core", dpl=1.0, nl=1.0, upl=1.0, uel=1.0, mv=1.0)
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
     queue.put_nowait(execution)
     queue.put_nowait(pnl)
 
@@ -124,7 +124,7 @@ async def test_capture_pnl_once_returns_true_when_execution_seen_mid_wait():
 async def test_capture_pnl_once_times_out_without_pnl_update():
     """A silent window times out and records nothing rather than inventing a snapshot."""
     listener, store = _make_listener()
-    queue: asyncio.Queue = asyncio.Queue()  # nothing ever put on it
+    queue: asyncio.Queue[Any] = asyncio.Queue()  # nothing ever put on it
 
     ws = MagicMock()
     ws.subscribe_pnl = AsyncMock()
@@ -170,7 +170,7 @@ async def test_capture_timeout_does_not_poison_subsequent_reads():
     from ibkr_core_mcp.streaming import TradeExecution
 
     listener, store = _make_listener()
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
 
     ws = MagicMock()
     ws.subscribe_pnl = AsyncMock()
@@ -195,7 +195,7 @@ async def test_capture_pnl_once_propagates_stop_async_iteration_on_closed_mid_wa
     from claudia.execution_listener import _CLOSED
 
     listener, store = _make_listener()
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
     queue.put_nowait(_CLOSED)
 
     ws = MagicMock()
@@ -214,7 +214,7 @@ async def test_capture_pnl_once_propagates_forwarded_exception_mid_wait():
     """An exception forwarded onto the queue (as _pump does on a real WS error)
     while waiting for a PnLUpdate must propagate, not be silently swallowed."""
     listener, store = _make_listener()
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
     queue.put_nowait(ConnectionError("dropped"))
 
     ws = MagicMock()

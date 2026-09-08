@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Iterable, Mapping
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -250,7 +251,7 @@ def test_history_to_messages_skips_tool_rows():
     assert len(result) == 2
     # Return type already excludes "tool" structurally — asserted anyway as a runtime
     # regression check that survives a future loosening of that return type.
-    assert all(r["role"] != "tool" for r in result)  # type: ignore[comparison-overlap]
+    assert all(r["role"] != "tool" for r in result)
 
 
 def test_history_to_messages_empty():
@@ -1391,7 +1392,7 @@ def test_second_proposal_in_one_turn_is_refused_and_the_first_survives(agent):
 # ── Per-turn lifecycle ───────────────────────────────────────────────────────
 
 
-def _proposal_tool_events(name: str, payload: dict, tool_id: str = "p1"):
+def _proposal_tool_events(name: str, payload: dict[str, Any], tool_id: str = "p1"):
     """Stream events for a turn whose only content block is a proposal tool call."""
     return [
         SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
@@ -1595,7 +1596,7 @@ class _RecordingSink:
     def __init__(self, proposal_error: Exception | None = None) -> None:
         """Record what was sent; `proposal_error` makes each render raise, as a broken sink."""
         self.messages: list[str] = []
-        self.proposals: list[tuple[str, dict]] = []
+        self.proposals: list[tuple[str, dict[str, Any]]] = []
         self._error = proposal_error
 
     async def send_message(self, text: str) -> None:
@@ -1613,21 +1614,21 @@ class _RecordingSink:
         step.__aexit__ = AsyncMock(return_value=False)
         return step
 
-    async def _render(self, kind: str, proposal: dict) -> None:
+    async def _render(self, kind: str, proposal: dict[str, Any]) -> None:
         """Record the proposal, or raise the configured error to simulate a render that fails."""
         if self._error is not None:
             raise self._error
         self.proposals.append((kind, proposal))
 
-    async def send_order_proposal(self, proposal: dict) -> None:
+    async def send_order_proposal(self, proposal: dict[str, Any]) -> None:
         """Route a new-order proposal through the shared recorder."""
         await self._render("order", proposal)
 
-    async def send_cancel_proposal(self, proposal: dict) -> None:
+    async def send_cancel_proposal(self, proposal: dict[str, Any]) -> None:
         """Route a cancel proposal through the shared recorder."""
         await self._render("cancel", proposal)
 
-    async def send_modify_proposal(self, proposal: dict) -> None:
+    async def send_modify_proposal(self, proposal: dict[str, Any]) -> None:
         """Route a modify proposal through the shared recorder."""
         await self._render("modify", proposal)
 
@@ -1643,8 +1644,8 @@ class _FakeStore:
 
     def __init__(self) -> None:
         """Start with no messages and no decisions."""
-        self.messages: list[dict] = []
-        self.decisions: list[dict] = []
+        self.messages: list[dict[str, Any]] = []
+        self.decisions: list[dict[str, Any]] = []
 
     def add_message(self, session_id: str, role: str, content: str = "", **kwargs) -> int:
         """Append a message row and return its 1-based id, matching the real store's contract.
@@ -1662,7 +1663,7 @@ class _FakeStore:
         )
         return len(self.messages)
 
-    def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
+    def get_history(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """Return this session's user/assistant rows, newest-limited, oldest first."""
         return [
             {"role": m["role"], "content": m["content"]}
@@ -1675,11 +1676,11 @@ class _FakeStore:
         self.decisions.append(kwargs)
         return len(self.decisions)
 
-    def get_decisions(self, session_id: str) -> list[dict]:
+    def get_decisions(self, session_id: str) -> list[dict[str, Any]]:
         """Return every decision recorded for one session."""
         return [d for d in self.decisions if d["session_id"] == session_id]
 
-    def get_rendered_proposals(self, session_id: str) -> list[dict]:
+    def get_rendered_proposals(self, session_id: str) -> list[dict[str, Any]]:
         """Mirrors the real query's two filters — allowlist + message_id. The SQL itself is
         pinned in tests/test_conversation_store.py; this double must not drift from it."""
         return [
@@ -1690,7 +1691,7 @@ class _FakeStore:
             and d.get("message_id") is not None
         ]
 
-    def get_completed_order_actions(self, session_id: str) -> list[dict]:
+    def get_completed_order_actions(self, session_id: str) -> list[dict[str, Any]]:
         """Mirrors the real query: allowlist only, and deliberately **no** message_id
         filter — `order_flow` writes these rows without one, because a button click belongs
         to no assistant turn."""
@@ -1715,7 +1716,7 @@ class _FakeStore:
             }
         )
 
-    def list_doc_versions(self) -> list[dict]:
+    def list_doc_versions(self) -> list[dict[str, Any]]:
         """No versions are registered — these tests never exercise the version note."""
         return []
 
@@ -1744,7 +1745,7 @@ def _make_agent_recording(proposal_error: Exception | None = None, *, store: Any
     return agent, sink
 
 
-def _proposal_turn(name: str, payload: dict, reply: str) -> list:
+def _proposal_turn(name: str, payload: dict[str, Any], reply: str) -> list[_FakeStream]:
     """The two streams of one turn: the proposal tool call, then the reply text."""
     return [
         _FakeStream(_proposal_tool_events(name, payload)),
@@ -1752,7 +1753,7 @@ def _proposal_turn(name: str, payload: dict, reply: str) -> list:
     ]
 
 
-def _system_texts(messages: list) -> list[str]:
+def _system_texts(messages: Iterable[Mapping[str, Any]]) -> list[str]:
     """Every `role: "system"` message body, whether plain string or marked text blocks."""
     out = []
     for m in messages:
@@ -2077,7 +2078,7 @@ SYNTHETIC_MODIFY = {
 }
 
 
-def _seed_rendered(agent, decision_type: str, payload: dict) -> None:
+def _seed_rendered(agent, decision_type: str, payload: dict[str, Any]) -> None:
     """Record a proposal exactly as a *successful* render does — via _log_proposal's shape."""
     agent._store.add_decision(
         session_id="test-session",
@@ -2937,7 +2938,7 @@ async def test_a_rejected_proposal_still_reaches_the_claim_detector():
 # see the other's half — so unlike L1/L4 these two are not mutually exclusive.
 
 
-def _tool_then_text(tool_name: str, reply: str, tool_result: str = "{}") -> list:
+def _tool_then_text(tool_name: str, reply: str, tool_result: str = "{}") -> list[_FakeStream]:
     """The two streams of one turn: a real tool call, then the reply text."""
     return [
         _FakeStream(
@@ -3216,11 +3217,11 @@ def test_live_api_accepts_mid_conversation_system_message():
     client = anthropic.Anthropic()
     for label, messages in shapes.items():
         try:
-            client.messages.create(
+            client.messages.create(  # type: ignore[call-overload]  # request bodies are plain dicts, as in agent.py
                 model=model,
                 max_tokens=1,
                 messages=messages,
-                tools=_with_cache_marker(PROPOSAL_TOOLS),  # type: ignore[arg-type]
+                tools=_with_cache_marker(PROPOSAL_TOOLS),
             )
         except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
             pytest.fail(f"live API rejected the operator channel ({label}) on {model}: {exc}")
@@ -3386,11 +3387,11 @@ def test_live_api_accepts_the_emission_record_channel():
     client = anthropic.Anthropic()
     for label, messages in shapes.items():
         try:
-            client.messages.create(
+            client.messages.create(  # type: ignore[call-overload]  # request bodies are plain dicts, as in agent.py
                 model=model,
                 max_tokens=1,
                 messages=messages,
-                tools=_with_cache_marker(PROPOSAL_TOOLS),  # type: ignore[arg-type]
+                tools=_with_cache_marker(PROPOSAL_TOOLS),
             )
         except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
             pytest.fail(

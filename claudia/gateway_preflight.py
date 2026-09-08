@@ -84,6 +84,7 @@ import logging
 import sys
 import warnings
 from dataclasses import dataclass
+from typing import Any
 
 import requests
 import urllib3
@@ -192,7 +193,7 @@ def read_state(gateway_url: str, timeout: float = 5.0) -> GatewayState:
     )
 
 
-def _read_sso(gateway_url: str, timeout: float) -> dict:
+def _read_sso(gateway_url: str, timeout: float) -> dict[str, Any]:
     """`GET /sso/validate`, or `{}` if it cannot be read. Read-only.
 
     Separate from `/tickle` because it answers a different question: `/tickle` says whether

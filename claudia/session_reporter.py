@@ -13,7 +13,7 @@ import logging
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
@@ -102,14 +102,14 @@ _TOOL_LABELS: dict[str, str] = {
 _ERROR_KEYWORDS = ("error", "failed", "exception", "timeout", "unauthorized", "traceback")
 
 
-def _tool_counts(messages: list[dict]) -> Counter:
+def _tool_counts(messages: list[dict[str, Any]]) -> Counter[str]:
     """Return a Counter of tool_name → call count for all tool rows in messages."""
     return Counter(
         m["tool_name"] for m in messages if m.get("role") == "tool" and m.get("tool_name")
     )
 
 
-def _error_lines(messages: list[dict]) -> list[str]:
+def _error_lines(messages: list[dict[str, Any]]) -> list[str]:
     """Extract tool result snippets that look like failures.
 
     Reads tool_result_json — TEXT column stored as JSON per conversation_store schema.
@@ -125,7 +125,7 @@ def _error_lines(messages: list[dict]) -> list[str]:
     return lines
 
 
-def _tool_section(counts: Counter) -> list[str]:
+def _tool_section(counts: Counter[str]) -> list[str]:
     """Format tool call counts as a sorted Markdown list for the session report."""
     if not counts:
         return ["- (no tool calls this session)"]
@@ -135,7 +135,7 @@ def _tool_section(counts: Counter) -> list[str]:
     ]
 
 
-def _decisions_section(decisions: list[dict]) -> list[str]:
+def _decisions_section(decisions: list[dict[str, Any]]) -> list[str]:
     """Format trade decisions as a Markdown list; falls back to '(none)' if empty."""
     if not decisions:
         return ["- (none)"]

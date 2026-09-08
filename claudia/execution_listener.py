@@ -265,7 +265,7 @@ class ExecutionListener:
         """
         self._gateway_url = gateway_url
         self._store = store
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._session_override = session
         self._subscribers: list[FillSubscriber] = []
         self._seen_executions: deque[str] = deque(maxlen=_SEEN_EXECUTIONS_MAX)
