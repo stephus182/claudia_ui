@@ -154,7 +154,7 @@ def read_state(gateway_url: str, timeout: float = 5.0) -> GatewayState:
         # noise on every single call and would bury this tool's actual output.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-            resp = requests.get(f"{gateway_url}/tickle", timeout=timeout, verify=False)
+            resp = requests.get(f"{gateway_url}/tickle", timeout=timeout, verify=False)  # noqa: S501 - localhost gateway, self-signed cert (ibkr_core_mcp SECURITY.md)
     except Exception as exc:
         return GatewayState(reachable=False, detail=f"{type(exc).__name__}: {exc}")
 
@@ -202,7 +202,7 @@ def _read_sso(gateway_url: str, timeout: float) -> dict:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-            resp = requests.get(f"{gateway_url}/sso/validate", timeout=timeout, verify=False)
+            resp = requests.get(f"{gateway_url}/sso/validate", timeout=timeout, verify=False)  # noqa: S501 - localhost gateway, self-signed cert (ibkr_core_mcp SECURITY.md)
         if resp.status_code != 200:
             return {}
         body = resp.json()

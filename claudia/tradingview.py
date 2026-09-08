@@ -829,7 +829,7 @@ class TradingViewBridge:
             if self._cm:
                 await self._cm.__aexit__(None, None, None)
         except Exception:
-            pass
+            log.debug("TradingView sidecar teardown raised", exc_info=True)
         self._session = None
         self._tools = []
         self._curated_tools = []

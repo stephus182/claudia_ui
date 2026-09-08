@@ -72,7 +72,7 @@ _EXCHANGE_LABELS = {
     "BVMF": "B3 São Paulo",
     "XMEX": "BMV Mexico City",
     "XJSE": "JSE Johannesburg",
-    "XSAU": "Tadawul (Sun–Thu week)",  # noqa: RUF001 — correct en-dash for a day range
+    "XSAU": "Tadawul (Sun–Thu week)",
     "XIDX": "IDX Jakarta",
     "XIST": "Borsa Istanbul",
 }

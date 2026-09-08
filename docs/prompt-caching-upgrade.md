@@ -32,7 +32,8 @@ Add `cache_control: {"type": "ephemeral"}` markers so the static prefix is cache
 2. **System prompt** — convert `system=` from a plain string to the block form and mark the
    last block:
    ```python
-   system = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+   system=[{"type": "text", "text": system_prompt,
+            "cache_control": {"type": "ephemeral"}}]
    ```
 
 Cache hierarchy is `tools → system → messages`, so these two markers cache everything static.

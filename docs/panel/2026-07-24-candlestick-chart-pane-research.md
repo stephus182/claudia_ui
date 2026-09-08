@@ -15,7 +15,6 @@ no-unnecessary-deps). Verified-live recipe:
 
 ```python
 from bokeh.plotting import figure
-
 inc = df["close"] >= df["open"]
 # Bokeh vbar `width` is the FULL body width in x-axis DATA units (ms on a datetime
 # axis) — NOT a half-width, and NOT a fixed pixel width. It must therefore scale
@@ -24,24 +23,13 @@ inc = df["close"] >= df["open"]
 # SHIPPED (794d7c0): derive it from the data's own median spacing so the helper
 # stays a pure function of the DataFrame yet is correct for every bar size.
 w = (df.index.to_series().diff().dropna().median() / pd.Timedelta("1ms")) * 0.7
-p = figure(
-    x_axis_type="datetime",
-    sizing_mode="stretch_width",
-    height=360,
-    title=f"{symbol} {bar} ({period})",
-)
-p.segment(df.index, df["high"], df.index, df["low"], color="#666")  # wicks
-p.vbar(
-    df.index[inc], w, df["open"][inc], df["close"][inc], fill_color="#26a69a", line_color="#26a69a"
-)  # up bars
-p.vbar(
-    df.index[~inc],
-    w,
-    df["open"][~inc],
-    df["close"][~inc],
-    fill_color="#ef5350",
-    line_color="#ef5350",
-)  # down bars
+p = figure(x_axis_type="datetime", sizing_mode="stretch_width", height=360,
+           title=f"{symbol} {bar} ({period})")
+p.segment(df.index, df["high"], df.index, df["low"], color="#666")          # wicks
+p.vbar(df.index[inc],  w, df["open"][inc],  df["close"][inc],
+       fill_color="#26a69a", line_color="#26a69a")                          # up bars
+p.vbar(df.index[~inc], w, df["open"][~inc], df["close"][~inc],
+       fill_color="#ef5350", line_color="#ef5350")                         # down bars
 ```
 
 > **Correction (2026-07-24, code-quality review):** the first cut used a fixed

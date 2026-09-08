@@ -591,7 +591,10 @@ def _build_action_bar(
         "tv": _reconnect_tradingview,
         "gdrive": _reconnect_drive,
     }
-    assert set(reconnect) == set(SERVICE_LABELS)
+    if set(reconnect) != set(SERVICE_LABELS):
+        raise RuntimeError(
+            f"reconnect handlers {sorted(reconnect)} do not match SERVICE_LABELS {sorted(SERVICE_LABELS)}"
+        )
     return ActionBar(
         reconnect=reconnect,
         end_session=_end_session,

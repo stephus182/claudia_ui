@@ -1236,7 +1236,7 @@ class DashboardView:
         # Panel types it `Any | None`; it is None only before the widget has a value,
         # which cannot be the case here since the constructor above was given a frame.
         styler = self._positions.style
-        assert styler is not None  # narrowing for mypy, not a runtime guarantee
+        assert styler is not None  # noqa: S101 - narrowing for mypy, not a runtime guarantee
         styler.map(_sign_style, subset=_SIGNED_COLUMNS)
         self._positions_status = safe_markdown("_Positions: waiting for the first poll…_")
         self._reconciliation = safe_markdown("")

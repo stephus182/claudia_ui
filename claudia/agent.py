@@ -2550,7 +2550,7 @@ class ClaudIAAgent:
             if not host:
                 return "Blocked: URL has no hostname."
             if (
-                host in ("localhost", "0.0.0.0")
+                host in ("localhost", "0.0.0.0")  # noqa: S104 - the string is what this guard blocks
                 or host.startswith("127.")
                 or host.startswith("169.254.")
             ):

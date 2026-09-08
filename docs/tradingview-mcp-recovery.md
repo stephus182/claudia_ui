@@ -235,7 +235,6 @@ only the internals of `claudia/tradingview.py`.
 # pip install playwright && playwright install chromium
 from playwright.async_api import async_playwright
 
-
 class TradingViewBridge:
     async def start(self) -> None:
         if not check_cdp_running():
@@ -248,11 +247,12 @@ class TradingViewBridge:
         # TradingView uses multiple contexts; the main chart is typically the
         # first page whose URL contains "chart"
         self._page = next(
-            (p for ctx in self._browser.contexts for p in ctx.pages if "chart" in p.url),
+            (p for ctx in self._browser.contexts for p in ctx.pages
+             if "chart" in p.url),
             self._browser.contexts[0].pages[0],
         )
         # Build your own tool dispatch table here:
-        self._tools = _DIRECT_CDP_TOOLS  # list[dict] matching Anthropic schema
+        self._tools = _DIRECT_CDP_TOOLS   # list[dict] matching Anthropic schema
 
     async def execute(self, name: str, inputs: dict) -> str:
         handler = _CDP_HANDLERS.get(name)

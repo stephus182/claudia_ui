@@ -696,7 +696,7 @@ def confirm_session(url: str, timeout: float = 10.0) -> tuple[bool, str]:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-            resp = requests.get(f"{url}/portfolio/accounts", timeout=timeout, verify=False)
+            resp = requests.get(f"{url}/portfolio/accounts", timeout=timeout, verify=False)  # noqa: S501 - localhost gateway, self-signed cert (ibkr_core_mcp SECURITY.md)
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
     if resp.status_code != 200:
@@ -749,7 +749,7 @@ def release_session(gateway_url_: str, timeout: float = 10.0) -> tuple[bool, str
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-            resp = requests.post(f"{gateway_url_}/logout", timeout=timeout, verify=False)
+            resp = requests.post(f"{gateway_url_}/logout", timeout=timeout, verify=False)  # noqa: S501 - localhost gateway, self-signed cert (ibkr_core_mcp SECURITY.md)
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
     if resp.status_code != 200:
@@ -1031,7 +1031,7 @@ def attempt_soft_recovery(url: str, timeout: float = 5.0) -> bool:
                 f"{url}/iserver/auth/ssodh/init",
                 json={"publish": True, "compete": False},
                 timeout=timeout,
-                verify=False,
+                verify=False,  # noqa: S501 - localhost gateway, self-signed cert (ibkr_core_mcp SECURITY.md)
             )
         if resp.status_code != 200:
             return False

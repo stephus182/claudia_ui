@@ -104,7 +104,7 @@ returns the actual live order list.
 ```python
 self._get("/iserver/account/orders?force=true")  # instantiate subscription
 time.sleep(1)
-data = self._get("/iserver/account/orders")  # retrieve actual data
+data = self._get("/iserver/account/orders")       # retrieve actual data
 ```
 
 Symptoms and diagnosis:

@@ -702,7 +702,7 @@ class ConversationStore:
                 f"""SELECT * FROM decisions
                     WHERE session_id=? {message_id_clause}
                       AND decision_type IN ({placeholders})
-                    ORDER BY id""",
+                    ORDER BY id""",  # noqa: S608 - only internal literals are interpolated; every value is a bound parameter
                 (session_id, *types),
             ).fetchall()
         out = []

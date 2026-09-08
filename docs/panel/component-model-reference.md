@@ -140,8 +140,8 @@ what it draws means walking `figure.renderers`, matching on glyph classes and re
 rendered yet. It answers questions about the data directly:
 
 ```python
-[type(e).__name__ for e in pane.object]  # ['Overlay', 'Bars']
-layout.Overlay.I.Rectangles.I.data  # the actual candle bodies
+[type(e).__name__ for e in pane.object]   # ['Overlay', 'Bars']
+layout.Overlay.I.Rectangles.I.data        # the actual candle bodies
 ```
 
 ClaudIA's chart pane moved from the first to the second on 2026-08-03, and the test suite got
@@ -158,8 +158,8 @@ silently resolves to an element with no data **[P]**.
 ### Parameters can be set at class level *and* instance level [S]
 
 ```python
-pn.widgets.IntRangeSlider.width = 350  # every future instance, process-wide
-pn.widgets.IntRangeSlider(width=100)  # this one only
+pn.widgets.IntRangeSlider.width = 350     # every future instance, process-wide
+pn.widgets.IntRangeSlider(width=100)      # this one only
 ```
 
 ⚠ The class-level form is process-wide and would leak across every browser session in our
@@ -170,9 +170,9 @@ not a styling shortcut **[?]** — untested here, and there is no reason to reac
 
 ```python
 class P(param.Parameterized):
-    x = param.Number()  # Good
-    w1 = pn.widgets.FloatSlider()  # shared by ALL instances
-    w2 = param.ClassSelector(class_=pn.widgets.FloatSlider)  # Much better
+    x  = param.Number()                                    # Good
+    w1 = pn.widgets.FloatSlider()                          # shared by ALL instances
+    w2 = param.ClassSelector(class_=pn.widgets.FloatSlider) # Much better
 ```
 
 For an object attribute to be Param-powered it must be declared as a *Parameter*; otherwise it
@@ -223,9 +223,9 @@ Executed against 1.9.3, watcher fire count in brackets:
 
 ```python
 ms = pn.widgets.MultiSelect(options=list("abc"))
-ms.value = ["a"]  # watcher fired  [1]  ← rebinding is detected
-ms.value.append("b")  # watcher fired  [1]  ← in-place mutation is NOT
-ms.param.trigger("value")  # watcher fired  [2]  ← the escape hatch
+ms.value = ["a"]            # watcher fired  [1]  ← rebinding is detected
+ms.value.append("b")        # watcher fired  [1]  ← in-place mutation is NOT
+ms.param.trigger("value")   # watcher fired  [2]  ← the escape hatch
 ```
 
 **This is a general rule, not a `MultiSelect` quirk.** It applies to any parameter holding a
@@ -278,10 +278,10 @@ component **[S]**:
 
 ```python
 # function-level: rebuilds the pane on every change
-pn.bind(lambda a, b: pn.pane.Str(f"{a + b}"), a, b)
+pn.bind(lambda a, b: pn.pane.Str(f"{a+b}"), a, b)
 
 # component-level: updates one parameter
-pn.pane.Str(object=pn.bind(lambda a, b: f"{a + b}", a, b))
+pn.pane.Str(object=pn.bind(lambda a, b: f"{a+b}", a, b))
 ```
 
 **Five things can act as a reference** **[S]**: a `Parameter` object, a `Widget` (a proxy for
@@ -304,13 +304,12 @@ verbose.
 class M(param.Parameterized):
     x = param.Integer(default=3, bounds=(0, 10))
 
-
 m = M()
-w = pn.widgets.IntSlider.from_param(m.param.x)  # bounds + default + label inherited
-w.value = 7  # → m.x == 7        (verified)
-m.x = 2  # → w.value == 2    (verified)
+w = pn.widgets.IntSlider.from_param(m.param.x)   # bounds + default + label inherited
+w.value = 7   # → m.x == 7        (verified)
+m.x   = 2     # → w.value == 2    (verified)
 
-pn.Param(m.param)  # → auto-generated ['StaticText', 'IntSlider']
+pn.Param(m.param)   # → auto-generated ['StaticText', 'IntSlider']
 ```
 
 Both directions of the sync were executed against 1.9.3 **[P]**. `from_param` picks up
@@ -574,7 +573,7 @@ Two families with genuinely different APIs.
 behave like a 2D array that auto-expands, addressed `[row, col]` with slice spans:
 
 ```python
-gspec[0, :3] = pn.Spacer(styles=dict(background="#FF0000"))
+gspec[0, :3]   = pn.Spacer(styles=dict(background='#FF0000'))
 gspec[1:3, 1:3] = some_plot
 ```
 

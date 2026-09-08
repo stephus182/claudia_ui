@@ -499,11 +499,11 @@ declarative `holoviews.Layout`, so tests read the data being drawn instead of po
 renderers:
 
 ```python
-[type(e).__name__ for e in pane.object]  # ['Overlay', 'Bars']
-_price(obj).Rectangles.I.data  # candle count, lbound/ubound per body
-_price(obj).Curve.Sma_20.vdims[0].name  # 'sma_20'
+[type(e).__name__ for e in pane.object]        # ['Overlay', 'Bars']
+_price(obj).Rectangles.I.data                  # candle count, lbound/ubound per body
+_price(obj).Curve.Sma_20.vdims[0].name         # 'sma_20'
 hv.Store.lookup_options("bokeh", rects, "style").kwargs["color"].apply(rects)
-# per-row ['#26a69a', …, '#ef5350']
+                                               # per-row ['#26a69a', …, '#ef5350']
 ```
 
 Two traps this file hit, both worth knowing before writing such a test **[P]**:
@@ -538,7 +538,6 @@ What does work — pull the live session and inspect the real document:
 
 ```python
 from bokeh.client import pull_session
-
 srv = pn.serve({"/c": app}, port=5601, show=False, threaded=True)
 doc = pull_session(url="http://localhost:5601/c").document
 Counter(type(m).__name__ for m in doc.roots[0].references())

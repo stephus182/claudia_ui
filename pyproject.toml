@@ -100,13 +100,27 @@ line-length = 100
 target-version = "py311"
 # Historical verification probe scripts (D4/D7/watchdog), committed verbatim as run —
 # evidence artifacts, not maintained code (see docs/probes/README.md, Task 5.6a review).
-extend-exclude = ["docs/probes"]
+# Markdown is documentation, not source. ruff 0.16 formats Python code blocks embedded in
+# .md files, and the 2026-09-08 whole-repo reformat rewrote hand-aligned examples in 11
+# docs (comment columns collapsed, multi-line calls exploded) before this exclusion was
+# added, the same day, with those hunks reversed. Same rule and reason as ibkr_core_mcp.
+extend-exclude = ["docs/probes", "*.md"]
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RUF", "FA", "D"]
+# One rule set for both repos, aligned 2026-09-08 with ibkr_core_mcp. Keep `select`,
+# `ignore` and `allowed-confusables` identical there: a rule worth having is worth having
+# in both, and a suppression one repo needs is written at the site, not added to the list.
+select = ["E", "W", "F", "I", "UP", "S", "B", "SIM", "C4", "RUF", "FA", "D"]
 ignore = [
     "E501",  # line-too-long — ~160 pre-existing lines exceed 100 chars, mostly
              # docstrings/URLs/system-prompt text; revisit as a dedicated pass if prioritized
+
+    # flake8-bandit ("S"): only the two rules that fire on every subprocess call, whatever it
+    # runs, are ignored here. Every other S rule is live, and each deliberate exception in
+    # package code carries an inline `noqa` stating why — so a new `verify=False`, `assert`
+    # or SQL f-string is a finding until someone writes the reason down next to it.
+    "S603",  # subprocess-without-shell-equals-true — every call is list-form; none uses shell=True
+    "S607",  # start-process-with-partial-path — docker/git/pgrep resolve on PATH; full paths would be OS-specific
 
     # pydocstyle: "D" is enabled for the D1xx *coverage* rules only. Those are the ones
     # worth enforcing — the 2026-07-25 audit found 67 undocumented definitions, including
@@ -126,16 +140,16 @@ ignore = [
     "D413",  # blank line required after the last section
     "D415",  # summary must end with punctuation
 ]
+# RUF001/002/003 flag characters that can be confused with ASCII. These three are correct
+# typography used on purpose — en dash for a range, × for a count, U+2212 for a signed
+# figure — so they are allowed by name and the rule stays live for real confusables.
+allowed-confusables = ["–", "×", "−"]
 
-# RUF002 (ambiguous-unicode in docstrings) can't take an inline noqa — the comment would
-# become literal docstring text. Both hits are correct typography (en-dash for a numeric
-# range, × for a count), not encoding mistakes.
 [tool.ruff.lint.per-file-ignores]
-"claudia/order_flow.py" = ["RUF002"]
-"tests/test_session_reporter.py" = ["RUF002"]
 # Docstring coverage is enforced on the package, not the suite: test names are the
 # documentation there, and the security regression tests all carry real docstrings anyway.
-"tests/*" = ["D"]
+# Tests also assert, and carry fixture tokens and /tmp paths as literals; none is a finding.
+"tests/*" = ["S101", "S105", "S106", "S108", "D"]
 
 [tool.mypy]
 # No python_version pin: mypy then targets the interpreter it runs under ("The default is

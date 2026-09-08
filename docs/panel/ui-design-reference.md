@@ -145,7 +145,9 @@ message HTML we generate ourselves.
 
 ```python
 pn.widgets.FloatSlider(
-    label="Number", stylesheets=[stylesheet, color_stylesheet], css_classes=["red"]
+    label='Number',
+    stylesheets=[stylesheet, color_stylesheet],
+    css_classes=['red']
 )
 ```
 
@@ -178,15 +180,14 @@ config/extension path.)
 > "any component that is rendered will now inherit this design" *(when set globally)*
 
 ```python
-pn.extension(design="material")  # globally, via extension
+pn.extension(design='material')          # globally, via extension
 ```
 ```python
-from panel.theme import Material  # globally, via config
-
+from panel.theme import Material         # globally, via config
 pn.config.design = Material
 ```
 ```python
-pn.widgets.FloatSlider(label="Slider", design=design)  # per component
+pn.widgets.FloatSlider(label='Slider', design=design)   # per component
 ```
 
 ### 3.3 Themes — light and dark
@@ -223,12 +224,12 @@ Three application scopes:
 ```python
 # global — the modern replacement for raw_css
 
-pn.extension(design="material", global_css=[":root { --design-primary-color: purple; }"])
+pn.extension(design='material', global_css=[':root { --design-primary-color: purple; }'])
 ```
 ```python
 # per component
 
-pn.widgets.FloatSlider(stylesheets=[":host { --design-primary-color: red; }"])
+pn.widgets.FloatSlider(stylesheets=[':host { --design-primary-color: red; }'])
 ```
 Template-level: `Template.config.raw_css` / `css_files`.
 

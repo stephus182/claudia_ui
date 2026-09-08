@@ -130,7 +130,7 @@ def _tool_section(counts: Counter) -> list[str]:
     if not counts:
         return ["- (no tool calls this session)"]
     return [
-        f"- {_TOOL_LABELS.get(name, name)}{f' ×{counts[name]}' if counts[name] > 1 else ''}"  # noqa: RUF001 — intended multiplication sign
+        f"- {_TOOL_LABELS.get(name, name)}{f' ×{counts[name]}' if counts[name] > 1 else ''}"
         for name in sorted(counts)
     ]
 
