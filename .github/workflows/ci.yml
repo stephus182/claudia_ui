@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Mirrors ibkr_core_mcp/.github/workflows/ci.yml step for step (aligned 2026-09-08) so both
+# repos are held to one gate: ruff check, ruff format --check, mypy, pytest.
+#
+# ibkr_core_mcp is not on PyPI. It is checked out beside this repo and installed with the
+# exact command CLAUDE.md § Dev Setup step 3 documents — strict editable mode from
+# ../ibkr_core_mcp — so CI executes the documented instruction rather than a CI-only variant
+# of it (a lazy editable install fails mypy; the trap is described in claudia/install_check.py,
+# and tests/test_install_check.py runs here against a fresh snapshot). The [scraper] extra is
+# deliberately not installed: every scraper import is lazy, no unit test exercises a web tool,
+# and crawl4ai's install adds minutes to every run.
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: claudia_ui
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: claudia_ui
+
+      - uses: actions/checkout@v5
+        with:
+          repository: stephus182/ibkr_core_mcp
+          path: ibkr_core_mcp
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            claudia_ui/pyproject.toml
+            ibkr_core_mcp/pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+          pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Type check (mypy)
+        # `mypy claudia/` is the gate CLAUDE.md documents. pyproject's `files` also lists
+        # tests/, and a bare `mypy` reported 80 errors there on 2026-09-08 — typing the test
+        # suite is the one gate still looser than ibkr_core_mcp's, which type-checks its tests.
+        run: mypy claudia/
+
+      - name: Test (pytest, unit only)
+        run: pytest -m "not integration" -v

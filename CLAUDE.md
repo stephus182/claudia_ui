@@ -119,11 +119,19 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
 pytest        # full suite — all unit, no IBKR gateway needed (1,724 tests as of 2026-09-04)
-ruff check claudia/ tests/ && mypy claudia/   # lint + type gates, both must be clean
+ruff check . && ruff format --check . && mypy claudia/   # lint, format, type gates — all must be clean
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
 ```
+
+Those four gates are also `.github/workflows/ci.yml`, step for step the same file as
+ibkr_core_mcp's (aligned 2026-09-08): every push and PR to `main` runs them on Ubuntu for
+Python 3.11 and 3.12, with ibkr_core_mcp checked out beside the repo and installed by the
+Dev Setup step 3 command. A green local run is what makes a green CI run, and a red CI run
+is stopped at its first failing step — `ruff format --check` failing hides whatever mypy or
+pytest would have said, so run the whole line locally before pushing. `ruff format` is a
+gate since that date; the whole repo was reformatted in one dedicated commit first.
 
 **The `live_api` marker exists because local validation cannot prove API acceptance.** During
 the 2026-07-27 guardrail work, three separate defects passed a docs read *and* a green suite

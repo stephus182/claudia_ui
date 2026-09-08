@@ -73,7 +73,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.12",
     "mypy>=1.8",
-    "ruff>=0.3",
+    "ruff>=0.16",
     # Direct test dependency, not transitive: tests/test_proposal_tools.py imports
     # jsonschema itself to validate claudia/proposal_tools.py's strict tool schemas
     # locally. It resolved for a while only because mcp requires it — an mcp release
