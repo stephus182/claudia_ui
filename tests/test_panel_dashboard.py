@@ -32,7 +32,6 @@ pn.extension("tabulator")
 
 
 from claudia import dashboard_data as dd  # noqa: E402
-from claudia.dashboard_data import realised_ledger_label
 from claudia.dashboard_poller import POLL_INTERVAL, STALE_AFTER  # noqa: E402
 
 _NOW = datetime(2026, 8, 6, 15, 30, tzinfo=UTC)
@@ -411,7 +410,7 @@ def test_ledger_block_does_not_invent_an_equities_residual(view):
     assert "futuresonlypnl" in text
     assert "-3,516.98 USD" in text
     assert "not a documented equities total" in " ".join(text.split())
-    assert text.index("futuresonlypnl") < text.index(realised_ledger_label())
+    assert text.index("futuresonlypnl") < text.index(dd.realised_ledger_label())
 
 
 def test_realised_ledger_tile_follows_the_measured_window(view):
