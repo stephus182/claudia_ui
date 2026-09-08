@@ -1,5 +1,7 @@
 # ClaudIA — AI Trading Assistant
 
+[![CI](https://github.com/stephus182/claudia_ui/actions/workflows/ci.yml/badge.svg)](https://github.com/stephus182/claudia_ui/actions/workflows/ci.yml)
+
 ClaudIA is a Panel-based trading assistant that gives you a persistent, principle-guided AI for market analysis, strategy work, and human-confirmed order staging. It connects to Interactive Brokers via `ibkr_core_mcp` and to TradingView Desktop via the `tradingview-mcp` Node.js sidecar. 
 
 ---

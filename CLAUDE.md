@@ -63,6 +63,7 @@ python3.11 -m venv .venv && source .venv/bin/activate
 # 3. Install claudia_ui + ibkr_core_mcp (editable)
 pip install -e ".[dev]"
 pip install -e "../ibkr_core_mcp[scraper]" --config-settings editable_mode=strict
+git config core.hooksPath .githooks   # the four CI gates as a pre-push hook (see Testing)
 # [scraper] is NOT optional in practice — it is what installs crawl4ai, and without it all
 # four web tools (fetch_page, crawl_site, search_site, firecrawl_search) are dark. Every
 # scraper import is lazy, so ClaudIA starts perfectly and each tool fails only when the
@@ -137,7 +138,12 @@ Dev Setup step 3 command. `mypy` runs in **strict mode** over `tests/` as well a
 **Run the whole line locally before pushing, in CI's order.** CI stops at its first failing
 step, so a red `ruff format --check` hides whatever mypy or pytest would have said — that is
 how ibkr_core_mcp run 34082479743 masked two real mypy errors on 2026-09-07. `ruff format` is
-a gate since that date; the whole repo was reformatted in one dedicated commit first. CI skips
+a gate since that date; the whole repo was reformatted in one dedicated commit first. The
+same four commands are `.githooks/pre-push`, which refuses a push that would go red — enable
+it once per clone with `git config core.hooksPath .githooks` (Dev Setup step 3); `git push
+--no-verify` bypasses it on purpose. Branch protection cannot do this job for a direct-push
+workflow: a required status check rejects every push whose commit has not already passed CI,
+which a direct push never has. CI skips
 more tests than a local run does (29 against 4 on 2026-09-08): the extra skips are the suites
 keyed on git-ignored account fixtures and the local conversation corpus, absent from a fresh
 clone by design — not a regression. Three git-ignored personal documents are absent there
