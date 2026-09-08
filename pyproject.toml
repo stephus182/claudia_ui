@@ -159,14 +159,25 @@ allowed-confusables = ["–", "×", "−"]
 # statements, rejected for a <3.12 target) while the 3.11 job, which resolves numpy 2.4.6,
 # passed (run 34244032164, 2026-09-08).
 files = ["claudia", "tests"]
-warn_return_any = true
-warn_unused_ignores = true
-warn_redundant_casts = true
+# Strict since 2026-09-08, the mode ibkr_core_mcp runs. It was reached in three commits —
+# the twelve untyped functions and Panel's two typing gaps, then every bare generic, then
+# this flag — each verified with `mypy --strict` before the flag went on, so turning it on
+# changed nothing but the guarantee. `strict` already implies warn_return_any,
+# warn_unused_ignores, warn_redundant_casts, strict_equality and check_untyped_defs, which
+# this block used to list one by one; warn_unreachable is the one flag strict leaves out.
+strict = true
 warn_unreachable = true
-strict_equality = true
-no_implicit_optional = true
-check_untyped_defs = true
-show_error_codes = true
+
+# tests/ never annotates function signatures (established convention) — disallow_untyped_defs
+# would demand annotating every test function and fixture for no safety benefit.
+# check_untyped_defs (inherited from strict) still type-checks each body, so real bugs inside
+# untyped tests are caught: the 80 errors fixed on 2026-09-08 were found that way. The same
+# override ibkr_core_mcp carries, so the two suites are held to one bar.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
 
 # The genuinely unstubbed third-party imports in claudia/ or tests/ (verified against the
 # actual venv — mcp, ibkr_core_mcp, panel, and bokeh all ship py.typed, so

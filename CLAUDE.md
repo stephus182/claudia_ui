@@ -130,9 +130,9 @@ CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
 Those four gates are also `.github/workflows/ci.yml`, step for step the same file as
 ibkr_core_mcp's (aligned 2026-09-08): every push and PR to `main` runs them on Ubuntu for
 Python 3.11 and 3.12, with ibkr_core_mcp checked out beside the repo and installed by the
-Dev Setup step 3 command. `mypy` covers `tests/` as well as `claudia/` (since 2026-09-08; the
-fetchers in `dashboard_data` take read-only Protocols, so a test double type-checks without
-casts). A green local run is what makes a green CI run, and a red CI run
+Dev Setup step 3 command. `mypy` runs in **strict mode** over `tests/` as well as `claudia/`
+(both since 2026-09-08, the same configuration as ibkr_core_mcp; the fetchers in
+`dashboard_data` take read-only Protocols, so a test double type-checks without casts). A green local run is what makes a green CI run, and a red CI run
 is stopped at its first failing step — `ruff format --check` failing hides whatever mypy or
 pytest would have said, so run the whole line locally before pushing. `ruff format` is a
 gate since that date; the whole repo was reformatted in one dedicated commit first. CI skips
