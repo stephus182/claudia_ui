@@ -120,6 +120,8 @@ source .venv/bin/activate   # every command below needs it — a bare `pytest` r
                             # system Python and dies on `ModuleNotFoundError: panel`
 pytest        # full suite — all unit, no IBKR gateway needed (1,725 tests as of 2026-09-08)
 ruff check . && ruff format --check . && mypy claudia/   # lint, format, type gates — all must be clean
+# The ruff rule set (`[tool.ruff.lint]` in pyproject.toml) is identical to ibkr_core_mcp's,
+# aligned 2026-09-08 — change it in both repos or in neither.
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
