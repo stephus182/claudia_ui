@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -111,6 +112,13 @@ def store(tmp_path):
 def test_week_start_is_monday(today, expected):
     """The trading week starts Monday, whichever day it is read on."""
     assert dd.week_start(today) == expected
+
+
+def _breakdown(w, asset_type):
+    """The per-type breakdown, asserted present so the test reads the figure, not `None`."""
+    b = w.for_type(asset_type)
+    assert b is not None, asset_type
+    return b
 
 
 def test_month_and_year_start():
@@ -1467,7 +1475,12 @@ def _bridge_rec(**kw):
     """A stand-in Reconstruction with just the surface `bridged_by_type` consumes."""
     from types import SimpleNamespace
 
-    base = {"realised": {}, "declined_days": frozenset(), "by_type": {}, "stats": {}}
+    base: dict[str, Any] = {
+        "realised": {},
+        "declined_days": frozenset(),
+        "by_type": {},
+        "stats": {},
+    }
     base.update(kw)
 
     return SimpleNamespace(
@@ -1489,6 +1502,7 @@ def test_the_bridge_adds_days_flex_has_not_delivered(tmp_path):
         _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
     )
     fut = w.for_type("FUT")
+    assert fut is not None
     assert w.bridged_days == ("20260806",)
     assert fut.net == pytest.approx(-2926.18 + 1841.04, abs=0.005)
     assert (fut.winners, fut.losers) == (1 + 2, 2 + 0)
@@ -1509,7 +1523,7 @@ def test_a_day_flex_already_covers_is_never_double_counted(tmp_path):
         _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
     )
     assert w.bridged_days == ()
-    assert w.for_type("FUT").net == pytest.approx(-2926.18, abs=0.005)
+    assert _breakdown(w, "FUT").net == pytest.approx(-2926.18, abs=0.005)
 
 
 def test_a_declined_contract_marks_the_window_incomplete(tmp_path):
@@ -1543,7 +1557,7 @@ def test_without_a_reconstruction_the_window_is_flex_alone(tmp_path):
     """A gateway-down session still shows its settled history rather than nothing."""
     w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
     assert w.bridged_days == () and w.incomplete is False
-    assert w.for_type("FUT").net == pytest.approx(-2926.18, abs=0.005)
+    assert _breakdown(w, "FUT").net == pytest.approx(-2926.18, abs=0.005)
 
 
 def test_a_window_records_whether_a_reconstruction_was_available(tmp_path):
@@ -1581,8 +1595,8 @@ def test_a_type_traded_only_live_still_gets_a_row(tmp_path):
     w = dd.bridged_by_type(
         _breakdown_db(tmp_path), date(2026, 8, 6), date(2026, 8, 6), rec, date(2026, 8, 4)
     )
-    assert w.for_type("OPT").net == pytest.approx(42.0)
-    assert w.for_type("OPT").win_rate == pytest.approx(100.0)
+    assert _breakdown(w, "OPT").net == pytest.approx(42.0)
+    assert _breakdown(w, "OPT").win_rate == pytest.approx(100.0)
 
 
 # -- Live quotes: /iserver/marketdata/snapshot --------------------------------

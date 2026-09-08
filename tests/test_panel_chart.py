@@ -81,7 +81,7 @@ def hv_title(obj):
 
 def _ms(td: pd.Timedelta) -> float:
     """A datetime as epoch milliseconds, the unit the bokeh x-axis uses."""
-    return td / pd.Timedelta(milliseconds=1)
+    return float(td / pd.Timedelta(milliseconds=1))
 
 
 # ── build_chart_pane (composition) ────────────────────────────────────────────
@@ -299,7 +299,7 @@ def _rects(obj):
 def _body_width_ms_of(obj) -> float:
     """The candle body width, in milliseconds, taken from the built figure."""
     d = _rects(obj).data
-    return (d["ubound"].iloc[0] - d["lbound"].iloc[0]) / pd.Timedelta(milliseconds=1)
+    return float((d["ubound"].iloc[0] - d["lbound"].iloc[0]) / pd.Timedelta(milliseconds=1))
 
 
 def test_build_chart_object_has_wicks_and_bodies():
@@ -580,7 +580,7 @@ def test_layout_figures_share_one_x_range():
     pane = pn.pane.HoloViews(build_chart_object(_long_df(), "T"), linked_axes=True)
     # Model.select returns Iterable[Model] (bokeh 3.9.2's own annotation, via
     # core.query.find) -- a generator, not a list -- so len() needs the list() first.
-    figs = list(pane.get_root().select({"type": bk_figure}))
+    figs = [f for f in pane.get_root().select({"type": bk_figure}) if isinstance(f, bk_figure)]
     assert len(figs) == 2
     assert figs[0].x_range is figs[1].x_range
 

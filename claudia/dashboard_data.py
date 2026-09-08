@@ -128,14 +128,56 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ibkr_core_mcp import IBKRClient
-
     from claudia.live_realised import LiveFill
 
 log = logging.getLogger(__name__)
+
+
+# Each fetcher below names the ONE read it needs as a Protocol rather than taking the
+# concrete `IBKRClient`. Two reasons. The surface is then explicit: this module reads a
+# ledger, positions, a quote snapshot and the order book, and nothing here can reach a
+# method that writes (Hard Rule 5 is a property of the type, not only of the code). And a
+# test double that implements the one method type-checks structurally — no casts, no
+# `type: ignore`, no fake that must impersonate the whole client. Signatures mirror
+# `IBKRClient`'s exactly (verified 2026-09-08), so the real client satisfies each of them.
+
+
+class LedgerSource(Protocol):
+    """Whatever can answer `/portfolio/{account}/ledger` — `fetch_ledger`'s only read."""
+
+    def get_account_ledger(self, account_id: str) -> dict[str, Any]:
+        """Cash balances by currency, keyed the way IBKR keys them (`BASE`, `USD`, ...)."""
+        ...
+
+
+class PositionSource(Protocol):
+    """Whatever can page `/portfolio/{account}/positions/{page}` — `fetch_positions`' only read."""
+
+    def get_positions(self, account_id: str, page: int = 0) -> list[dict[str, Any]]:
+        """One page of open positions, 30 rows per page; `[]` past the last page."""
+        ...
+
+
+class QuoteSource(Protocol):
+    """Whatever can answer `/iserver/marketdata/snapshot` — `fetch_quotes`' only read."""
+
+    def get_market_snapshot(
+        self, conids: list[int], fields: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """One snapshot row per conid, with the requested field ids as keys."""
+        ...
+
+
+class OrderSource(Protocol):
+    """Whatever can answer `/iserver/account/orders` — `fetch_orders`' only read."""
+
+    def get_live_orders(self) -> list[dict[str, Any]]:
+        """Working orders only, as IBKR reports them."""
+        ...
+
 
 # IBKR returns positions 30 to a page and gives no total count, so "is there more?" is
 # "did this page come back full?". The cap exists so a malformed response that keeps
@@ -394,7 +436,7 @@ def _ledger_row(
 
 
 def fetch_ledger(
-    client: IBKRClient, account_id: str, base_currency: str | None = None
+    client: LedgerSource, account_id: str, base_currency: str | None = None
 ) -> LedgerSnapshot | None:
     """Pull and parse the account ledger. Blocking HTTP — call via `asyncio.to_thread`.
 
@@ -656,7 +698,7 @@ def parse_positions(rows: Sequence[Any]) -> tuple[Position, ...]:
     return tuple(out)
 
 
-def fetch_positions(client: IBKRClient, account_id: str) -> tuple[Position, ...]:
+def fetch_positions(client: PositionSource, account_id: str) -> tuple[Position, ...]:
     """Fetch **all** positions, following IBKR's 30-per-page pagination.
 
     Page 0 returns only the first 30 (`client.get_positions` docstring). A dashboard that
@@ -1386,7 +1428,7 @@ def parse_quotes(rows: Sequence[Any]) -> dict[int, Quote]:
     return out
 
 
-def fetch_quotes(client: IBKRClient, conids: Sequence[int]) -> dict[int, Quote]:
+def fetch_quotes(client: QuoteSource, conids: Sequence[int]) -> dict[int, Quote]:
     """Top-of-book for `conids`. Blocking HTTP — call via `asyncio.to_thread`.
 
     One request. The endpoint caps at 100 conids and 50 fields; this asks for four
@@ -1409,7 +1451,7 @@ def with_quotes(positions: Sequence[Position], quotes: Mapping[int, Quote]) -> t
     return tuple(replace(p, quote=quotes.get(p.conid)) for p in positions)
 
 
-def fetch_orders(client: IBKRClient) -> tuple[LiveOrder, ...] | None:
+def fetch_orders(client: OrderSource) -> tuple[LiveOrder, ...] | None:
     """Working orders, or **None when the book could not be established**.
 
     None and `()` are different claims and the caller must keep them apart: `()` says

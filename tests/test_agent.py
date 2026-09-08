@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1733,7 +1733,7 @@ def _make_agent_recording(proposal_error: Exception | None = None, *, store: Any
     with patch("claudia.agent.AsyncAnthropic"):
         agent = ClaudIAAgent(
             toolkit=toolkit,
-            store=store if store is not None else _FakeStore(),
+            store=store if store is not None else cast(ConversationStore, _FakeStore()),
             context_loader=loader,
             session_id="test-session",
             sink=sink,
@@ -2476,7 +2476,7 @@ def test_unmapped_completed_type_is_dropped_not_guessed(caplog):
     )
     with caplog.at_level(logging.WARNING, logger="claudia.agent"):
         # Reach the mapping directly: the store's allowlist would filter this row out.
-        agent._store.get_completed_order_actions = lambda _sid: [  # type: ignore[method-assign]
+        agent._store.get_completed_order_actions = lambda _sid: [
             {
                 "decision_type": "trade_teleported",
                 "symbol": "ZZZ",
@@ -3215,7 +3215,7 @@ def test_live_api_accepts_mid_conversation_system_message():
             client.messages.create(
                 model=model,
                 max_tokens=1,
-                messages=messages,  # type: ignore[arg-type]
+                messages=messages,
                 tools=_with_cache_marker(PROPOSAL_TOOLS),  # type: ignore[arg-type]
             )
         except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
@@ -3270,11 +3270,11 @@ def test_live_api_rejects_the_operator_channel_on_an_excluded_model():
     ]
     client = anthropic.Anthropic()
     try:
-        client.messages.create(
+        client.messages.create(  # type: ignore[call-overload]  # the SDK types reject the role being probed
             model=excluded,
             max_tokens=1,
             thinking={"type": "adaptive"},
-            messages=messages,  # type: ignore[arg-type]
+            messages=messages,
         )
     except anthropic.BadRequestError as exc:
         print(f"\n{excluded} rejected the operator channel as expected: {exc}")
@@ -3385,7 +3385,7 @@ def test_live_api_accepts_the_emission_record_channel():
             client.messages.create(
                 model=model,
                 max_tokens=1,
-                messages=messages,  # type: ignore[arg-type]
+                messages=messages,
                 tools=_with_cache_marker(PROPOSAL_TOOLS),  # type: ignore[arg-type]
             )
         except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
@@ -3575,6 +3575,7 @@ def test_the_block_tells_the_model_not_to_guess():
     with patch("claudia.gateway_session.get_session", return_value=owner):
         blocked = _ibkr_unavailable()
 
+    assert blocked is not None
     assert "Do not guess" in blocked
     assert "nothing was changed" in blocked
 

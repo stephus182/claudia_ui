@@ -57,12 +57,16 @@ import logging
 from contextlib import closing
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 from claudia.dashboard_data import (
     DashboardSnapshot,
     LedgerSnapshot,
+    LedgerSource,
+    OrderSource,
     Position,
+    PositionSource,
+    QuoteSource,
     build_flex_sections,
     connect,
     economic_entries,
@@ -74,11 +78,25 @@ from claudia.dashboard_data import (
     with_economic_entries,
     with_quotes,
 )
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ibkr_core_mcp import IBKRClient
+from claudia.live_realised import TradeSource
 
 log = logging.getLogger(__name__)
+
+
+class DashboardClient(
+    LedgerSource, PositionSource, QuoteSource, OrderSource, TradeSource, Protocol
+):
+    """The read-only slice of `IBKRClient` the poller uses: six reads, nothing that writes.
+
+    `IBKRClient` satisfies it structurally. The test double satisfies it by defining the
+    same six, raising from the ones a test wants to fail — the quote and fill reads are
+    behind guards in `_with_quotes` / `_read_entries`, and a raise there is a tested path.
+    """
+
+    def get_accounts(self) -> list[dict[str, Any]]:
+        """The accounts this session may read, `accountId` and `currency` per row."""
+        ...
+
 
 # 15s: fast enough that a position change shows up within one glance, slow enough to stay
 # far clear of IBKR's portfolio rate limits with the account id already resolved. The
@@ -109,7 +127,7 @@ class DashboardPoller:
 
     def __init__(
         self,
-        client: IBKRClient,
+        client: DashboardClient,
         db_path: str | Path,
         interval: float = POLL_INTERVAL,
         today_provider: Any = None,
@@ -118,7 +136,7 @@ class DashboardPoller:
         """Configure the poller. Nothing is polled until `start()`.
 
         Args:
-            client: IBKRClient for the ledger and positions. Read-only use.
+            client: The IBKRClient (any `DashboardClient`). Read-only use.
             db_path: ibkr_core_mcp store.db — opened read-only, once per poll.
             interval: Seconds between polls.
             today_provider: Zero-arg callable returning today's `date`. Defaults to

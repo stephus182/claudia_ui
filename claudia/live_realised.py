@@ -74,10 +74,20 @@ from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ibkr_core_mcp import IBKRClient
+
+class TradeSource(Protocol):
+    """Whatever can answer `/iserver/account/trades` — `fetch_fills`' only read.
+
+    Mirrors `IBKRClient.get_trades` exactly (verified 2026-09-08); the dashboard poller's
+    test double satisfies it structurally, and so does the real client.
+    """
+
+    def get_trades(self) -> list[dict[str, Any]]:
+        """Recent fills in IBKR's own window, one row per execution."""
+        ...
+
 
 log = logging.getLogger(__name__)
 
@@ -349,7 +359,7 @@ def reconstruct(
     )
 
 
-def fetch_fills(client: IBKRClient) -> tuple[LiveFill, ...]:
+def fetch_fills(client: TradeSource) -> tuple[LiveFill, ...]:
     """Pull recent executions via the toolkit's own client. Blocking — use `to_thread`.
 
     Deliberately `client.get_trades()` rather than a raw request, and not for tidiness:

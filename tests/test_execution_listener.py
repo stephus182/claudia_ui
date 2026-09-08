@@ -10,6 +10,7 @@ thing.
 import asyncio
 import contextlib
 import logging
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -668,7 +669,7 @@ async def test_waiting_for_a_session_does_not_consume_the_backoff_budget():
 # already receives every fill in real time; it now tells its subscribers, before the P&L
 # capture that can block for 10 s. The report is built ONLY from IBKR's event fields.
 
-_TODAYS_FILL = {  # the real event of 2026-09-04 16:47:05 UTC, verbatim field values
+_TODAYS_FILL: dict[str, Any] = {  # the real event of 2026-09-04 16:47:05 UTC, verbatim field values
     "execution_id": "00010181.6a9a4b19.01.01",
     "conid": 649180671,
     "symbol": "ES",
@@ -802,7 +803,7 @@ async def test_fills_arriving_during_a_pnl_capture_round_are_reported_too():
         received.append(report.execution_id)
 
     listener.subscribe(subscriber)
-    pnl = PnLUpdate(account="U1", row_type="", dpl=1.0, nl=2.0, upl=3.0, uel=4.0, mv=5.0)
+    pnl = PnLUpdate(account="U1", row_type=None, dpl=1.0, nl=2.0, upl=3.0, uel=4.0, mv=5.0)
     fake_ws = _fake_ws(
         [TradeExecution(execution_id="E1"), TradeExecution(execution_id="E2"), pnl, pnl]
     )

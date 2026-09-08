@@ -163,7 +163,7 @@ def test_borrowed_names_the_app_holding_the_session():
 # ── declare: the hole that must stay closed ──────────────────────────────────
 
 
-@pytest.mark.parametrize("phase", sorted(SUSPENDED, key=lambda p: p.value))
+@pytest.mark.parametrize("phase", sorted(SUSPENDED))
 def test_the_two_operational_phases_may_be_declared(phase):
     """These describe something the owner is doing and cannot be read off the wire."""
     assert declare(phase, now=_NOW).phase is phase
@@ -744,9 +744,15 @@ async def test_soft_recovery_fires_only_from_a_previously_live_session(monkeypat
     """
     soft = GatewayState(reachable=True, authenticated=False, connected=True)
     calls: list[str] = []
+
+    def _tried(*a, **k):
+        """Record the attempt and report that recovery did not succeed."""
+        calls.append("tried")
+        return False
+
     monkeypatch.setattr(
         "claudia.gateway_session.attempt_soft_recovery",
-        lambda *a, **k: calls.append("tried") or False,
+        _tried,
     )
 
     # From FREE: no recovery — nothing was ever established.
@@ -767,9 +773,15 @@ async def test_soft_recovery_fires_only_from_a_previously_live_session(monkeypat
 async def test_no_soft_recovery_on_a_hard_disconnect(monkeypatch):
     """`connected` false is not a soft timeout; init cannot help and must not be sent."""
     calls: list[str] = []
+
+    def _tried(*a, **k):
+        """Record the attempt and report that recovery did not succeed."""
+        calls.append("tried")
+        return False
+
     monkeypatch.setattr(
         "claudia.gateway_session.attempt_soft_recovery",
-        lambda *a, **k: calls.append("tried") or False,
+        _tried,
     )
     session = GatewaySession()
     session.publish(observe(_authenticated(), True))

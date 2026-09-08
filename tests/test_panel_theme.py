@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from typing import cast
 
 import panel as pn
 import pytest
@@ -175,7 +176,9 @@ def test_register_claudia_avatar_missing_file_warns_and_leaves_panel_default(
     assert any(str(missing) in r.getMessage() for r in caplog.records)
     assert not set(panel_theme.CLAUDIA_AUTHORS) & set(pn.chat.ChatMessage.default_avatars)
     # Panel's own fallback: first letter of the author name, resolved at render time.
-    assert pn.chat.ChatMessage("hi", user="ClaudIA")._render_avatar().object == "C"
+    assert (
+        cast(pn.pane.HTML, pn.chat.ChatMessage("hi", user="ClaudIA")._render_avatar()).object == "C"
+    )
 
 
 def test_register_claudia_avatar_makes_claudia_messages_carry_the_image(
@@ -211,7 +214,9 @@ def test_register_claudia_avatar_does_not_touch_other_authors(tmp_path, restore_
     avatar.write_bytes(_TINY_PNG)
     panel_theme.register_claudia_avatar(avatar)
     assert pn.chat.ChatMessage("hi", user="System").avatar == "⚙️"
-    assert pn.chat.ChatMessage("hi", user="Steph")._render_avatar().object == "S"
+    assert (
+        cast(pn.pane.HTML, pn.chat.ChatMessage("hi", user="Steph")._render_avatar()).object == "S"
+    )
 
 
 def test_register_claudia_avatar_warns_when_the_file_is_large(

@@ -167,6 +167,10 @@ class FakeClient:
         self.position_pages.append(page)
         return self._positions if page == 0 else []
 
+    def get_market_snapshot(self, conids, fields=None):
+        """This fake serves no quotes; the poller's quote guard is what tolerates that."""
+        raise RuntimeError("no quotes in this fake")
+
     def get_live_orders(self):
         """Return one working order, counting the call.
 
@@ -295,7 +299,7 @@ async def test_a_failed_flex_read_carries_the_previous_windows_forward(db):
     good = p.snapshot()
     assert good.week is not None
 
-    p._read_flex = lambda _rec=None: None  # type: ignore[method-assign]
+    p._read_flex = lambda _rec=None: None
     await p._poll_once()
     after = p.snapshot()
 
@@ -312,7 +316,7 @@ async def test_a_failed_flex_read_during_an_ibkr_failure_keeps_both_halves(db):
     await p._poll_once()
     good = p.snapshot()
 
-    p._read_flex = lambda _rec=None: None  # type: ignore[method-assign]
+    p._read_flex = lambda _rec=None: None
     await p._poll_once()
     after = p.snapshot()
 
@@ -374,7 +378,7 @@ async def test_loop_survives_a_poll_that_raises_outright(db, caplog):
         if len(calls) <= 2:
             raise RuntimeError("kaboom")
 
-    p._poll_once = _boom  # type: ignore[method-assign]
+    p._poll_once = _boom
     with caplog.at_level("WARNING"):
         p.start()
         try:
@@ -430,7 +434,8 @@ async def test_a_failed_resolution_is_not_cached(db):
     client = FakeClient(accounts=[])
     p = _poller(db, client)
     await p._poll_once()
-    assert p.account_id is None
+    first = p.account_id  # a local, so mypy's narrowing does not outlive the next poll
+    assert first is None
     assert "No IBKR account" in (p.snapshot().error or "")
 
     client._accounts = [{"accountId": "U7654321"}]

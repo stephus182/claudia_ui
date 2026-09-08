@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import panel as pn
@@ -16,7 +17,7 @@ from tests.conftest import _get_click_callback
 
 def _bar(**overrides):
     """An ActionBar with AsyncMock reconnects, a MagicMock error sink and an empty status."""
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "reconnect": {k: AsyncMock() for k in SERVICE_LABELS},
         "end_session": AsyncMock(),
         "on_error": MagicMock(),

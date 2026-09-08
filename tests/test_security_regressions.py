@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from panel.models.markup import HTML as HTMLModel
 
 # ── Fix #1 + #3 — env allowlist: secrets not in subprocess, CDP port present ──
 
@@ -70,6 +71,13 @@ async def test_sidecar_subprocess_env_excludes_secrets(tmp_path, monkeypatch):
 
 
 # ── Fix #4 — os.chmod called after token file refresh ────────────────────────
+
+
+def _rendered_text(pane) -> str:
+    """The text the browser would receive for a Markdown pane, from its bokeh model."""
+    model = pane.get_root()
+    assert isinstance(model, HTMLModel)
+    return model.text
 
 
 def test_gdrive_token_file_chmod_after_refresh(tmp_path):
@@ -446,7 +454,7 @@ def test_safe_markdown_neutralises_html(payload):
     """
     from claudia.panel_markdown import safe_markdown
 
-    text = safe_markdown(f"Output: {payload}").get_root().text
+    text = _rendered_text(safe_markdown(f"Output: {payload}"))
     assert not _decodes_to_markup(text), f"safe_markdown left executable markup: {text!r}"
 
 
@@ -458,7 +466,7 @@ def test_unsafe_markdown_would_be_vulnerable():
     """
     import panel as pn
 
-    text = pn.pane.Markdown(f"Output: {_XSS_PAYLOAD}").get_root().text
+    text = _rendered_text(pn.pane.Markdown(f"Output: {_XSS_PAYLOAD}"))
     assert _decodes_to_markup(text), (
         "Panel's default Markdown pane no longer renders raw HTML — re-check H-1's premise"
     )
@@ -891,5 +899,6 @@ def test_safe_text_renders_a_payload_as_literal_text():
 
     pane = safe_text("<img src=x onerror=alert(1)> **not bold**")
     model = pane.get_root(Document())
+    assert isinstance(model, HTMLModel)
     assert "&lt;img" in model.text
     assert "<img" not in model.text

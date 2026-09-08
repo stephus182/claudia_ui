@@ -387,7 +387,7 @@ ClaudIA is designed to run on any machine — all persistent state lives in a si
 
 ```bash
 pytest                                        # full suite — 1,183 unit tests, no IBKR gateway needed
-ruff check . && ruff format --check . && mypy claudia/   # lint, format, type gates — CI runs all four
+ruff check . && ruff format --check . && mypy   # lint, format, type gates — CI runs all four
 
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api   # opt-in; bills real Anthropic API calls
 ```

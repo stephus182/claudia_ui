@@ -7,6 +7,7 @@ whole value is telling those states apart, so each verdict is pinned here.
 
 import logging
 from dataclasses import replace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -55,7 +56,8 @@ def test_a_live_session_says_do_not_log_in_again():
 @pytest.mark.parametrize("field", ["competing", "collision"])
 def test_a_contested_session_is_reported_before_any_login_advice(field):
     """Another IBKR client holding the session must never read as 'free to log in'."""
-    code, headline, _ = verdict(GatewayState(reachable=True, **{field: True}))
+    contested: dict[str, Any] = {field: True}
+    code, headline, _ = verdict(GatewayState(reachable=True, **contested))
     assert code == EXIT_CONTESTED
     assert "another ibkr client" in headline.lower()
 

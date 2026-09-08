@@ -1805,6 +1805,7 @@ async def test_read_back_waits_before_reading():
     assert seen == [("sleep", _READBACK_DELAY_S), ("read", "555")]
     assert confirmed is True
     assert "Submitted" in line
+    assert status is not None
     assert status["order_status"] == "Submitted"
 
 
@@ -1813,12 +1814,19 @@ async def test_read_back_happens_after_the_dispatch_never_before():
     """A read taken before the POST would describe the pre-dispatch world."""
     ibkr_mod, client = _make_ibkr_mock()
     seen = []
-    client.place_order_and_confirm.side_effect = lambda *_a, **_kw: (
-        seen.append("dispatch") or [{"order_id": "777"}]
-    )
-    client.get_order_status.side_effect = lambda oid: (
-        seen.append("read") or {"order_status": "Submitted", "order_status_description": ""}
-    )
+
+    def _dispatch(*_a, **_kw):
+        """Record the POST and answer like a placed order."""
+        seen.append("dispatch")
+        return [{"order_id": "777"}]
+
+    def _read(oid):
+        """Record the read-back and answer like a submitted order."""
+        seen.append("read")
+        return {"order_status": "Submitted", "order_status_description": ""}
+
+    client.place_order_and_confirm.side_effect = _dispatch
+    client.get_order_status.side_effect = _read
     await _run(_make_action(), ibkr_mod)
     assert seen == ["dispatch", "read"]
 
@@ -2021,11 +2029,20 @@ async def test_the_live_book_is_read_after_the_wait_and_after_the_dispatch():
     """The wait comes first (a book read taken too early sees a not-yet-populated view),
     and the whole check follows the POST."""
     ibkr_mod, client = _make_ibkr_mock()
-    seen = []
-    client.place_order_and_confirm.side_effect = lambda *_a, **_kw: (
-        seen.append("dispatch") or [{"order_id": "999"}]
-    )
-    client.get_live_orders.side_effect = lambda: seen.append("live_orders") or [LIVE_ORDER]
+    seen: list[object] = []
+
+    def _dispatch(*_a, **_kw):
+        """Record the POST and answer like a placed order."""
+        seen.append("dispatch")
+        return [{"order_id": "999"}]
+
+    def _live_orders():
+        """Record the book read and answer with the one live order."""
+        seen.append("live_orders")
+        return [LIVE_ORDER]
+
+    client.place_order_and_confirm.side_effect = _dispatch
+    client.get_live_orders.side_effect = _live_orders
     send_status, _calls = _make_send_status_recorder()
 
     async def _fake_sleep(seconds):

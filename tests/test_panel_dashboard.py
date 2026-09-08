@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import pandas as pd
 import panel as pn
@@ -28,6 +29,7 @@ import claudia.panel_dashboard as pdash
 # under test does not do it — panel_app owns the single pn.extension call — so the suite
 # loads it here, matching what a served session provides.
 pn.extension("tabulator")
+
 
 from claudia import dashboard_data as dd  # noqa: E402
 from claudia.dashboard_poller import POLL_INTERVAL, STALE_AFTER  # noqa: E402
@@ -64,7 +66,7 @@ def _stats(lots=4, wins=2, losses=2, scratches=0, gross_win=1322.0, gross_loss=-
 
 def _ledger(**over):
     """A `LedgerSnapshot` in USD with the fields the KPI strip reads."""
-    fields = {
+    fields: dict[str, Any] = {
         "currency": "USD",
         "net_liquidation": 100000.0,
         "cash": 25000.0,
@@ -576,6 +578,7 @@ def test_a_blank_tile_shows_no_currency_code_and_no_sign():
 def test_pnl_colors_are_neutral_at_exactly_zero():
     """`value <= threshold` would paint a flat P&L red without the dead band."""
     tile = pdash.build_dashboard()._tiles["unrealised"]
+    assert tile.colors is not None
     thresholds = dict(tile.colors)
     assert thresholds[-0.005] == pdash._DOWN_COLOR
     assert thresholds[0.005] == pdash._FLAT_COLOR
@@ -971,6 +974,7 @@ def test_pct_unrealised_is_ibkr_over_ibkr_and_ties_to_their_screen():
     assert p.cost_basis == pytest.approx(19160.7502)
     assert p.pct_unrealised == pytest.approx(4.085, abs=0.001)
     # The identity that licenses the denominator.
+    assert p.cost_basis is not None
     assert p.market_value - p.cost_basis == pytest.approx(p.unrealised_pnl, abs=0.01)
     # IBKR sends multiplier 0.0 on a stock row; `parse_positions` normalises it to 1.0,
     # which is what keeps Basis Δ from blanking on every equity position.
@@ -1226,7 +1230,7 @@ def test_refresh_never_raises_and_keeps_the_previous_frame(view, caplog):
             raise RuntimeError("bad snapshot")
 
     with caplog.at_level("ERROR"):
-        view.refresh(_Exploding())  # type: ignore[arg-type]
+        view.refresh(_Exploding())
     assert view._tiles["net_liq"].value == before
     assert "repaint failed" in caplog.text
 
@@ -1270,7 +1274,7 @@ def _order(**kw):
     """A LiveOrder with the fields the order table renders."""
     from claudia.dashboard_data import LiveOrder
 
-    base = {
+    base: dict[str, Any] = {
         "order_id": "314390101",
         "symbol": "AAPL",
         "side": "BUY",

@@ -61,10 +61,9 @@ jobs:
         run: ruff format --check .
 
       - name: Type check (mypy)
-        # `mypy claudia/` is the gate CLAUDE.md documents. pyproject's `files` also lists
-        # tests/, and a bare `mypy` reported 80 errors there on 2026-09-08 — typing the test
-        # suite is the one gate still looser than ibkr_core_mcp's, which type-checks its tests.
-        run: mypy claudia/
+        # Bare `mypy`: pyproject's `files` covers claudia/ and tests/, the same scope as
+        # ibkr_core_mcp's gate. (The suite carried 80 errors until 2026-09-08; it is clean.)
+        run: mypy
 
       - name: Test (pytest, unit only)
         run: pytest -m "not integration" -v
