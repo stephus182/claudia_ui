@@ -132,10 +132,12 @@ ibkr_core_mcp's (aligned 2026-09-08): every push and PR to `main` runs them on U
 Python 3.11 and 3.12, with ibkr_core_mcp checked out beside the repo and installed by the
 Dev Setup step 3 command. `mypy` runs in **strict mode** over `tests/` as well as `claudia/`
 (both since 2026-09-08, the same configuration as ibkr_core_mcp; the fetchers in
-`dashboard_data` take read-only Protocols, so a test double type-checks without casts). A green local run is what makes a green CI run, and a red CI run
-is stopped at its first failing step — `ruff format --check` failing hides whatever mypy or
-pytest would have said, so run the whole line locally before pushing. `ruff format` is a
-gate since that date; the whole repo was reformatted in one dedicated commit first. CI skips
+`dashboard_data` take read-only Protocols, so a test double type-checks without casts).
+
+**Run the whole line locally before pushing, in CI's order.** CI stops at its first failing
+step, so a red `ruff format --check` hides whatever mypy or pytest would have said — that is
+how ibkr_core_mcp run 34082479743 masked two real mypy errors on 2026-09-07. `ruff format` is
+a gate since that date; the whole repo was reformatted in one dedicated commit first. CI skips
 more tests than a local run does (29 against 4 on 2026-09-08): the extra skips are the suites
 keyed on git-ignored account fixtures and the local conversation corpus, absent from a fresh
 clone by design — not a regression. Three git-ignored personal documents are absent there

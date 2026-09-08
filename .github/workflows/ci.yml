@@ -61,8 +61,8 @@ jobs:
         run: ruff format --check .
 
       - name: Type check (mypy)
-        # Bare `mypy`: pyproject's `files` covers claudia/ and tests/, the same scope as
-        # ibkr_core_mcp's gate. (The suite carried 80 errors until 2026-09-08; it is clean.)
+        # Bare `mypy`, strict, over claudia/ and tests/ (pyproject `files`) — the same scope
+        # and mode as ibkr_core_mcp's gate. The suite carried 80 errors until 2026-09-08.
         run: mypy
 
       - name: Test (pytest, unit only)
