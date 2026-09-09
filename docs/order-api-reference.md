@@ -203,11 +203,13 @@ Established before a live ES buy-stop test, from IBKR's own pages (local copies 
 
 Source (536-B requirement): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
 
-## Attached profit taker (parent → child) orders — API support (scraped 2026-09-06)
+## Attached profit taker (parent → child) orders — API support (scraped 2026-09-06, extended 2026-09-08)
 
 The question: *sell ES at 7725 with a "profit taker" buy at 7700 that only comes live when the
 sell fills* — a one-child bracket. **The Web API supports it. ClaudIA cannot send it today.**
-Local copies of every page cited here are in `.firecrawl/ibkr/*-2026-09-06.md` (git-ignored).
+Local copies of every page cited here are in `.firecrawl/ibkr/*-2026-09-06.md` and
+`*-2026-09-08.md` (git-ignored). The 09-08 pass re-fetched the six 09-06 pages (byte-identical) and
+added twenty more, including IBKR's own Web API bracket walkthrough and the newer reference site.
 
 ### What IBKR calls it
 
@@ -269,33 +271,94 @@ The user's example, in IBKR's documented shape (ES Sep-2026 conid 649180671 as m
 for USFUT products that do not include this field will be rejected"* per ticket and never
 mentions children. Probe it on `whatif` before the first live send.
 
-### What the pages do not say — measure, do not assume
+### What the 2026-09-08 scrape settled, and what stays unwritten — measure the rest
 
-1. **A one-child bracket.** Every Web API example has two children. The product definition
-   (a Profit Taker attachable alone in TWS/Mobile) says the order model allows one; the API pages
-   neither show nor forbid it.
-2. **Mixed time-in-force** (parent `DAY`, child `GTC`, or the reverse): undocumented.
-3. **The held child on the read side.** Neither `/iserver/account/orders` nor
-   `/iserver/account/order/status/{id}` documents a parent-link field. `child_order_type` on the
-   status endpoint is about *hedges* (`0` none, `A` attached child hedge, `B` beta hedge), not
-   brackets. So the Orders tab cannot label a child as a child from documented fields, and the
-   status a held child reports before the parent fills is undocumented.
-   Sources: <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/get-open-orders.md>,
-   <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/get-order-status.md>.
-4. **Modify / cancel of one leg** by its own order id, and whether cancelling the parent cancels
-   the child: the product pages imply the child dies with the parent; the API pages are silent.
-5. **Partial fill of the parent**: the product page says the child *"uses the same order quantity
-   as the parent"*; the API child carries its own `quantity`. What IBKR does when 1 of 2 fills is
-   undocumented.
-6. **Response shape**: the success example is one `order_id`; whether a bracket returns one entry
-   per ticket, and whether the reply chain (`/iserver/reply/{id}`) fires once or per ticket, is
-   undocumented. Our `place_order_and_confirm` loop keys on `response[0]` only.
+Four of the six items the 09-06 pass listed as undocumented now have a documented expectation.
+An expectation is confirmed live before it is relied on; it is not re-derived.
+
+**Documented:**
+
+- **Response: one entry per ticket, and the reply chain is per ticket, index-aligned.** The
+  reference schema names four response variants. *orderSubmitSuccess*: *"A successful submission
+  of one or more order tickets."* *orderReplyMessage*: *"An array containing objects that each
+  deliver the order reply messages emitted against one order ticket in the submission request's
+  array. Indicies of the order reply message objects in this array correspond to the indicies of
+  the order tickets in the submission request's array."* So a bracket can return a reply for the
+  child at index 1 while index 0 is terminal, and `place_order_and_confirm`'s loop, which keys on
+  `response[0]` only, would never answer it. IBKR's own worked example (IBKR API group, 2021, the
+  only place the per-ticket keys appear) returns:
+
+  ```json
+  [{"order_id": "1763237133", "order_status": "Submitted",    "local_order_id": "66807300"},
+   {"order_id": "1763237135", "order_status": "PreSubmitted", "parent_order_id": "1763237133"}]
+  ```
+
+  with the gloss *"order_id = system generated order Id(s) for each order. local_order_id = cOID.
+  parent_order_id = order_Id of the parent order."* Those two keys are absent from the formal
+  schema (three properties on the success object), so they are an expectation to confirm, not a
+  contract.
+  Sources: <https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order>,
+  <https://www.interactivebrokers.com/campus/ibkr-quant-news/how-to-code-a-bracket-order-in-the-web-api/>.
+- **The held child's status is `PreSubmitted`** in that example, defined as *"accepted by the
+  system (simulated orders) or an exchange (native orders) and that this order has yet to be
+  elected"*. `_CONFIRMED["place"]` in `order_flow.py` counts `PreSubmitted` as a working order;
+  for a bracket child it means *held*, and a read-back must say so rather than "working".
+  Source: <https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status-value.md>.
+- **The mechanism, in IBKR's words:** *"When an order is attached to another, the system will keep
+  the child order 'on hold' until its parent fills. Once the parent order is completely filled, its
+  children will automatically become active."* (TWS API page; same order model.) The sequential
+  form has a documented failure the single-request form cannot have: *"it will be necessary to
+  include a small delay of 50 ms or less after placing the parent order for processing, before
+  placing the child order. Otherwise the error '10006: Missing parent order' will be triggered."*
+  Decision D3 (one request) stands on that.
+  Sources: <https://interactivebrokers.github.io/tws-api/order_submission.html#order_attach>,
+  <https://ibkrcampus.com/docs/general/order-types/complex-orders/hedging.md>.
+- **Read side: two candidates the 09-06 pass missed.** The Live Orders *guide* example carries
+  `"order_ref": "Order123"`, a key absent from the reference's field list; if it echoes `cOID`, a
+  parent is findable in the book by its `CLAUDIA-<ms>` reference. And the two `child_order_type`
+  pages disagree: the reference says hedges (*"A = Attached child hedge order"*), the v1 page
+  says *"A=attached, B=beta-hedge, 0=No Child"*. Whether a bracket child reads `A` is a
+  measurement.
+  Sources: <https://ibkrcampus.com/docs/web-api/trading/orders/monitoring-live-orders.md>,
+  <https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md>.
+- **The parent need not be a limit order.** IBKR staff, in the Mosaic lesson's comments: *"the
+  primary order does not necessarily need to be a Limit order"*; IBKR's Web API bracket example
+  uses a `MKT` parent. Each child sets `outsideRTH` for itself in every IBKR UI (the Desktop
+  lesson: the profit taker asks *"if they would like the order to be active outside regular
+  trading hours"*, the stop loss *"is not available outside regular trading hours"*).
+  Sources: <https://www.interactivebrokers.com/campus/trading-lessons/bracket-orders-for-tws-mosaic-2/>,
+  <https://www.interactivebrokers.com/campus/trading-lessons/bracket-orders-for-ibkr-desktop/>.
+- **A Profit Taker alone is a first-class product** on every IBKR front end (TWS: *"Check the
+  'Profit Taker' box"*; Mobile: *"Choose from Profit Taker, Stop Loss or Bracket"*), and the order
+  types catalogue lists Bracket for *"Stocks, ETFs, Options, Futures, FOPs, Currencies, Warrants,
+  EFPs, Combos"* on *"TWS, IBKR Desktop, and IBKR Mobile"*. The API pages still show no one-child
+  example; the order model allows one.
+  Source: <https://www.interactivebrokers.com/en/trading/ordertypes.php> (Bracket).
+
+**Still unwritten anywhere IBKR publishes — measure, do not assume:**
+
+1. **A one-child bracket through the Web API.** Every API example has two children.
+2. **Mixed time-in-force** across parent and child.
+3. **Cancelling the parent.** No IBKR page states what happens to a held child. The product
+   pages describe only the *active* children as an OCA pair (*"When one fills, the other is
+   canceled"*). Community threads say the child dies with the parent; that is not evidence.
+4. **Modifying the parent.** The modify body must *"mirror the content of the original order"*
+   with *"All JSON keys from the initial order submission"* present; whether that includes `cOID`,
+   and whether the held child survives a parent modify, is unstated. This matters today, not
+   later: `propose_modify` already exists and will be pointed at a bracketed parent.
+5. **Partial fill of the parent.** *"Once the parent order is completely filled"* is the only
+   statement; what a 1-of-2 fill does to the held child is not.
+6. **Whether a bracket is accepted or rejected as a unit.** The two reject variants
+   (`orderSubmitError`, `advancedOrderReject`) are single objects with no index, which suggests a
+   whole-request verdict. Suggests. A parent accepted with its child refused is the one outcome
+   the staging text must never mislabel as "not placed".
+7. **`manualIndicator` on the child** (above).
 
 After the parent fills, the child is an ordinary order: a **LMT** profit taker on ES is native to
 Globex and rests around the clock; a **STP** child is IBKR-simulated and RTH-only by default —
 § Stop orders on US futures applies to the child too, so a stop-loss leg needs `outsideRTH`.
 
-### Why ClaudIA cannot send it today (2026-09-06)
+### Why ClaudIA cannot send it today (2026-09-06, re-checked against the 2026-09-08 scrape)
 
 Every layer carries exactly one ticket:
 
@@ -303,10 +366,10 @@ Every layer carries exactly one ticket:
 |---|---|---|
 | Proposal schema | `claudia/proposal_tools.py` | `propose_order` is 11 closed keys, no child; a strict-schema change needs the live-API probe (`live_api` marker) |
 | Order body | `claudia/order_flow.py` (`order_body`) | one dict; `cOID` is set, `parentId` never |
-| Client | `ibkr_core_mcp/client.py` `place_order(account_id, order: dict)` and `get_order_preview` | both wrap the single dict as `{"orders": [api_order]}` — a caller cannot pass two tickets |
+| Client | `ibkr_core_mcp/client.py` `place_order(account_id, order: dict)` and `get_order_preview` | both wrap the single dict as `{"orders": [api_order]}` — a caller cannot pass two tickets. `place_order_and_confirm` answers replies for `response[0]` only; the reply chain is documented as one entry per ticket, index-aligned (above), so a child's reply would go unanswered and the child be dropped silently |
 | Gate 2 | `ibkr_core_mcp/order_confirm.py` | renders one order; the human must see **both** legs before **SEND TO IBKR** |
-| Read-back | `order_flow._read_back` | one order id |
-| Orders tab | `claudia/panel_dashboard.py` | no parent column (and no documented field to fill one — item 3) |
+| Read-back | `order_flow._read_back` | one order id; the documented bracket response carries one entry per ticket (above), so both ids are available to read back — the child's `PreSubmitted` must read as *held*, not *working* |
+| Orders tab | `claudia/panel_dashboard.py` | no parent column; two candidate fields to measure before adding one — `order_ref` and `child_order_type` (above) |
 | Execution reports | `claudia/execution_listener.py` | already correct: both legs of a bracket are reported since the 2026-09-04 fix |
 
 Hard Rule 1 is unaffected by any of this: a bracket is still one physical click on a request the
