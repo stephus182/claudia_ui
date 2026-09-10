@@ -145,7 +145,10 @@ async def test_render_cancel_proposal_confirm_click_calls_cancel_core():
     with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
         await _get_click_callback(cancel_btn)(None)
 
-    client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
+    args, kwargs = client.cancel_order.call_args
+    assert args == ("U12345", "555")
+    # The core hands the dialog IBKR-shaped detail (gap #40), never the proposal dict.
+    assert kwargs["order_details"]["side"] == "BUY" and "order_id" not in kwargs["order_details"]
 
 
 @pytest.mark.asyncio

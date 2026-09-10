@@ -137,6 +137,112 @@ def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | 
     return multiplier, currency, " · ".join(parts)
 
 
+def _number_or_none(value: Any) -> float | None:
+    """IBKR's status endpoint reports prices as strings — '7900.00', or '' when absent."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(str(value).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _current_order_description(ibkr: Any, order_id: str) -> str | None:
+    """IBKR's own one-line description of a working order (`order_description_with_contract`,
+    e.g. "Buy 1 ES Sep18'26 Stop 7900.00, GTC"), for the modify dialog's `Currently at IBKR`
+    row. A failed read returns None — the dialog then shows the request alone; it never
+    blocks."""
+    try:
+        status = ibkr.get_order_status(order_id)
+    except Exception as exc:
+        log.warning("Order %s: status read for the dialog failed: %s", order_id, exc)
+        return None
+    if not isinstance(status, dict):
+        return None
+    text = status.get("order_description_with_contract")
+    return str(text) if text else None
+
+
+def _apply_futures_display_facts(ibkr: Any, order: dict[str, Any], conid: int) -> None:
+    """Attach the futures label, multiplier and currency as display-only keys (gap #34 on the
+    place path since 2026-09-04; modify and cancel since 2026-09-10)."""
+    multiplier, currency, contract_label = _futures_contract_facts(ibkr, conid)
+    if contract_label:
+        order["_companyName"] = contract_label
+    if multiplier is not None:
+        order["_multiplier"] = multiplier
+    else:
+        order["_multiplier_unknown"] = True
+    if currency:
+        order["_currency"] = currency
+
+
+def _cancel_display_details(ibkr: Any, proposal: dict[str, Any]) -> dict[str, Any]:
+    """The IBKR-shaped display dict for the cancel dialog (gap #40).
+
+    Read from the live order status when it can be read — side, size, type, prices, TIF,
+    outside-RTH and IBKR's own description — so the dialog shows the order as IBKR holds
+    it; on a failed read, from the proposal's own fields, so a cancel is never blocked by a
+    read. Futures get the contract label, multiplier and currency like the place path.
+    """
+    order_id = str(proposal.get("order_id", ""))
+    status: dict[str, Any] | None = None
+    try:
+        raw = ibkr.get_order_status(order_id)
+        status = raw if isinstance(raw, dict) else None
+    except Exception as exc:
+        log.warning("Order %s: status read for the cancel dialog failed: %s", order_id, exc)
+    if status:
+        side_raw = str(status.get("side", "")).upper()
+        side = {"B": "BUY", "S": "SELL"}.get(side_raw, side_raw or str(proposal.get("action", "?")))
+        order_type = str(status.get("order_type") or proposal.get("order_type") or "?")
+        details: dict[str, Any] = {
+            "ticker": status.get("symbol") or proposal.get("symbol", "?"),
+            "side": side,
+            "quantity": status.get("size") or proposal.get("quantity", "?"),
+            "orderType": order_type,
+            "tif": status.get("tif") or proposal.get("tif", "?"),
+        }
+        limit_price = _number_or_none(status.get("limit_price"))
+        stop_price = _number_or_none(status.get("stop_price"))
+        if order_type == "STOP_LIMIT":
+            if limit_price is not None:
+                details["price"] = limit_price
+            if stop_price is not None:
+                details["auxPrice"] = stop_price
+        elif order_type == "STP" and stop_price is not None:
+            details["price"] = stop_price
+        elif limit_price is not None:
+            details["price"] = limit_price
+        if isinstance(status.get("outside_rth"), bool):
+            details["outsideRTH"] = status["outside_rth"]
+        text = status.get("order_description_with_contract")
+        if text:
+            details["_current_description"] = str(text)
+        conid = status.get("conid")
+        if str(status.get("sec_type", "")).upper() in ("FUT", "FOP") and conid is not None:
+            _apply_futures_display_facts(ibkr, details, int(conid))
+        return details
+    details = {
+        "ticker": proposal.get("symbol", "?"),
+        "side": proposal.get("action", "?"),
+        "quantity": proposal.get("quantity", "?"),
+        "orderType": proposal.get("order_type", "?"),
+        "tif": proposal.get("tif", "?"),
+    }
+    proposal_type = proposal.get("order_type")
+    if proposal_type == "STOP_LIMIT":
+        if proposal.get("limit_price") is not None:
+            details["price"] = proposal["limit_price"]
+        if proposal.get("stop_price") is not None:
+            details["auxPrice"] = proposal["stop_price"]
+    elif proposal_type == "STP" and proposal.get("stop_price") is not None:
+        details["price"] = proposal["stop_price"]
+    elif proposal.get("limit_price") is not None:
+        details["price"] = proposal["limit_price"]
+    return details
+
+
 def _apply_outside_rth(order_body: dict[str, Any], proposal: dict[str, Any]) -> None:
     """Copy the proposal's `outside_rth` into the body as IBKR's `outsideRTH` — only when stated.
 
@@ -1271,7 +1377,10 @@ async def _execute_cancel_order_core(
         account_id = _resolve_account_id(accounts)
 
         log.info("Cancelling order %s (%s)", order_id, symbol)
-        result = ibkr.cancel_order(account_id, order_id, order_details=proposal)
+        # One read-only status GET before Touch ID: the dialog shows the order as IBKR holds
+        # it, not the proposal's copy (gap #40). A failed read falls back to the proposal.
+        order_details = _cancel_display_details(ibkr, proposal)
+        result = ibkr.cancel_order(account_id, order_id, order_details=order_details)
         dispatched = True
 
         # Same 200-with-rejection classification as the place path — cancel_order
@@ -1489,6 +1598,14 @@ async def _execute_modify_order_core(
             if stop_price is not None:
                 order_body["auxPrice"] = float(stop_price)
         _apply_outside_rth(order_body, proposal)
+        if sec_type in ("FUT", "FOP"):
+            # Same facts as the place path (gap #34): the label carries the contract month,
+            # the multiplier turns the price into a notional, the currency is an ISO code.
+            _apply_futures_display_facts(ibkr, order_body, int(conid))
+        order_body["_changes"] = list(proposal.get("changes") or [])
+        current = _current_order_description(ibkr, str(order_id))
+        if current:
+            order_body["_current_description"] = current
 
         accounts = ibkr.get_accounts()
         account_id = _resolve_account_id(accounts)

@@ -1282,8 +1282,12 @@ async def test_execute_cancel_order_rejection_payload_reports_failure():
     assert not any("confirmed cancelled" in c.lower() for c in contents)
     store.add_decision.assert_not_called()
     # Nothing was dispatched, so there is nothing to read back — and the rejection's
-    # own error text is the only evidence available (no order exists to query).
-    client.get_order_status.assert_not_called()
+    # own error text is the only evidence available (no order exists to query). The one
+    # status read is the dialog's, BEFORE the write (gap #40); none may follow it.
+    assert [c[0] for c in client.method_calls if c[0] in ("get_order_status", "cancel_order")] == [
+        "get_order_status",
+        "cancel_order",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1303,7 +1307,12 @@ async def test_execute_modify_order_rejection_payload_reports_failure():
     assert any("Modify REJECTED" in c for c in contents)
     assert not any("Verified via get_order_status" in c for c in contents)
     store.add_decision.assert_not_called()
-    client.get_order_status.assert_not_called()
+    # The one status read is the dialog's, BEFORE the write (gap #40); no read-back follows.
+    assert [
+        c[0]
+        for c in client.method_calls
+        if c[0] in ("get_order_status", "modify_order_and_confirm")
+    ] == ["get_order_status", "modify_order_and_confirm"]
 
 
 # ── execute_cancel_order ──────────────────────────────────────────────────────
@@ -1344,7 +1353,15 @@ async def test_execute_cancel_order_calls_client_with_account_and_order_id():
     }
     action = _make_cancel_action(proposal)
     await _run_cancel(action, ibkr_mod)
-    client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
+    args, kwargs = client.cancel_order.call_args
+    assert args == ("U12345", "555")
+    # The dialog detail is IBKR-shaped and read from the live status (the shared read-back
+    # stub says LMT even though the proposal says MKT — IBKR's record wins on the dialog).
+    details = kwargs["order_details"]
+    assert (
+        details["side"] == "BUY" and details["ticker"] == "AAPL" and details["orderType"] == "LMT"
+    )
+    assert "order_id" not in details and "reason" not in details
 
 
 @pytest.mark.asyncio
@@ -1701,7 +1718,15 @@ async def test_execute_cancel_order_core_calls_client_with_account_and_order_id(
         _no_readback_delay(),
     ):
         await _execute_cancel_order_core(proposal, send_status, session_id="s1", store=None)
-    client.cancel_order.assert_called_once_with("U12345", "555", order_details=proposal)
+    args, kwargs = client.cancel_order.call_args
+    assert args == ("U12345", "555")
+    # The dialog detail is IBKR-shaped and read from the live status (the shared read-back
+    # stub says LMT even though the proposal says MKT — IBKR's record wins on the dialog).
+    details = kwargs["order_details"]
+    assert (
+        details["side"] == "BUY" and details["ticker"] == "AAPL" and details["orderType"] == "LMT"
+    )
+    assert "order_id" not in details and "reason" not in details
 
 
 def test_execute_cancel_order_core_never_touches_action_or_removes_anything():
@@ -2081,7 +2106,8 @@ async def test_the_modify_path_does_not_use_the_live_book_as_evidence():
     await _run_modify(_make_modify_action(), ibkr_mod)
 
     client.get_live_orders.assert_not_called()
-    client.get_order_status.assert_called_once()
+    # Two per-order reads: the dialog's description before Touch ID, then the read-back.
+    assert client.get_order_status.call_count == 2
 
 
 # ── cancel ───────────────────────────────────────────────────────────────────
@@ -2938,3 +2964,136 @@ def test_reply_first_line_takes_the_first_non_empty_line_and_truncates():
     long = "x" * 130
     assert _reply_first_line(long) == "x" * 119 + "…"
     assert _reply_first_line("") == ""
+
+
+_ES_STATUS = {
+    "order_status": "PreSubmitted",
+    "side": "B",
+    "size": "1.0",
+    "order_type": "STP",
+    "tif": "GTC",
+    "limit_price": "",
+    "stop_price": "7900.00",
+    "outside_rth": True,
+    "symbol": "ES",
+    "sec_type": "FUT",
+    "conid": 649180671,
+    "order_description_with_contract": "Buy 1 ES Sep18'26 Stop 7900.00, GTC",
+}
+_ES_INFO = {
+    "multiplier": "50",
+    "currency": "USD",
+    "local_symbol": "ESU6",
+    "maturity_date": "20260918",
+}
+_ES_CANCEL = {
+    "order_id": "975324733",
+    "symbol": "ES",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "STP",
+    "limit_price": None,
+    "stop_price": 7900.0,
+    "tif": "GTC",
+    "reason": "disposable test stop",
+}
+
+
+@pytest.mark.asyncio
+async def test_execute_cancel_order_dialog_details_come_from_the_live_status():
+    """Gap #40: the cancel dialog shows the order as IBKR holds it — IBKR-shaped keys, the
+    futures facts and IBKR's own description — never the raw proposal (screenshot 2026-09-10)."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    _set_readback(client, **_ES_STATUS)
+    client.get_contract_info.return_value = _ES_INFO
+    await _run_cancel(_make_cancel_action(_ES_CANCEL), ibkr_mod)
+    args, kwargs = client.cancel_order.call_args
+    assert args == ("U12345", "975324733")
+    details = kwargs["order_details"]
+    assert details["side"] == "BUY" and details["orderType"] == "STP" and details["price"] == 7900.0
+    assert details["quantity"] == "1.0" and details["tif"] == "GTC" and details["ticker"] == "ES"
+    assert details["outsideRTH"] is True
+    assert details["_current_description"] == "Buy 1 ES Sep18'26 Stop 7900.00, GTC"
+    assert "ESU6" in details["_companyName"]
+    assert details["_multiplier"] == 50.0 and details["_currency"] == "USD"
+    assert "reason" not in details and "order_id" not in details and "limit_price" not in details
+
+
+@pytest.mark.asyncio
+async def test_execute_cancel_order_falls_back_to_the_proposal_when_the_status_read_fails():
+    """A cancel is never blocked by a read: the dialog then shows the proposal's own values."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.get_order_status.side_effect = RuntimeError("HTTP 500")
+    await _run_cancel(_make_cancel_action(_ES_CANCEL), ibkr_mod)
+    details = client.cancel_order.call_args.kwargs["order_details"]
+    assert details == {
+        "ticker": "ES",
+        "side": "BUY",
+        "quantity": 1,
+        "orderType": "STP",
+        "tif": "GTC",
+        "price": 7900.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_modify_order_body_carries_changes_and_the_ibkr_description():
+    """The modify body carries the proposal's `changes` and IBKR's current description as
+    display-only keys, and nothing futures-specific on a stock."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    _set_readback(client, order_description_with_contract="Buy 1 AAPL Limit 100.00, GTC")
+    await _run_modify(_make_modify_action(), ibkr_mod)
+    order_body = client.modify_order_and_confirm.call_args.args[2]
+    assert order_body["_changes"] == [{"field": "limit_price", "previous_value": 100.0}]
+    assert order_body["_current_description"] == "Buy 1 AAPL Limit 100.00, GTC"
+    assert "_multiplier" not in order_body and "_companyName" not in order_body  # STK
+
+
+@pytest.mark.asyncio
+async def test_execute_modify_order_fut_carries_the_contract_facts():
+    """On a future the modify body gets the same label, multiplier and currency as place;
+    manualIndicator stays in the body for IBKR but never reaches the dialog rows."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.get_contract_info.return_value = _ES_INFO
+    action = _make_modify_action(
+        {
+            "order_id": "975324733",
+            "conid": 649180671,
+            "symbol": "ES",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "STP",
+            "limit_price": None,
+            "stop_price": 7895.0,
+            "tif": "GTC",
+            "sec_type": "FUT",
+            "outside_rth": True,
+            "changes": [{"field": "stop_price", "previous_value": 7900.0}],
+        }
+    )
+    await _run_modify(action, ibkr_mod)
+    order_body = client.modify_order_and_confirm.call_args.args[2]
+    client.get_contract_info.assert_called_once_with(649180671)
+    assert "ESU6" in order_body["_companyName"] and "2026-09-18" in order_body["_companyName"]
+    assert order_body["_multiplier"] == 50.0 and order_body["_currency"] == "USD"
+    assert order_body["manualIndicator"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_modify_order_status_read_failure_skips_the_description_row():
+    """A failed status read before the dialog drops the description row and blocks nothing."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.get_order_status.side_effect = RuntimeError("HTTP 500")
+    await _run_modify(_make_modify_action(), ibkr_mod)
+    client.modify_order_and_confirm.assert_called_once()
+    assert "_current_description" not in client.modify_order_and_confirm.call_args.args[2]
+
+
+def test_number_or_none_parses_ibkr_price_strings():
+    """IBKR's status endpoint reports prices as strings — '7900.00', or '' when absent."""
+    from claudia.order_flow import _number_or_none
+
+    assert _number_or_none("7900.00") == 7900.0
+    assert _number_or_none("1,234.5") == 1234.5
+    assert _number_or_none("") is None and _number_or_none(None) is None
+    assert _number_or_none("n/a") is None
