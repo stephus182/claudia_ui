@@ -59,10 +59,13 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from claudia.contract_identity import ContractIdentity, ContractInfoSource, contract_identity
 from claudia.dashboard_data import (
+    FUTURES_CLASSES,
     DashboardSnapshot,
     LedgerSnapshot,
     LedgerSource,
+    LiveOrder,
     OrderSource,
     Position,
     PositionSource,
@@ -84,9 +87,16 @@ log = logging.getLogger(__name__)
 
 
 class DashboardClient(
-    LedgerSource, PositionSource, QuoteSource, OrderSource, TradeSource, Protocol
+    LedgerSource,
+    PositionSource,
+    QuoteSource,
+    OrderSource,
+    TradeSource,
+    ContractInfoSource,
+    Protocol,
 ):
-    """The read-only slice of `IBKRClient` the poller uses: six reads, nothing that writes.
+    """The read-only slice of `IBKRClient` the poller uses: seven reads, nothing that writes
+    (the seventh, contract info, names a futures contract once per conid — 2026-09-10).
 
     `IBKRClient` satisfies it structurally. The test double satisfies it by defining the
     same six, raising from the ones a test wants to fail — the quote and fill reads are
@@ -273,11 +283,13 @@ class DashboardPoller:
         # take a perfectly good ledger down with it, so `fetch_orders` returns None and
         # the view says "not established" instead of drawing an empty book.
         orders = await asyncio.to_thread(fetch_orders, self._client)
+        identities = await asyncio.to_thread(self._read_identities, positions, orders)
         self._snapshot = DashboardSnapshot(
             as_of=datetime.now(UTC),
             ledger=ledger,
             positions=positions,
             orders=orders,
+            identities=identities,
             error=None,
             **flex,
         )
@@ -306,6 +318,7 @@ class DashboardPoller:
             ledger=previous.ledger,
             positions=previous.positions,
             orders=previous.orders,
+            identities=previous.identities,
             error=error,
             **flex,
         )
@@ -397,6 +410,28 @@ class DashboardPoller:
         except Exception as exc:
             log.warning("Dashboard Flex read failed: %s", exc)
             return None
+
+    def _read_identities(
+        self, positions: tuple[Position, ...], orders: tuple[LiveOrder, ...] | None
+    ) -> dict[int, ContractIdentity]:
+        """Name every futures contract on the book in IBKR's own terms (design 2026-09-10).
+
+        One contract-info GET per conid the process has not seen yet; `contract_identity`
+        caches and never raises, so a failed read costs the row its local symbol for this
+        poll and nothing else.
+        """
+        conids = [p.conid for p in positions if p.asset_class.upper() in FUTURES_CLASSES]
+        conids += [
+            o.conid
+            for o in (orders or ())
+            if o.conid is not None and o.sec_type.upper() in FUTURES_CLASSES
+        ]
+        identities: dict[int, ContractIdentity] = {}
+        for conid in dict.fromkeys(conids):
+            identity = contract_identity(self._client, conid)
+            if identity is not None:
+                identities[conid] = identity
+        return identities
 
     def _read_account(self) -> tuple[LedgerSnapshot | None, tuple[Position, ...]]:
         """Resolve the account if needed, then read the ledger and positions.

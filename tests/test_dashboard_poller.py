@@ -144,6 +144,8 @@ class FakeClient:
         self.position_pages: list[int] = []
         self.order_calls = 0
         self.trade_calls = 0
+        self.contract_info_calls = 0
+        self.contract_info_fails = False
         self.trades = trades
         self._positions = [_POSITION] if positions is None else positions
         self._accounts = (
@@ -193,6 +195,20 @@ class FakeClient:
         if self.trades is _RAISE:
             raise ConnectionError("trades endpoint unreachable")
         return self.trades
+
+    def get_contract_info(self, conid):
+        """Contract info for a future (the ES payload measured 2026-09-10), counting the call."""
+        self.contract_info_calls += 1
+        if self.contract_info_fails:
+            raise ConnectionError("contract info down")
+        return {
+            "local_symbol": "ESU6",
+            "contract_month": "202609",
+            "maturity_date": "20260918",
+            "company_name": "E-mini S&P 500",
+            "multiplier": "50",
+            "currency": "USD",
+        }
 
 
 def _poller(db, client, **kw):
@@ -784,3 +800,59 @@ async def test_a_closed_position_triggers_a_refetch(db, monkeypatch):
     await poller._poll_once()
 
     assert client.trade_calls == 2, "a new realised figure must refetch the fills"
+
+
+_ES_POSITION = {
+    **_POSITION,
+    "conid": 649180671,
+    "ticker": "ES",
+    "contractDesc": "ES SEP2026",
+    "assetClass": "FUT",
+    "name": "E-mini S&P 500",
+    "fullName": "ES Sep18'26",
+}
+
+
+@pytest.mark.asyncio
+async def test_poll_names_every_futures_contract_once(db):
+    """Gap #37: a futures position's identity is read once per conid and published with
+    the snapshot; a second poll hits the cache."""
+    from claudia import contract_identity as ci
+
+    ci.clear_cache()
+    client = FakeClient(positions=[_ES_POSITION])
+    poller = _poller(db, client)
+    await poller._poll_once()
+    assert poller.snapshot().identities[649180671].local_symbol == "ESU6"
+    await poller._poll_once()
+    assert client.contract_info_calls == 1
+    ci.clear_cache()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_contract_read_costs_only_the_identity(db):
+    """The poll still publishes positions and orders; identities is just empty."""
+    from claudia import contract_identity as ci
+
+    ci.clear_cache()
+    client = FakeClient(positions=[_ES_POSITION])
+    client.contract_info_fails = True
+    poller = _poller(db, client)
+    await poller._poll_once()
+    snap = poller.snapshot()
+    assert snap.error is None and len(snap.positions) == 1 and dict(snap.identities) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_stale_poll_carries_the_identities_forward(db):
+    """A contract's name does not go stale; the failed-poll republish keeps it."""
+    from claudia import contract_identity as ci
+
+    ci.clear_cache()
+    client = FakeClient(positions=[_ES_POSITION], fail_from=2)
+    poller = _poller(db, client)
+    await poller._poll_once()
+    await poller._poll_once()
+    snap = poller.snapshot()
+    assert snap.error is not None and snap.identities[649180671].local_symbol == "ESU6"
+    ci.clear_cache()
