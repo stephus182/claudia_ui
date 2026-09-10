@@ -123,12 +123,15 @@ trades from 2024 and 2025 alongside the USD ones (measured 2026-08-04), even tho
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+
+from claudia.contract_identity import ContractIdentity
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from claudia.live_realised import LiveFill
@@ -182,6 +185,7 @@ class OrderSource(Protocol):
 # IBKR returns positions 30 to a page and gives no total count, so "is there more?" is
 # "did this page come back full?". The cap exists so a malformed response that keeps
 # returning full pages cannot spin forever; 40 pages is 1,200 positions.
+FUTURES_CLASSES = ("FUT", "FOP")
 _POSITIONS_PAGE_SIZE = 30
 _MAX_POSITION_PAGES = 40
 
@@ -477,6 +481,9 @@ class Position:
     FIFO-matched over this account's own fills, with no cost basis adjustment of any
     kind. It is None whenever it could not be reconstructed with certainty — see
     `economic_entries`, which would rather show nothing than a plausible wrong entry.
+
+    `full_name` is IBKR's `fullName` — a stock's ticker, or ticker + month for a future
+    (`ES Sep18'26`, `CL Sep'26`); `position_display_name` appends that month to `name`.
     """
 
     conid: int
@@ -502,6 +509,7 @@ class Position:
     # when absent — the lean futures row that omits `ticker` and `multiplier` can omit
     # this too, and a blank cell is the honest rendering of a field IBKR did not send.
     name: str = ""
+    full_name: str = ""
     # Live top-of-book, attached by `with_quotes` after the positions are fetched. None
     # means no quote was obtained for this contract — a gateway failure, an unopened
     # stream on the first poll, or a contract IBKR returned nothing for. It is NOT a
@@ -683,6 +691,7 @@ def parse_positions(rows: Sequence[Any]) -> tuple[Position, ...]:
                 symbol=str(row.get("ticker") or "").strip() or desc,
                 description=desc,
                 name=str(row.get("name") or "").strip(),
+                full_name=str(row.get("fullName") or "").strip(),
                 asset_class=str(row.get("assetClass") or "").strip(),
                 quantity=_as_float(row.get("position")),
                 average_cost=avg_cost,
@@ -1208,6 +1217,7 @@ class DashboardSnapshot:
     series: tuple[RealisedPoint, ...] = ()
     coverage: FlexCoverage | None = None
     error: str | None = None
+    identities: Mapping[int, ContractIdentity] = field(default_factory=dict)
 
     def age_seconds(self, now: datetime | None = None) -> float:
         """Seconds since this snapshot was taken. Never negative."""
@@ -1266,6 +1276,10 @@ class LiveOrder:
     # A stop's resting price. IBKR keeps it out of `price`: the live ES stop of 2026-09-04
     # came back with `price` '' and 7735.00 in `auxPrice` / `stop_price`.
     stop_price: float | None = None
+    conid: int | None = None
+    sec_type: str = ""
+    company_name: str = ""
+    description1: str = ""
 
     @property
     def is_claudia_staged(self) -> bool:
@@ -1326,6 +1340,12 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                     row["outsideRTH"] if isinstance(row.get("outsideRTH"), bool) else None
                 ),
                 stop_price=_optional_float(row.get("auxPrice") or row.get("stop_price")),
+                conid=(
+                    int(_as_float(row.get("conid"))) if row.get("conid") not in (None, "") else None
+                ),
+                sec_type=str(row.get("secType") or row.get("sec_type") or "").strip().upper(),
+                company_name=str(row.get("companyName") or "").strip(),
+                description1=str(row.get("description1") or "").strip(),
             )
         )
     return tuple(out)
@@ -1449,6 +1469,62 @@ def with_quotes(positions: Sequence[Position], quotes: Mapping[int, Quote]) -> t
     has already priced a US ETF in MXN by assuming it was.
     """
     return tuple(replace(p, quote=quotes.get(p.conid)) for p in positions)
+
+
+_MULTIPLIER_SUFFIX = re.compile(r"\s*\(\d+(?:\.\d+)?\)\s*$")
+
+
+def _month_from_full_name(full_name: str) -> str:
+    """The contract month in IBKR's `fullName`: everything after the leading ticker
+    (`ES Sep18'26` → `Sep18'26`, `CL Sep'26` → `Sep'26`). A stock's fullName is its ticker."""
+    _ticker, _sep, tail = full_name.strip().partition(" ")
+    return tail.strip()
+
+
+def _month_from_description1(description1: str) -> str:
+    """The contract month in a live order's `description1` (`Sep18'26(50)` → `Sep18'26`):
+    IBKR's string without its bracketed multiplier."""
+    return _MULTIPLIER_SUFFIX.sub("", description1.strip())
+
+
+def _with_month(name: str, month: str) -> str:
+    """`name · month` when both are known; whichever one is, otherwise; never a filler."""
+    if name and month:
+        return f"{name} · {month}"
+    return name or month
+
+
+def position_display_name(position: Position) -> str:
+    """IBKR's long name, with the contract month for a future: `E-mini S&P 500 · Sep18'26`.
+
+    Both halves are IBKR's own strings (`name`, the tail of `fullName`); a missing half is
+    simply absent. Design 2026-09-10 (gap #37): the month is shown, never inferred.
+    """
+    if position.asset_class.upper() not in FUTURES_CLASSES:
+        return position.name
+    return _with_month(position.name, _month_from_full_name(position.full_name))
+
+
+def order_display_name(order: LiveOrder) -> str:
+    """IBKR's `companyName`, with the contract month for a future from `description1`."""
+    if order.sec_type.upper() not in FUTURES_CLASSES:
+        return order.company_name
+    return _with_month(order.company_name, _month_from_description1(order.description1))
+
+
+def display_symbol(
+    symbol: str,
+    asset_class: str,
+    conid: int | None,
+    identities: Mapping[int, ContractIdentity],
+) -> str:
+    """The exchange local symbol (`ESU6`) for a future whose identity has been read; the
+    row's own symbol otherwise, and always for a stock."""
+    if asset_class.upper() in FUTURES_CLASSES and conid is not None:
+        identity = identities.get(conid)
+        if identity is not None:
+            return identity.local_symbol
+    return symbol
 
 
 def fetch_orders(client: OrderSource) -> tuple[LiveOrder, ...] | None:

@@ -1744,3 +1744,126 @@ def test_parse_orders_reads_the_stop_price_from_ibkr_s_stop_fields():
     assert orders[0].stop_price == 7735.0
     plain = dd.parse_orders([{"orderId": "1", "ticker": "AAPL", "totalSize": 1, "price": 150.0}])
     assert plain[0].stop_price is None
+
+
+def test_parse_positions_reads_full_name():
+    """IBKR's `fullName` carries the contract month for a future (`ES Sep18'26`)."""
+    pos = dd.parse_positions([_position_row(fullName="ES Sep18'26", name="E-mini S&P 500")])[0]
+    assert pos.full_name == "ES Sep18'26" and pos.name == "E-mini S&P 500"
+
+
+def test_parse_orders_reads_conid_sec_type_company_name_and_description1():
+    """The live-order row's identity fields, measured 2026-09-10: `companyName` on every
+    asset class, `description1` `Sep18'26(50)` on a future."""
+    order = dd.parse_orders(
+        [
+            {
+                "orderId": 1217252288,
+                "conid": 649180671,
+                "secType": "FUT",
+                "ticker": "ES",
+                "companyName": "E-mini S&P 500",
+                "description1": "Sep18'26(50)",
+                "side": "BUY",
+                "totalSize": 1,
+                "remainingQuantity": 1,
+                "orderType": "Stop",
+                "timeInForce": "GTC",
+                "status": "PreSubmitted",
+            }
+        ]
+    )[0]
+    assert order.conid == 649180671 and order.sec_type == "FUT"
+    assert order.company_name == "E-mini S&P 500" and order.description1 == "Sep18'26(50)"
+
+
+def test_parse_orders_without_identity_fields_leaves_them_empty():
+    """A lean row keeps parsing: no conid → None, the strings blank."""
+    order = dd.parse_orders([{"orderId": 1, "ticker": "AAPL", "side": "BUY", "totalSize": 1}])[0]
+    assert order.conid is None and order.sec_type == ""
+    assert order.company_name == "" and order.description1 == ""
+
+
+def _identity(conid=649180671, local_symbol="ESU6"):
+    """A ContractIdentity as `contract_identity` would cache it."""
+    from claudia.contract_identity import ContractIdentity
+
+    return ContractIdentity(
+        conid, local_symbol, "SEP26", "2026-09-18", "E-mini S&P 500", 50.0, "USD"
+    )
+
+
+def test_position_display_name_appends_the_month_for_a_future():
+    """`E-mini S&P 500 · Sep18'26`: IBKR's name and the tail of IBKR's fullName after the ticker."""
+    pos = dd.parse_positions(
+        [_position_row(assetClass="FUT", name="E-mini S&P 500", fullName="ES Sep18'26")]
+    )[0]
+    assert dd.position_display_name(pos) == "E-mini S&P 500 · Sep18'26"
+    cl = dd.parse_positions(
+        [_position_row(assetClass="FUT", name="Light Sweet Crude Oil", fullName="CL Sep'26")]
+    )[0]
+    assert dd.position_display_name(cl) == "Light Sweet Crude Oil · Sep'26"
+
+
+def test_position_display_name_is_the_plain_name_for_a_stock_and_blank_stays_blank():
+    """A stock's fullName is its ticker, so nothing is appended; missing fields add nothing."""
+    stk = dd.parse_positions(
+        [_position_row(assetClass="STK", ticker="F", name="Ford Motor Co", fullName="F")]
+    )[0]
+    assert dd.position_display_name(stk) == "Ford Motor Co"
+    lean = dd.parse_positions([_position_row(assetClass="FUT", name="", fullName="")])[0]
+    assert dd.position_display_name(lean) == ""
+    month_only = dd.parse_positions(
+        [_position_row(assetClass="FUT", name="", fullName="ES Sep18'26")]
+    )[0]
+    assert dd.position_display_name(month_only) == "Sep18'26"
+
+
+def test_order_display_name_drops_the_bracketed_multiplier():
+    """`companyName · description1` without IBKR's `(50)` suffix; a stock is the company name."""
+    fut = dd.LiveOrder(
+        "1",
+        "ES",
+        "BUY",
+        1.0,
+        0.0,
+        None,
+        "STP",
+        "GTC",
+        "PreSubmitted",
+        sec_type="FUT",
+        company_name="E-mini S&P 500",
+        description1="Sep18'26(50)",
+    )
+    assert dd.order_display_name(fut) == "E-mini S&P 500 · Sep18'26"
+    stk = dd.LiveOrder(
+        "2",
+        "AAPL",
+        "BUY",
+        1.0,
+        0.0,
+        150.0,
+        "LMT",
+        "GTC",
+        "Submitted",
+        sec_type="STK",
+        company_name="APPLE INC",
+        description1="AAPL",
+    )
+    assert dd.order_display_name(stk) == "APPLE INC"
+    lean = dd.LiveOrder("3", "ES", "BUY", 1.0, 0.0, None, "STP", "GTC", "x", sec_type="FUT")
+    assert dd.order_display_name(lean) == ""
+
+
+def test_display_symbol_prefers_the_local_symbol_for_a_known_future():
+    """`ESU6` once the identity is known; the row's own symbol otherwise, and always for a stock."""
+    identities = {649180671: _identity()}
+    assert dd.display_symbol("ES", "FUT", 649180671, identities) == "ESU6"
+    assert dd.display_symbol("ES", "FUT", 111, identities) == "ES"
+    assert dd.display_symbol("ES", "FUT", None, identities) == "ES"
+    assert dd.display_symbol("F", "STK", 9, {9: _identity(9, "F")}) == "F"
+
+
+def test_snapshot_carries_identities_and_defaults_to_none_known():
+    """`DashboardSnapshot.identities` is a mapping keyed by conid; empty by default."""
+    assert dict(dd.empty_snapshot().identities) == {}
