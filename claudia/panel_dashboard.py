@@ -73,6 +73,9 @@ from claudia.dashboard_data import (
     RealisedWindow,
     Reconciliation,
     RoundTripStats,
+    display_symbol,
+    order_display_name,
+    position_display_name,
     realised_ledger_label,
     reconcile,
 )
@@ -644,10 +647,14 @@ _POSITIONS_ROWS_PER_PAGE = 15
 # trading surface: "Avg cost" is IBKR's `avgCost`, which for a futures position is per
 # contract including the multiplier, and "Unrealised" is open P&L, not the day's move.
 _POSITION_TOOLTIPS = {
+    "Symbol": "IBKR's ticker; for a future the exchange local symbol (ESU6) once its contract "
+    "info has been read, so the month is in the symbol itself (2026-09-10).",
     "Name": "IBKR's own instrument name, so a row is never acted on from an ambiguous "
     "ticker alone. IBKR truncates this field itself (IGV arrives as 'ISHARES "
     "EXPANDED TECH-SOFTWA'); a short name is theirs, not a display limit. Blank "
-    "when IBKR omits it, which happens on the same lean rows that omit ticker.",
+    "when IBKR omits it, which happens on the same lean rows that omit ticker. For a "
+    "future the contract month follows the name (E-mini S&P 500 · Sep18'26), from IBKR's "
+    "fullName (2026-09-10).",
     "Qty": "Signed position size. Negative is short.",
     "Avg entry": "Where the position was actually entered: average price of the open "
     "lots, FIFO over this account's own fills, excluding commission. Blank "
@@ -689,6 +696,7 @@ _EMPTY = DashboardSnapshot(as_of=datetime.min.replace(tzinfo=UTC))
 _ORDER_COLUMNS = [
     "Order",
     "Symbol",
+    "Name",
     "Side",
     "Qty",
     "Filled",
@@ -716,6 +724,10 @@ than omitting it.
 
 _ORDER_TOOLTIPS = {
     "Order": "IBKR's order id — the identity `propose_cancel` / `propose_modify` need.",
+    "Symbol": "IBKR's ticker; for a future the exchange local symbol (ESU6) once its contract "
+    "info has been read, so the month is in the symbol itself (2026-09-10).",
+    "Name": "IBKR's companyName; for a future the contract month follows, from IBKR's "
+    "description1 without its bracketed multiplier (E-mini S&P 500 · Sep18'26).",
     "Qty": "Total order size, not the remainder.",
     "Filled": "How much has executed. Shows 0 when IBKR reports no remaining quantity, "
     "which is the safe direction to be wrong in.",
@@ -759,7 +771,8 @@ def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     rows = [
         {
             "Order": o.order_id,
-            "Symbol": o.symbol,
+            "Symbol": display_symbol(o.symbol, o.sec_type, o.conid, snapshot.identities),
+            "Name": order_display_name(o),
             "Side": o.side,
             "Qty": o.quantity,
             "Filled": o.filled,
@@ -830,8 +843,8 @@ def positions_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     """
     rows = [
         {
-            "Symbol": p.symbol,
-            "Name": p.name,
+            "Symbol": display_symbol(p.symbol, p.asset_class, p.conid, snapshot.identities),
+            "Name": position_display_name(p),
             "Qty": p.quantity,
             "Avg entry": p.economic_entry,
             "IBKR basis": p.average_price,

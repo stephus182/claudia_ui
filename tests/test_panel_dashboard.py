@@ -1881,3 +1881,75 @@ def test_orders_frame_renders_the_stop_price():
     row = frame.iloc[0]
     assert row["Stop"] == 7735.0
     assert pd.isna(row["Limit"])
+
+
+def _es_identity():
+    """The ES Sep 2026 identity as the poller caches it."""
+    from claudia.contract_identity import ContractIdentity
+
+    return ContractIdentity(649180671, "ESU6", "SEP26", "2026-09-18", "E-mini S&P 500", 50.0, "USD")
+
+
+def test_positions_frame_shows_the_local_symbol_and_the_month_for_a_future():
+    """Gap #37: `ESU6` in Symbol once the identity is known, the month in Name; a stock
+    keeps its ticker and plain name."""
+    fut = dd.Position(
+        conid=649180671,
+        symbol="ES",
+        description="ES SEP2026",
+        asset_class="FUT",
+        quantity=1.0,
+        average_cost=380000.0,
+        market_price=7601.0,
+        market_value=380050.0,
+        unrealised_pnl=50.0,
+        realised_pnl=0.0,
+        currency="USD",
+        average_price=7600.0,
+        multiplier=50.0,
+        name="E-mini S&P 500",
+        full_name="ES Sep18'26",
+    )
+    stk = dd.Position(
+        conid=9,
+        symbol="F",
+        description="F",
+        asset_class="STK",
+        quantity=10.0,
+        average_cost=10.0,
+        market_price=11.0,
+        market_value=110.0,
+        unrealised_pnl=10.0,
+        realised_pnl=0.0,
+        currency="USD",
+        average_price=10.0,
+        name="Ford Motor Co",
+        full_name="F",
+    )
+    frame = pdash.positions_frame(
+        _snapshot(positions=(fut, stk), identities={649180671: _es_identity()})
+    )
+    assert list(frame["Symbol"]) == ["ESU6", "F"]
+    assert list(frame["Name"]) == ["E-mini S&P 500 · Sep18'26", "Ford Motor Co"]
+    without = pdash.positions_frame(_snapshot(positions=(fut,), identities={}))
+    assert list(without["Symbol"]) == ["ES"]
+
+
+def test_orders_frame_has_a_name_column_after_symbol_and_uses_the_local_symbol():
+    """The Orders tab names the contract like the Positions tab does."""
+    fut = _order(
+        order_id="1217252288",
+        symbol="ES",
+        order_type="STP",
+        price=None,
+        stop_price=7900.0,
+        conid=649180671,
+        sec_type="FUT",
+        company_name="E-mini S&P 500",
+        description1="Sep18'26(50)",
+    )
+    stk = _order(conid=265598, sec_type="STK", company_name="APPLE INC", description1="AAPL")
+    frame = pdash.orders_frame(_snapshot(orders=(fut, stk), identities={649180671: _es_identity()}))
+    assert list(frame.columns)[:3] == ["Order", "Symbol", "Name"]
+    assert list(frame["Symbol"]) == ["ESU6", "AAPL"]
+    assert list(frame["Name"]) == ["E-mini S&P 500 · Sep18'26", "APPLE INC"]
