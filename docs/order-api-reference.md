@@ -466,7 +466,7 @@ Touch ID and hands the dialog an IBKR-shaped display dict — side, size, type, 
 outside-RTH, the futures label/multiplier/currency, and `Currently at IBKR` from
 `order_description_with_contract`; on a failed read the proposal's own values are shown, so a
 cancel is never blocked by a read. The order id appears once; nulls and the reason blob are gone
-(before: screenshot 2026-09-10 10:38, gaps #27(b–e)).
+(before: screenshot 2026-09-10 10:38, gaps #27(b–e); the reworked dialog read live at 16:02).
 
 **Gate 2 shows full order detail on cancel (fixed 2026-07-10):** `confirm_cancel_dialog(order_id,
 account_id, order=None)` in `ibkr_core_mcp/order_confirm.py` takes an optional `order` param —
@@ -485,7 +485,8 @@ label / Quantity / Order Type / Price with currency / Stop / TIF / Outside RTH /
 `Order ID`, a `Changes` row (`stop price 7900.0 → 7895.0`, from the proposal's `changes`) and
 `Currently at IBKR` (IBKR's `order_description_with_contract`, read once before Touch ID).
 `_`-prefixed display keys are stripped by `modify_order` before the POST, as `place_order` always
-did. Before that date the dialog was the replacement body verbatim (screenshot 2026-09-10 10:37).
+did. Before that date the dialog was the replacement body verbatim (screenshot 2026-09-10 10:37);
+the reworked dialog was read live by screenshot at 16:00 the same day.
 
 Same button-then-gates pattern, with one important difference: **the request body must be the
 full original order, not a partial diff** — verified directly against the primary source
@@ -645,7 +646,8 @@ caller-owned list that receives one record per reply — `reply_id`, raw `messag
 raw `&nbsp;` of gap #39), `message_options`, `confirmed`, UTC `at` — appended before the gates so a
 decline or a Touch ID failure is recorded too. `order_flow` stores it as `ibkr_replies` in the
 `trade_staged` / `trade_modified` decision metadata and lists the confirmed precautions in the
-chat (first line each); a decline names the declined prompt.
+chat (first line each); a decline names the declined prompt. Live-verified 2026-09-10 16:00:
+decision row 72 carried both replies of a one-lot ES stop, confirmed and time-stamped.
 
 ## Post-dispatch read-back (L2)
 
