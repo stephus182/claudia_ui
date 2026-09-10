@@ -9,6 +9,7 @@ chat message) and the send_status wiring are Panel-specific.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,7 @@ from claudia.order_flow import (
     _format_cancel_summary,
     _format_modify_summary,
     _format_order_summary,
+    proposal_contract_label,
 )
 from claudia.panel_markdown import safe_markdown
 
@@ -64,7 +66,8 @@ async def render_order_proposal(
             `store`) means the click is executed but not recorded in the decision log.
         store: Conversation store for decision logging. Optional, as above.
     """
-    summary_pane = safe_markdown(_format_order_summary(proposal))
+    contract_label = await asyncio.to_thread(proposal_contract_label, proposal)
+    summary_pane = safe_markdown(_format_order_summary(proposal, contract_label=contract_label))
     stage_btn = pn.widgets.Button(label="Stage this order", color="success")
     cancel_btn = pn.widgets.Button(label="Cancel", color="light")
     send_status = _make_send_status(chat)
@@ -190,7 +193,8 @@ async def render_modify_proposal(
             `render_order_proposal`.
         store: Conversation store for decision logging. Optional, as above.
     """
-    summary_pane = safe_markdown(_format_modify_summary(proposal))
+    contract_label = await asyncio.to_thread(proposal_contract_label, proposal)
+    summary_pane = safe_markdown(_format_modify_summary(proposal, contract_label=contract_label))
     modify_btn = pn.widgets.Button(label="Modify this order", color="success")
     discard_btn = pn.widgets.Button(label="Discard", color="light")
     send_status = _make_send_status(chat)

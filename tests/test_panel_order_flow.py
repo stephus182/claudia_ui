@@ -195,3 +195,28 @@ async def test_render_modify_proposal_confirm_click_calls_modify_core():
         await _get_click_callback(modify_btn)(None)
 
     client.modify_order_and_confirm.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_render_order_proposal_shows_the_contract_line_for_a_future():
+    """The render site fetches the label off the loop and the summary carries it."""
+    chat = _make_chat()
+    proposal = {
+        "symbol": "ES",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "STP",
+        "stop_price": 7900.0,
+        "tif": "GTC",
+        "sec_type": "FUT",
+        "conid": 649180671,
+        "reason": "test",
+    }
+    with patch(
+        "claudia.panel_order_flow.proposal_contract_label",
+        return_value="ESU6 · SEP26 · expires 2026-09-18",
+    ) as label:
+        await render_order_proposal(chat, proposal, session_id="s1", store=None)
+    label.assert_called_once_with(proposal)
+    column = chat.send.call_args.args[0]
+    assert "ESU6 · SEP26 · expires 2026-09-18" in column[0].object

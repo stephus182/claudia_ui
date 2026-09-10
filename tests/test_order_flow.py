@@ -3097,3 +3097,74 @@ def test_number_or_none_parses_ibkr_price_strings():
     assert _number_or_none("1,234.5") == 1234.5
     assert _number_or_none("") is None and _number_or_none(None) is None
     assert _number_or_none("n/a") is None
+
+
+_FUT_PROPOSAL = {
+    "symbol": "ES",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "STP",
+    "stop_price": 7900.0,
+    "tif": "GTC",
+    "sec_type": "FUT",
+    "conid": 649180671,
+    "outside_rth": True,
+    "reason": "test",
+}
+
+
+def test_format_order_summary_names_the_contract_for_a_future():
+    """Gap #37: the approval text carries the resolved contract in IBKR's terms; a stock never
+    does, and a future without a label shows no line rather than a guess."""
+    from claudia.order_flow import _format_order_summary
+
+    text = _format_order_summary(_FUT_PROPOSAL, contract_label="ESU6 · SEP26 · expires 2026-09-18")
+    assert "**Contract:** ESU6 · SEP26 · expires 2026-09-18" in text
+    assert "Contract:" not in _format_order_summary(_FUT_PROPOSAL)
+    stk = {**_FUT_PROPOSAL, "sec_type": "STK", "symbol": "AAPL"}
+    assert "Contract:" not in _format_order_summary(stk, contract_label="nonsense")
+
+
+def test_format_modify_summary_names_the_contract_for_a_future():
+    """The modify approval text carries the same line."""
+    from claudia.order_flow import _format_modify_summary
+
+    proposal = {
+        **_FUT_PROPOSAL,
+        "order_id": "1217252288",
+        "changes": [{"field": "stop_price", "previous_value": 7895.0}],
+    }
+    text = _format_modify_summary(proposal, contract_label="ESU6 · SEP26 · expires 2026-09-18")
+    assert "**Contract:** ESU6 · SEP26 · expires 2026-09-18" in text
+
+
+def test_proposal_contract_label_builds_no_client_for_a_stock():
+    """A stock returns None before any IBKR client exists — no network, no cookies."""
+    from claudia.order_flow import proposal_contract_label
+
+    with patch("claudia.order_flow.contract_identity") as identity:
+        assert (
+            proposal_contract_label({"symbol": "AAPL", "sec_type": "STK", "conid": 265598}) is None
+        )
+    identity.assert_not_called()
+
+
+def test_proposal_contract_label_returns_the_label_and_never_raises():
+    """The label comes from the cached identity; any failure is None, so the proposal renders."""
+    from claudia.contract_identity import ContractIdentity
+    from claudia.order_flow import proposal_contract_label
+
+    ibkr_mod, _client = _make_ibkr_mock()
+    identity = ContractIdentity(
+        649180671, "ESU6", "SEP26", "2026-09-18", "E-mini S&P 500", 50.0, "USD"
+    )
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        patch("claudia.order_flow.contract_identity", return_value=identity),
+    ):
+        assert proposal_contract_label(_FUT_PROPOSAL) == "ESU6 · SEP26 · expires 2026-09-18"
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        patch("claudia.order_flow.contract_identity", side_effect=RuntimeError("down")),
+    ):
+        assert proposal_contract_label(_FUT_PROPOSAL) is None

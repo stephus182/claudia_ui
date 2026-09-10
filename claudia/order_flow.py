@@ -39,6 +39,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from claudia.contract_identity import contract_identity
+
 if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
 
@@ -135,6 +137,35 @@ def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | 
     if multiplier is not None:
         parts.append(f"x{multiplier:g}")
     return multiplier, currency, " · ".join(parts)
+
+
+def proposal_contract_label(proposal: dict[str, Any]) -> str | None:
+    """The resolved contract's label (`ESU6 · SEP26 · expires 2026-09-18`) for a futures
+    proposal's approval text, or None.
+
+    Read-only and fail-soft by design: a stock returns None before any client is built, and
+    any failure returns None so the proposal still renders — Gate 2 carries the same label
+    independently. The render site calls this in a thread.
+    """
+    if str(proposal.get("sec_type", "STK")).upper() not in ("FUT", "FOP"):
+        return None
+    conid = proposal.get("conid")
+    if conid in (None, ""):
+        return None
+    try:
+        from dotenv import load_dotenv
+        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+
+        load_dotenv(override=False)
+        ibkr = IBKRClient(
+            config=Config.from_env(),
+            auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
+        )
+        identity = contract_identity(ibkr, int(conid))
+    except Exception as exc:
+        log.warning("Contract label unavailable for conid %s: %s", conid, exc)
+        return None
+    return identity.label if identity is not None else None
 
 
 def _number_or_none(value: Any) -> float | None:
@@ -284,7 +315,7 @@ def _outside_rth_line(proposal: dict[str, Any]) -> str | None:
     return None
 
 
-def _format_order_summary(proposal: dict[str, Any]) -> str:
+def _format_order_summary(proposal: dict[str, Any], contract_label: str | None = None) -> str:
     """Build the human-approval text for a new order.
 
     Safety surface: this string, plus the Gate 2 dialog, is everything the user sees before
@@ -299,8 +330,13 @@ def _format_order_summary(proposal: dict[str, Any]) -> str:
     to DAY — the identical expression `_execute_staged_order_core` uses, so display and
     execution cannot diverge. Do not change one without the other.
 
+    `contract_label` (design 2026-09-10, gap #37) is the resolved futures contract in IBKR's
+    own terms — `ESU6 · SEP26 · expires 2026-09-18` from `proposal_contract_label` — shown as a
+    `Contract:` line on a future only; a bare root in the proposal means the front month.
+
     Args:
         proposal: Schema-checked order-proposal dict.
+        contract_label: The resolved contract's label for a future, or None for no line.
 
     Returns:
         Markdown for the proposal message. Rendered via `safe_markdown` — `reason` is
@@ -324,6 +360,10 @@ def _format_order_summary(proposal: dict[str, Any]) -> str:
     lines = [
         f"**{action} {qty} {symbol}{sec_label}** ({otype}{price_str}, {tif})",
     ]
+    if sec_type in ("FUT", "FOP") and contract_label:
+        # The resolved contract in IBKR's own terms (design 2026-09-10): a bare root means
+        # the front month, and this line says which contract that is before Touch ID.
+        lines.append(f"**Contract:** {contract_label}")
     rth_line = _outside_rth_line(proposal)
     if rth_line:
         lines.append(rth_line)
@@ -1448,7 +1488,7 @@ async def _execute_cancel_order_core(
 # ── Order modification ───────────────────────────────────────────────────────
 
 
-def _format_modify_summary(proposal: dict[str, Any]) -> str:
+def _format_modify_summary(proposal: dict[str, Any], contract_label: str | None = None) -> str:
     """Build the human-approval text for modifying a live order, as a field-by-field diff.
 
     The only consumer of `changes`, the array `propose_modify` carries alongside the
@@ -1467,6 +1507,8 @@ def _format_modify_summary(proposal: dict[str, Any]) -> str:
 
     Args:
         proposal: Schema-checked modify-proposal dict — the full replacement order.
+        contract_label: The resolved futures contract's label (`ESU6 · SEP26 · expires
+            2026-09-18`) for the `Contract:` line, or None for no line (design 2026-09-10).
 
     Returns:
         Markdown for the proposal message.
@@ -1477,6 +1519,9 @@ def _format_modify_summary(proposal: dict[str, Any]) -> str:
     reason = proposal.get("reason", "")
 
     lines = [f"**MODIFY order {order_id}: {symbol}**"]
+    if str(proposal.get("sec_type", "STK")).upper() in ("FUT", "FOP") and contract_label:
+        # Same line as the place text (design 2026-09-10): the contract, in IBKR's terms.
+        lines.append(f"**Contract:** {contract_label}")
     rth_line = _outside_rth_line(proposal)
     if rth_line and proposal.get("outside_rth") is None:
         # A modify resends the whole order: null here DROPS the attribute the original
