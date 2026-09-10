@@ -836,7 +836,9 @@ async def test_run_session_cleanup_closes_reports_uploads(monkeypatch):
         status = await _run_session_cleanup("sid-1", store, loader)
 
     loader.stop_watching.assert_called_once()
-    store.close_session.assert_called_once_with("sid-1", metadata={"model": ANY})
+    store.close_session.assert_called_once_with(
+        "sid-1", metadata={"model": ANY, "ended_by": "user"}
+    )
     mock_report.assert_called_once_with("sid-1", store, {}, "v7")
     mock_sync.upload_db.assert_called_once()
     assert status == "42 messages saved · claudia.db → Drive ✅"
@@ -894,7 +896,15 @@ async def test_session_destroy_hook_registered_and_runs_cleanup_once():
 
     # ANY = the session's uuid; store/loader pin the holder wiring (the hook
     # must pass THIS session's store and loader, not fresh or global objects).
-    mock_cleanup.assert_awaited_once_with(ANY, mock_store, mock_loader_cls.return_value)
+    from claudia.panel_app import _open_sessions
+
+    # The build registered this session's store for the shutdown path (gap #41); cleanup was
+    # mocked, so the entry is still there.
+    assert mock_store in _open_sessions.values()
+    _open_sessions.clear()
+    mock_cleanup.assert_awaited_once_with(
+        ANY, mock_store, mock_loader_cls.return_value, ended_by="disconnect"
+    )
 
 
 @pytest.mark.asyncio
@@ -925,7 +935,9 @@ async def test_end_session_button_always_present_and_runs_cleanup():
         assert not _find_buttons(chat)  # no button message in the chat feed any more
         # Simulate a real click via the Phase 3 idiom (test_panel_order_flow.py).
         await _get_click_callback(_action_bar(chat).end_button)(None)
-    mock_cleanup.assert_awaited_once()
+    mock_cleanup.assert_awaited_once_with(
+        ANY, mock_store, mock_loader_cls.return_value, ended_by="user"
+    )
     assert any("Session ended." in t and "7 messages saved" in t for t in _log_texts(chat))
     assert not any("Session ended." in t for t in _message_texts(chat))
 
@@ -3225,3 +3237,60 @@ async def test_destroy_hook_unsubscribes_fills_too(backend_singletons):
         hook(MagicMock())
         await asyncio.sleep(0.05)
     unsub_fills.assert_called_once()
+
+
+def test_finalize_session_stamps_ended_by_and_writes_the_report(monkeypatch):
+    """Gap #41 core: the row is closed with the reason and the report is generated; the
+    session leaves the open-session registry."""
+    from claudia.panel_app import _finalize_session, _open_sessions
+
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
+    store = MagicMock()
+    store.get_session.return_value = {"doc_version": "v7"}
+    _open_sessions["sid-1"] = store
+    with patch("claudia.panel_app.generate_session_report") as mock_report:
+        _finalize_session("sid-1", store, ended_by="shutdown")
+    store.close_session.assert_called_once_with(
+        "sid-1", metadata={"model": ANY, "ended_by": "shutdown"}
+    )
+    mock_report.assert_called_once_with("sid-1", store, {}, "v7")
+    assert "sid-1" not in _open_sessions
+
+
+def test_shutdown_finalises_only_the_sessions_still_open(monkeypatch):
+    """Measured 2026-09-10: SIGTERM left `sessions.ended_at` NULL and wrote no report. A
+    session already closed by the button is not in the registry and must not be stamped
+    twice; a failure on one session must not stop the next."""
+    from claudia.panel_app import _finalize_open_sessions_at_shutdown, _open_sessions
+
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
+    _open_sessions.clear()
+    broken, healthy = MagicMock(), MagicMock()
+    broken.close_session.side_effect = RuntimeError("disk full")
+    healthy.get_session.return_value = {}
+    _open_sessions["broken"] = broken
+    _open_sessions["healthy"] = healthy
+    with patch("claudia.panel_app.generate_session_report") as mock_report:
+        _finalize_open_sessions_at_shutdown()
+    healthy.close_session.assert_called_once_with(
+        "healthy", metadata={"model": ANY, "ended_by": "shutdown"}
+    )
+    mock_report.assert_called_once_with("healthy", healthy, {}, None)
+    assert _open_sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_run_session_cleanup_passes_ended_by_through(monkeypatch):
+    """The destroy hook's reason reaches the row: `ended_by` is not swallowed on the way."""
+    from claudia.panel_app import _run_session_cleanup
+
+    monkeypatch.setattr("claudia.panel_app._gdrive_sync", None)
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
+    store = MagicMock()
+    store.get_session.return_value = {}
+    store.count_messages.return_value = 1
+    with patch("claudia.panel_app.generate_session_report"):
+        await _run_session_cleanup("sid-2", store, None, ended_by="disconnect")
+    store.close_session.assert_called_once_with(
+        "sid-2", metadata={"model": ANY, "ended_by": "disconnect"}
+    )

@@ -155,6 +155,11 @@ _cleanup_tasks: set[asyncio.Task[str]] = set()
 # Strong references to fire-and-forget background Flex-sync tasks — same
 # GC-protection rationale as _cleanup_tasks (ruff RUF006).
 _background_tasks: set[asyncio.Task[None]] = set()
+# Sessions whose store row is still open, keyed by session id. The shutdown path finalises
+# them because a dead server never sees a browser disconnect: measured 2026-09-10, SIGTERM
+# left `sessions.ended_at` NULL and wrote no report (gap #41). Added when the row is
+# created, removed by `_finalize_session` on every close path.
+_open_sessions: dict[str, ConversationStore] = {}
 
 # Serializes the check-download-first-store-open section of _init_session across
 # concurrently-initializing sessions — see the comment at its acquire site.
@@ -486,7 +491,9 @@ def _build_action_bar(
         _session["closed"] = True
         syslog.say("Saving session…")
         try:
-            status = await _run_session_cleanup(session_id, _session["store"], _session["loader"])
+            status = await _run_session_cleanup(
+                session_id, _session["store"], _session["loader"], ended_by="user"
+            )
         except Exception as exc:
             # `closed` is already True (the destroy hook must not run cleanup twice), so
             # this line is the only trace the user gets — say it (review 2026-09-04).
@@ -736,36 +743,60 @@ async def _maybe_background_flex_sync(
 # ── Session-end cleanup ───────────────────────────────────────────────────────
 
 
+def _finalize_session(session_id: str, store: ConversationStore, *, ended_by: str) -> None:
+    """Stamp the session row and write its Markdown report — the synchronous core shared by
+    the End Session button, the destroy hook and the server shutdown.
+
+    `ended_by` goes into the row's metadata: "user" (button), "disconnect" (destroy hook)
+    or "shutdown" (server stopped with the session open). Until 2026-09-10 only the first
+    two paths existed, so a SIGTERM left every open row without `ended_at` or a report.
+    """
+    store.close_session(session_id, metadata={"model": _MODEL, "ended_by": ended_by})
+    connectivity = (
+        {k: v.value for k, v in _connectivity_checker.get_status().items()}
+        if _connectivity_checker
+        else {}
+    )
+    session_meta = store.get_session(session_id) or {}
+    generate_session_report(session_id, store, connectivity, session_meta.get("doc_version"))
+    _open_sessions.pop(session_id, None)
+
+
+def _finalize_open_sessions_at_shutdown() -> None:
+    """Close every session row still open when the server stops (gap #41).
+
+    Runs after `pn.serve` returns — the loop is stopped, so synchronous calls are fine.
+    Each session gets its own try/except: one report failure must not stop the next
+    session, nor the final Drive upload that follows.
+    """
+    for session_id, store in list(_open_sessions.items()):
+        try:
+            _finalize_session(session_id, store, ended_by="shutdown")
+            log.info("Session %s closed at shutdown", session_id)
+        except Exception as exc:
+            log.warning("Could not finalise session %s at shutdown: %s", session_id, exc)
+            _open_sessions.pop(session_id, None)
+
+
 async def _run_session_cleanup(
     session_id: str | None,
     store: ConversationStore | None,
     loader: ContextLoader | None,
+    *,
+    ended_by: str = "user",
 ) -> str:
     """Close session, generate report, upload DB (parity with the removed app.py).
     Returns a one-line status string. The slow calls (report generation, Drive
-    upload) are offloaded via asyncio.to_thread; the sqlite row ops and
-    stop_watching are ms-scale and run inline (app.py parity) — the destroy-hook
-    path runs this on the shared loop, where blocking would freeze every live
-    session (V4 probe). NO UI calls: on the destroy path the chat's Document is
-    already gutted."""
+    upload) are offloaded via asyncio.to_thread; stop_watching and the message count
+    are ms-scale and run inline (app.py parity) — the destroy-hook path runs this on
+    the shared loop, where blocking would freeze every live session (V4 probe).
+    NO UI calls: on the destroy path the chat's Document is already gutted.
+    `ended_by` is recorded in the row (gap #41)."""
     if loader:
         loader.stop_watching()
 
     if store and session_id:
-        store.close_session(session_id, metadata={"model": _MODEL})
-        connectivity = (
-            {k: v.value for k, v in _connectivity_checker.get_status().items()}
-            if _connectivity_checker
-            else {}
-        )
-        session_meta = store.get_session(session_id) or {}
-        await asyncio.to_thread(
-            generate_session_report,
-            session_id,
-            store,
-            connectivity,
-            session_meta.get("doc_version"),
-        )
+        await asyncio.to_thread(_finalize_session, session_id, store, ended_by=ended_by)
         msg_count = store.count_messages(session_id)
     else:
         msg_count = 0
@@ -853,7 +884,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
         _detach_subscriptions(_session)
         _session["closed"] = True
         task = asyncio.get_running_loop().create_task(
-            _run_session_cleanup(session_id, _session["store"], _session["loader"])
+            _run_session_cleanup(
+                session_id, _session["store"], _session["loader"], ended_by="disconnect"
+            )
         )
         _cleanup_tasks.add(task)
 
@@ -1143,6 +1176,7 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 syslog.say(warning, "warning")
 
             store.create_session(session_id, context_hash=current_hash, doc_version=version_label)
+            _open_sessions[session_id] = store
 
             # Backend singletons (design D6, parity with the removed app.py). The
             # checker's 60s /tickle poll is the IBKR session KEEPALIVE — live-
@@ -1487,7 +1521,8 @@ def main() -> None:
             websocket_origin=[f"localhost:{_PANEL_PORT}", f"127.0.0.1:{_PANEL_PORT}"],
         )
     finally:
-        # Loop is stopped here — synchronous blocking upload is fine (V5).
+        # Loop is stopped here — synchronous blocking calls are fine (V5).
+        _finalize_open_sessions_at_shutdown()
         if _gdrive_sync is not None:
             try:
                 _gdrive_sync.upload_db(_DB_PATH)
