@@ -16,7 +16,7 @@ owns a question. Within each group, the file that answers "where do I start" is 
 | File | Description |
 | --- | --- |
 | [`ibkr-gateway.md`](ibkr-gateway.md) | **The gateway session, start here for anything IBKR-connection.** Phases, who may touch the session and from which runtime, the login runbook, borrowed-session and IB Key failures, the container image trap, and the incident record |
-| [`order-api-reference.md`](order-api-reference.md) | Full order-staging spec — Gate 1/2, the parameter-immutability rule, the `conid` requirement, stops on US futures, attached profit taker / bracket orders (API-supported, not yet expressible — 2026-09-06) |
+| [`order-api-reference.md`](order-api-reference.md) | Full order-staging spec — Gate 1/2, the parameter-immutability rule, the `conid` requirement, stops on US futures, attached profit taker / bracket orders (API-supported, not yet expressible — 2026-09-06), the automatic execution reports (2026-09-04), IBKR's reply chain as actually sent (STK 2026-07-06, FUT 2026-09-10) and the post-dispatch read-back |
 | [`trading-data-reference.md`](trading-data-reference.md) | Trade data architecture, Flex vs live API, P&L and the execution listener |
 | [`flex-query-setup.md`](flex-query-setup.md) | IBKR Flex Query setup: token, query config, backfill, ongoing sync |
 | [`market-calendar-reference.md`](market-calendar-reference.md) | 20-exchange market calendar and futures schedules |
@@ -69,18 +69,23 @@ browser window** and is **serialised per profile**, both required rather than in
 
 Living reference for the Panel UI (the framework since the 2026-07-24 Chainlit→Panel
 cutover) — each claim backed by a `file:line`, the installed package, or a scraped URL. Start
-at [`panel/README.md`](panel/README.md), which indexes:
+at [`panel/README.md`](panel/README.md): it opens with a question → document table, then
+indexes the five living references, the two dated research notes, the git-ignored screenshot
+folder, and the verified findings the migration rests on.
 
 | File | Description |
 | --- | --- |
-| [`panel/panel-reference.md`](panel/panel-reference.md) | How ClaudIA uses Panel — serving model, session lifecycle, layout tree, `MessageSink` seam, widget gotchas, status lights (the action bar, ex-dots), chart pane, headless button testing, dependency state |
-| [`panel/ui-design-reference.md`](panel/ui-design-reference.md) | UI design & styling — the no-styling baseline, the shadow-DOM constraint, Panel's scraped styling surface (designs/themes/tokens/templates), open design questions, a proposed Track D direction, official-source index |
-| [`panel/ui-customisation-reference.md`](panel/ui-customisation-reference.md) | What the UI's adjustable settings are and how to change them — phase 1 (2026-09-02): theme default + URL override, ClaudIA's avatar, user label, Send-only footer, no reaction icons; a costed menu of the next easy changes; phase-2 candidates with their real cost |
-| [`panel/component-model-reference.md`](panel/component-model-reference.md) | How a Panel component is built, parameterised and composed — the model behind the two references above |
-| [`panel/data-surfaces-reference.md`](panel/data-surfaces-reference.md) | Tabulator / Number / ECharts, the `pn.extension()` gate, side windows, stream/patch + connectivity, and 27 measured gotchas (16 onwards found live against the account) — the reference the live dashboard was built from |
+| [`panel/panel-reference.md`](panel/panel-reference.md) | How ClaudIA uses Panel — serving model, module map, session lifecycle, layout tree, `MessageSink` seam, widget gotchas, the action bar's buttons + System log (dots until 2026-09-03), chart pane, headless button testing and what proves a served page renders, dependency state |
+| [`panel/ui-design-reference.md`](panel/ui-design-reference.md) | UI design & styling — the honest baseline (no CSS, no template; `pn.extension` since 2026-08-04, session-scoped theme since 2026-09-02), the shadow-DOM constraint, Panel's scraped styling surface (designs/themes/tokens/templates), `ChatInterface`'s own parameters, open design questions, the proposed Track D direction, official-source index |
+| [`panel/ui-customisation-reference.md`](panel/ui-customisation-reference.md) | What is set and how to change it — phase 1 (2026-09-02): theme default + URL override, ClaudIA's avatar, user label, Send-only footer, no reaction icons, intro card, pinned layout; §2.6 the System log + action bar (2026-09-03) and the log-vs-chat routing rule; a costed menu of the next easy changes; phase-2 candidates with their real cost; the 2026-09-04 review record |
+| [`panel/component-model-reference.md`](panel/component-model-reference.md) | How a Panel component is built, parameterised, wired and updated — taxonomy, real class hierarchy, the Param foundation, the four interactivity APIs ranked, the four routes to a custom component (`PyComponent`, not `Viewer`) — the model behind the two references above |
+| [`panel/data-surfaces-reference.md`](panel/data-surfaces-reference.md) | Tabulator / Number / ECharts, the `pn.extension()` gate, side windows, stream/patch + connectivity, and the gotchas index (27 measured entries as of 2026-08-04, 16 onwards found live against the account) — the reference the live dashboard was built from |
 
-Plus two dated research docs (candlestick chart pane, PineScript/actionable buttons) and the
-migration's smoke screenshots. The post-migration restyle project draws from here.
+Plus two dated research docs (candlestick chart pane, PineScript/actionable buttons — both
+partly superseded by what shipped, each says by what) and `panel/screenshots/`, which is
+**git-ignored** because most captures show account data; its own local `README.md` catalogs
+every file with an honest account-data column. The post-migration restyle (Track D) draws
+from here.
 
 ## Probes (`docs/probes/`)
 
