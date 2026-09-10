@@ -358,6 +358,33 @@ After the parent fills, the child is an ordinary order: a **LMT** profit taker o
 Globex and rests around the clock; a **STP** child is IBKR-simulated and RTH-only by default —
 § Stop orders on US futures applies to the child too, so a stop-loss leg needs `outsideRTH`.
 
+### Measured live 2026-09-10 — the single-ticket baseline (not a bracket)
+
+A disposable ES stop (`975324503`) was placed, modified and cancelled through ClaudIA with every
+response captured out of band (Live Test Log row of that date; raw captures in
+`data/test-sessions/2026-09-10-captures/`, git-ignored). This is what a bracket read gets compared
+against, so the expectations above do not have to be re-derived:
+
+- **`local_order_id` is live behaviour on the single-ticket path and equals the cOID.** Placement
+  *and* modify both answered `[{"order_id": "975324503", "local_order_id":
+  "CLAUDIA-1789049488826", "order_status": "PreSubmitted", "encrypt_message": "1"}]`. The 2021
+  worked example's key is real; `parent_order_id` on a child is still unmeasured.
+- **`order_ref` on the live-orders row echoes the cOID** (`CLAUDIA-1789049488826`) — the
+  book-side link the 09-08 pass called a candidate — while the order-status endpoint has no
+  `order_ref` key at all (its keys were listed: 46 on the working read, `order_ref` not among
+  them). A parent is findable in the book by reference; a status read needs the id.
+- **`child_order_type` is not a child indicator.** The plain, unattached stop read `"3"` while
+  working and `"0"` once cancelled. The v1 page's `0 = No Child` therefore described a
+  *cancelled* plain order here, and a working plain order was neither `A` nor `0`. A bracket
+  detector must not key on the field's presence or on `≠ 0`; whether a real child reads `A`
+  stays a measurement.
+- **The bare `DELETE` cancelled the future** (second measurement, § Order Cancellation) — the
+  path a parent cancel would take.
+- **Status values seen:** `PreSubmitted` from placement through modify (a resting stop, not a
+  held child — a bracket's held child will read the same on this field, which is why the
+  read-back must say *held* from the parent link, never from the status alone), then
+  `Cancelled` with `cannot_cancel_order: true`.
+
 ### Why ClaudIA cannot send it today (2026-09-06, re-checked against the 2026-09-08 scrape)
 
 Every layer carries exactly one ticket:
@@ -422,11 +449,21 @@ observed (see § Post-dispatch read-back) — `CANCELLED:` in the summary only w
 disposable AAPL order (orderId `567317535`), confirmed gone from `get_live_orders` on the next
 check. STK cancellation works end to end.
 
-**Known gap (FUT/FOP):** IBKR's documented Cancel Order endpoint requires `manualIndicator`/`extOperator`
-**query params** for FUT/FOP (CME Rule 536-B), but `ibkr_core_mcp.IBKRClient.cancel_order()`'s
-signature (`account_id, order_id`) has no way to pass them — FUT/FOP cancellation may be
-rejected by IBKR until that's added upstream in `ibkr_core_mcp`. STK cancellation is unaffected.
+**Documented but not enforced (FUT/FOP) — measured twice:** IBKR's Cancel Order page lists
+`manualIndicator`/`extOperator` **query params** for FUT/FOP (CME Rule 536-B), and
+`ibkr_core_mcp.IBKRClient.cancel_order()` sends the bare `DELETE` with neither. That bare call
+cancelled a live ES order on 2026-07-28 (T2, Live Test Log) and again on 2026-09-10
+(`975324503`: `{"msg": "Request was submitted"}`, read back `Cancelled`, confirmed gone from
+`/iserver/account/orders`). So the requirement is documented and, on both days, unenforced. Do not
+add the params on the page's word alone — a query param IBKR rejects on `DELETE` would break a
+cancel that works; if they are ever added, probe the live endpoint first, the same rule as the
+strict-schema keywords. Tracked as Known Gaps #7 in `docs/project-status.md`. The bracket plan
+inherits this path: a parent cancel is the same `DELETE`.
 Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/cancel-order.md
+
+**Seen rendered 2026-09-10 (screenshot, Known Gaps #27(b–e)/#40):** the cancel dialog is the
+proposal dict verbatim — snake_case labels, `order_id` and `Order ID` both present, `limit_price:
+None` literal, the `reason` text mid-dialog, no outside-RTH, month or currency.
 
 **Gate 2 shows full order detail on cancel (fixed 2026-07-10):** `confirm_cancel_dialog(order_id,
 account_id, order=None)` in `ibkr_core_mcp/order_confirm.py` takes an optional `order` param —
@@ -438,6 +475,11 @@ Known Gaps entry in `docs/project-status.md` for commit references and two flagg
 residuals.
 
 ## Order Modification
+
+**Seen rendered 2026-09-10 (screenshot, Known Gaps #40):** the modify dialog shows the replacement
+body verbatim (`orderType`, `tif`, `manualIndicator: True`, `price: 7895.0`, `outsideRTH: True`…) with
+no contract month, notional, currency or before → after; `_futures_contract_facts` runs on the place
+path only. The abandon button (`LEAVE UNCHANGED`) was clicked live that day and nothing was sent.
 
 Same button-then-gates pattern, with one important difference: **the request body must be the
 full original order, not a partial diff** — verified directly against the primary source
@@ -571,6 +613,24 @@ until a stock fills through the listener. Not done: a P&L-after-fill line (the r
 within 15 s), a poller-based fallback. Live status: **code-verified 2026-09-04; the first
 automatic report awaits the next real fill** (the two fills of that day, 12:47 and the SELL
 after it, happened on a server that predates the feature).
+
+## IBKR's reply chain — what it has actually sent (2026-07-06 STK, 2026-09-10 FUT)
+
+`place_order_and_confirm` loops over `{id, message, messageOptions}` entries, each behind Gate 1
+(*Python is trying to confirm an IBKR order reply <id>.*) and the CONFIRM ORDER REPLY dialog, and
+returns only the terminal `[{order_id, local_order_id, order_status}]` entry. Chains observed:
+
+- **2026-07-06, an AAPL limit:** three sequential replies before the terminal response (the
+  `reply_order` docstring's record) — the loop exists because of it.
+- **2026-09-10 10:34, `BUY 1 ES STP 7900 GTC`** (one contract, 395,000 USD notional): **two**
+  replies, both screenshotted — (1) *"value estimate of 395,000 USD exceeds the Total Value Limit
+  of 100,000 USD. Are you sure you want to submit this order?"*, the account's precautionary
+  setting; (2) *Stop Variant Order Confirmation*, IBKR's stop-order disclosure, whose text carries
+  literal `&nbsp;` entities (Known Gaps #39). The identical order at 10:11 the same day left no
+  record of whether it was asked: the store keeps the terminal entry only (Known Gaps #38).
+
+For a bracket the chain is per ticket and index-aligned (§ Attached profit taker), so both gaps
+compound there: a child's reply would be neither answered by today's loop nor recorded.
 
 ## Post-dispatch read-back (L2)
 
