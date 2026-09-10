@@ -379,6 +379,15 @@ the fix that established this (75,480 → 2,910 tokens/session).
   `/iserver/account/trades` after it, keyed on **conid** (never symbol), and **fills that
   could not be read (`None`, as against `()`) blank the column rather than certify the stored
   history**
+- **Futures contract identity (2026-09-10, gap #37):** a bare root (`ES`) keeps meaning the
+  front month, as IB does, and the resolved contract is named in IB's own strings on every
+  surface: `get_market_snapshot` FUT results carry `_contract` (`local_symbol ESU6`, `month
+  SEP26`, `expires`, `name`), `get_futures` is sorted by expiry with `front_month: true`, the
+  approval text carries a `Contract: ESU6 · SEP26 · expires 2026-09-18` line, and on the
+  Positions and Orders tabs `Symbol` shows the local symbol once contract info is read while
+  `Name` carries IB's long name with the month (`E-mini S&P 500 · Sep18'26`). One definition:
+  `claudia/contract_identity.py` (cached per conid, never a guess). `ESU6` is an output only —
+  IB's search rejects it as an input (measured 2026-09-10).
 - Panel folder hub (both references + dated research + smoke screenshots): `docs/panel/README.md`
 - Startup flow, phase by phase (diagnose startup failures): `docs/startup-flow.md`
 - Trade data sync (Flex vs live API, integrity checks): `docs/flex-query-setup.md` and

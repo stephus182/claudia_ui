@@ -139,6 +139,20 @@ routing depends on `sec_type`:
   `auxPrice` / `stop_price` (`orderType` `Stop`, measured on order 853170745); the dashboard's
   order book has a `Stop` column for it since 2026-09-04.
 
+### The resolved contract is named on the approval text (2026-09-10, gap #37)
+
+A bare root in a futures proposal (`symbol: "ES"`, `sec_type: "FUT"`) keeps meaning the front
+month — the lowest `expirationDate` on `/trsrv/futures`, IB's own default — and the approval
+text now says which contract that is: `**Contract:** ESU6 · SEP26 · expires 2026-09-18`, from
+`claudia/contract_identity.py` (one cached `GET /iserver/contract/{conid}/info` per conid:
+`local_symbol`, `contract_month` → IB's `MMMYY` token, `maturity_date`, `company_name`). The
+render site reads it in a thread through `order_flow.proposal_contract_label`; a stock builds no
+client and any failure means no line, never a guess — Gate 2 carries the same label
+independently. `ESU6` is an output only: `secdef/search?symbol=ESU6` answers "No symbol found"
+(measured 2026-09-10), so nothing parses a month-coded symbol as an input. The same identity
+feeds the Positions and Orders tabs (`Symbol` = local symbol, `Name` = IB's long name · month)
+and the `_contract` block on `get_market_snapshot` FUT results.
+
 ### Stop orders on US futures — what IBKR does with them (scraped 2026-09-04)
 
 Established before a live ES buy-stop test, from IBKR's own pages (local copies in
