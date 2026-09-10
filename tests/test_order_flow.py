@@ -2832,3 +2832,109 @@ def test_compare_modify_readback_checks_both_prices_of_a_stop_limit():
     status["stop_price"] = "7730.00"
     agree, line = _compare_modify_readback(body, status)
     assert agree is False and "stop price" in line
+
+
+def _reply_record(text, confirmed=True, reply_id="RPL1"):
+    """The record shape ibkr_core_mcp appends per reply (its _resolve_one_reply)."""
+    return {
+        "reply_id": reply_id,
+        "message": text,
+        "message_text": text,
+        "message_options": None,
+        "confirmed": confirmed,
+        "at": "2026-09-10T14:34:00Z",
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_persists_the_reply_log_and_reports_it():
+    """Gap #38: the IBKR precautions the human confirmed are persisted with the decision and
+    listed in the chat, first line each; the terminal response is unchanged."""
+    ibkr_mod, client = _make_ibkr_mock()
+
+    def _place(account_id, order_body, *, reply_log):
+        """A client double that resolves two replies, then returns the terminal response."""
+        reply_log.append(
+            _reply_record(
+                "The following order value estimate of 395,000 USD exceeds\n"
+                "the Total Value Limit of 100,000 USD."
+            )
+        )
+        reply_log.append(
+            _reply_record("Stop Variant Order Confirmation\xa0A Stop Order …", reply_id="RPL2")
+        )
+        return [{"orderId": "999"}]
+
+    client.place_order_and_confirm.side_effect = _place
+    store = MagicMock()
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod, store=store, session_id="s1"))
+    line = next(c for c in contents if "IBKR asked 2 confirmations before accepting" in c)
+    assert "1. The following order value estimate of 395,000 USD exceeds" in line
+    assert "2. Stop Variant Order Confirmation A Stop Order …" in line
+    metadata = store.add_decision.call_args.kwargs["metadata"]
+    assert [r["reply_id"] for r in metadata["ibkr_replies"]] == ["RPL1", "RPL2"]
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_without_replies_adds_no_line_and_an_empty_log():
+    """No reply → no "IBKR asked" line, and the decision row carries an empty list, not None."""
+    ibkr_mod, _client = _make_ibkr_mock()
+    store = MagicMock()
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod, store=store, session_id="s1"))
+    assert not any("IBKR asked" in c for c in contents)
+    assert store.add_decision.call_args.kwargs["metadata"]["ibkr_replies"] == []
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_names_the_declined_ibkr_prompt():
+    """A decline mid-chain names the prompt that was declined, from the partial log."""
+    ibkr_mod, client = _make_ibkr_mock()
+
+    def _place(account_id, order_body, *, reply_log):
+        """A client double whose second gate is declined: partial log, then the raise."""
+        reply_log.append(
+            _reply_record("Stop Variant Order Confirmation A Stop Order …", confirmed=False)
+        )
+        raise RuntimeError("User declined IBKR order reply")
+
+    client.place_order_and_confirm.side_effect = _place
+    contents = _sent_contents(await _run(_make_action(), ibkr_mod))
+    assert any(
+        "Order not placed" in c and "Declined prompt: Stop Variant Order Confirmation" in c
+        for c in contents
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_modify_order_persists_and_reports_the_reply_log():
+    """The modify path persists and reports its reply log exactly like the place path."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+
+    def _modify(account_id, order_id, order_body, *, reply_log):
+        """A client double that resolves one reply on the modify chain."""
+        reply_log.append(_reply_record("Price band warning."))
+        return {"order_id": "242538143", "order_status": "Submitted"}
+
+    client.modify_order_and_confirm.side_effect = _modify
+    store = MagicMock()
+    contents = _sent_contents(
+        await _run_modify(_make_modify_action(), ibkr_mod, store=store, session_id="s42")
+    )
+    assert any(
+        "IBKR asked 1 confirmation before accepting" in c and "1. Price band warning." in c
+        for c in contents
+    )
+    metadata = store.add_decision.call_args.kwargs["metadata"]
+    assert metadata["ibkr_replies"][0]["reply_id"] == "RPL1"
+
+
+def test_reply_first_line_takes_the_first_non_empty_line_and_truncates():
+    """The status line shows one clean line per reply: whitespace collapsed, NBSP → space,
+    cut at 120 characters with an ellipsis; the record keeps the full text."""
+    from claudia.order_flow import _reply_first_line
+
+    assert _reply_first_line("\n\n  first   line \nsecond") == "first line"
+    assert _reply_first_line("a\xa0b") == "a b"
+    long = "x" * 130
+    assert _reply_first_line(long) == "x" * 119 + "…"
+    assert _reply_first_line("") == ""

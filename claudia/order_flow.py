@@ -246,6 +246,46 @@ def _post_dispatch_failure_text(exc: Exception, noun: str) -> str:
     )
 
 
+def _reply_first_line(text: str, limit: int = 120) -> str:
+    """The first non-empty line of an IBKR reply's cleaned text, cut to `limit` characters.
+
+    For a status line only — the decision row keeps the full raw and cleaned texts.
+    """
+    for raw_line in text.replace("\xa0", " ").splitlines():
+        line = " ".join(raw_line.split())
+        if line:
+            return line if len(line) <= limit else line[: limit - 1] + "…"
+    return ""
+
+
+def _format_reply_log(reply_log: list[dict[str, Any]]) -> str:
+    """The IBKR precautions the human confirmed before the write was accepted (gap #38).
+
+    Rendered from the client's reply records so the chat says what the human clicked
+    through — IBKR's own words, first line each — instead of a bare "accepted". "" when
+    no reply was confirmed.
+    """
+    confirmed = [r for r in reply_log if r.get("confirmed")]
+    if not confirmed:
+        return ""
+    noun = "confirmation" if len(confirmed) == 1 else "confirmations"
+    lines = [f"**IBKR asked {len(confirmed)} {noun} before accepting:**"]
+    for i, record in enumerate(confirmed, 1):
+        text = str(record.get("message_text") or record.get("message") or "")
+        lines.append(f"{i}. {_reply_first_line(text)}")
+    return "\n".join(lines)
+
+
+def _declined_reply_text(reply_log: list[dict[str, Any]]) -> str:
+    """Name the IBKR prompt the human declined — the log's last unconfirmed record, or ""."""
+    declined = [r for r in reply_log if not r.get("confirmed")]
+    if not declined:
+        return ""
+    text = str(declined[-1].get("message_text") or declined[-1].get("message") or "")
+    first = _reply_first_line(text)
+    return f" Declined prompt: {first}" if first else ""
+
+
 def _classify_execution_error(exc: Exception) -> str:
     """Map an exception from a Gate 1/2-guarded IBKR call to a user-facing message.
 
@@ -921,6 +961,7 @@ async def _execute_staged_order_core(
         "System",
     )
 
+    reply_log: list[dict[str, Any]] = []
     try:
         from dotenv import load_dotenv
         from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
@@ -1056,8 +1097,11 @@ async def _execute_staged_order_core(
         log.info(
             "Placing order: %s", {k: v for k, v in order_body.items() if not k.startswith("_")}
         )
-        result = ibkr.place_order_and_confirm(account_id, order_body)
+        result = ibkr.place_order_and_confirm(account_id, order_body, reply_log=reply_log)
         dispatched = True
+        reply_line = _format_reply_log(reply_log)
+        if reply_line:
+            await send_status(reply_line, "System")
 
         # IBKR returns rejections as HTTP 200 payloads — no exception — so the
         # result must be classified before claiming success (proven live 2026-07-23;
@@ -1120,6 +1164,7 @@ async def _execute_staged_order_core(
                 metadata={
                     "proposal": proposal,
                     "ibkr_response": result,
+                    "ibkr_replies": reply_log,
                     "ibkr_order_id": ibkr_order_id,
                     "claudia_ref": claudia_ref,
                     "readback_confirmed": confirmed,
@@ -1133,7 +1178,11 @@ async def _execute_staged_order_core(
         if dispatched:
             await send_status(_post_dispatch_failure_text(exc, "order"), "System")
         else:
-            await send_status(f"**Order not placed:** {_classify_execution_error(exc)}", "System")
+            await send_status(
+                f"**Order not placed:** {_classify_execution_error(exc)}"
+                f"{_declined_reply_text(reply_log)}",
+                "System",
+            )
 
 
 # ── Order cancellation ───────────────────────────────────────────────────────
@@ -1395,6 +1444,7 @@ async def _execute_modify_order_core(
         "System",
     )
 
+    reply_log: list[dict[str, Any]] = []
     try:
         from dotenv import load_dotenv
         from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
@@ -1444,8 +1494,13 @@ async def _execute_modify_order_core(
         account_id = _resolve_account_id(accounts)
 
         log.info("Modifying order %s: %s", order_id, order_body)
-        result = ibkr.modify_order_and_confirm(account_id, order_id, order_body)
+        result = ibkr.modify_order_and_confirm(
+            account_id, order_id, order_body, reply_log=reply_log
+        )
         dispatched = True
+        reply_line = _format_reply_log(reply_log)
+        if reply_line:
+            await send_status(reply_line, "System")
 
         # Same 200-with-rejection classification as the place path — modify hits the
         # same order-submission machinery and can return the same rejection shape.
@@ -1495,6 +1550,7 @@ async def _execute_modify_order_core(
                 metadata={
                     "proposal": proposal,
                     "ibkr_response": result,
+                    "ibkr_replies": reply_log,
                     "ibkr_order_id": order_id,
                     "readback_confirmed": confirmed,
                     "readback_order_status": observed_state,
@@ -1508,4 +1564,8 @@ async def _execute_modify_order_core(
         if dispatched:
             await send_status(_post_dispatch_failure_text(exc, "modify request"), "System")
         else:
-            await send_status(f"**Order not modified:** {_classify_execution_error(exc)}", "System")
+            await send_status(
+                f"**Order not modified:** {_classify_execution_error(exc)}"
+                f"{_declined_reply_text(reply_log)}",
+                "System",
+            )
