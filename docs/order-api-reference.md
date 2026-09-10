@@ -461,9 +461,12 @@ strict-schema keywords. Tracked as Known Gaps #7 in `docs/project-status.md`. Th
 inherits this path: a parent cancel is the same `DELETE`.
 Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/cancel-order.md
 
-**Seen rendered 2026-09-10 (screenshot, Known Gaps #27(b–e)/#40):** the cancel dialog is the
-proposal dict verbatim — snake_case labels, `order_id` and `Order ID` both present, `limit_price:
-None` literal, the `reason` text mid-dialog, no outside-RTH, month or currency.
+**Since 2026-09-10 (gap #40, same commits):** the cancel core reads the order status once before
+Touch ID and hands the dialog an IBKR-shaped display dict — side, size, type, prices, TIF,
+outside-RTH, the futures label/multiplier/currency, and `Currently at IBKR` from
+`order_description_with_contract`; on a failed read the proposal's own values are shown, so a
+cancel is never blocked by a read. The order id appears once; nulls and the reason blob are gone
+(before: screenshot 2026-09-10 10:38, gaps #27(b–e)).
 
 **Gate 2 shows full order detail on cancel (fixed 2026-07-10):** `confirm_cancel_dialog(order_id,
 account_id, order=None)` in `ibkr_core_mcp/order_confirm.py` takes an optional `order` param —
@@ -476,10 +479,13 @@ residuals.
 
 ## Order Modification
 
-**Seen rendered 2026-09-10 (screenshot, Known Gaps #40):** the modify dialog shows the replacement
-body verbatim (`orderType`, `tif`, `manualIndicator: True`, `price: 7895.0`, `outsideRTH: True`…) with
-no contract month, notional, currency or before → after; `_futures_contract_facts` runs on the place
-path only. The abandon button (`LEAVE UNCHANGED`) was clicked live that day and nothing was sent.
+**Since 2026-09-10 (gap #40, ibkr_core_mcp `c8ff5d6` + claudia_ui `6df077a`):** the modify
+dialog shows the same typed rows as the place dialog (Account / Action / Symbol with the futures
+label / Quantity / Order Type / Price with currency / Stop / TIF / Outside RTH / Total) plus
+`Order ID`, a `Changes` row (`stop price 7900.0 → 7895.0`, from the proposal's `changes`) and
+`Currently at IBKR` (IBKR's `order_description_with_contract`, read once before Touch ID).
+`_`-prefixed display keys are stripped by `modify_order` before the POST, as `place_order` always
+did. Before that date the dialog was the replacement body verbatim (screenshot 2026-09-10 10:37).
 
 Same button-then-gates pattern, with one important difference: **the request body must be the
 full original order, not a partial diff** — verified directly against the primary source
@@ -631,6 +637,15 @@ returns only the terminal `[{order_id, local_order_id, order_status}]` entry. Ch
 
 For a bracket the chain is per ticket and index-aligned (§ Attached profit taker), so both gaps
 compound there: a child's reply would be neither answered by today's loop nor recorded.
+
+**Persisted since 2026-09-10 (gap #38 closed in code, ibkr_core_mcp `882231a` + claudia_ui
+`d732c44`):** `place_order_and_confirm` / `modify_order_and_confirm` take `reply_log=`, a
+caller-owned list that receives one record per reply — `reply_id`, raw `message`, `message_text`
+(tags stripped, entities unescaped by `order_confirm.reply_message_text`, which also fixed the
+raw `&nbsp;` of gap #39), `message_options`, `confirmed`, UTC `at` — appended before the gates so a
+decline or a Touch ID failure is recorded too. `order_flow` stores it as `ibkr_replies` in the
+`trade_staged` / `trade_modified` decision metadata and lists the confirmed precautions in the
+chat (first line each); a decline names the declined prompt.
 
 ## Post-dispatch read-back (L2)
 

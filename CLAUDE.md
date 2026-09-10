@@ -233,6 +233,12 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   `propose_modify` too, and it is shown in the approval text, the Gate 2 dialog and the Orders
   tab (`—` there = not reported by IBKR, never "No"). Sources: `docs/order-api-reference.md`
   § Stop orders on US futures.
+- **Display-only keys** (2026-09-10): `_`-prefixed keys on an order body (`_companyName`,
+  `_multiplier`, `_multiplier_unknown`, `_currency`, `_changes`, `_current_description`) exist
+  for Gate 2 only and are stripped by `client.py` before the POST on place **and** modify. The
+  three dialogs draw from one typed row builder (`order_confirm._order_rows`); the reply chain
+  IBKR sends before accepting a write is persisted as `ibkr_replies` on the decision row — the
+  store no longer keeps only the terminal response.
 - **Attached profit taker / bracket orders (2026-09-06, reviewed 2026-09-08): supported by the
   Web API, not yet expressible here.** IBKR takes a bracket as one request — an `orders` array
   where the parent carries `cOID` and each child `parentId` equal to it — and holds the child
