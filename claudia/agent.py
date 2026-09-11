@@ -45,6 +45,7 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from anthropic import AsyncAnthropic
@@ -1487,6 +1488,152 @@ def _with_history_cache_marker(messages: list[dict[str, Any]]) -> list[dict[str,
     return [*messages[:-1], last]
 
 
+@dataclass(frozen=True)
+class _ClaimShape:
+    """One claim detector's identity on every surface it corrects.
+
+    Four shapes, four sets of words — deliberately never merged: "the proposal was never
+    made", "the lookup never ran", "the payload is constructed" and "the action never ran"
+    each need their own words to the user, their own decision type (so the log stays
+    separable) and their own operator note. Before 2026-09-11 each set lived in its own
+    `_emit_*_notice` method; the table is the same four sets with the sequence they share
+    (`_emit_correction`) written once and the decision they share
+    (`_detect_unbacked_claims`) made pure, so the same-turn retry can ask it before display.
+    """
+
+    kind: str
+    decision_type: str
+    log_message: str
+    notice: str
+    operator_note: str
+    summary_text: str
+
+
+_CLAIM_SHAPES: dict[str, _ClaimShape] = {
+    # "Never proposed at all" — the sibling of the render-failure notice
+    # (`_emit_guardrail_notice`, "accepted but not rendered"), and a turn can only be in one
+    # of the two states: a recorded proposal takes the render path, so this shape is
+    # checked only when none exists.
+    "proposal": _ClaimShape(
+        kind="proposal",
+        decision_type="proposal_claim_unbacked",
+        log_message="Unbacked staging claim, no proposal tool called: %r",
+        notice=_UNBACKED_CLAIM_NOTICE,
+        operator_note=_UNBACKED_CLAIM_OPERATOR_NOTE,
+        summary_text=(
+            "assistant text claimed a completed order action but no proposal tool was "
+            "called — nothing staged"
+        ),
+    ),
+    # "The lookup never ran". Not mutually exclusive with the others: one message can
+    # narrate a staging and the lookup that supposedly justified it, and each false claim
+    # gets its own correction rather than one covering for the other.
+    "book": _ClaimShape(
+        kind="book",
+        decision_type="book_claim_unverified",
+        log_message="Book-check claim with no order-book tool called: %r",
+        notice=_STALE_BOOK_CLAIM_NOTICE,
+        operator_note=_STALE_BOOK_CLAIM_OPERATOR_NOTE,
+        summary_text=(
+            "assistant text claimed a live-order check but no order-book tool was "
+            "called — the stated order state is unverified"
+        ),
+    ),
+    # "The payload is constructed" — the audit-defeating shape: the measured instance
+    # answered a user's explicit verification request with a manufactured block. The
+    # specific correction outranks the generic action one, and no uploaded image can
+    # ground the provenance of a fenced "raw tool result", so it is never image-exempt.
+    "payload": _ClaimShape(
+        kind="payload",
+        decision_type="result_claim_unbacked",
+        log_message="Constructed payload presented as a tool result: %r",
+        notice=_UNBACKED_RESULT_NOTICE,
+        operator_note=_UNBACKED_RESULT_OPERATOR_NOTE,
+        summary_text=(
+            "assistant text presented a constructed block as a raw tool result — "
+            "no tool was called in that turn"
+        ),
+    ),
+    # "The action never ran" — T7's shape, the general case. Stands down when a sibling
+    # has already corrected the same sentence (the measured overlap is one sentence
+    # committing two lies: two corrections for two claims, never three), and on an image
+    # turn (an upload is DATA INTEGRITY's second guaranteed source; describing it needs no
+    # tool).
+    "action": _ClaimShape(
+        kind="action",
+        decision_type="action_claim_unbacked",
+        log_message="Action reported with no tool call this turn: %r",
+        notice=_UNBACKED_ACTION_NOTICE,
+        operator_note=_UNBACKED_ACTION_OPERATOR_NOTE,
+        summary_text=(
+            "assistant text reported a completed action but no tool was called in "
+            "that turn — nothing it described was observed"
+        ),
+    ),
+}
+"""Every claim shape the agent corrects, keyed by the `kind` `_detect_unbacked_claims` emits.
+
+Pinned by tests/test_agent.py::test_every_correction_persists_before_it_displays, which
+iterates this table so a fifth shape is covered the day it is added.
+"""
+
+
+def _detect_unbacked_claims(
+    display_text: str,
+    called_tools: set[str],
+    *,
+    proposal_recorded: bool,
+    images: bool,
+) -> list[tuple[str, str]]:
+    """Return `(kind, offending sentence)` for every claim the turn's evidence does not back.
+
+    Pure, and the four detectors' precedence and gating moved here verbatim from the tail
+    of `handle_message` (2026-09-11), so the same decision can be asked before display —
+    the same-turn retry — and again after it, where it drives the corrections:
+
+    - **proposal** — only when no proposal was recorded this turn; a recorded one takes the
+      render path, and the claim is textual where the verdict is `proposal_recorded`.
+    - **book** — only when no order-book tool ran (`_BOOK_READING_TOOLS`); independent of
+      the proposal branch, because the 2026-07-28 turn committed both in one message.
+    - **payload**, then **action** — only when *no* tool ran at all (with any real call the
+      report may be grounded; that give-up is documented on the detectors). The payload
+      check runs first and is never image-exempt; the action check is skipped on an image
+      turn and when its sentence overlaps a proposal or book claim already found.
+
+    Args:
+        display_text: The assistant text of the turn (stripped).
+        called_tools: Every tool that really ran this turn.
+        proposal_recorded: Whether a `propose_*` call was recorded this turn.
+        images: Whether the user turn carried an uploaded image.
+
+    Returns:
+        Claims in correction order, empty when the text is empty or nothing is unbacked.
+        The sentences are for the log line only, never for storage.
+    """
+    found: list[tuple[str, str]] = []
+    if not display_text:
+        return found
+    claim = None if proposal_recorded else _claims_completed_proposal(display_text)
+    if claim is not None:
+        found.append(("proposal", claim))
+    stale = None
+    if not (called_tools & _BOOK_READING_TOOLS):
+        stale = _claims_fresh_book_check(display_text)
+        if stale is not None:
+            found.append(("book", stale))
+    if not called_tools:
+        shown = _claims_verbatim_tool_result(display_text)
+        if shown is not None:
+            found.append(("payload", shown))
+        elif not images:
+            narrated = _claims_completed_action(display_text)
+            if narrated is not None and not any(
+                s is not None and (narrated in s or s in narrated) for s in (claim, stale)
+            ):
+                found.append(("action", narrated))
+    return found
+
+
 class ClaudIAAgent:
     """Manages one chat session's Anthropic API interaction.
     Instantiated once per chat session by whichever UI entry point owns that session
@@ -1861,13 +2008,6 @@ class ClaudIAAgent:
         # one exists per turn — the second call is refused there, not silently dropped.
         display_text = full_response_text.strip()
         kind, proposal = self._pending_proposal or (None, None)
-        # The sibling detectors' claimed sentences, kept for the general action detector
-        # below: it stands down only when its own report overlaps one of them — the same
-        # sentence corrected twice is noise, a second distinct lie is not (2026-08-12
-        # review; the earlier turn-wide boolean let the second lie stand).
-        claim: str | None = None
-        stale: str | None = None
-
         # Persist final assistant message
         msg_id = self._store.add_message(self._session_id, "assistant", display_text)
 
@@ -1913,48 +2053,18 @@ class ClaudIAAgent:
                     cancel_proposal=proposal if kind == "cancel" else None,
                     modify_proposal=proposal if kind == "modify" else None,
                 )
-        elif display_text:
-            # Nothing was recorded this turn, so the invariant above had nothing to assert —
-            # which is precisely how the 2026-07-28 failure passed it. That turn called no
-            # tool at all and still told the user "Cancel staged — button's above". The
-            # claim is textual and the verdict is `proposal is None`; see
-            # `_claims_completed_proposal` for the shapes and the corpus measurement.
-            claim = _claims_completed_proposal(display_text)
-            if claim is not None:
-                await self._emit_unbacked_claim_notice(msg_id, claim)
 
-        # Outside the proposal branches on purpose: claiming a lookup and claiming a
-        # proposal are independent acts, and the 2026-07-28 turn committed both in one
-        # message. A turn can also propose perfectly and still describe a book check it
-        # never made, which neither branch above would ever look at.
-        if display_text and not (called_tools & _BOOK_READING_TOOLS):
-            stale = _claims_fresh_book_check(display_text)
-            if stale is not None:
-                await self._emit_stale_book_claim_notice(msg_id, stale)
-
-        # The two general detectors — T7's shape — run last, gated on `not called_tools`:
-        # with any real call the turn's report may be grounded, and that give-up is
-        # documented on the detector. The payload check runs first and is deliberately
-        # NOT gated on images or on the siblings (2026-08-12 review): no uploaded image
-        # can ground the provenance of a fenced "raw tool result", and a book notice
-        # about sentence A does not correct a constructed payload in sentence B.
-        if display_text and not called_tools:
-            shown = _claims_verbatim_tool_result(display_text)
-            if shown is not None:
-                await self._emit_unbacked_result_notice(msg_id, shown)
-            elif not images:
-                # `not images` clears the ACTION detector only: a screenshot the user
-                # dragged in is DATA INTEGRITY's second guaranteed source, and describing
-                # it needs no tool. The overlap test replaces a turn-wide stand-down
-                # (2026-08-12 review): the 2026-07-28 message narrates a book check and a
-                # staging in ONE sentence — correcting that sentence twice devalues both
-                # notices — but a second, distinct lie elsewhere in the message still
-                # earns its own correction.
-                narrated = _claims_completed_action(display_text)
-                if narrated is not None and not any(
-                    s is not None and (narrated in s or s in narrated) for s in (claim, stale)
-                ):
-                    await self._emit_unbacked_action_notice(msg_id, narrated)
+        # Every claim the turn's evidence does not back, in the order the four detectors
+        # always ran — proposal (only when none was recorded), book, then payload or action
+        # — each with its own correction. The decision itself is pure
+        # (`_detect_unbacked_claims`), so the same-turn retry can ask it before display.
+        for claim_kind, claim in _detect_unbacked_claims(
+            display_text,
+            called_tools,
+            proposal_recorded=proposal is not None,
+            images=bool(images),
+        ):
+            await self._emit_claim_correction(claim_kind, msg_id, claim)
 
     async def _emit_correction(
         self,
@@ -2013,120 +2123,27 @@ class ClaudIAAgent:
         self._pending_operator_notes.append(operator_note)
         await self._sink.send_message(notice)
 
-    async def _emit_stale_book_claim_notice(self, msg_id: int, claim: str) -> None:
-        """Contradict a claimed order-book check that no tool call backs.
+    async def _emit_claim_correction(self, kind: str, msg_id: int, claim: str) -> None:
+        """Contradict one unbacked claim with the words of its shape (`_CLAIM_SHAPES`).
 
-        The third member of the family, kept separate from the other two for the same
-        reason they are separate from each other: this one means "the lookup never ran",
-        which needs its own words to the user, its own decision type and its own operator
-        note. Unlike those two it is not mutually exclusive with them — a single message can
-        both narrate a staging and narrate the lookup that supposedly justified it, and
-        each false claim gets its own correction rather than one covering for the other.
-
-        Surface order and its safety argument live once, in `_emit_correction`.
+        Surface order and its safety argument live once, in `_emit_correction`. The claim
+        is **logged only** — live conversation text, kept out of the decision row and every
+        surface that leaves this machine.
 
         Args:
-            msg_id: The assistant message whose text carries the unverified claim.
-            claim: The offending sentence. **Logged only** — live conversation text, kept
-                out of the decision row and every surface that leaves this machine.
+            kind: A key of `_CLAIM_SHAPES` — `proposal`, `book`, `payload` or `action`.
+            msg_id: The assistant message whose text carries the claim.
+            claim: The offending sentence, for the log line.
         """
+        shape = _CLAIM_SHAPES[kind]
         await self._emit_correction(
             msg_id,
             claim,
-            log_message="Book-check claim with no order-book tool called: %r",
-            notice=_STALE_BOOK_CLAIM_NOTICE,
-            decision_type="book_claim_unverified",
-            summary_text=(
-                "assistant text claimed a live-order check but no order-book tool was "
-                "called — the stated order state is unverified"
-            ),
-            operator_note=_STALE_BOOK_CLAIM_OPERATOR_NOTE,
-        )
-
-    async def _emit_unbacked_action_notice(self, msg_id: int, claim: str) -> None:
-        """Contradict a reported action that no tool call backs — T7's shape.
-
-        The fourth member of the family, and the general case: it means "the action never
-        ran", where its siblings mean "the proposal was never made" and "the lookup never
-        ran". It stands down when either sibling has already corrected the turn (the call
-        site's `corrected` gate), because the measured overlap is a single sentence
-        committing two lies — two corrections for two claims, never three.
-
-        Surface order and its safety argument live once, in `_emit_correction`.
-
-        Args:
-            msg_id: The assistant message whose text carries the unbacked report.
-            claim: The offending segment. **Logged only** — live conversation text, kept
-                out of the decision row and every surface that leaves this machine.
-        """
-        await self._emit_correction(
-            msg_id,
-            claim,
-            log_message="Action reported with no tool call this turn: %r",
-            notice=_UNBACKED_ACTION_NOTICE,
-            decision_type="action_claim_unbacked",
-            summary_text=(
-                "assistant text reported a completed action but no tool was called in "
-                "that turn — nothing it described was observed"
-            ),
-            operator_note=_UNBACKED_ACTION_OPERATOR_NOTE,
-        )
-
-    async def _emit_unbacked_result_notice(self, msg_id: int, claim: str) -> None:
-        """Contradict a fenced block vouched for as a tool result that no tool produced.
-
-        Kept separate from `_emit_unbacked_action_notice` for the same reason the
-        siblings are separate from each other: "the payload is constructed" needs its own
-        words to the user, its own decision type and its own operator note. This is the
-        audit-defeating shape — the measured instance answered a user's explicit
-        verification request with a manufactured payload — so the specific correction
-        outranks the generic one at the call site.
-
-        Args:
-            msg_id: The assistant message whose text vouches for the block.
-            claim: The vouching sentence. **Logged only**, as with its siblings.
-        """
-        await self._emit_correction(
-            msg_id,
-            claim,
-            log_message="Constructed payload presented as a tool result: %r",
-            notice=_UNBACKED_RESULT_NOTICE,
-            decision_type="result_claim_unbacked",
-            summary_text=(
-                "assistant text presented a constructed block as a raw tool result — "
-                "no tool was called in that turn"
-            ),
-            operator_note=_UNBACKED_RESULT_OPERATOR_NOTE,
-        )
-
-    async def _emit_unbacked_claim_notice(self, msg_id: int, claim: str) -> None:
-        """Contradict a staging claim that no tool call backs, on all three surfaces.
-
-        The sibling of `_emit_guardrail_notice`, and deliberately not merged with it: that
-        one means "accepted but not rendered" and this one means "never proposed at all".
-        They need different words to the user, a different decision type, and a different
-        operator note, and a turn can only ever be in one of the two states — a recorded
-        proposal takes the render path, so this branch runs only when none exists.
-
-        Surface order and its safety argument live once, in `_emit_correction`.
-
-        Args:
-            msg_id: The assistant message whose text carries the unbacked claim.
-            claim: The offending sentence. **Logged only.** It is live conversation text, so
-                it stays out of the decision row, out of the session report and out of any
-                surface that leaves this machine.
-        """
-        await self._emit_correction(
-            msg_id,
-            claim,
-            log_message="Unbacked staging claim, no proposal tool called: %r",
-            notice=_UNBACKED_CLAIM_NOTICE,
-            decision_type="proposal_claim_unbacked",
-            summary_text=(
-                "assistant text claimed a completed order action but no proposal tool was "
-                "called — nothing staged"
-            ),
-            operator_note=_UNBACKED_CLAIM_OPERATOR_NOTE,
+            log_message=shape.log_message,
+            notice=shape.notice,
+            decision_type=shape.decision_type,
+            summary_text=shape.summary_text,
+            operator_note=shape.operator_note,
         )
 
     async def _emit_guardrail_notice(self, kind: str, msg_id: int) -> None:

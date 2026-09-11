@@ -18,6 +18,7 @@ from claudia.agent import (
     ClaudIAAgent,
     _build_system_prompt,
     _build_version_note,
+    _detect_unbacked_claims,
     _history_to_messages,
     _log_cache_usage,
     _log_thinking_usage,
@@ -4005,35 +4006,26 @@ async def test_an_image_does_not_clear_a_fabricated_payload():
 async def test_every_correction_persists_before_it_displays():
     """The one safety property of the shared emitter: the record must exist before the
     sink is touched, so a failing chat feed cannot cost a correction. Asserted by
-    breaking the sink and checking the row survives — for every correction shape."""
-    from claudia.agent import (
-        _STALE_BOOK_CLAIM_NOTICE,
-        _UNBACKED_ACTION_NOTICE,
-        _UNBACKED_CLAIM_NOTICE,
-        _UNBACKED_RESULT_NOTICE,
-    )
+    breaking the sink and checking the row survives — for every shape in `_CLAIM_SHAPES`,
+    so a fifth shape is covered the day it is added."""
+    from claudia.agent import _CLAIM_SHAPES
 
-    shapes = [
-        ("_emit_unbacked_claim_notice", _UNBACKED_CLAIM_NOTICE, "proposal_claim_unbacked"),
-        ("_emit_stale_book_claim_notice", _STALE_BOOK_CLAIM_NOTICE, "book_claim_unverified"),
-        ("_emit_unbacked_action_notice", _UNBACKED_ACTION_NOTICE, "action_claim_unbacked"),
-        ("_emit_unbacked_result_notice", _UNBACKED_RESULT_NOTICE, "result_claim_unbacked"),
-    ]
-    for method, notice, decision_type in shapes:
+    assert set(_CLAIM_SHAPES) == {"proposal", "book", "payload", "action"}
+    for kind, shape in _CLAIM_SHAPES.items():
         agent, sink = _make_agent_recording()
         sink.send_message = AsyncMock(side_effect=RuntimeError("chat feed down"))
         with pytest.raises(RuntimeError):
-            await getattr(agent, method)(1, "some claimed sentence")
+            await agent._emit_claim_correction(kind, 1, "some claimed sentence")
         decisions = agent._store.get_decisions("test-session")
-        assert [d["decision_type"] for d in decisions] == [decision_type], method
+        assert [d["decision_type"] for d in decisions] == [shape.decision_type], kind
         # The user-facing notice is persisted as an assistant row before the sink runs,
         # so the correction survives in the transcript even though the display failed.
-        assert notice in agent._store.get_history("test-session")[-1]["content"], method
-        assert agent._pending_operator_notes, method
+        assert shape.notice in agent._store.get_history("test-session")[-1]["content"], kind
+        assert agent._pending_operator_notes, kind
         # The offending sentence is logged only — never persisted anywhere.
         assert not any(
             "some claimed sentence" in (d.get("summary_text") or "") for d in decisions
-        ), method
+        ), kind
 
 
 async def test_the_render_failure_notice_persists_before_it_displays():
@@ -4208,6 +4200,31 @@ async def test_each_pass_logs_its_response_shape(caplog):
     with caplog.at_level(logging.INFO, logger="claudia.agent"):
         await agent.handle_message("hi")
     assert "response shape: text blocks=2 tool_use=0 thinking blocks=0" in caplog.text
+
+
+# --- the four detectors as one pure decision (plan Task 5 — no behaviour change) ----------
+
+
+def test_detect_unbacked_claims_orders_and_gates_like_the_tail():
+    """Proposal only when none was recorded; payload/action only on a zero-tool turn;
+    action stands down on an image turn; empty text yields nothing."""
+    staged = NARRATED_STAGING[0]
+    kinds = [
+        k for k, _ in _detect_unbacked_claims(staged, set(), proposal_recorded=False, images=False)
+    ]
+    assert kinds[0] == "proposal"
+    assert "proposal" not in [
+        k for k, _ in _detect_unbacked_claims(staged, set(), proposal_recorded=True, images=False)
+    ]
+    assert _detect_unbacked_claims("", set(), proposal_recorded=False, images=False) == []
+    payload = NARRATED_TOOL_RESULT[0]
+    assert [
+        k for k, _ in _detect_unbacked_claims(payload, set(), proposal_recorded=False, images=True)
+    ] == ["payload"]
+    assert (
+        _detect_unbacked_claims(payload, {"get_positions"}, proposal_recorded=False, images=False)
+        == []
+    )
 
 
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------
