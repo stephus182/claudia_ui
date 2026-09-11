@@ -278,6 +278,13 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   non-blank `order_id`, no duplicate `changes` entries — are checked by `_proposal_defect()`
   in `claudia/agent.py`. A defective proposal is **rejected whole and never repaired**: the
   model gets an honest `tool_result` saying no button was created.
+- **Narrated actions (2026-09-11):** a turn that ran no tool and still claims a tool result
+  or an order action is withdrawn before display and retried once (`_RETRIES_PER_TURN`,
+  `tool_choice: any` on the first request where the model is probed for it); a contradicted
+  turn is never replayed as the model's words again (`message_withdrawals`); `propose_modify`
+  is refused unless `get_order_status` ran in the same turn; refused / rejected / unverified
+  clicks replay on the operator channel. Mechanism and measurements:
+  `docs/agent-behavior-reference.md` §4d.
 
 ---
 

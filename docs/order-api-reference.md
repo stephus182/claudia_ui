@@ -498,6 +498,12 @@ residuals.
 
 ## Order Modification
 
+**Precondition enforced in the handler (2026-09-11):** `propose_modify` is refused — with a
+`tool_result` telling the model to call `get_order_status(order_id)` and copy the unchanged
+fields from its result — unless `get_order_status` ran **in the same turn**. The read the
+immutability rule below copies from has to be in evidence, not recalled; the refusal creates
+no button. Source and measurement: `docs/agent-behavior-reference.md` §4d.
+
 **Since 2026-09-10 (gap #40, ibkr_core_mcp `c8ff5d6` + claudia_ui `6df077a`):** the modify
 dialog shows the same typed rows as the place dialog (Account / Action / Symbol with the futures
 label / Quantity / Order Type / Price with currency / Stop / TIF / Outside RTH / Total) plus

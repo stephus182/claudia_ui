@@ -279,7 +279,7 @@ defect**: a turn-wide suppression flag let a second, distinct lie stand uncorrec
 They are listed rather than summarised because the list *is* the evidence for §4c's claim
 that corpus precision is not safety.
 
-### 4b. Four replay records — "here is what you actually did"
+### 4b. Five replay records — "here is what you actually did"
 
 Delivered by `_append_operator_message` as one mid-conversation **`role: "system"`** message.
 **That role is the security property:** anything the model can write, it can forge, and the
@@ -291,6 +291,7 @@ failure being corrected is a model asserting something untrue about its own outp
 | `_called_tool_records` | which tools have already run — **and that their results are gone from context**. Since 2026-08-12 the header says "called by you, **or run by a user button click**": the ledger can now name a tool the model never called |
 | `_emission_records` | which proposals genuinely rendered a button (failed renders excluded) |
 | `_completed_order_records` | which order actions reached IBKR (a button click leaves no transcript) |
+| `_refused_order_records` (2026-09-11) | which clicks did **not** end in a confirmed write — refused by the user at a gate or an IBKR precaution, rejected by IBKR, or dispatched with the outcome unverified. A refusal is a chat status line the model never sees; without this record a refused proposal and a staged one look the same from inside the conversation (message 1059, 2026-09-11: *"the same ES stop-entry I staged a moment ago"*, four minutes after the user declined it at Gate 2). Named as the user's decision, never as a failure |
 | pending notices | this turn's corrections, closest to where generation resumes |
 
 **Records carry identity only — never values.** A tool name, an order id, a symbol. A
@@ -326,6 +327,51 @@ cannot contain.**
 
 ---
 
+### 4d. Transcript fidelity and the same-turn retry (2026-09-11)
+
+The mechanism §7 called *"unexplained"* was measured on 2026-09-11 (the full record:
+`docs/plans/2026-09-11-anti-fabrication-framework-design.md`, git-ignored; the numbers also
+sit in `docs/project-status.md` § Live Test Log). Two facts about the transcript ClaudIA
+replays were the cause:
+
+1. **Glue.** `agent.py` joined content blocks with nothing, so a boundary printed as
+   `staging.Confirmed` — on screen and in the store. Replayed as history, every tool turn
+   read "announce → report" with no `tool_use` between, and the glue was the token-level
+   cue the model copied when it narrated a tool cycle it never ran. The fabrications carry
+   the glue *written by the model*, inside single text blocks. Corpus proxy: a glued
+   sentence boundary in a zero-tool turn catches **23/23** audited fabrications, including
+   both documented misses of the prose detectors.
+2. **Copying.** Once a narrated action is in the history it is copied on the re-ask
+   (1075 → 1078 near-verbatim, with the operator note *answered inside the copy* —
+   "— freshly, this turn" — and still no call).
+
+Measured on the real stored contexts of turns 1074 / 1077 / 1058 with `scripts/replay_eval.py`
+(n = 16 per cell): today's replay narrated **17/48**; a paragraph break at the block
+boundary alone **0/32**; withdrawal alone 3/32; every combined shape 0/48; the retry shape
+(`tool_choice: any`) 48/48 calls with **zero thinking on every sample**; `xhigh` effort no
+measurable gain. Anthropic's own reference names the class: *"the model occasionally writes
+a tool call into its visible text instead of a `tool_use` block: the turn succeeds, the call
+never runs, no error is raised, and in an agentic loop that text pollutes later turns."*
+
+What shipped, strongest layer first (commits `7eb5fbc` … `d23c56c`):
+
+| Layer | Mechanism | Where |
+| --- | --- | --- |
+| Separator | text blocks joined with a paragraph break, within a response and across passes | `_stream_turn` |
+| Withdrawal | a row a detector contradicted is not replayed as the model's words; kept everywhere else (`message_withdrawals`, append-only) | `ConversationStore.withdraw_message`, `_history_to_messages`, `_emit_correction` |
+| Same-turn retry | a zero-tool turn whose text still claims a tool result or an action is withdrawn **before display** and run again with the operator note delivered and `tool_choice: any` on the first request (probed per model, `auto` elsewhere); one retry, then the ⚠️ notice; a System-log line is the visible trace | `_RETRIES_PER_TURN`, `_withdraw_attempt`, `retry_tool_choice`, `MessageSink.send_system_note` |
+| Not-completed record | the fifth replay record (§4b) | `_refused_order_records` |
+| Poka-yoke | `propose_modify` is refused unless `get_order_status` ran this turn | `_record_proposal` |
+| Shape log | `response shape: text blocks=… tool_use=… thinking blocks=…` per pass — measurement only; the block-count detector was withdrawn when a fabrication was measured inside one block | `_stream_turn` |
+
+Not shipped, with the reason: `xhigh` effort (no measurable gain over the transcript
+fixes), a block-count detector (see above), more prompt text (the safety block, the tool
+description, the notice and the operator note were all in context when the model
+fabricated). Faithful replay of the tool cycles themselves (real `tool_use` blocks with
+value-free stub results; the live API accepts the shape — probed) also scored 0/48 and is
+gated behind the same harness at larger n, since it cannot show a benefit over the
+separator at this resolution.
+
 ## 5. Anthropic's hallucination techniques — what we implement, honestly
 
 The [Reduce hallucinations](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-hallucinations)
@@ -341,10 +387,10 @@ repeated, per `feedback-verify-claims-about-our-own-repo`.)
 | B3 | **Verify with citations** (retract unsupported claims) | ✅ implemented **in code**, with a documented divergence | The four detectors of §4a. The doc has *Claude* audit itself; we rule from persisted rows, because the model that narrated a phantom cancel is the last thing that should be asked whether it made one |
 | A1 | **Chain-of-thought verification** | ✅ enabled | `thinking={"type": "adaptive"}` since `512099c`; `max_tokens` 4096→16000 because it caps thinking and response together |
 | A2 | **Best-of-N verification** | ⛔ deliberately not | Running the same turn N times and comparing is incompatible with a live single-user chat and would multiply cost and latency for a marginal signal |
-| A3 | **Iterative refinement** | ◐ analogous | The operator channel is a one-directional version: a correction is fed back before the next turn so a false claim cannot become in-context precedent |
+| A3 | **Iterative refinement** | ✅ implemented 2026-09-11 | The same-turn retry (§4d): a zero-tool narration is withdrawn, the correction is fed back on the operator channel, and the turn runs again — one iteration, before anything is displayed. The operator channel had been the one-directional analogue since 2026-07-27 |
 | A4 | **External knowledge restriction** | ✅ implemented | DATA INTEGRITY: every specific figure must originate from a tool result or user-provided content **in this conversation** — inventing or carrying over a plausible value is prohibited |
 
-**Net: 4 implemented, 1 analogous, 1 not applicable, 1 declined with a reason.** The honest
+**Net: 5 implemented, 1 not applicable, 1 declined with a reason** (4 + 1 analogous until 2026-09-11). The honest
 headline is not "we implement all of them" — it is that the one with the biggest documented
 leverage is in §7, unbuilt.
 
@@ -397,10 +443,11 @@ wrapped in exemplary epistemic caution around a premise that was entirely false.
 
 ## 7. Known limits — stated rather than implied
 
-- **The fire path has never fired in production.** Every correction shape is exercised by
-  unit tests and by the frozen corpus, and the false-positive side was probed live — but no
-  detector has yet corrected a real fabrication in front of a user, because none has occurred
-  since they shipped. Passively armed, the same standing status the 2026-07-28 pair carries.
+- **The fire path has fired in production** — five times on 2026-09-10/11 (decisions 133,
+  138, 139 among them), every time with no button, nothing staged and IBKR untouched. The
+  five are what the 2026-09-11 measurement started from (§4d). Since that day a zero-tool
+  fire is retried before display, so the notice is what the user sees only when the retry
+  narrates too.
 - **Mixed turns.** Some tool ran and a *different* claimed action did not. The verdict is the
   whole turn's tool set, so one real call clears every claim in the message. Closing it needs
   a verb→tool map, and the TradingView surface has no closed declaration to pin one against.
@@ -409,13 +456,15 @@ wrapped in exemplary epistemic caution around a premise that was entirely false.
   deliberately not exempted: no image can ground the provenance of a fenced "raw tool result".
 - **Report shapes with no intent lead-in** whose noun falls outside the result-noun gate (two
   measured misses). Widening was tried and costs false positives on honest compositions.
-- **The mechanism is unexplained.** We detect and correct the shape; *why* the model skips
-  the call is not established. Adaptive thinking was already on when T7 fabricated, so
-  "reasoning was off" is ruled out.
-- **The prevention lever is unbuilt.** Tool descriptions stating *when* to call — gap **G5**,
-  open since 2026-07-27, cross-repo into `ibkr_core_mcp`. Detection is bounded by how well
-  prose can be pattern-matched; prevention is bounded by how well the tools are described,
-  and the second has the better ceiling. **This is the next thing to build.**
+- **The mechanism is measured, not fully explained.** The replayed transcript's glue and the
+  copy-on-re-ask are established (§4d) and removed; what is not established is *why* the
+  model skips thinking on the copy (two of three 2026-09-11 firings thought for 0 tokens,
+  one for 59) — and thinking did not decide it either way in the eval.
+- **The description lever (G5) is still unbuilt, and it is not the lever for the measured
+  failure.** Tool descriptions stating *when* to call address *selection* errors; the
+  2026-09-11 fabrications named the tool and its field while not calling it — an
+  *omission*, which the transcript fixes of §4d address. G5 keeps its value for the
+  selection class, cross-repo into `ibkr_core_mcp`.
 - **A button-run tool is stamped, and that stamp is load-bearing.** The Pine Inject button
   writes a real tool row so the action is no longer invisible, marked `ui_button` so a click
   is never mistaken for a model call. Without the stamp the forensic rule *"a tool row

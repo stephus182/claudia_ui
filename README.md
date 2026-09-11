@@ -226,6 +226,7 @@ which layer a rule lives in decides whether it is a control or a wish:
 | Prompt — user documents | `context.md` / `principles.md` (Drive) | Yes — persona and trading judgment **only** |
 | Prompt — safety block | `_SAFETY_BLOCK`, `agent.py` — appended last, non-overridable | Yes |
 | **Code — evidence** | four claim detectors + a `role:"system"` operator channel | **No** |
+| **Code — transcript** (2026-09-11) | text blocks joined with a paragraph break; a contradicted turn withdrawn from the replay; a zero-tool narration retried once before display | **No** |
 
 **The instruction layer is provably not enough.** An audit of the entire conversation store
 (2026-08-12, all 225 assistant messages) found **23 verified instances across nine sessions
@@ -245,9 +246,13 @@ real tool set — never from asking the model whether it was telling the truth.
 | `_claims_completed_action` | reported any completed action ⇒ some tool really ran this turn |
 | `_claims_verbatim_tool_result` | showed a "raw tool result" ⇒ some tool really ran this turn |
 
-A fire produces an unhedged correction to the user, a persisted row, its own decision type,
-and a non-forgeable `role:"system"` note so the false claim cannot become precedent next
-turn. **Precision is a measurement, not an argument:** frozen at 21 fires (all individually
+A fire on a turn that ran no tool is **withdrawn before display and the turn retried once**
+(2026-09-11: the attempt stays in the store and the decision log, a System-log line is the
+visible trace, and the retry's first request forces a tool call where the model supports it);
+a second fire, or a fire on a turn that ran a tool, produces an unhedged correction to the
+user, a persisted row, its own decision type, and a non-forgeable `role:"system"` note so the
+false claim cannot become precedent — and the contradicted row is never replayed as the
+model's words again. **Precision is a measurement, not an argument:** frozen at 21 fires (all individually
 verified fabrications), 22 near-identical texts cleared by their real tool calls, **0 false
 positives** — `tests/test_corpus_precision.py`.
 

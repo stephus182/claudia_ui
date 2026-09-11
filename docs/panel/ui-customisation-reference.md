@@ -232,6 +232,7 @@ stays with the answer; what happens *to the session* goes to the log.
 | "Response truncated" (`send_max_tokens_warning`) | Flex sync result (`info`), validation / coverage warnings (`warning`) |
 | upload rejected / upload failed / the echoed screenshot | document reloaded (`info`), doc-version warning (`warning`) |
 | Pine inject outcomes (`panel_pinescript`) | gateway and TradingView reconnect progress and outcome |
+| — | the same-turn retry's note (`MessageSink.send_system_note` → `PanelMessageSink(system_log=…)`, 2026-09-11) — `warning`; the only visible trace of a withdrawn first reply |
 | the honest "Setup required / Session init failed" **reply** to a message typed after a failed init | "Saving session…", "Session ended.", "Session init failed", "Setup required" at init time (`error`) |
 
 Levels: `info` = line only; `warning` = line tagged `WARN` + 8 s toast; `error` = line tagged
