@@ -286,6 +286,32 @@ shadow-DOM/clipboard pages — is maintained in
 [`docs/panel/ui-design-reference.md`](panel/ui-design-reference.md) § "Official sources"
 rather than duplicated here (single source, scraped 2026-07-24).
 
+## Order authorization — security guidance (`ibkr_core_mcp/human_auth.py`, `client.py`)
+
+Scraped with Firecrawl on 2026-09-11 to answer one question: is there security value in a
+second, third or fourth Touch ID for the *same* order (Gate 1 on the write, then one per IBKR
+precaution reply — measured at 3 for a BUY ES stop and 4 for a SELL stop-limit on 2026-09-10)?
+Verbatim quotes and the synthesis: `docs/plans/2026-09-11-repeated-touch-id-research.md`
+(local archive). Decision record: `docs/project-status.md` gap #47.
+
+| Topic | Official source |
+| --- | --- |
+| OWASP — Transaction Authorization Cheat Sheet (WYSIWYS, one authorization per *transaction*, credentials time-limited and unique per operation) | <https://cheatsheetseries.owasp.org/cheatsheets/Transaction_Authorization_Cheat_Sheet.html> |
+| NIST SP 800-63B-4 — Authentication Intent (an explicit button; a biometric alone may not establish intent), threat table row *Authentication Fatigue* | <https://pages.nist.gov/800-63-4/sp800-63b.html> |
+| CISA — Implementing Phishing-Resistant MFA (push bombing / push fatigue; number matching as the countermeasure) | <https://www.cisa.gov/sites/default/files/publications/fact-sheet-implementing-phishing-resistant-mfa-508c.pdf> |
+| EU Commission Delegated Regulation 2018/389 (PSD2 RTS on SCA), Article 5 *Dynamic linking* — one strong authentication per payment transaction, bound to amount and payee, invalidated on change | <https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX:32018R0389> |
+| Apple — `LAContext.touchIDAuthenticationAllowableReuseDuration` (scoped to the **device unlock**, so it cannot merge prompts) | <https://developer.apple.com/documentation/localauthentication/lacontext/touchidauthenticationallowablereuseduration> |
+| Apple — `LATouchIDAuthenticationMaximumAllowableReuseDuration` (the page prints no value — cite none) | <https://developer.apple.com/documentation/localauthentication/latouchidauthenticationmaximumallowablereuseduration> |
+| Apple — `LAContext.evaluatePolicy(_:localizedReason:reply:)` (reason text guidance; never assume a prior success implies the next) | <https://developer.apple.com/documentation/localauthentication/lacontext/evaluatepolicy(_:localizedreason:reply:)> |
+
+What they agree on, read together: the unit of authorization is the **transaction**; the
+per-step duty is to show the human the significant data and take an **explicit** acknowledgement
+(the dialog's job, not the fingerprint's); and repeated approval prompts are a named threat,
+because they train approval. IBKR's own clients, Mobile and TWS, ask for one biometric per
+placement, modification or cancellation — the model ClaudIA replicates (user decision
+2026-09-11). Apple's reuse window was the tempting one-line fix and is ruled out by its own
+documentation.
+
 ## Standard libraries used in claudia_ui
 
 | Library | Used in | Official reference |

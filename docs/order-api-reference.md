@@ -637,6 +637,35 @@ after it, happened on a server that predates the feature).
 
 ## IBKR's reply chain — what it has actually sent (2026-07-06 STK, 2026-09-10 FUT)
 
+### One Touch ID per order write — principle decided 2026-09-11, code not yet changed
+
+As shipped, every entry of the chain runs behind its own Gate 1 *and* Gate 2: `_resolve_one_reply`
+calls `require_touch_id` then `confirm_reply_dialog` per reply, on top of the write's own pair.
+Measured 2026-09-10: a BUY ES stop drew two precautions (value limit, Stop Variant) — **three**
+Touch IDs; a SELL stop-limit drew three (percentage constraint, value limit, Cap Price) — **four**,
+all within seconds, in-process, for one decision.
+
+The user's rule, after a sourced review that morning: **IBKR Mobile and TWS ask for one biometric
+per placement, modification or cancellation, and ClaudIA replicates that.** The biometric and the
+dialog are two controls with two jobs — Touch ID *authenticates* (a human is present and consents
+to this write), the dialog *validates* (this data is read and agreed, with an explicit button).
+Place, modify and cancel each keep their own Touch ID; every dialog stays, one per message — the
+order, and each precaution; nothing after the fingerprint asks for it again.
+
+What the sources say (URLs in `docs/api-reference.md` § Order authorization; quotes in the local
+research note): OWASP's unit of authorization is the transaction and its per-step duty is What
+You See Is What You Sign; NIST 800-63B-4 says intent is an explicit button and that a biometric
+alone may not establish it, and lists *Authentication Fatigue* as a threat; CISA names push
+fatigue; EU RTS 2018/389 Art. 5 is why a bank app asks once — one strong authentication per
+transaction, dynamically linked, invalidated on change. Apple's Touch ID reuse window is scoped
+to the device unlock and cannot merge prompts.
+
+The implementation is gap #47 in `docs/project-status.md` (design: an authorization value bound
+to the exact body about to be sent, 300 s window, fails closed, never persisted; each reply keeps
+its dialog and names its order). Until it ships, the counts above are what the user sees.
+`ibkr_core_mcp/SECURITY.md` is updated with that change — it also currently overstates Gate 1's
+policy as biometrics-only (gap #48).
+
 `place_order_and_confirm` loops over `{id, message, messageOptions}` entries, each behind Gate 1
 (*Python is trying to confirm an IBKR order reply <id>.*) and the CONFIRM ORDER REPLY dialog, and
 returns only the terminal `[{order_id, local_order_id, order_status}]` entry. Chains observed:
