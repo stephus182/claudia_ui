@@ -4,7 +4,12 @@ import sqlite3
 
 import pytest
 
-from claudia.conversation_store import ConversationStore
+from claudia.conversation_store import (
+    COMPLETED_ORDER_ACTION_TYPES,
+    REFUSED_ORDER_ACTION_TYPES,
+    RENDERED_PROPOSAL_TYPES,
+    ConversationStore,
+)
 
 
 @pytest.fixture
@@ -788,3 +793,37 @@ def test_withdraw_message_stamps_the_row_and_get_history_returns_it(store):
     row = store.get_history("s1")[0]
     assert row["withdrawn_at"] is not None
     assert row["content"] == "Cancel staged — button above."
+
+
+# --- refused / rejected / unverified order actions (plan Task 8) ---------------------------
+
+
+def test_refused_allowlist_is_disjoint_from_the_other_two():
+    """A refusal is neither a rendered proposal nor a completed write."""
+    assert not set(REFUSED_ORDER_ACTION_TYPES) & set(COMPLETED_ORDER_ACTION_TYPES)
+    assert not set(REFUSED_ORDER_ACTION_TYPES) & set(RENDERED_PROPOSAL_TYPES)
+    assert len(REFUSED_ORDER_ACTION_TYPES) == 9
+
+
+def test_get_refused_order_actions_returns_the_click_rows_without_a_message_id(store):
+    """Written by order_flow after a click, so no assistant message_id — like the
+    completed-action rows, and unlike rendered proposals."""
+    store.create_session("s1")
+    store.add_decision(
+        session_id="s1",
+        decision_type="trade_refused",
+        symbol="ES",
+        summary_text="REFUSED: BUY 1 ES (STP) — Order was cancelled at the confirmation dialog.",
+        metadata={"stage": "gate2", "reason": "Order was cancelled at the confirmation dialog."},
+    )
+    mid = store.add_message("s1", "assistant", "Staged as a button above.")
+    store.add_decision(
+        session_id="s1",
+        decision_type="trade_proposed",
+        symbol="ES",
+        summary_text="x",
+        message_id=mid,
+    )
+    rows = store.get_refused_order_actions("s1")
+    assert [r["decision_type"] for r in rows] == ["trade_refused"]
+    assert rows[0]["metadata"]["stage"] == "gate2"

@@ -464,6 +464,45 @@ _COMPLETED_ORDER_HEADER = (
 """Header of the replayed completed-action block. See `_completed_order_records`."""
 
 
+_REFUSED_ACTION_VERBS: dict[str, str] = {
+    "trade_refused": "REFUSED by the user",
+    "modify_refused": "REFUSED by the user",
+    "cancel_refused": "REFUSED by the user",
+    "trade_rejected": "REJECTED by IBKR",
+    "modify_rejected": "REJECTED by IBKR",
+    "cancel_rejected": "REJECTED by IBKR",
+    "trade_dispatched_unverified": "DISPATCHED, outcome unverified",
+    "modify_dispatched_unverified": "DISPATCHED, outcome unverified",
+    "cancel_dispatched_unverified": "DISPATCHED, outcome unverified",
+}
+"""Not-completed decision type -> how the record names what happened after the click.
+
+Keys mirror `conversation_store.REFUSED_ORDER_ACTION_TYPES` (the store owns the decision
+vocabulary; wording is a message-construction concern and belongs here). Pinned by
+test_refused_action_verbs_cover_exactly_the_store_allowlist. "REFUSED by the user" names a
+decision, not an error — a refusal isn't a failure (user rule, 2026-09-11).
+"""
+
+_REFUSED_SUMMARY_PREFIXES = ("REFUSED: ", "REJECTED BY IBKR: ", "DISPATCHED UNVERIFIED: ")
+"""The prefixes `order_flow._record_refusal` / `_record_rejection` put on `summary_text`.
+
+Stripped so the record reads "<verb>: <subject> — <reason>" once, not twice. Unknown
+prefixes are left alone — the row's own words are safer than a guess.
+"""
+
+_REFUSED_ORDER_HEADER = (
+    "Order actions in this session that did NOT complete. Each is a button click by the "
+    "user that stopped at a gate, was declined at IBKR's confirmation, was rejected by "
+    "IBKR, or reached IBKR without a verified outcome — and none of that appears in this "
+    "conversation, so this list is your only evidence of it. A refusal is the user's "
+    "decision, not an error: never describe a refused action as staged, and never "
+    "re-propose one unless the user asks again. For a DISPATCHED, outcome unverified "
+    "line, read the order's state with a tool before relying on it. Identities and "
+    "outcomes only — never restate an order parameter from this list."
+)
+"""Header of the replayed not-completed block. See `_refused_order_records`."""
+
+
 _UNBACKED_CLAIM_NOTICE = (
     "⚠️ **That message described an order action that never happened.** No proposal tool "
     "was called, so **no staging button was created, nothing has been staged and no order "
@@ -2518,6 +2557,49 @@ class ClaudIAAgent:
             return ""
         return "\n".join([_COMPLETED_ORDER_HEADER, *lines])
 
+    def _refused_order_records(self) -> str:
+        """Return this session's not-completed order actions block, or "" when there are none.
+
+        The fourth replayed record (2026-09-11), fed by the rows gap #50 made `order_flow`
+        write after a click that did not end in a confirmed write. The first #51 case is
+        the reason: on 2026-09-11 the user declined an ES stop at Gate 2, re-asked four
+        minutes later, and ClaudIA — seeing its own rendered proposal and nothing about
+        the refusal — called it "the same ES stop-entry I staged a moment ago".
+
+        Identity and outcome only, as with its siblings: the verb, the row's own summary
+        (which `order_flow` writes as "<subject> — <reason>" with no price), the stage and
+        the time. Never `metadata["proposal"]`, which carries the order's parameters.
+        Byte-stable across turns: rows are read oldest first and a row never changes.
+
+        Returns:
+            The header plus one line per row, or "" — never an empty header.
+        """
+        lines: list[str] = []
+        for row in self._store.get_refused_order_actions(self._session_id):
+            verb = _REFUSED_ACTION_VERBS.get(row.get("decision_type") or "")
+            if verb is None:
+                # Same rule as the completed records: an unmapped type is dropped and
+                # logged, never given a guessed verb.
+                log.warning("Unmapped not-completed order action %r", row.get("decision_type"))
+                continue
+            summary = str(row.get("summary_text") or "").strip()
+            for prefix in _REFUSED_SUMMARY_PREFIXES:
+                if summary.startswith(prefix):
+                    summary = summary[len(prefix) :]
+                    break
+            meta = row.get("metadata") or {}
+            stage = str(meta.get("stage") or "").strip()
+            when = str(row.get("created_at") or "")[11:16]
+            detail = ", ".join(
+                p
+                for p in (f"stage {stage}" if stage else "", f"at {when} UTC" if when else "")
+                if p
+            )
+            lines.append(f"  - {verb}: {summary}" + (f" [{detail}]" if detail else ""))
+        if not lines:
+            return ""
+        return "\n".join([_REFUSED_ORDER_HEADER, *lines])
+
     def note_execution(self, report_text: str) -> None:
         """Queue a fill reported by IBKR's WebSocket for the next turn's operator message.
 
@@ -2594,6 +2676,11 @@ class ClaudIAAgent:
         completed = self._completed_order_records()
         if completed:
             parts.append(completed)
+        # After the completed actions: a refusal is the later fact about an order than its
+        # proposal, and less urgent than a correction of the turn just before this one.
+        refused = self._refused_order_records()
+        if refused:
+            parts.append(refused)
         # Notes last: a note contradicts the turn immediately preceding this one and is the
         # most urgent of the four, so it sits closest to where generation resumes.
         parts.extend(self._pending_operator_notes)

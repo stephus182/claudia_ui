@@ -66,6 +66,34 @@ staged, confirmed `Submitted`, and recorded here.
 """
 
 
+REFUSED_ORDER_ACTION_TYPES: tuple[str, ...] = (
+    "trade_refused",
+    "modify_refused",
+    "cancel_refused",
+    "trade_rejected",
+    "modify_rejected",
+    "cancel_rejected",
+    "trade_dispatched_unverified",
+    "modify_dispatched_unverified",
+    "cancel_dispatched_unverified",
+)
+"""The decision types that mean **a button click did NOT end in a confirmed write**.
+
+Written only by `claudia/order_flow.py` after a physical click (gap #50, 2026-09-11):
+`*_refused` — the human said no at Gate 1, Gate 2 or an IBKR precaution dialog, or the
+dialog timed out; `*_rejected` — the human approved and IBKR said no; `*_dispatched_unverified`
+— the write reached IBKR and the reporting failed. Disjoint from `RENDERED_PROPOSAL_TYPES`
+and `COMPLETED_ORDER_ACTION_TYPES` (pinned by
+tests/test_conversation_store.py::test_refused_allowlist_is_disjoint_from_the_other_two).
+
+Why they are replayed to the model: a refusal is a chat status line the model never sees,
+so from inside the conversation a refused proposal and a staged one look the same. On
+2026-09-11 (message 1059) ClaudIA called an ES stop "the same ES stop-entry I staged a
+moment ago" four minutes after the user had declined it at Gate 2. **A refusal is not a
+failure** (user rule): the record names it as the user's decision.
+"""
+
+
 def _utcnow() -> str:
     """Current UTC time as an ISO-8601 string — the storage format for every timestamp."""
     return datetime.now(UTC).isoformat()
@@ -672,6 +700,24 @@ class ConversationStore:
         return self._decisions_of_types(
             session_id,
             COMPLETED_ORDER_ACTION_TYPES,
+            require_message_id=False,
+        )
+
+    def get_refused_order_actions(self, session_id: str) -> list[dict[str, Any]]:
+        """Return the session's clicks that did not end in a confirmed write, oldest first.
+
+        The source for the fourth replayed record in `claudia/agent.py`
+        (`_refused_order_records`). Same two properties as `get_completed_order_actions`:
+        the allowlist is `REFUSED_ORDER_ACTION_TYPES`, and **no `message_id` filter** —
+        `order_flow` writes these rows after a click, which belongs to no assistant turn.
+
+        Returns:
+            Row dicts with `metadata_json` decoded into `metadata`; callers read
+            `metadata["stage"]` and the row's `summary_text` and `created_at`.
+        """
+        return self._decisions_of_types(
+            session_id,
+            REFUSED_ORDER_ACTION_TYPES,
             require_message_id=False,
         )
 

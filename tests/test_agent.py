@@ -29,6 +29,7 @@ from claudia.agent import (
 )
 from claudia.conversation_store import (
     COMPLETED_ORDER_ACTION_TYPES,
+    REFUSED_ORDER_ACTION_TYPES,
     RENDERED_PROPOSAL_TYPES,
     ConversationStore,
 )
@@ -215,6 +216,7 @@ def _make_agent():
     store.get_doc_version.return_value = None
     store.get_rendered_proposals.return_value = []
     store.get_completed_order_actions.return_value = []
+    store.get_refused_order_actions.return_value = []
     loader = MagicMock()
     with patch("claudia.agent.AsyncAnthropic"):
         return ClaudIAAgent(
@@ -889,6 +891,7 @@ def _make_agent_with_sink(sink=None):
     store.get_history.return_value = []
     store.get_rendered_proposals.return_value = []
     store.get_completed_order_actions.return_value = []
+    store.get_refused_order_actions.return_value = []
     loader = MagicMock()
     loader.reload_count = 0
     loader.load_system_prompt.return_value = "# Role\nStub.\n\n# Principles\nStub."
@@ -1756,6 +1759,15 @@ class _FakeStore:
             for d in self.decisions
             if d["session_id"] == session_id
             and d.get("decision_type") in COMPLETED_ORDER_ACTION_TYPES
+        ]
+
+    def get_refused_order_actions(self, session_id: str) -> list[dict[str, Any]]:
+        """Mirrors the real query: allowlist only, no message_id filter (click rows)."""
+        return [
+            d
+            for d in self.decisions
+            if d["session_id"] == session_id
+            and d.get("decision_type") in REFUSED_ORDER_ACTION_TYPES
         ]
 
     def get_called_tool_names(self, session_id: str) -> list[str]:
@@ -4359,6 +4371,42 @@ async def test_retry_uses_auto_on_an_unprobed_model():
     agent._client.messages.stream = stream
     await agent.handle_message("cancel that one")
     assert "tool_choice" not in stream.call_args_list[1].kwargs
+
+
+# --- L3a: refused / rejected / unverified order actions replay (plan Task 8) ---------------
+
+
+def test_refused_action_verbs_cover_exactly_the_store_allowlist():
+    """Drift guard, as for the completed-action verbs."""
+    from claudia.agent import _REFUSED_ACTION_VERBS
+
+    assert set(_REFUSED_ACTION_VERBS) == set(REFUSED_ORDER_ACTION_TYPES)
+
+
+async def test_refused_actions_replay_on_the_operator_channel_identity_only():
+    """A Gate 2 refusal is named as a refusal — the user's decision, not a failure — and
+    no order parameter from the proposal reaches the record. Closes the 1059 case: from
+    inside the conversation a refused proposal and a staged one looked the same."""
+    agent, _sink = _make_agent_recording()
+    agent._store.add_decision(
+        session_id="test-session",
+        decision_type="trade_refused",
+        symbol="ES",
+        summary_text="REFUSED: BUY 1 ES (STP) — Order was cancelled at the confirmation dialog.",
+        metadata={
+            "proposal": {"symbol": "ES", "stop_price": 7975, "quantity": 1},
+            "stage": "gate2",
+            "reason": "Order was cancelled at the confirmation dialog.",
+        },
+    )
+    stream = MagicMock(return_value=_FakeStream(_text_response_events("Noted.")))
+    agent._client.messages.stream = stream
+    await agent.handle_message("propose it again")
+    texts = _system_texts(stream.call_args_list[0].kwargs["messages"])
+    record = next(t for t in texts if "did NOT complete" in t)
+    assert "REFUSED by the user: BUY 1 ES (STP)" in record
+    assert "gate2" in record
+    assert "7975" not in record
 
 
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------
