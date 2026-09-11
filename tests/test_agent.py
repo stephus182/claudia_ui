@@ -1679,9 +1679,10 @@ class _FakeStore:
     """
 
     def __init__(self) -> None:
-        """Start with no messages and no decisions."""
+        """Start with no messages, no decisions and nothing withdrawn."""
         self.messages: list[dict[str, Any]] = []
         self.decisions: list[dict[str, Any]] = []
+        self.withdrawn: list[int] = []
 
     def add_message(self, session_id: str, role: str, content: str = "", **kwargs) -> int:
         """Append a message row and return its 1-based id, matching the real store's contract.
@@ -1700,12 +1701,23 @@ class _FakeStore:
         return len(self.messages)
 
     def get_history(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Return this session's user/assistant rows, newest-limited, oldest first."""
+        """Return this session's rows, newest-limited, oldest first — with `id` and
+        `withdrawn_at`, as the real `SELECT *` does. Withdrawn rows are returned, not
+        filtered: the replay decides, exactly as in production."""
         return [
-            {"role": m["role"], "content": m["content"]}
-            for m in self.messages
+            {
+                "id": i + 1,
+                "role": m["role"],
+                "content": m["content"],
+                "withdrawn_at": "2026-09-11T00:00:00+00:00" if i + 1 in self.withdrawn else None,
+            }
+            for i, m in enumerate(self.messages)
             if m["session_id"] == session_id
         ][-limit:]
+
+    def withdraw_message(self, message_id: int) -> None:
+        """Record the withdrawal; a double without it would keep the path green forever."""
+        self.withdrawn.append(message_id)
 
     def add_decision(self, **kwargs) -> int:
         """Append a decision row verbatim and return its 1-based id."""
@@ -4127,6 +4139,45 @@ async def test_text_across_tool_passes_is_joined_by_a_paragraph_break():
     )
     await agent.handle_message("buy 1 AAPL at 250")
     assert sink.messages == ["Pulling the status.\n\nStaged as a button above."]
+
+
+# --- L1c: a contradicted turn is withdrawn from the replay (plan Task 2) -------------------
+
+
+def test_history_replay_skips_withdrawn_assistant_rows_but_keeps_the_notice():
+    """Measured 2026-09-11 on the real context of turn 1077: with the contradicted turn
+    replayed as the model's words it was copied 14/16; withdrawn, 1/16."""
+    rows = [
+        {"id": 1, "role": "user", "content": "modify it", "withdrawn_at": None},
+        {
+            "id": 2,
+            "role": "assistant",
+            "content": "Modify is staged as a button above.",
+            "withdrawn_at": "2026-09-11T15:54:31+00:00",
+        },
+        {"id": 3, "role": "assistant", "content": "⚠️ nothing was staged.", "withdrawn_at": None},
+        {"id": 4, "role": "user", "content": "it's a test pls do", "withdrawn_at": None},
+    ]
+    assert [m["content"] for m in _history_to_messages(rows)] == [
+        "modify it",
+        "⚠️ nothing was staged.",
+        "it's a test pls do",
+    ]
+
+
+async def test_every_correction_withdraws_the_contradicted_row():
+    """The claim row is withdrawn; the notice row that follows it is not."""
+    agent, _sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events(NARRATED_STAGING[0]))
+    )
+    await agent.handle_message("cancel that one")
+    store = agent._store
+    assert [d["decision_type"] for d in store.decisions] == ["proposal_claim_unbacked"]
+    claim_id = next(
+        i + 1 for i, m in enumerate(store.messages) if m["content"] == NARRATED_STAGING[0]
+    )
+    assert store.withdrawn == [claim_id]
 
 
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------

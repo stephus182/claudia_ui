@@ -1384,7 +1384,8 @@ def _history_to_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
         history: Rows from `get_history`, each with `role` and `content`.
 
     Returns:
-        Only `user` and `assistant` messages, in order. **Tool rows are deliberately
+        Only `user` and `assistant` messages, in order — minus assistant rows stamped
+        `withdrawn_at` (see `ConversationStore.withdraw_message`). **Tool rows are deliberately
         dropped** — the DB stores neither the Anthropic-assigned `tool_use_id`s nor the
         intermediate assistant messages carrying the matching `tool_use` blocks, so
         replaying them would send orphaned `tool_result` blocks and the API would 400.
@@ -1400,8 +1401,11 @@ def _history_to_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
         role = row["role"]
         if role == "user":
             messages.append({"role": "user", "content": row["content"] or ""})
-        elif role == "assistant":
+        elif role == "assistant" and not row.get("withdrawn_at"):
             messages.append({"role": "assistant", "content": row["content"] or ""})
+        # A withdrawn assistant row — one a claim detector contradicted — is not replayed
+        # as the model's words; the notice row that follows it still is. Replayed, it is
+        # copied on the next ask (2026-09-11, turn 1077: 14/16 copies vs 1/16 withdrawn).
         # tool rows are intentionally skipped: the DB does not store the
         # tool_use_id UUIDs assigned by Anthropic, and the intermediate
         # assistant messages containing the matching tool_use blocks are
@@ -1919,7 +1923,7 @@ class ClaudIAAgent:
         constants each caller passes. What is NOT worth repeating is the sequence, and
         before 2026-08-12 it existed in four copies with no test pinning it.
 
-        **The order is the safety property: persist, record, queue, then display.** The
+        **The order is the safety property: persist, record, withdraw, queue, then display.** The
         store has shown no fault; the sink is the surface that can fail. Display last means
         a failing sink raises *after* the record exists, so a correction can never be lost
         because the chat feed broke. A transposition here would silently reintroduce
@@ -1950,6 +1954,10 @@ class ClaudIAAgent:
             message_id=msg_id,
             metadata=metadata,
         )
+        # After the decision row, so a withdrawal is never recorded without the reason for
+        # it; before the note and the display, so a failing sink cannot leave the claim
+        # replayable. The row itself is kept (`ConversationStore.withdraw_message`).
+        self._store.withdraw_message(msg_id)
         self._pending_operator_notes.append(operator_note)
         await self._sink.send_message(notice)
 

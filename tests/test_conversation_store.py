@@ -754,3 +754,37 @@ def test_no_sql_in_the_package_updates_a_message_row():
                     offenders.append(f"{path.name}:{node.lineno}")
 
     assert not offenders, f"UPDATE on messages found at {offenders} — add an FTS update trigger"
+
+
+# --- withdrawn_at: a contradicted turn is kept, but no longer replayed (plan Task 2) ------
+
+
+def test_message_withdrawals_table_is_created_on_an_existing_db(tmp_path):
+    """A store created before withdrawals existed gains the side table on open."""
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT NOT NULL,
+                 ended_at TEXT, context_hash TEXT, metadata TEXT DEFAULT '{}');
+               CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+                 tool_name TEXT, tool_input_json TEXT, tool_result_json TEXT,
+                 created_at TEXT NOT NULL, tokens_used INTEGER DEFAULT 0);"""
+        )
+    ConversationStore(db)
+    with sqlite3.connect(db) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+    assert "message_withdrawals" in tables
+    assert "withdrawn_at" not in cols  # messages stays append-only; the withdrawal is its own row
+
+
+def test_withdraw_message_stamps_the_row_and_get_history_returns_it(store):
+    """The text is kept (audit trail, report, UI); only the stamp changes."""
+    store.create_session("s1")
+    mid = store.add_message("s1", "assistant", "Cancel staged — button above.")
+    assert store.get_history("s1")[0]["withdrawn_at"] is None
+    store.withdraw_message(mid)
+    row = store.get_history("s1")[0]
+    assert row["withdrawn_at"] is not None
+    assert row["content"] == "Cancel staged — button above."

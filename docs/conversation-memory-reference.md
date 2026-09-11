@@ -7,6 +7,7 @@ All interactions are stored in `data/claudia.db` (separate from ibkr_core_mcp's
 |---|---|
 | `sessions` | One row per Panel session, with start/end time, document hash, and `doc_version` |
 | `messages` | Full message history (user, assistant, tool calls and results) — primary memory store |
+| `message_withdrawals` | One row per assistant message a claim detector contradicted (`message_id`, `withdrawn_at`, 2026-09-11). The replay skips such a row; the chat, the report and the store keep it. A side table, not a column: `messages` is append-only (asserted by `test_no_sql_in_the_package_updates_a_message_row`), and a withdrawal is an event about a row, not a change to it |
 | `decisions` | User-directed trade proposals surfaced by ClaudIA — each tagged with `doc_version`. ClaudIA does not decide to trade; it surfaces a proposal when directed by the user. The user decides at the button → Touch ID → confirmation dialog. Also, since 2026-09-04, `execution_reported` rows: fills IBKR reported on the execution WebSocket and the session showed (any origin) — a broker event, in no replay allowlist. Full type list: `ConversationStore.add_decision`'s docstring. |
 | `doc_versions` | Versioned snapshots of `context.md` + `principles.md` — full text, hash, date |
 

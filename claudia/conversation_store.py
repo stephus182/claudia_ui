@@ -257,6 +257,18 @@ class ConversationStore:
         # Migration for existing DBs that predate the doc_version column
         with self._conn() as conn, suppress(sqlite3.OperationalError):
             conn.execute("ALTER TABLE sessions ADD COLUMN doc_version TEXT")
+        # Withdrawals live beside messages, not in them (2026-09-11): `messages` is
+        # append-only — asserted by test_no_sql_in_the_package_updates_a_message_row,
+        # because an UPDATE would leave the FTS index stale without a trigger — and a
+        # withdrawal is an event about a row, not a change to it. CREATE IF NOT EXISTS is
+        # the whole migration for stores that predate it.
+        with self._conn() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS message_withdrawals (
+                       message_id   INTEGER PRIMARY KEY REFERENCES messages(id),
+                       withdrawn_at TEXT NOT NULL
+                   )"""
+            )
         # Migration: drop dead schema (2026-07-03 review finding M2 — no caller
         # ever existed for relationships or decisions FTS search).
         # Triggers first, or decisions writes would reference a dropped table.
@@ -410,14 +422,44 @@ class ConversationStore:
             )
             return cur.lastrowid  # type: ignore[return-value]
 
+    def withdraw_message(self, message_id: int) -> None:
+        """Mark an assistant row as withdrawn: kept for the record, no longer replayed.
+
+        Set by `agent._emit_correction` when a claim detector contradicts the row. The text
+        stays — audit trail, session report, the chat the user already saw — and only
+        `agent._history_to_messages` treats the row differently. Why: a contradicted turn
+        replayed as the model's own words is copied on the next ask. Measured 2026-09-11 on
+        the real stored context of turn 1077 (`scripts/replay_eval.py`, n=16): 14/16
+        near-verbatim copies with the row replayed, 1/16 with it withdrawn.
+
+        Recorded in `message_withdrawals`, never by updating the message row: `messages`
+        is append-only (see `_init_schema`), so the withdrawal is its own row with its own
+        timestamp, and withdrawing twice is a no-op (the first stamp stands).
+
+        Args:
+            message_id: The assistant row a detector contradicted.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO message_withdrawals(message_id, withdrawn_at) VALUES (?, ?)",
+                (message_id, _utcnow()),
+            )
+
     def get_history(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Return recent conversation messages for context injection."""
+        """Return recent conversation messages for context injection.
+
+        Rows carry `withdrawn_at` (None unless `withdraw_message` recorded one, joined from
+        `message_withdrawals`); they are returned either way — filtering is the replay's
+        decision, not the query's.
+        """
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT * FROM (
-                       SELECT * FROM messages
-                       WHERE session_id=?
-                       ORDER BY created_at DESC LIMIT ?
+                       SELECT m.*, w.withdrawn_at
+                       FROM messages m
+                       LEFT JOIN message_withdrawals w ON w.message_id = m.id
+                       WHERE m.session_id=?
+                       ORDER BY m.created_at DESC LIMIT ?
                    ) ORDER BY created_at ASC""",
                 (session_id, limit),
             ).fetchall()
