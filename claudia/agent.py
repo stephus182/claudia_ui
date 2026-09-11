@@ -1685,6 +1685,7 @@ class ClaudIAAgent:
         # turn — deliberately NOT cleared per turn like _pending_proposal, since a note
         # queued by a turn that then raised must still reach the model.
         self._pending_operator_notes: list[str] = []
+        self._called_tools_this_turn: set[str] = set()
 
     def set_tv_bridge(self, bridge: TradingViewBridge, tools: list[dict[str, Any]]) -> None:
         """Update the TradingView connection mid-session, after a successful launch.
@@ -1788,14 +1789,118 @@ class ClaudIAAgent:
 
         system_blocks = self._get_system_blocks()
 
-        # Multi-turn tool loop
+        # The stream → tool → stream loop, to `end_turn` (`_stream_turn`).
+        full_response_text, called_tools = await self._stream_turn(messages, system_blocks)
+
+        # --- Final response ---
+        # Nothing is parsed out of the text any more: a proposal is a tool call the API
+        # already validated, recorded by _record_proposal during the loop above. At most
+        # one exists per turn — the second call is refused there, not silently dropped.
+        display_text = full_response_text.strip()
+        kind, proposal = self._pending_proposal or (None, None)
+        # Persist final assistant message
+        msg_id = self._store.add_message(self._session_id, "assistant", display_text)
+
+        # Render text response
+        if display_text:
+            await self._sink.send_message(display_text)
+
+        # Render the staging button for whichever proposal was recorded — then assert it
+        # happened. `rendered` is set on the line *after* a specific await returns, never
+        # after the dispatch as a whole, because the failure this closes was a silent skip:
+        # a falsy parsed value matched no branch, raised nothing, and left the model's
+        # "here's your button" standing with no button and no decision row. A try/except is
+        # necessary but not sufficient — the guarantee has to be a positive assertion.
+        if proposal is not None:
+            render = {
+                "order": self._sink.send_order_proposal,
+                "cancel": self._sink.send_cancel_proposal,
+                "modify": self._sink.send_modify_proposal,
+            }.get(kind or "")
+            rendered = False
+            if render is None:
+                log.error("Proposal kind %r routes to no renderer — nothing was rendered", kind)
+            else:
+                try:
+                    await render(proposal)
+                    rendered = True
+                except Exception:
+                    log.exception(
+                        "Proposal render failed (kind=%s, session=%s)", kind, self._session_id
+                    )
+
+            if not rendered:
+                await self._emit_guardrail_notice(kind or "unknown", msg_id)
+            else:
+                # Log the user-directed trade proposal for future recall. Only on a real
+                # render: `trade_proposed` and its siblings must keep meaning "a button was
+                # shown", or every historical row and regression baseline silently changes
+                # meaning. A failure gets `proposal_render_failed` instead.
+                self._log_proposal(
+                    display_text,
+                    proposal if kind == "order" else None,
+                    msg_id,
+                    cancel_proposal=proposal if kind == "cancel" else None,
+                    modify_proposal=proposal if kind == "modify" else None,
+                )
+
+        # Every claim the turn's evidence does not back, in the order the four detectors
+        # always ran — proposal (only when none was recorded), book, then payload or action
+        # — each with its own correction. The decision itself is pure
+        # (`_detect_unbacked_claims`), so the same-turn retry can ask it before display.
+        for claim_kind, claim in _detect_unbacked_claims(
+            display_text,
+            called_tools,
+            proposal_recorded=proposal is not None,
+            images=bool(images),
+        ):
+            await self._emit_claim_correction(claim_kind, msg_id, claim)
+
+    async def _stream_turn(
+        self,
+        messages: list[dict[str, Any]],
+        system_blocks: list[dict[str, Any]],
+        *,
+        first_pass_tool_choice: dict[str, str] | None = None,
+    ) -> tuple[str, set[str]]:
+        """Run the stream → tool → stream loop to `end_turn`; return (text, tools called).
+
+        The body of `handle_message`'s loop, moved verbatim on 2026-09-11 so the same-turn
+        retry can run it a second time. Mutates `messages` in place, as before: every pass
+        appends the assistant turn and, when tools ran, the `tool_result` user turn.
+
+        Args:
+            messages: The request messages, ending in the user turn (plus the operator
+                message when one was appended).
+            system_blocks: The cached system blocks for this session.
+            first_pass_tool_choice: Sent as `tool_choice` on the **first** request only, or
+                omitted (`auto`). A retry must produce a tool call; the passes after it must
+                be free to reason and to write — measured 2026-09-11, a forced choice yields
+                zero thinking tokens on every sample.
+
+        Returns:
+            The turn's text (passes joined with a paragraph break) and the set of tools that
+            really ran, also kept on `self._called_tools_this_turn` for the proposal handler.
+        """
+        first_pass = True
         full_response_text = ""
         # Every tool that actually ran this turn. `tool_calls` below is per-iteration and is
         # cleared on each pass, so it cannot answer "did a lookup happen anywhere in this
         # turn?" — which is the whole question `_claims_fresh_book_check` is checked against.
         called_tools: set[str] = set()
+        self._called_tools_this_turn = called_tools
 
         while True:
+            # A forced choice on the first request only — the pass that must produce a
+            # tool call (the same-turn retry); the passes after it run `auto`, so the model
+            # can reason before it writes. Omitted entirely otherwise: `auto` is the API's
+            # default, and the parameter must not appear on a model that rejects it.
+            extra: dict[str, Any] = (
+                {"tool_choice": first_pass_tool_choice}
+                if first_pass and first_pass_tool_choice is not None
+                else {}
+            )
+            first_pass = False
             response_text = ""
             tool_calls: list[dict[str, Any]] = []
             thinking_blocks: list[dict[str, Any]] = []
@@ -1828,6 +1933,7 @@ class ClaudIAAgent:
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=_with_history_cache_marker(messages),  # type: ignore[arg-type]
                 tools=self._all_tools,  # type: ignore[arg-type]
+                **extra,
             ) as stream:
                 async for event in stream:
                     # Narrow on `event.type`/`delta.type` directly (not a copied variable) —
@@ -2002,69 +2108,7 @@ class ClaudIAAgent:
 
             messages.append({"role": "user", "content": tool_results})
 
-        # --- Final response ---
-        # Nothing is parsed out of the text any more: a proposal is a tool call the API
-        # already validated, recorded by _record_proposal during the loop above. At most
-        # one exists per turn — the second call is refused there, not silently dropped.
-        display_text = full_response_text.strip()
-        kind, proposal = self._pending_proposal or (None, None)
-        # Persist final assistant message
-        msg_id = self._store.add_message(self._session_id, "assistant", display_text)
-
-        # Render text response
-        if display_text:
-            await self._sink.send_message(display_text)
-
-        # Render the staging button for whichever proposal was recorded — then assert it
-        # happened. `rendered` is set on the line *after* a specific await returns, never
-        # after the dispatch as a whole, because the failure this closes was a silent skip:
-        # a falsy parsed value matched no branch, raised nothing, and left the model's
-        # "here's your button" standing with no button and no decision row. A try/except is
-        # necessary but not sufficient — the guarantee has to be a positive assertion.
-        if proposal is not None:
-            render = {
-                "order": self._sink.send_order_proposal,
-                "cancel": self._sink.send_cancel_proposal,
-                "modify": self._sink.send_modify_proposal,
-            }.get(kind or "")
-            rendered = False
-            if render is None:
-                log.error("Proposal kind %r routes to no renderer — nothing was rendered", kind)
-            else:
-                try:
-                    await render(proposal)
-                    rendered = True
-                except Exception:
-                    log.exception(
-                        "Proposal render failed (kind=%s, session=%s)", kind, self._session_id
-                    )
-
-            if not rendered:
-                await self._emit_guardrail_notice(kind or "unknown", msg_id)
-            else:
-                # Log the user-directed trade proposal for future recall. Only on a real
-                # render: `trade_proposed` and its siblings must keep meaning "a button was
-                # shown", or every historical row and regression baseline silently changes
-                # meaning. A failure gets `proposal_render_failed` instead.
-                self._log_proposal(
-                    display_text,
-                    proposal if kind == "order" else None,
-                    msg_id,
-                    cancel_proposal=proposal if kind == "cancel" else None,
-                    modify_proposal=proposal if kind == "modify" else None,
-                )
-
-        # Every claim the turn's evidence does not back, in the order the four detectors
-        # always ran — proposal (only when none was recorded), book, then payload or action
-        # — each with its own correction. The decision itself is pure
-        # (`_detect_unbacked_claims`), so the same-turn retry can ask it before display.
-        for claim_kind, claim in _detect_unbacked_claims(
-            display_text,
-            called_tools,
-            proposal_recorded=proposal is not None,
-            images=bool(images),
-        ):
-            await self._emit_claim_correction(claim_kind, msg_id, claim)
+        return full_response_text, called_tools
 
     async def _emit_correction(
         self,

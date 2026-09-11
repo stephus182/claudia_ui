@@ -4227,6 +4227,33 @@ def test_detect_unbacked_claims_orders_and_gates_like_the_tail():
     )
 
 
+# --- the tool loop is _stream_turn; first-pass tool_choice plumbed (plan Task 6) ----------
+
+
+async def test_first_pass_tool_choice_is_sent_on_the_first_request_only():
+    """A forced choice belongs to the pass that must produce a tool call; the passes after
+    it run `auto` so the model can reason and write (measured 2026-09-11: forced choice
+    yields zero thinking tokens on every sample)."""
+    agent, _sink = _make_agent_recording()
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_then_tool_events("Checking.", "propose_order", VALID_ORDER)),
+            _FakeStream(_text_response_events("Staged as a button above.")),
+        ]
+    )
+    agent._client.messages.stream = stream
+    text, called = await agent._stream_turn(
+        [{"role": "user", "content": "buy 1 AAPL at 250"}],
+        agent._get_system_blocks(),
+        first_pass_tool_choice={"type": "any"},
+    )
+    assert stream.call_args_list[0].kwargs["tool_choice"] == {"type": "any"}
+    assert "tool_choice" not in stream.call_args_list[1].kwargs
+    assert text == "Checking.\n\nStaged as a button above."
+    assert called == {"propose_order"}
+    assert agent._called_tools_this_turn == {"propose_order"}
+
+
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------
 #
 # Three request shapes the design depends on, each documented by Anthropic and none of them
