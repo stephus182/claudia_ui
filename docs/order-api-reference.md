@@ -125,7 +125,11 @@ routing depends on `sec_type`:
   (`order_flow._futures_contract_facts`, on every futures path — conid supplied or resolved),
   passed as `_multiplier`, `_currency` and `_companyName` (e.g. `ESU6 · expires 2026-09-18`; the
   multiplier reaches the dialog's Quantity row as `1 (×50 per contract)` since 2026-09-11, gap #45)
-  display fields. Until 2026-09-04 this line said the multiplier came from `/trsrv/futures`:
+  display fields. Since 2026-09-11 (gap #49) a **stock** gets `_companyName` and `_currency` from
+  the same read (`order_flow._stock_contract_facts`, cached per conid, fail-soft): live that
+  morning `SELL 1 GLD LMT 600` had reached Gate 2 as `Symbol: GLD`, `Price: 600.00` with no
+  name and no currency while IBKR's status said `USD` — a share price is money. Until
+  2026-09-04 this line said the multiplier came from `/trsrv/futures`:
   **it never did** — those rows carry only `conid`, `expirationDate`, `ltd`, the cut-offs,
   `symbol` and `underlyingConid` (measured), the tests had invented a `multiplier` key, and
   on the conid-supplied path the lookup was skipped entirely. Found live the same day: Gate 2
@@ -674,8 +678,16 @@ for …`, `Gate 1: reply … covered by authorization …`), so the server log w
 The same pass gave the dialogs bold values with regular labels, a MODIFY banner in the order's
 colour, and futures price rows without a currency (index points, not money — the total keeps
 the USD). `ibkr_core_mcp/SECURITY.md` now says what the code does — gap #48's biometrics-only
-claim is corrected there, dated, with the reason. One live cycle still owes the count on screen
-(Live Test Log).
+claim is corrected there, dated, with the reason. **Counted live the same day:** one Touch ID for
+a two-precaution placement at 10:04 (three the day before), then twelve writes for twelve
+fingerprints across the 10:24 coverage matrix, user-counted and log-witnessed (`Gate 1:
+granted for …` once per write, `covered by authorization` once per precaution). **Refusals
+(gap #50, same day):** DO NOT SEND at Gate 2 and DO NOT REPLY at a precaution had left the
+store with `trade_proposed` and nothing else — the declined precaution's `confirmed: false`
+entry was discarded with the chain. Every outcome after the button now writes a row:
+`trade_refused` (stage `gate2` / `reply` / `timeout` / `touch_id`, the reason, the reply log as
+far as it got), `trade_rejected` (IBKR's payload), `trade_dispatched_unverified`; the same for
+modify and cancel. A human's no logs at INFO, not as an ERROR traceback.
 
 `place_order_and_confirm` loops over `{id, message, messageOptions}` entries, each behind Gate 1
 (*Python is trying to confirm an IBKR order reply <id>.*) and the CONFIRM ORDER REPLY dialog, and

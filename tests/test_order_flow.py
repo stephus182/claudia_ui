@@ -3375,6 +3375,7 @@ async def test_a_declined_precaution_keeps_its_reply_log_in_the_refusal_row():
     ibkr_mod, client = _make_ibkr_mock()
 
     def decline(account_id, order, *, reply_log=None):
+        """Stand in for the client: log the precaution as unconfirmed, then decline it."""
         reply_log.append(
             {
                 "reply_id": "RPL1",

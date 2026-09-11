@@ -241,7 +241,13 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   for Gate 2 only and are stripped by `client.py` before the POST on place **and** modify. The
   three dialogs draw from one typed row builder (`order_confirm._order_rows`); the reply chain
   IBKR sends before accepting a write is persisted as `ibkr_replies` on the decision row — the
-  store no longer keeps only the terminal response.
+  store no longer keeps only the terminal response. Since 2026-09-11 a **stock** proposal
+  carries `_companyName` and `_currency` too (gap #49: a share price is money, so it shows its
+  ISO code; a future's price is index points and shows none), and **every outcome after the
+  button leaves a decision row** — `trade_refused` / `modify_refused` / `cancel_refused` with
+  the stage, the reason and the reply log as far as it got, `*_rejected` with IBKR's payload,
+  `*_dispatched_unverified` when the write landed and the reporting failed (gap #50: a DO NOT
+  SEND used to leave only `trade_proposed`, and a declined precaution lost its record).
 - **Attached profit taker / bracket orders (2026-09-06, reviewed 2026-09-08): supported by the
   Web API, not yet expressible here.** IBKR takes a bracket as one request — an `orders` array
   where the parent carries `cOID` and each child `parentId` equal to it — and holds the child
