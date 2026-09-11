@@ -4446,6 +4446,73 @@ def test_propose_order_and_cancel_do_not_need_get_order_status():
     assert agent._record_proposal("propose_cancel", VALID_CANCEL).startswith("Proposal accepted")
 
 
+# --- retry widening from live cell D (2026-09-11): a proposal claim on a read-only turn ----
+
+
+async def test_a_proposal_claim_after_idempotent_reads_is_retried():
+    """Live 2026-09-11 16:52 (cell D): `get_order_status` ran, then "Cancel staged — button
+    is up" with no `propose_cancel`. The proposal verdict is exact whatever else ran, and a
+    read costs one call to repeat, so the turn is retried like a zero-tool one."""
+    from claudia.agent import _RETRY_SYSTEM_NOTE
+
+    agent, sink = _make_agent_recording()
+    agent._model = "claude-opus-4-8"
+    agent._toolkit.execute = MagicMock(return_value=("{}", None))
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_then_tool_events("Reading.", "get_order_status", {"order_id": "1"})),
+            _FakeStream(_text_response_events(NARRATED_STAGING[0])),
+            _FakeStream(_text_then_tool_events("Checking.", "propose_cancel", VALID_CANCEL)),
+            _FakeStream(_text_response_events("The cancel button is above.")),
+        ]
+    )
+    agent._client.messages.stream = stream
+    await agent.handle_message("cancel that one")
+    assert sink.notes == [_RETRY_SYSTEM_NOTE]
+    assert sink.messages == ["Checking.\n\nThe cancel button is above."]
+    assert stream.call_args_list[2].kwargs["tool_choice"] == {"type": "any"}
+    attempt = next(m for m in agent._store.messages if m["content"].startswith("Reading."))
+    assert agent._store.messages.index(attempt) + 1 in agent._store.withdrawn
+
+
+async def test_a_proposal_claim_after_a_writer_is_not_retried():
+    """A retry re-runs the turn; a writer must never be re-run on the strength of a text
+    claim (the ledger's argument: a second `create_price_alert` nobody asked for)."""
+    agent, sink = _make_agent_recording()
+    agent._toolkit.execute = MagicMock(return_value=("{}", None))
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_then_tool_events("Setting.", "create_price_alert", {"x": 1})),
+            _FakeStream(_text_response_events(NARRATED_STAGING[0])),
+        ]
+    )
+    agent._client.messages.stream = stream
+    await agent.handle_message("alert me and cancel it")
+    assert stream.call_count == 2
+    assert sink.notes == []
+    assert any("no staging button" in m.lower() for m in sink.messages)
+
+
+async def test_a_book_claim_after_a_read_is_corrected_not_retried():
+    """Only the proposal verdict is exact on a mixed turn; a book claim after a non-book
+    read keeps the correction path."""
+    agent, sink = _make_agent_recording()
+    agent._toolkit.execute = MagicMock(return_value=("{}", None))
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(
+                _text_then_tool_events("Quoting.", "get_market_snapshot", {"symbols": ["ES"]})
+            ),
+            _FakeStream(_text_response_events(NARRATED_BOOK_CHECK[0])),
+        ]
+    )
+    agent._client.messages.stream = stream
+    await agent.handle_message("what's working?")
+    assert stream.call_count == 2
+    assert sink.notes == []
+    assert any("never ran" in m.lower() for m in sink.messages)
+
+
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------
 #
 # Three request shapes the design depends on, each documented by Anthropic and none of them

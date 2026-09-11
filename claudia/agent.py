@@ -536,6 +536,45 @@ loop would only spend tokens on it. Measured 2026-09-11 (`scripts/replay_eval.py
 retry shape called the tool 48/48 on the real contexts, so one is what the evidence buys.
 """
 
+_RETRY_SAFE_READS = frozenset(
+    {
+        "get_order_status",
+        "get_live_orders",
+        "diagnose_orders",
+        "get_futures",
+        "get_market_snapshot",
+        "get_contract_info",
+        "search_contract",
+        "preview_order",
+        "get_positions",
+        "get_account_summary",
+    }
+)
+"""The idempotent reads the order flow prescribes before a proposal — the only tools a
+retried turn may have run.
+
+A retry re-runs the whole turn, and a text claim is never grounds to re-run a *writer*
+(`create_price_alert`, `pine_set_source`, …: the ledger's argument — a second alert nobody
+asked for). A read costs one call to repeat. Live 2026-09-11 16:52 (cell D of the phase-1
+run): `get_order_status` ran, then "Cancel staged — button is up" with no `propose_cancel`;
+the proposal verdict is exact whatever else ran, so a turn like that is retried when every
+tool it ran is in this set.
+"""
+
+
+def _retryable(called_tools: set[str], claims: list[tuple[str, str]]) -> bool:
+    """Whether a turn with these claims is retried rather than corrected in place.
+
+    A zero-tool turn with any claim (the shape the replay eval measured, 17/48); or a turn
+    whose tools were all `_RETRY_SAFE_READS` and whose claims include a **proposal** — the
+    one kind whose verdict does not depend on which tools ran. Book, payload and action
+    claims after a real call keep the correction path.
+    """
+    if not called_tools:
+        return True
+    return any(kind == "proposal" for kind, _ in claims) and called_tools <= _RETRY_SAFE_READS
+
+
 _RETRY_SYSTEM_NOTE = (
     "ClaudIA's first reply described a tool result or an action that no tool call backs "
     "— withdrawn before display; retrying the turn with the tool."
@@ -1859,22 +1898,23 @@ class ClaudIAAgent:
         full_response_text, called_tools = await self._stream_turn(messages, system_blocks)
         display_text = full_response_text.strip()
 
-        # One silent retry, before anything is displayed, when the turn ran no tool and its
-        # text still claims a tool result or an action (2026-09-11). Text reaches the sink
-        # only after this loop, so the user never sees the attempt; the store, a decision
-        # row and a System-log line keep it. Zero-tool turns only: every narration the
-        # replay eval measured (17/48) ran no tool, and a turn that ran one keeps today's
-        # correction path. A proposal is a tool call, so none exists on a zero-tool turn.
+        # One silent retry, before anything is displayed, when the turn's text claims a
+        # tool result or an action the evidence does not back (2026-09-11). Text reaches
+        # the sink only after this loop, so the user never sees the attempt; the store, a
+        # decision row and a System-log line keep it. Which turns: `_retryable` — a
+        # zero-tool turn (the shape the replay eval measured, 17/48) or, since the live
+        # cancel of the same afternoon, a read-only turn that claims a proposal it never
+        # made. Everything else keeps the correction path below.
         retries = 0
-        while (
-            retries < _RETRIES_PER_TURN
-            and not called_tools
-            and (
-                claims := _detect_unbacked_claims(
-                    display_text, called_tools, proposal_recorded=False, images=bool(images)
-                )
+        while retries < _RETRIES_PER_TURN:
+            claims = _detect_unbacked_claims(
+                display_text,
+                called_tools,
+                proposal_recorded=self._pending_proposal is not None,
+                images=bool(images),
             )
-        ):
+            if not claims or not _retryable(called_tools, claims):
+                break
             retries += 1
             await self._withdraw_attempt(claims, display_text)
             await self._sink.send_system_note(_RETRY_SYSTEM_NOTE)
