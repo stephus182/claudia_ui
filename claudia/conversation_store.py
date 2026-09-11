@@ -490,6 +490,15 @@ class ConversationStore:
         decision_type is a free-form label; it is not validated by a CHECK constraint, so
         callers must use consistent values. Every value claudia writes today:
 
+        From `claudia/order_flow.py` — an outcome after the button that was NOT a success
+        (2026-09-11, gap #50; before that day these left no row at all):
+        `trade_refused`, `modify_refused`, `cancel_refused` — the human or the gates said no
+        (metadata `stage`: gate2, reply, timeout, touch_id, rejected, other; `reason`; the
+        `ibkr_replies` as far as the chain got, a declined one as `confirmed: false`);
+        `trade_dispatched_unverified` / `modify_…` / `cancel_…` — the write reached IBKR and
+        the reporting failed; `trade_rejected` / `modify_rejected` / `cancel_rejected` — IBKR
+        refused an approved write (`ibkr_response` carries its payload).
+
         From `claudia/agent.py` — a proposal was *surfaced* (the user has not decided yet):
           - ``trade_proposed`` — a new-order staging button was rendered for the user
           - ``trade_cancel_proposed`` — a cancel staging button was rendered

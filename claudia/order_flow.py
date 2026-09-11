@@ -550,6 +550,112 @@ def _refusal_stage(exc: Exception) -> str:
     )
 
 
+def _refusal_subject(noun: str, proposal: dict[str, Any]) -> str:
+    """The one line a refusal row names its order by — the success rows' own wording."""
+    if noun == "trade":
+        return (
+            f"{proposal.get('action', '?')} {proposal.get('quantity', '?')} "
+            f"{proposal.get('symbol', '?')} ({proposal.get('order_type', 'MKT')})"
+        )
+    return f"order {proposal.get('order_id', '?')} ({proposal.get('symbol', '?')})"
+
+
+def _record_outcome(
+    store: Any,
+    session_id: str | None,
+    *,
+    decision_type: str,
+    summary: str,
+    symbol: str | None,
+    metadata: dict[str, Any],
+) -> None:
+    """Write one decision row for an outcome after the button; never let it mask the report."""
+    if store is None or not session_id:
+        return
+    try:
+        store.add_decision(
+            session_id=session_id,
+            decision_type=decision_type,
+            summary_text=summary,
+            symbol=symbol,
+            metadata=metadata,
+        )
+    except Exception:  # the record must never mask the report the user sees
+        log.exception("Could not record %s", decision_type)
+
+
+def _record_refusal(
+    store: Any,
+    session_id: str | None,
+    *,
+    noun: str,
+    proposal: dict[str, Any],
+    exc: Exception,
+    reply_log: list[dict[str, Any]],
+    dispatched: bool,
+    symbol: str | None,
+) -> None:
+    """Write the decision a refusal or failure after the button leaves behind (#50).
+
+    Until 2026-09-11 every refusal — Touch ID denied, DO NOT SEND, a declined precaution, a
+    timeout — reached the chat as a status line and the store as nothing: `add_decision` ran
+    only on the success path, so a reader of the store could not tell a proposal refused at
+    Gate 2 from one never clicked, and a declined precaution lost the very `reply_log` entry
+    (`confirmed: false`) built to prove it. Measured in the coverage matrix, cells 5 and 6.
+
+    `noun` is "trade", "modify" or "cancel"; the row is `<noun>_refused`, or
+    `<noun>_dispatched_unverified` when the write had already reached IBKR and what failed
+    was the reporting — a different fact, named differently. No store or no session: the
+    render sites allow both, and a refusal must still report and return.
+    """
+    kind = "dispatched_unverified" if dispatched else "refused"
+    reason = _classify_execution_error(exc)
+    _record_outcome(
+        store,
+        session_id,
+        decision_type=f"{noun}_{kind}",
+        summary=f"{kind.upper().replace('_', ' ')}: {_refusal_subject(noun, proposal)} — {reason}",
+        symbol=symbol,
+        metadata={
+            "proposal": proposal,
+            "stage": "dispatch" if dispatched else _refusal_stage(exc),
+            "reason": reason,
+            "ibkr_replies": reply_log,
+            "dispatched": dispatched,
+        },
+    )
+
+
+def _record_rejection(
+    store: Any,
+    session_id: str | None,
+    *,
+    noun: str,
+    proposal: dict[str, Any],
+    result: Any,
+    symbol: str | None,
+) -> None:
+    """IBKR said no to a write the human had approved: `<noun>_rejected`, with IBKR's payload (#50)."""
+    _record_outcome(
+        store,
+        session_id,
+        decision_type=f"{noun}_rejected",
+        summary=f"REJECTED BY IBKR: {_refusal_subject(noun, proposal)}",
+        symbol=symbol,
+        metadata={"proposal": proposal, "stage": "ibkr", "ibkr_response": result},
+    )
+
+
+def _log_refusal(exc: Exception, dispatched: bool, what: str, *args: Any) -> None:
+    """A human's no is not an error: INFO without a traceback for a refusal at a gate;
+    `log.exception` for a genuine failure (2026-09-11 — DO NOT SEND had logged as ERROR)."""
+    stage = _refusal_stage(exc)
+    if dispatched or stage == "other":
+        log.exception(what, *args)
+    else:
+        log.info(what + " — refused at %s: %s", *args, stage, exc)
+
+
 _CONID_LOOKUP = {
     # sec_type -> (tool that resolves it, why a bare symbol is not enough for THIS type)
     "OPT": ("get_option_chain", "expiry, strike and call/put are all needed"),
@@ -1338,6 +1444,9 @@ async def _execute_staged_order_core(
         # see _is_ibkr_rejection and docs/plans/2026-07-23-futures-order-field-8089-bug.md).
         if _is_ibkr_rejection(result):
             log.warning("IBKR rejected order for %s: %s", symbol, result)
+            _record_rejection(
+                store, session_id, noun="trade", proposal=proposal, result=result, symbol=symbol
+            )
             await send_status(
                 (
                     f"**Order REJECTED by IBKR (not placed):** {action_str} {qty} {symbol} ({otype})\n"
@@ -1404,7 +1513,17 @@ async def _execute_staged_order_core(
             )
 
     except Exception as exc:
-        log.exception("Order staging failed for %s", symbol)
+        _log_refusal(exc, dispatched, "Order staging failed for %s", symbol)
+        _record_refusal(
+            store,
+            session_id,
+            noun="trade",
+            proposal=proposal,
+            exc=exc,
+            reply_log=reply_log,
+            dispatched=dispatched,
+            symbol=symbol,
+        )
         if dispatched:
             await send_status(_post_dispatch_failure_text(exc, "order"), "System")
         else:
@@ -1517,6 +1636,9 @@ async def _execute_cancel_order_core(
         # returns the parsed JSON unconditionally, no exception on a rejection.
         if _is_ibkr_rejection(result):
             log.warning("IBKR rejected cancel for order %s: %s", order_id, result)
+            _record_rejection(
+                store, session_id, noun="cancel", proposal=proposal, result=result, symbol=symbol
+            )
             await send_status(
                 (
                     f"**Cancel FAILED (order may still be working):** order {order_id} ({symbol})\n"
@@ -1566,7 +1688,17 @@ async def _execute_cancel_order_core(
             )
 
     except Exception as exc:
-        log.exception("Order cancellation failed for order %s", order_id)
+        _log_refusal(exc, dispatched, "Order cancellation failed for order %s", order_id)
+        _record_refusal(
+            store,
+            session_id,
+            noun="cancel",
+            proposal=proposal,
+            exc=exc,
+            reply_log=[],
+            dispatched=dispatched,
+            symbol=symbol,
+        )
         if dispatched:
             await send_status(_post_dispatch_failure_text(exc, "cancel request"), "System")
         else:
@@ -1769,6 +1901,9 @@ async def _execute_modify_order_core(
         # same order-submission machinery and can return the same rejection shape.
         if _is_ibkr_rejection(result):
             log.warning("IBKR rejected modify for order %s: %s", order_id, result)
+            _record_rejection(
+                store, session_id, noun="modify", proposal=proposal, result=result, symbol=symbol
+            )
             await send_status(
                 (
                     f"**Modify REJECTED by IBKR (not applied):** order {order_id} ({symbol})\n"
@@ -1823,7 +1958,17 @@ async def _execute_modify_order_core(
             )
 
     except Exception as exc:
-        log.exception("Order modification failed for order %s", order_id)
+        _log_refusal(exc, dispatched, "Order modification failed for order %s", order_id)
+        _record_refusal(
+            store,
+            session_id,
+            noun="modify",
+            proposal=proposal,
+            exc=exc,
+            reply_log=reply_log,
+            dispatched=dispatched,
+            symbol=symbol,
+        )
         if dispatched:
             await send_status(_post_dispatch_failure_text(exc, "modify request"), "System")
         else:

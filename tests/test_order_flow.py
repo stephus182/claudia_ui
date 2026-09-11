@@ -1295,9 +1295,10 @@ async def test_execute_staged_order_rejection_payload_reports_failure():
 
 
 @pytest.mark.asyncio
-async def test_execute_staged_order_rejection_payload_logs_no_success_decision():
-    """A rejected order must not be recorded as a 'trade_staged' decision — matches
-    the other failure paths in this module, which log no decision at all."""
+async def test_execute_staged_order_rejection_payload_logs_a_rejection_not_a_success():
+    """A rejected order is never a 'trade_staged' decision — and since 2026-09-11 (#50) it
+    is not *nothing* either: IBKR's no is an outcome after the button, recorded as
+    `trade_rejected` with IBKR's own payload."""
     ibkr_mod, client = _make_ibkr_mock()
     client.place_order_and_confirm.return_value = _REJECTION_PAYLOAD
     store = MagicMock()
@@ -1313,7 +1314,10 @@ async def test_execute_staged_order_rejection_payload_logs_no_success_decision()
         }
     )
     await _run(action, ibkr_mod, store=store, session_id="s42")
-    store.add_decision.assert_not_called()
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_rejected"
+    assert kwargs["metadata"]["ibkr_response"] == _REJECTION_PAYLOAD
+    assert kwargs["metadata"]["stage"] == "ibkr"
 
 
 @pytest.mark.asyncio
@@ -1352,7 +1356,8 @@ async def test_execute_cancel_order_rejection_payload_reports_failure():
     contents = _sent_contents(recorded)
     assert any("Cancel FAILED" in c for c in contents)
     assert not any("confirmed cancelled" in c.lower() for c in contents)
-    store.add_decision.assert_not_called()
+    # Not a success row — and since 2026-09-11 (#50) not nothing: IBKR's no is recorded.
+    assert store.add_decision.call_args.kwargs["decision_type"] == "cancel_rejected"
     # Nothing was dispatched, so there is nothing to read back — and the rejection's
     # own error text is the only evidence available (no order exists to query). The one
     # status read is the dialog's, BEFORE the write (gap #40); none may follow it.
@@ -1378,7 +1383,8 @@ async def test_execute_modify_order_rejection_payload_reports_failure():
     contents = _sent_contents(recorded)
     assert any("Modify REJECTED" in c for c in contents)
     assert not any("Verified via get_order_status" in c for c in contents)
-    store.add_decision.assert_not_called()
+    # Not a success row — and since 2026-09-11 (#50) not nothing: IBKR's no is recorded.
+    assert store.add_decision.call_args.kwargs["decision_type"] == "modify_rejected"
     # The one status read is the dialog's, BEFORE the write (gap #40); no read-back follows.
     assert [
         c[0]
@@ -3342,3 +3348,103 @@ def test_refusal_stage_uses_the_same_patterns_as_the_user_facing_text(exc, stage
     assert sentence == _classify_execution_error(type(exc)(str(exc)))
     if stage == "other":
         assert sentence == "RuntimeError: boom"
+
+
+@pytest.mark.asyncio
+async def test_a_gate2_abandon_writes_a_refusal_decision_with_the_proposal():
+    """Cell 5 (2026-09-11): DO NOT SEND left only `trade_proposed` in the store (#50)."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.side_effect = HumanAuthError("Order cancelled by user")
+    store = MagicMock()
+    action = _make_action()
+    recorded = await _run(action, ibkr_mod, store=store, session_id="s1")
+    assert any("Order not placed" in c for c in _sent_contents(recorded))
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_refused"
+    assert kwargs["metadata"]["stage"] == "gate2"
+    assert kwargs["metadata"]["proposal"] == json.loads(action.payload["order"])
+    assert kwargs["metadata"]["ibkr_replies"] == []
+    assert kwargs["metadata"]["dispatched"] is False
+    assert "cancelled at the confirmation dialog" in kwargs["summary_text"]
+    assert kwargs["symbol"] == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_a_declined_precaution_keeps_its_reply_log_in_the_refusal_row():
+    """Cell 6: the client's reply_log carried `confirmed: false`; the store never saw it (#50)."""
+    ibkr_mod, client = _make_ibkr_mock()
+
+    def decline(account_id, order, *, reply_log=None):
+        reply_log.append(
+            {
+                "reply_id": "RPL1",
+                "message": "value limit",
+                "message_text": "value limit",
+                "message_options": None,
+                "confirmed": False,
+                "at": "2026-09-11T14:54:00Z",
+            }
+        )
+        raise HumanAuthError("User declined IBKR order reply")
+
+    client.place_order_and_confirm.side_effect = decline
+    store = MagicMock()
+    await _run(_make_action(), ibkr_mod, store=store, session_id="s1")
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_refused"
+    assert kwargs["metadata"]["stage"] == "reply"
+    assert kwargs["metadata"]["ibkr_replies"][0]["confirmed"] is False
+    assert kwargs["metadata"]["ibkr_replies"][0]["reply_id"] == "RPL1"
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_dispatch_is_recorded_as_dispatched_unverified():
+    """The write reached IBKR and the record failed: a different fact, named differently, and
+    the record must never mask the report."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.return_value = _SUCCESS_PAYLOAD
+    store = MagicMock()
+    store.add_decision.side_effect = [RuntimeError("db locked"), 7]
+    recorded = await _run(_make_action(), ibkr_mod, store=store, session_id="s1")
+    assert any("WAS dispatched" in c for c in _sent_contents(recorded))
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_dispatched_unverified"
+    assert kwargs["metadata"]["dispatched"] is True
+    assert kwargs["metadata"]["stage"] == "dispatch"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_refusal_is_recorded():
+    """KEEP ORDER at Gate 2 (#50)."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.cancel_order.side_effect = HumanAuthError("Order cancelled by user")
+    store = MagicMock()
+    recorded = await _run_cancel(_make_cancel_action(), ibkr_mod, store=store, session_id="s1")
+    assert any("Order not cancelled" in c for c in _sent_contents(recorded))
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "cancel_refused"
+    assert kwargs["metadata"]["stage"] == "gate2"
+    assert kwargs["metadata"]["ibkr_replies"] == []
+    assert "242538143" in kwargs["summary_text"]
+
+
+@pytest.mark.asyncio
+async def test_a_modify_refusal_is_recorded():
+    """LEAVE UNCHANGED at Gate 2 (#50)."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.modify_order_and_confirm.side_effect = HumanAuthError("Order cancelled by user")
+    store = MagicMock()
+    recorded = await _run_modify(_make_modify_action(), ibkr_mod, store=store, session_id="s1")
+    assert any("Order not modified" in c for c in _sent_contents(recorded))
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "modify_refused"
+    assert kwargs["metadata"]["stage"] == "gate2"
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_with_no_store_still_reports_and_returns():
+    """The render sites allow store=None; a refusal must still reach the chat and return."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.side_effect = HumanAuthError("Order cancelled by user")
+    recorded = await _run(_make_action(), ibkr_mod, store=None, session_id="s1")
+    assert any("Order not placed" in c for c in _sent_contents(recorded))
