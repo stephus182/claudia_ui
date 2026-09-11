@@ -24,6 +24,7 @@ from claudia.agent import (
     _system_blocks,
     _with_cache_marker,
     _with_history_cache_marker,
+    retry_tool_choice,
 )
 from claudia.conversation_store import (
     COMPLETED_ORDER_ACTION_TYPES,
@@ -4178,6 +4179,19 @@ async def test_every_correction_withdraws_the_contradicted_row():
         i + 1 for i, m in enumerate(store.messages) if m["content"] == NARRATED_STAGING[0]
     )
     assert store.withdrawn == [claim_id]
+
+
+# --- the per-model forced-tool-choice table (plan Task 3) ----------------------------------
+
+
+def test_retry_tool_choice_forces_only_on_probed_models():
+    """Both directions probed 2026-09-11 (test_live_api_forced_tool_choice_under_adaptive_thinking):
+    claude-opus-4-8 accepted with a real tool_use back; claude-fable-5-1 the documented 400.
+    A model the probe has not executed is `auto` — documented is not probed."""
+    assert retry_tool_choice("claude-opus-4-8") == {"type": "any"}
+    assert retry_tool_choice("claude-fable-5-1") is None
+    assert retry_tool_choice("claude-opus-5") is None
+    assert retry_tool_choice("some-future-model") is None
 
 
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------

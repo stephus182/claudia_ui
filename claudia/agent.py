@@ -310,6 +310,44 @@ allowlists are: a model absent from it gets a warning, never silent acceptance.
 """
 
 
+_FORCED_TOOL_CHOICE_MODELS = frozenset({"claude-opus-4-8"})
+"""Models on which `tool_choice: {"type": "any"}` is accepted under adaptive thinking — probed.
+
+The tool-use docs (read 2026-09-11,
+https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use) give the
+rule: adaptive thinking supports forced tool use; Claude Fable 5.1 and Claude Mythos 5.1
+return a 400 — `tool_choice: type "tool" and "any" are not supported for this model.`
+(https://platform.claude.com/docs/en/api/errors). A doc is a claim; this set holds only
+what `test_live_api_forced_tool_choice_under_adaptive_thinking` has executed, in both
+directions: `claude-opus-4-8` accepted with a real `tool_use` returned, `claude-fable-5-1`
+rejected with that text verbatim. Documented-but-unprobed models (Opus 5, Fable 5, Mythos
+5) are deliberately absent — add a model here together with its probe result.
+
+Consumer: the same-turn retry (`_RETRIES_PER_TURN`). A model outside the set retries with
+`auto`, and the choice is logged; the retry still carries the operator note and the
+withdrawn attempt, which is most of its effect (design doc § Phase 0: withdrawal alone took
+the re-ask copy from 14/16 to 1/16). Measured with `any`: 48/48 first responses called the
+tool — and every one with zero thinking tokens, which is why the retry forces its first
+request only.
+
+The model is a knob, not a constant (user rule 2026-09-11): a model that stops rejecting
+the shape is a signal to widen this set, not a defect.
+"""
+
+
+def retry_tool_choice(model: str) -> dict[str, str] | None:
+    """The `tool_choice` for the first request of a same-turn retry, or None for `auto`.
+
+    Args:
+        model: The `CLAUDIA_MODEL` value the session runs on.
+
+    Returns:
+        `{"type": "any"}` when the model is in `_FORCED_TOOL_CHOICE_MODELS`, else None —
+        the caller omits the parameter, which the API documents as `auto`.
+    """
+    return {"type": "any"} if model in _FORCED_TOOL_CHOICE_MODELS else None
+
+
 def warn_if_model_lacks_operator_channel(model: str) -> str | None:
     """Log a loud, actionable error when `model` cannot carry the operator channel.
 
