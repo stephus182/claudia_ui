@@ -39,6 +39,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from ibkr_core_mcp.order_confirm import change_value_text
+
 from claudia.contract_identity import contract_identity
 
 if TYPE_CHECKING:
@@ -1599,8 +1601,12 @@ def _format_modify_summary(proposal: dict[str, Any], contract_label: str | None 
             if not isinstance(field, str):
                 change_lines.append(f"- (malformed change entry: {change!r})")
                 continue
+            # One formatter for both sides of the arrow, shared with Gate 2 — on
+            # 2026-09-10 this line read `7900.0 → 7950` while the dialog read
+            # `7900.0 → 7950.0` for the same change.
             change_lines.append(
-                f"- {field}: {change.get('previous_value')} → {proposal.get(field)}"
+                f"- {field}: {change_value_text(field, change.get('previous_value'))}"
+                f" → {change_value_text(field, proposal.get(field))}"
             )
         lines.append("\n".join(change_lines))
     else:

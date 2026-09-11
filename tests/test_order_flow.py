@@ -282,7 +282,9 @@ def test_format_modify_summary_shows_every_changed_field():
         ],
     }
     summary = _format_modify_summary(proposal)
-    assert "limit_price: 100.0 → 105.0" in summary
+    # Both sides formatted alike by the formatter Gate 2 shares (2026-09-10): a diff
+    # read `100.0 → 105` when the two values arrived as different types.
+    assert "limit_price: 100.00 → 105.00" in summary
     assert "quantity: 1 → 3" in summary
 
 
