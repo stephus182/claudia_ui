@@ -3448,3 +3448,105 @@ async def test_a_refusal_with_no_store_still_reports_and_returns():
     client.place_order_and_confirm.side_effect = HumanAuthError("Order cancelled by user")
     recorded = await _run(_make_action(), ibkr_mod, store=None, session_id="s1")
     assert any("Order not placed" in c for c in _sent_contents(recorded))
+
+
+# ---------------------------------------------------------------------------
+# Gap #49 (2026-09-11): a stock's name and currency reach Gate 2
+# ---------------------------------------------------------------------------
+
+
+def test_stock_contract_facts_read_name_and_currency_once_per_conid():
+    """Cell 3 (2026-09-11): `SELL 1 GLD LMT 600` reached Gate 2 as `Symbol: GLD`, `Price: 600.00`
+    — no name, no currency — while IBKR's status said USD (#49). The same contract-info read
+    the futures path makes gives both; cached per conid; a failed read gives (None, None)."""
+    from claudia.order_flow import _stock_contract_facts, clear_stock_facts_cache
+
+    clear_stock_facts_cache()
+    client = MagicMock()
+    client.get_contract_info.return_value = {"company_name": "SPDR GOLD SHARES", "currency": "usd"}
+    assert _stock_contract_facts(client, 51529211) == ("SPDR GOLD SHARES", "USD")
+    assert _stock_contract_facts(client, 51529211) == ("SPDR GOLD SHARES", "USD")
+    client.get_contract_info.assert_called_once_with(51529211)
+    client.get_contract_info.side_effect = RuntimeError("down")
+    assert _stock_contract_facts(client, 1) == (None, None)
+    client.get_contract_info.side_effect = None
+    client.get_contract_info.return_value = {}
+    assert _stock_contract_facts(client, 2) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_stock_placement_carries_name_and_currency_to_gate2():
+    """The place core sets `_companyName` and `_currency` for STK as it does for FUT (#49);
+    a stock gets no multiplier keys."""
+    from claudia.order_flow import clear_stock_facts_cache
+
+    clear_stock_facts_cache()
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_contract_info.return_value = {"company_name": "SPDR GOLD SHARES", "currency": "USD"}
+    client.place_order_and_confirm.return_value = _SUCCESS_PAYLOAD
+    action = _make_action(
+        {
+            "symbol": "GLD",
+            "action": "SELL",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 600.0,
+            "sec_type": "STK",
+            "tif": "GTC",
+            "conid": 51529211,
+        }
+    )
+    await _run(action, ibkr_mod, store=MagicMock(), session_id="s1")
+    body = client.place_order_and_confirm.call_args.args[1]
+    assert body["_companyName"] == "SPDR GOLD SHARES"
+    assert body["_currency"] == "USD"
+    assert "_multiplier" not in body and "_multiplier_unknown" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_stock_modify_carries_name_and_currency_to_gate2():
+    """The modify core does the same (#49)."""
+    from claudia.order_flow import clear_stock_facts_cache
+
+    clear_stock_facts_cache()
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_contract_info.return_value = {"company_name": "SPDR GOLD SHARES", "currency": "USD"}
+    action = _make_modify_action(
+        {
+            "order_id": "242538143",
+            "conid": 51529211,
+            "symbol": "GLD",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 190.0,
+            "sec_type": "STK",
+            "tif": "GTC",
+            "changes": [{"field": "limit_price", "previous_value": 200.0}],
+        }
+    )
+    await _run_modify(action, ibkr_mod, store=MagicMock(), session_id="s1")
+    body = client.modify_order_and_confirm.call_args.args[2]
+    assert body["_companyName"] == "SPDR GOLD SHARES" and body["_currency"] == "USD"
+
+
+def test_cancel_display_details_carry_name_and_currency_for_a_stock():
+    """The cancel dialog reads the live status; a stock's status carries the conid and
+    sec_type, and the facts follow (#49)."""
+    from claudia.order_flow import _cancel_display_details, clear_stock_facts_cache
+
+    clear_stock_facts_cache()
+    client = MagicMock()
+    client.get_order_status.return_value = {
+        "conid": 51529211,
+        "sec_type": "STK",
+        "symbol": "GLD",
+        "side": "S",
+        "size": "1.0",
+        "order_type": "LIMIT",
+        "limit_price": "600.00",
+        "tif": "GTC",
+    }
+    client.get_contract_info.return_value = {"company_name": "SPDR GOLD SHARES", "currency": "USD"}
+    details = _cancel_display_details(client, {"order_id": "2030858970", "symbol": "GLD"})
+    assert details["_companyName"] == "SPDR GOLD SHARES" and details["_currency"] == "USD"

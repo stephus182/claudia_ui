@@ -256,6 +256,60 @@ def _apply_futures_display_facts(ibkr: Any, order: dict[str, Any], conid: int) -
         order["_currency"] = currency
 
 
+_STOCK_FACTS: dict[int, tuple[str | None, str | None]] = {}
+
+
+def clear_stock_facts_cache() -> None:
+    """Tests only."""
+    _STOCK_FACTS.clear()
+
+
+def _stock_contract_facts(ibkr: Any, conid: int) -> tuple[str | None, str | None]:
+    """(company_name, currency) for a stock, from `/iserver/contract/{conid}/info`.
+
+    The same read `_futures_contract_facts` makes for a future. Live 2026-09-11 (gap #49):
+    `SELL 1 GLD LMT 600` reached Gate 2 as `Symbol: GLD`, `Price: 600.00` — no name, no
+    currency — while IBKR's own status for the order said `USD`. A future's price is index
+    points, not money, so no currency there is right; a stock's price IS money, and the rule
+    is an ISO code or nothing, never a guess (IGV is USD on BATS and MXN on MEXI). Cached per
+    conid; a failed or empty read is (None, None) and is not cached, so Gate 2 prints nothing
+    rather than a guess and the next attempt may succeed.
+    """
+    if conid in _STOCK_FACTS:
+        return _STOCK_FACTS[conid]
+    try:
+        info = ibkr.get_contract_info(conid) or {}
+    except Exception as exc:
+        log.warning("Contract info unavailable for conid %s: %s", conid, exc)
+        return (None, None)
+    name = str(info.get("company_name") or "").strip() or None
+    raw = info.get("currency")
+    currency = str(raw).strip().upper() if isinstance(raw, str) and raw.strip() else None
+    if name is None and currency is None:
+        return (None, None)
+    _STOCK_FACTS[conid] = (name, currency)
+    return _STOCK_FACTS[conid]
+
+
+def _apply_contract_display_facts(
+    ibkr: Any, order: dict[str, Any], conid: int, sec_type: str
+) -> None:
+    """Display-only keys for Gate 2, by instrument (#49, 2026-09-11).
+
+    Futures get the contract label, multiplier and currency (`_apply_futures_display_facts`);
+    everything else gets its listing's name and currency. A name already on the order — the
+    proposal's own `_companyName` — is kept.
+    """
+    if sec_type.upper() in ("FUT", "FOP"):
+        _apply_futures_display_facts(ibkr, order, conid)
+        return
+    name, currency = _stock_contract_facts(ibkr, conid)
+    if name and not order.get("_companyName"):
+        order["_companyName"] = name
+    if currency:
+        order["_currency"] = currency
+
+
 def _cancel_display_details(ibkr: Any, proposal: dict[str, Any]) -> dict[str, Any]:
     """The IBKR-shaped display dict for the cancel dialog (gap #40).
 
@@ -299,8 +353,10 @@ def _cancel_display_details(ibkr: Any, proposal: dict[str, Any]) -> dict[str, An
         if text:
             details["_current_description"] = str(text)
         conid = status.get("conid")
-        if str(status.get("sec_type", "")).upper() in ("FUT", "FOP") and conid is not None:
-            _apply_futures_display_facts(ibkr, details, int(conid))
+        if conid is not None:
+            _apply_contract_display_facts(
+                ibkr, details, int(conid), str(status.get("sec_type", ""))
+            )
         return details
     details = {
         "ticker": proposal.get("symbol", "?"),
@@ -1352,6 +1408,14 @@ async def _execute_staged_order_core(
             multiplier, currency, contract_label = _futures_contract_facts(ibkr, conid)
             if contract_label:
                 company_name = contract_label
+        else:
+            # A stock's price IS money: its listing's name and currency reach Gate 2 too
+            # (gap #49, 2026-09-11). A name the proposal already carries is kept.
+            name, currency = (
+                _stock_contract_facts(ibkr, int(conid)) if conid is not None else (None, None)
+            )
+            if name and not company_name:
+                company_name = name
 
         claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"
         tif = (
@@ -1415,6 +1479,8 @@ async def _execute_staged_order_core(
                 order_body["_multiplier_unknown"] = True
             if currency:
                 order_body["_currency"] = currency  # display only — ISO code, never "$"
+        elif currency:
+            order_body["_currency"] = currency  # display only — a stock's price is money (#49)
         if otype == "LMT" and limit_price is not None:
             order_body["price"] = float(limit_price)  # float
         elif otype == "STP" and proposal.get("stop_price") is not None:
@@ -1876,10 +1942,10 @@ async def _execute_modify_order_core(
             if stop_price is not None:
                 order_body["auxPrice"] = float(stop_price)
         _apply_outside_rth(order_body, proposal)
-        if sec_type in ("FUT", "FOP"):
-            # Same facts as the place path (gap #34): the label carries the contract month,
-            # the multiplier turns the price into a notional, the currency is an ISO code.
-            _apply_futures_display_facts(ibkr, order_body, int(conid))
+        # Same facts as the place path (gap #34): a future's label carries the contract
+        # month and its multiplier turns the price into a notional; a stock gets its name
+        # and currency (gap #49). Always an ISO code, never a guess.
+        _apply_contract_display_facts(ibkr, order_body, int(conid), sec_type)
         order_body["_changes"] = list(proposal.get("changes") or [])
         current = _current_order_description(ibkr, str(order_id))
         if current:
