@@ -76,3 +76,21 @@ case. There is deliberately **no** silent fallback to a `<system-reminder>` bloc
 user turn (which the Anthropic docs suggest for unsupported models): that channel is
 forgeable by the model, and quietly downgrading a non-spoofable one is worse than not
 running on that model at all.
+
+**A third capability is optional and degrades rather than blocks: forced tool choice.** The
+2026-09-11 anti-fabrication design retries a turn whose text narrated an action no tool call
+backs, sending `tool_choice: {"type": "any"}` where the model supports it and `auto`
+elsewhere — the choice is logged, never silent. Probed 2026-09-11 in both directions
+(`test_live_api_forced_tool_choice_under_adaptive_thinking`): `claude-opus-4-8` accepts it
+under adaptive thinking and the response carries a real `tool_use`; `claude-fable-5-1`
+rejects it —
+
+```text
+400 invalid_request_error: tool_choice: type "tool" and "any" are not supported for this model.
+```
+
+— exactly as the [tool-use docs](https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use)
+state for Claude Fable 5.1 and Claude Mythos 5.1 (*"`auto` with strict tool use"* is their
+alternative). A model outside the probed set is treated as `auto` until probed. The model is a
+knob, not a constant (user rule 2026-09-11): a model that stops rejecting this is a signal to
+widen the table, not a defect.

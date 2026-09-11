@@ -4058,3 +4058,243 @@ async def test_execution_note_reaches_the_model_once_on_the_next_turn():
         "IBKR reported an execution" in t
         for t in _system_texts(stream.call_args_list[1].kwargs["messages"])
     )
+
+
+# --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------
+#
+# Three request shapes the design depends on, each documented by Anthropic and none of them
+# yet executed against the real API from this code base. A doc is a claim; these are the
+# evidence. Opt-in and billed, like their siblings above.
+
+
+def _replay_cycle(name: str, tool_id: str) -> list[dict[str, Any]]:
+    """A prior turn replayed the way the design's L1b would: real tool_use, stub result.
+
+    Synthetic id (the store keeps no Anthropic ids), no thinking block (the docs' "Allowed:
+    outside tool use, omit prior turns' thinking"), a value-free stub in the tool_result.
+    """
+    return [
+        {"role": "user", "content": "What is order 2030859591 doing?"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": tool_id,
+                    "name": name,
+                    "input": {"order_id": "2030859591"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": (
+                        "[result not replayed — 1,234 chars. Stale by now: call the tool "
+                        "for the current state.]"
+                    ),
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": "Order 2030859591 is Submitted at limit 40.00, 0/1 filled.",
+        },
+        {"role": "user", "content": "And now?"},
+    ]
+
+
+_ORDER_STATUS_PROBE_TOOL: dict[str, Any] = {
+    "name": "get_order_status",
+    "description": "Probe stand-in for the toolkit's get_order_status.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"order_id": {"type": "string"}},
+        "required": ["order_id"],
+    },
+}
+
+
+@pytest.mark.live_api
+@pytest.mark.skipif(
+    os.environ.get("CLAUDIA_LIVE_SCHEMA_CHECK") != "1",
+    reason="live API check is opt-in: set CLAUDIA_LIVE_SCHEMA_CHECK=1",
+)
+def test_live_api_accepts_a_replayed_tool_cycle_with_synthetic_ids_and_no_thinking():
+    """Probes P1 + P2 of the 2026-09-11 anti-fabrication design (§5).
+
+    The design's L1b replays every persisted tool row as a real `tool_use` block so the
+    transcript shows the call where it happened (today `_history_to_messages` drops the
+    rows and the replayed turn reads "announce → report" with no call between — the
+    fabrication shape, measured 23/23 on the audited corpus). Two things the store cannot
+    supply and the API might require:
+
+      P1 — the `tool_use` id. The store keeps none, so the replay mints
+           `toolu_replay_<row id>`. The docs show `toolu_…` ids and state no format rule
+           (https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use).
+      P2 — the thinking block. Under `thinking: adaptive` the docs say *"Allowed: outside
+           tool use, omit prior turns' thinking"*
+           (https://platform.claude.com/docs/en/build-with-claude/thinking) — ambiguous for
+           a prior turn that *contained* tool use, which is exactly what a replay carries.
+
+    Both shapes are sent in the production configuration (adaptive thinking, the
+    messages-level cache marker on the second), with the replayed tool declared. Accepted =
+    the design can proceed; rejected = L1b needs a different shape, and the failure output
+    says which. Opt-in — it costs real API calls:
+
+        CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
+    """
+    import anthropic
+    from dotenv import load_dotenv
+
+    from claudia.agent import _with_cache_marker, _with_history_cache_marker
+
+    load_dotenv(override=False)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+
+    model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
+    cycle = _replay_cycle("get_order_status", "toolu_replay_1081")
+    shapes = {
+        "synthetic id, no thinking block": cycle,
+        "same, cache-marked": _with_history_cache_marker(cycle),
+    }
+    client = anthropic.Anthropic()
+    for label, messages in shapes.items():
+        try:
+            client.messages.create(  # type: ignore[call-overload]  # plain-dict bodies, as in agent.py
+                model=model,
+                max_tokens=1,
+                thinking={"type": "adaptive"},
+                messages=messages,
+                tools=_with_cache_marker([_ORDER_STATUS_PROBE_TOOL]),
+            )
+        except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
+            pytest.fail(f"live API rejected the replayed tool cycle ({label}) on {model}: {exc}")
+
+
+@pytest.mark.live_api
+@pytest.mark.skipif(
+    os.environ.get("CLAUDIA_LIVE_SCHEMA_CHECK") != "1",
+    reason="live API check is opt-in: set CLAUDIA_LIVE_SCHEMA_CHECK=1",
+)
+def test_live_api_replayed_tool_cycle_whose_tool_is_no_longer_declared():
+    """Probe P1-bis — a replayed call to a tool absent from this request's `tools`.
+
+    Production reaches this shape: TradingView tools are declared only while the sidecar is
+    up, so a `pine_compile` called earlier in a session can be replayed after the sidecar
+    dropped. The docs do not say whether a `tool_use` in history must name a currently
+    declared tool. Separate from the probe above so that a rejection here is its own,
+    informative failure: it would mean L1b must skip (or rename) rows whose tool is not
+    declared on the request, not that the whole shape is unusable.
+
+    Opt-in — it costs real API calls:
+
+        CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
+    """
+    import anthropic
+    from dotenv import load_dotenv
+
+    from claudia.agent import _with_cache_marker
+    from claudia.proposal_tools import PROPOSAL_TOOLS
+
+    load_dotenv(override=False)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+
+    model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
+    client = anthropic.Anthropic()
+    try:
+        client.messages.create(  # type: ignore[call-overload]  # plain-dict bodies, as in agent.py
+            model=model,
+            max_tokens=1,
+            thinking={"type": "adaptive"},
+            messages=_replay_cycle("get_order_status", "toolu_replay_1081"),
+            tools=_with_cache_marker(PROPOSAL_TOOLS),  # get_order_status deliberately absent
+        )
+    except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
+        pytest.fail(
+            f"live API rejected a replayed call to an undeclared tool on {model}: {exc} — "
+            "L1b must skip rows whose tool is not declared on the request"
+        )
+
+
+@pytest.mark.live_api
+@pytest.mark.skipif(
+    os.environ.get("CLAUDIA_LIVE_SCHEMA_CHECK") != "1",
+    reason="live API check is opt-in: set CLAUDIA_LIVE_SCHEMA_CHECK=1",
+)
+def test_live_api_forced_tool_choice_under_adaptive_thinking():
+    """Probe P3 — `tool_choice: any` with adaptive thinking, both directions.
+
+    The design's L4 retry forces a tool call where the model supports it. The tool-use
+    docs (https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use,
+    read 2026-09-11) give a per-model rule:
+
+      - *"Adaptive thinking, including on models where thinking is on by default such as
+        Claude Opus 5, supports forced tool use"* — so the configured model should accept
+        it, and the response must actually carry a `tool_use` block (acceptance alone
+        would not prove the forcing works).
+      - *"Claude Fable 5.1 and Claude Mythos 5.1 | `any` and `tool` return a 400 error"*,
+        with the error text on https://platform.claude.com/docs/en/api/errors — the
+        documented negative, pinned so the per-model table the retry will consult has both
+        directions, the way `_OPERATOR_CHANNEL_MODELS` does. The model is a knob (user rule
+        2026-09-11): a model that stops rejecting this is a signal to widen the table, and
+        the assertion message says so.
+
+    Opt-in — it costs real API calls:
+
+        CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
+    """
+    import anthropic
+    from dotenv import load_dotenv
+
+    from claudia.agent import _with_cache_marker
+    from claudia.proposal_tools import PROPOSAL_TOOLS
+
+    load_dotenv(override=False)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+
+    model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
+    client = anthropic.Anthropic()
+    messages = [{"role": "user", "content": "Buy 1 AAPL at 250, day order, conid 265598."}]
+    tools = _with_cache_marker(PROPOSAL_TOOLS)
+    try:
+        response = client.messages.create(  # type: ignore[call-overload]  # plain-dict bodies
+            model=model,
+            max_tokens=600,
+            thinking={"type": "adaptive"},
+            tool_choice={"type": "any"},
+            messages=messages,
+            tools=tools,
+        )
+    except anthropic.BadRequestError as exc:  # pragma: no cover - only on API change
+        pytest.fail(f"live API rejected tool_choice=any under adaptive thinking on {model}: {exc}")
+    assert any(block.type == "tool_use" for block in response.content), (
+        f"tool_choice=any accepted on {model} but the response carries no tool_use: "
+        f"{[block.type for block in response.content]}"
+    )
+
+    excluded = "claude-fable-5-1"
+    try:
+        client.messages.create(  # type: ignore[call-overload]  # plain-dict bodies
+            model=excluded,
+            max_tokens=1,
+            thinking={"type": "adaptive"},
+            tool_choice={"type": "any"},
+            messages=messages,
+            tools=tools,
+        )
+    except anthropic.BadRequestError as exc:
+        print(f"\n{excluded} rejected tool_choice=any, as documented: {exc}")
+    except (anthropic.NotFoundError, anthropic.PermissionDeniedError) as exc:
+        pytest.skip(f"{excluded} is not reachable with this key ({exc}); negative case unprobed")
+    else:  # pragma: no cover - only on API change
+        pytest.fail(
+            f"{excluded} ACCEPTED tool_choice=any — the docs' 400 no longer holds; widen the "
+            "forced-tool-choice model table rather than treating this as a defect"
+        )

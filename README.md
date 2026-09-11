@@ -264,6 +264,21 @@ system prompt (context.md + principles.md + market calendar + hardcoded safety
 block), tool schemas (`ClaudeToolkit` + TradingView + local tools), conversation
 history (`ConversationStore`), and tool results returned mid-loop.
 
+**The model is a knob, not a constant.** `CLAUDIA_MODEL` selects the model (`claude-opus-4-8`
+as of 2026-09-11 — a good starting product at a reasonable token cost, and not set in stone:
+models evolve and other ones will be explored). So nothing in the agent may hardcode an
+assumption about one model. Every model-dependent behaviour goes through a **per-model
+capability table with a live probe behind each entry, in both directions** — the pattern of
+`_OPERATOR_CHANNEL_MODELS` / `warn_if_model_lacks_operator_channel` (the mid-conversation
+`role:"system"` channel: accepted on Opus 4.8, `400` on Sonnet 4.6, both probed), and of the
+forced-`tool_choice` probe (`any` under adaptive thinking: accepted on Opus 4.8 with a real
+`tool_use` returned, `400` on Fable 5.1 as documented — both probed 2026-09-11,
+`test_live_api_forced_tool_choice_under_adaptive_thinking`). Where a model lacks a channel the
+agent degrades **explicitly and loudly** — never a silent fallback to a weaker mechanism — and
+a model that stops rejecting something is a signal to widen the table, not a defect. The
+constraints a replacement model must satisfy are listed in
+[`docs/env-vars-reference.md`](docs/env-vars-reference.md) § `CLAUDIA_MODEL`.
+
 **System prompt — built once per session, not per message.** Doc-version and
 document checks run when ClaudIA loads; a watchdog-driven reload counter
 (`ContextLoader.reload_count`) triggers a rebuild only when `context.md` or
