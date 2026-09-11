@@ -92,6 +92,9 @@ class _NullSink:
     async def send_max_tokens_warning(self) -> None:
         raise AssertionError("the eval harness must never render")
 
+    async def send_system_note(self, text: str) -> None:
+        raise AssertionError("the eval harness must never render")
+
     async def send_order_proposal(self, proposal: dict[str, Any]) -> None:
         raise AssertionError("the eval harness must never render")
 

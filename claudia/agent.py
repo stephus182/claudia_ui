@@ -488,6 +488,22 @@ _UNBACKED_CLAIM_OPERATOR_NOTE = (
 """Operator-channel body for a narrated action nothing backs. See `_append_operator_message`."""
 
 
+_RETRIES_PER_TURN = 1
+"""How many times a turn is retried after a zero-tool narration — once, never a loop.
+
+A second fire ends in the ⚠️ notice, the honest end state: a model that narrates twice
+with the evidence in front of it is not going to call the tool on a third request, and a
+loop would only spend tokens on it. Measured 2026-09-11 (`scripts/replay_eval.py`): the
+retry shape called the tool 48/48 on the real contexts, so one is what the evidence buys.
+"""
+
+_RETRY_SYSTEM_NOTE = (
+    "ClaudIA's first reply described a tool result or an action that no tool call backs "
+    "— withdrawn before display; retrying the turn with the tool."
+)
+"""The System-log line of a same-turn retry — the user's only visible trace of it."""
+
+
 _STALE_BOOK_CLAIM_NOTICE = (
     "⚠️ **That message described a check of your live orders that never ran.** No "
     "order-book tool was called in that turn, so **any order state it stated came from "
@@ -1488,6 +1504,24 @@ def _with_history_cache_marker(messages: list[dict[str, Any]]) -> list[dict[str,
     return [*messages[:-1], last]
 
 
+def _attach_images(messages: list[dict[str, Any]], images: list[dict[str, Any]] | None) -> None:
+    """Append uploaded image blocks to the current user turn (`messages[-1]`), in place.
+
+    Moved out of `handle_message` on 2026-09-11 so the same-turn retry, which rebuilds the
+    message list from the store, attaches them the same way. A no-op without images or when
+    the last message is not a user turn.
+    """
+    if not images:
+        return
+    last_user = messages[-1] if messages and messages[-1]["role"] == "user" else None
+    if last_user is None:
+        return
+    content = last_user["content"]
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    messages[-1] = {"role": "user", "content": [*content, *images]}
+
+
 @dataclass(frozen=True)
 class _ClaimShape:
     """One claim detector's identity on every surface it corrects.
@@ -1775,14 +1809,7 @@ class ClaudIAAgent:
         messages = _history_to_messages(history)
 
         # Attach images if provided (TradingView screenshots)
-        if images:
-            last_user = messages[-1] if messages and messages[-1]["role"] == "user" else None
-            if last_user:
-                content = last_user["content"]
-                if isinstance(content, str):
-                    content = [{"type": "text", "text": content}]
-                content = list(content) + images
-                messages[-1] = {"role": "user", "content": content}
+        _attach_images(messages, images)
 
         # After the images, so the current user turn is still `messages[-1]` above.
         self._append_operator_message(messages)
@@ -1791,12 +1818,50 @@ class ClaudIAAgent:
 
         # The stream → tool → stream loop, to `end_turn` (`_stream_turn`).
         full_response_text, called_tools = await self._stream_turn(messages, system_blocks)
+        display_text = full_response_text.strip()
+
+        # One silent retry, before anything is displayed, when the turn ran no tool and its
+        # text still claims a tool result or an action (2026-09-11). Text reaches the sink
+        # only after this loop, so the user never sees the attempt; the store, a decision
+        # row and a System-log line keep it. Zero-tool turns only: every narration the
+        # replay eval measured (17/48) ran no tool, and a turn that ran one keeps today's
+        # correction path. A proposal is a tool call, so none exists on a zero-tool turn.
+        retries = 0
+        while (
+            retries < _RETRIES_PER_TURN
+            and not called_tools
+            and (
+                claims := _detect_unbacked_claims(
+                    display_text, called_tools, proposal_recorded=False, images=bool(images)
+                )
+            )
+        ):
+            retries += 1
+            await self._withdraw_attempt(claims, display_text)
+            await self._sink.send_system_note(_RETRY_SYSTEM_NOTE)
+            # Rebuilt from the store, which no longer replays the withdrawn attempt; the
+            # operator note queued by the withdrawal is delivered on this request.
+            messages = _history_to_messages(
+                self._store.get_history(self._session_id, limit=_HISTORY_LIMIT)
+            )
+            _attach_images(messages, images)
+            self._append_operator_message(messages)
+            choice = retry_tool_choice(self._model)
+            log.info(
+                "Retry %d of %d after a zero-tool narration, tool_choice=%s",
+                retries,
+                _RETRIES_PER_TURN,
+                choice["type"] if choice else "auto",
+            )
+            full_response_text, called_tools = await self._stream_turn(
+                messages, system_blocks, first_pass_tool_choice=choice
+            )
+            display_text = full_response_text.strip()
 
         # --- Final response ---
         # Nothing is parsed out of the text any more: a proposal is a tool call the API
         # already validated, recorded by _record_proposal during the loop above. At most
         # one exists per turn — the second call is refused there, not silently dropped.
-        display_text = full_response_text.strip()
         kind, proposal = self._pending_proposal or (None, None)
         # Persist final assistant message
         msg_id = self._store.add_message(self._session_id, "assistant", display_text)
@@ -2166,6 +2231,36 @@ class ClaudIAAgent:
         self._store.withdraw_message(msg_id)
         self._pending_operator_notes.append(operator_note)
         await self._sink.send_message(notice)
+
+    async def _withdraw_attempt(self, claims: list[tuple[str, str]], text: str) -> None:
+        """Record a first reply the retry replaces: persisted, recorded, withdrawn, noted.
+
+        `_emit_correction` minus the two user-facing surfaces — the ⚠️ notice is neither
+        displayed nor persisted, because the user never saw the text it would contradict.
+        What remains is the record: the attempt as one assistant row (kept, never erased),
+        a decision row per claim it made with `withdrawn`/`retried` metadata (one message
+        can carry two — the 2026-07-28 shape narrated a lookup and a staging), the
+        withdrawal that keeps the row out of the replay (so it cannot be copied — 1077:
+        14/16 → 1/16), and each claim's operator note, delivered on the retry's first
+        request. The claims are logged only, as everywhere.
+
+        Args:
+            claims: `(kind, offending sentence)` pairs from `_detect_unbacked_claims`.
+            text: The attempt's full text.
+        """
+        msg_id = self._store.add_message(self._session_id, "assistant", text)
+        for kind, claim in claims:
+            shape = _CLAIM_SHAPES[kind]
+            log.warning(shape.log_message + " — withdrawn before display, retrying", claim)
+            self._store.add_decision(
+                session_id=self._session_id,
+                decision_type=shape.decision_type,
+                summary_text=shape.summary_text,
+                message_id=msg_id,
+                metadata={"withdrawn": True, "retried": True},
+            )
+            self._pending_operator_notes.append(shape.operator_note)
+        self._store.withdraw_message(msg_id)
 
     async def _emit_claim_correction(self, kind: str, msg_id: int, claim: str) -> None:
         """Contradict one unbacked claim with the words of its shape (`_CLAIM_SHAPES`).

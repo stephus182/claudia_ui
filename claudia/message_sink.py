@@ -54,6 +54,17 @@ class MessageSink(Protocol):
         """Notify the user a response was truncated at the token limit."""
         ...
 
+    async def send_system_note(self, text: str) -> None:
+        """Record a session-level event where the UI keeps such events — the System log,
+        never the chat (routing rule: docs/panel/ui-customisation-reference.md §2.6).
+
+        Used by the same-turn retry (2026-09-11): a first reply that narrated a tool cycle
+        no tool call backs is withdrawn before display and the turn retried; this line is
+        the user's only visible trace of it. A sink with no such surface may drop it — the
+        store and the decision row carry the record regardless.
+        """
+        ...
+
     # ── Order proposals ──────────────────────────────────────────────────────────────
     #
     # All three render a human-approval surface and MUST NOT execute anything. The agent

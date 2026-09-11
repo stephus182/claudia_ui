@@ -1232,6 +1232,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 session_id=session_id,
                 store=store,
                 tv_bridge_getter=lambda: _tv_bridge,
+                # A same-turn retry leaves its only visible trace here (System log, not
+                # the chat — routing rule §2.6), at warning level.
+                system_log=lambda text: syslog.say(text, "warning"),
             )
             _session["store"] = store
             _session["loader"] = loader

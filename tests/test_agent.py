@@ -877,6 +877,7 @@ def _make_agent_with_sink(sink=None):
     sink = sink or MagicMock()
     sink.send_message = AsyncMock()
     sink.send_max_tokens_warning = AsyncMock()
+    sink.send_system_note = AsyncMock()
     sink.send_order_proposal = AsyncMock()
     sink.send_cancel_proposal = AsyncMock()
     sink.send_modify_proposal = AsyncMock()
@@ -1634,8 +1635,13 @@ class _RecordingSink:
     def __init__(self, proposal_error: Exception | None = None) -> None:
         """Record what was sent; `proposal_error` makes each render raise, as a broken sink."""
         self.messages: list[str] = []
+        self.notes: list[str] = []
         self.proposals: list[tuple[str, dict[str, Any]]] = []
         self._error = proposal_error
+
+    async def send_system_note(self, text: str) -> None:
+        """Record a System-log line — a session-level event, never a chat message."""
+        self.notes.append(text)
 
     async def send_message(self, text: str) -> None:
         """Capture the assistant text instead of rendering it."""
@@ -2887,13 +2893,17 @@ async def test_narrated_staging_writes_its_own_decision_type():
     await agent.handle_message("cancel that one")
 
     rows = agent._store.get_decisions("test-session")
-    assert [r["decision_type"] for r in rows] == ["proposal_claim_unbacked"]
-    # Anchored to the assistant row carrying the claim (user turn is 1), so the session
-    # report and the FTS index can find the message the notice is about.
-    assert rows[0]["message_id"] == 2
+    # Two rows of the one type since the same-turn retry (2026-09-11): the attempt,
+    # withdrawn before display and retried, then the retry's identical narration — the
+    # one the user saw, corrected by the notice.
+    assert [r["decision_type"] for r in rows] == ["proposal_claim_unbacked"] * 2
+    assert rows[0]["metadata"] == {"withdrawn": True, "retried": True}
+    # Anchored to the assistant rows carrying the claim (user turn is 1), so the session
+    # report and the FTS index can find the message each row is about.
+    assert [r["message_id"] for r in rows] == [2, 3]
     assert "no proposal tool was called" in rows[0]["summary_text"].lower()
     # The offending sentence is live conversation text: logged, never stored.
-    assert NARRATED_STAGING[0][:20] not in json.dumps(rows[0], default=str)
+    assert NARRATED_STAGING[0][:20] not in json.dumps(rows, default=str)
 
 
 async def test_narrated_staging_notice_is_persisted_not_only_displayed():
@@ -2922,8 +2932,9 @@ async def test_narrated_staging_uses_the_operator_channel():
     agent._client.messages.stream = stream
 
     await agent.handle_message("cancel that one")
-    await agent.handle_message("is it staged?")
 
+    # Since the same-turn retry (2026-09-11) the note reaches the model on the retry's
+    # first request — the same turn — not the next one.
     notes = _system_texts(stream.call_args_list[-1].kwargs["messages"])
     assert len(notes) == 1
     assert "no proposal tool" in notes[0].lower()
@@ -3067,10 +3078,11 @@ async def test_narrated_book_check_produces_an_honest_notice():
     assert "came from memory" in notice
 
     rows = agent._store.get_decisions("test-session")
-    assert [r["decision_type"] for r in rows] == ["book_claim_unverified"]
-    assert rows[0]["message_id"] == 2
+    # The withdrawn attempt's row, then the displayed retry's (same-turn retry, 2026-09-11).
+    assert [r["decision_type"] for r in rows] == ["book_claim_unverified"] * 2
+    assert [r["message_id"] for r in rows] == [2, 3]
     # The offending sentence is live conversation text: logged, never stored.
-    assert NARRATED_BOOK_CHECK[0][:20] not in json.dumps(rows[0], default=str)
+    assert NARRATED_BOOK_CHECK[0][:20] not in json.dumps(rows, default=str)
 
 
 @pytest.mark.parametrize("tool_name", ["get_live_orders", "get_order_status", "diagnose_orders"])
@@ -3135,8 +3147,8 @@ async def test_narrated_book_check_uses_the_operator_channel():
     agent._client.messages.stream = stream
 
     await agent.handle_message("what's working?")
-    await agent.handle_message("and now?")
 
+    # Delivered on the retry's first request, the same turn (2026-09-11).
     notes = _system_texts(stream.call_args_list[-1].kwargs["messages"])
     assert len(notes) == 1
     assert "no order-book tool ran" in notes[0].lower()
@@ -3154,7 +3166,11 @@ async def test_one_message_can_earn_both_corrections():
     )
     await agent.handle_message("check the book and cancel it")
 
+    # Both claims recorded on the withdrawn attempt, then both corrected on the displayed
+    # retry (same-turn retry, 2026-09-11).
     assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
+        "proposal_claim_unbacked",
+        "book_claim_unverified",
         "proposal_claim_unbacked",
         "book_claim_unverified",
     ]
@@ -3787,9 +3803,10 @@ async def test_narrated_action_writes_its_own_decision_type():
     )
     await agent.handle_message("switch and screenshot")
 
+    # The withdrawn attempt's row, then the displayed retry's (same-turn retry, 2026-09-11).
     assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
         "action_claim_unbacked"
-    ]
+    ] * 2
 
 
 async def test_narrated_action_uses_the_operator_channel():
@@ -3805,8 +3822,8 @@ async def test_narrated_action_uses_the_operator_channel():
     agent._client.messages.stream = stream
 
     await agent.handle_message("switch to ZZZ and screenshot it")
-    await agent.handle_message("and now?")
 
+    # Delivered on the retry's first request, the same turn (2026-09-11).
     notes = _system_texts(stream.call_args_list[-1].kwargs["messages"])
     assert len(notes) == 1
     assert "no tool ran" in notes[0].lower()
@@ -3887,9 +3904,10 @@ async def test_shown_payload_produces_its_own_notice():
     notice = sink.messages[-1]
     assert "no tool ran" in notice.lower()
     assert "constructed" in notice.lower()
+    # The withdrawn attempt's row, then the displayed retry's (same-turn retry, 2026-09-11).
     assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
         "result_claim_unbacked"
-    ]
+    ] * 2
 
 
 def test_unbacked_action_notice_never_claims_an_order_state():
@@ -3999,7 +4017,7 @@ async def test_an_image_does_not_clear_a_fabricated_payload():
 
     assert [d["decision_type"] for d in agent._store.get_decisions("test-session")] == [
         "result_claim_unbacked"
-    ]
+    ] * 2
     assert any("constructed" in m.lower() for m in sink.messages)
 
 
@@ -4166,11 +4184,10 @@ async def test_every_correction_withdraws_the_contradicted_row():
     )
     await agent.handle_message("cancel that one")
     store = agent._store
-    assert [d["decision_type"] for d in store.decisions] == ["proposal_claim_unbacked"]
-    claim_id = next(
-        i + 1 for i, m in enumerate(store.messages) if m["content"] == NARRATED_STAGING[0]
-    )
-    assert store.withdrawn == [claim_id]
+    assert [d["decision_type"] for d in store.decisions] == ["proposal_claim_unbacked"] * 2
+    claim_ids = [i + 1 for i, m in enumerate(store.messages) if m["content"] == NARRATED_STAGING[0]]
+    assert len(claim_ids) == 2  # the withdrawn attempt, then the displayed retry
+    assert store.withdrawn == claim_ids
 
 
 # --- the per-model forced-tool-choice table (plan Task 3) ----------------------------------
@@ -4252,6 +4269,96 @@ async def test_first_pass_tool_choice_is_sent_on_the_first_request_only():
     assert text == "Checking.\n\nStaged as a button above."
     assert called == {"propose_order"}
     assert agent._called_tools_this_turn == {"propose_order"}
+
+
+# --- L4: one silent same-turn retry on a zero-tool narration (plan Task 7) ---------------
+
+
+async def test_a_zero_tool_narration_is_withdrawn_and_retried_once_before_display():
+    """The user sees the retry's reply only; the attempt is a withdrawn row, a decision
+    row and a System-log line. Measured 2026-09-11: the retry shape called the tool 48/48."""
+    from claudia.agent import _RETRY_SYSTEM_NOTE, _UNBACKED_CLAIM_OPERATOR_NOTE
+
+    agent, sink = _make_agent_recording()
+    agent._model = "claude-opus-4-8"
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_response_events(NARRATED_STAGING[0])),
+            _FakeStream(_text_then_tool_events("Checking.", "propose_cancel", VALID_CANCEL)),
+            _FakeStream(_text_response_events("The cancel button is above.")),
+        ]
+    )
+    agent._client.messages.stream = stream
+    await agent.handle_message("cancel that one")
+
+    assert sink.messages == ["Checking.\n\nThe cancel button is above."]
+    assert sink.notes == [_RETRY_SYSTEM_NOTE]
+    store = agent._store
+    attempt_id = next(
+        i + 1 for i, m in enumerate(store.messages) if m["content"] == NARRATED_STAGING[0]
+    )
+    assert store.withdrawn == [attempt_id]
+    assert [d["decision_type"] for d in store.decisions] == [
+        "proposal_claim_unbacked",
+        "trade_cancel_proposed",
+    ]
+    assert store.decisions[0]["metadata"] == {"withdrawn": True, "retried": True}
+    assert stream.call_args_list[1].kwargs["tool_choice"] == {"type": "any"}
+    assert "tool_choice" not in stream.call_args_list[2].kwargs
+    retry_messages = stream.call_args_list[1].kwargs["messages"]
+    assert any(_UNBACKED_CLAIM_OPERATOR_NOTE in t for t in _system_texts(retry_messages))
+    assert not any(NARRATED_STAGING[0] in str(m.get("content")) for m in retry_messages)
+
+
+async def test_a_second_fire_shows_the_notice_and_does_not_retry_again():
+    """One retry, never a loop: the notice is the honest end state."""
+    from claudia.agent import _UNBACKED_CLAIM_NOTICE
+
+    agent, sink = _make_agent_recording()
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_response_events(NARRATED_STAGING[0])),
+            _FakeStream(_text_response_events(NARRATED_STAGING[0])),
+        ]
+    )
+    agent._client.messages.stream = stream
+    await agent.handle_message("cancel that one")
+    assert stream.call_count == 2
+    assert sink.messages == [NARRATED_STAGING[0], _UNBACKED_CLAIM_NOTICE]
+    assert len(agent._store.withdrawn) == 2
+
+
+async def test_a_turn_that_ran_a_tool_is_not_retried():
+    """Mixed turns keep today's behaviour — the correction, no retry. Only the zero-tool
+    shape was measured: all 17 narrations in the replay eval ran no tool."""
+    agent, sink = _make_agent_recording()
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_then_tool_events("Staging.", "propose_order", VALID_ORDER)),
+            _FakeStream(_text_response_events(NARRATED_BOOK_CHECK[0])),
+        ]
+    )
+    agent._client.messages.stream = stream
+    await agent.handle_message("buy 1 AAPL at 250")
+    assert stream.call_count == 2
+    assert sink.notes == []
+    assert any("never ran" in m for m in sink.messages)
+
+
+async def test_retry_uses_auto_on_an_unprobed_model():
+    """A model outside `_FORCED_TOOL_CHOICE_MODELS` retries without the parameter."""
+    agent, _sink = _make_agent_recording()
+    agent._model = "claude-opus-5"
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_response_events(NARRATED_STAGING[0])),
+            _FakeStream(_text_then_tool_events("Checking.", "propose_cancel", VALID_CANCEL)),
+            _FakeStream(_text_response_events("The cancel button is above.")),
+        ]
+    )
+    agent._client.messages.stream = stream
+    await agent.handle_message("cancel that one")
+    assert "tool_choice" not in stream.call_args_list[1].kwargs
 
 
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------

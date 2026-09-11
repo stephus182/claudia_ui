@@ -130,6 +130,7 @@ class PanelMessageSink:
         session_id: str,
         store: ConversationStore | None = None,
         tv_bridge_getter: Callable[[], TradingViewBridge | None] | None = None,
+        system_log: Callable[[str], None] | None = None,
     ) -> None:
         """Bind a sink to one browser session's chat feed.
 
@@ -142,10 +143,14 @@ class PanelMessageSink:
                 rather than at construction, so a TradingView launch that happens after a
                 ```pine message has already rendered is still picked up. Default None means
                 inject reports "not connected".
+            system_log: Where a session-level note goes (`send_system_note`) — panel_app
+                passes the session's System log card. Default None drops such notes: the
+                store and the decision row carry the record regardless.
         """
         self._chat = chat
         self._session_id = session_id
         self._store = store
+        self._system_log = system_log
         # Resolved lazily at click time (default None → inject shows not-connected)
         # so a TradingView launch after a ```pine message rendered is still picked up.
         self._tv_bridge_getter = tv_bridge_getter
@@ -196,6 +201,11 @@ class PanelMessageSink:
             user="System",
             respond=False,
         )
+
+    async def send_system_note(self, text: str) -> None:
+        """A session-level event for the System log card, not the chat (§2.6 routing rule)."""
+        if self._system_log is not None:
+            self._system_log(text)
 
     async def send_order_proposal(self, proposal: dict[str, Any]) -> None:
         """Render the staging button for a new order. Places nothing — see MessageSink."""
