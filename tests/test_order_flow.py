@@ -3582,3 +3582,37 @@ def test_cancel_dialog_speaks_the_proposals_order_type_vocabulary(ibkr_word, sho
     }
     client.get_contract_info.return_value = {}
     assert _cancel_display_details(client, {"order_id": "1", "symbol": "ES"})["orderType"] == shown
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_logs_at_info_as_a_refusal_not_a_failure(caplog):
+    """Read in the 2026-09-11 Terminal: first an ERROR traceback, then "failed — refused" in one
+    sentence. A human's no is neither; it logs as `Order staging refused at gate2 for ES: …`."""
+    import logging
+
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.side_effect = HumanAuthError("Order cancelled by user")
+    with caplog.at_level(logging.INFO, logger="claudia.order_flow"):
+        await _run(
+            _make_action(
+                {
+                    "symbol": "ES",
+                    "action": "BUY",
+                    "quantity": 1,
+                    "order_type": "STP",
+                    "stop_price": 7975.0,
+                    "sec_type": "FUT",
+                    "tif": "GTC",
+                    "conid": 649180671,
+                }
+            ),
+            ibkr_mod,
+            store=MagicMock(),
+            session_id="s1",
+        )
+    refusal = [r for r in caplog.records if "refused at gate2" in r.getMessage()]
+    assert len(refusal) == 1 and refusal[0].levelno == logging.INFO and refusal[0].exc_info is None
+    assert (
+        refusal[0].getMessage() == "Order staging refused at gate2 for ES: Order cancelled by user"
+    )
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)

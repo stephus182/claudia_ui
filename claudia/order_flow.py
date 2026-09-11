@@ -710,14 +710,15 @@ def _record_rejection(
     )
 
 
-def _log_refusal(exc: Exception, dispatched: bool, what: str, *args: Any) -> None:
-    """A human's no is not an error: INFO without a traceback for a refusal at a gate;
-    `log.exception` for a genuine failure (2026-09-11 — DO NOT SEND had logged as ERROR)."""
+def _log_refusal(exc: Exception, dispatched: bool, action: str, subject: Any) -> None:
+    """A human's no is not an error: `<action> refused at <stage> for <subject>: …` at INFO,
+    without a traceback; `<action> failed for <subject>` with one for a genuine failure
+    (2026-09-11 — DO NOT SEND had logged as ERROR, then as "failed — refused")."""
     stage = _refusal_stage(exc)
     if dispatched or stage == "other":
-        log.exception(what, *args)
+        log.exception("%s failed for %s", action, subject)
     else:
-        log.info(what + " — refused at %s: %s", *args, stage, exc)
+        log.info("%s refused at %s for %s: %s", action, stage, subject, exc)
 
 
 _CONID_LOOKUP = {
@@ -1587,7 +1588,7 @@ async def _execute_staged_order_core(
             )
 
     except Exception as exc:
-        _log_refusal(exc, dispatched, "Order staging failed for %s", symbol)
+        _log_refusal(exc, dispatched, "Order staging", symbol)
         _record_refusal(
             store,
             session_id,
@@ -1762,7 +1763,7 @@ async def _execute_cancel_order_core(
             )
 
     except Exception as exc:
-        _log_refusal(exc, dispatched, "Order cancellation failed for order %s", order_id)
+        _log_refusal(exc, dispatched, "Order cancellation", f"order {order_id}")
         _record_refusal(
             store,
             session_id,
@@ -2032,7 +2033,7 @@ async def _execute_modify_order_core(
             )
 
     except Exception as exc:
-        _log_refusal(exc, dispatched, "Order modification failed for order %s", order_id)
+        _log_refusal(exc, dispatched, "Order modification", f"order {order_id}")
         _record_refusal(
             store,
             session_id,
