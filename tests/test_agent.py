@@ -833,6 +833,42 @@ def _text_response_events(text: str, stop_reason: str = "end_turn"):
     ]
 
 
+def _two_text_blocks_events(first: str, second: str, stop_reason: str = "end_turn"):
+    """One response carrying two text blocks — the shape whose glue the model imitated."""
+    return [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
+        SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="text")),
+        SimpleNamespace(
+            type="content_block_delta", delta=SimpleNamespace(type="text_delta", text=first)
+        ),
+        SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="text")),
+        SimpleNamespace(
+            type="content_block_delta", delta=SimpleNamespace(type="text_delta", text=second)
+        ),
+        _message_delta(stop_reason),
+    ]
+
+
+def _text_then_tool_events(text: str, name: str, payload: dict[str, Any]):
+    """A pass that narrates, then calls a tool — the real shape of every tool turn."""
+    return [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace())),
+        SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="text")),
+        SimpleNamespace(
+            type="content_block_delta", delta=SimpleNamespace(type="text_delta", text=text)
+        ),
+        SimpleNamespace(
+            type="content_block_start",
+            content_block=SimpleNamespace(type="tool_use", id="toolu_t1", name=name),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="input_json_delta", partial_json=json.dumps(payload)),
+        ),
+        _message_delta("tool_use"),
+    ]
+
+
 def _make_agent_with_sink(sink=None):
     """Like _make_agent(), but returns (agent, sink) — sink defaults to a fresh MagicMock
     with async methods pre-wired as AsyncMock so callers can assert on them."""
@@ -4058,6 +4094,39 @@ async def test_execution_note_reaches_the_model_once_on_the_next_turn():
         "IBKR reported an execution" in t
         for t in _system_texts(stream.call_args_list[1].kwargs["messages"])
     )
+
+
+# --- L1a: text blocks are joined with a paragraph break (anti-fabrication plan, Task 1) ----
+
+
+async def test_two_text_blocks_in_one_response_are_joined_by_a_paragraph_break():
+    """The glue ("staging.Confirmed") was the cue the model copied when it narrated a tool
+    cycle it never ran: with a break at the boundary the replay eval scored 32/32 clean,
+    without it 15/32 (docs/plans/2026-09-11-anti-fabrication-framework-design.md § Phase 0).
+    """
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(
+            _two_text_blocks_events("Two things.", "First, the calendar is quiet.")
+        )
+    )
+    await agent.handle_message("am I flat?")
+    assert sink.messages == ["Two things.\n\nFirst, the calendar is quiet."]
+
+
+async def test_text_across_tool_passes_is_joined_by_a_paragraph_break():
+    """The same break between the narration before a tool call and the report after it."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(
+                _text_then_tool_events("Pulling the status.", "propose_order", VALID_ORDER)
+            ),
+            _FakeStream(_text_response_events("Staged as a button above.")),
+        ]
+    )
+    await agent.handle_message("buy 1 AAPL at 250")
+    assert sink.messages == ["Pulling the status.\n\nStaged as a button above."]
 
 
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------

@@ -1657,6 +1657,15 @@ class ClaudIAAgent:
                                     "input_json": "",
                                 }
                             )
+                        elif block.type == "text":
+                            # A second text block in one response starts a new paragraph.
+                            # Joined with nothing until 2026-09-11, the boundary printed
+                            # as "staging.Confirmed" — and that glue, replayed as history,
+                            # was the token-level cue the model copied when it narrated a
+                            # tool cycle it never ran: separator alone, 32/32 clean on the
+                            # real contexts; without it, 15/32 (design doc § Phase 0).
+                            if response_text:
+                                response_text += "\n\n"
                         elif block.type == "thinking":
                             thinking_blocks.append(
                                 {"type": "thinking", "thinking": "", "signature": ""}
@@ -1738,7 +1747,13 @@ class ClaudIAAgent:
             messages.append({"role": "assistant", "content": assistant_content})
 
             if response_text:
-                full_response_text += response_text
+                # The same paragraph break between the narration before a tool call and
+                # the report after it — across passes, where the tool_use sat.
+                full_response_text = (
+                    f"{full_response_text}\n\n{response_text}"
+                    if full_response_text
+                    else response_text
+                )
 
             if not tool_calls:
                 # No more tool calls — done
