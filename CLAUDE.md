@@ -218,7 +218,10 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
    `panel_order_flow.render_order_proposal()` → a Panel message with a
    **"Stage this order"** button.
 3. Click → `panel_order_flow`'s handler → `order_flow._execute_staged_order_core()` →
-   **Gate 1** (Touch ID) → **Gate 2** (AppKit dialog, green/red banner by side,
+   **Gate 1** (Touch ID — **once per order write**, as IBKR Mobile and TWS ask once per
+   placement, modification or cancellation; IBKR's precaution replies validate through their
+   own dialogs on the write's `OrderWriteAuthorization`, 2026-09-11) → **Gate 2** (AppKit
+   dialog, values in bold, green/red banner by side,
    **SEND TO IBKR** button, 60s auto-cancel, Return key disabled).
 4. `IBKRClient.place_order()` fires only after both gates pass.
 

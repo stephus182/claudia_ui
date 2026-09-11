@@ -637,11 +637,11 @@ after it, happened on a server that predates the feature).
 
 ## IBKR's reply chain — what it has actually sent (2026-07-06 STK, 2026-09-10 FUT)
 
-### One Touch ID per order write — principle decided 2026-09-11, code not yet changed
+### One Touch ID per order write — decided and shipped 2026-09-11 (ibkr_core_mcp `65cedba`…`8af6cca`)
 
-As shipped, every entry of the chain runs behind its own Gate 1 *and* Gate 2: `_resolve_one_reply`
-calls `require_touch_id` then `confirm_reply_dialog` per reply, on top of the write's own pair.
-Measured 2026-09-10: a BUY ES stop drew two precautions (value limit, Stop Variant) — **three**
+Until that morning, every entry of the chain ran behind its own Gate 1 *and* Gate 2:
+`_resolve_one_reply` called `require_touch_id` then `confirm_reply_dialog` per reply, on top of
+the write's own pair. Measured 2026-09-10: a BUY ES stop drew two precautions (value limit, Stop Variant) — **three**
 Touch IDs; a SELL stop-limit drew three (percentage constraint, value limit, Cap Price) — **four**,
 all within seconds, in-process, for one decision.
 
@@ -660,11 +660,21 @@ fatigue; EU RTS 2018/389 Art. 5 is why a bank app asks once — one strong authe
 transaction, dynamically linked, invalidated on change. Apple's Touch ID reuse window is scoped
 to the device unlock and cannot merge prompts.
 
-The implementation is gap #47 in `docs/project-status.md` (design: an authorization value bound
-to the exact body about to be sent, 300 s window, fails closed, never persisted; each reply keeps
-its dialog and names its order). Until it ships, the counts above are what the user sees.
-`ibkr_core_mcp/SECURITY.md` is updated with that change — it also currently overstates Gate 1's
-policy as biometrics-only (gap #48).
+**What shipped (gap #47):** `place_order_and_confirm` and `modify_order_and_confirm` run Gate 1
+once through `client._authorize_order_write` and pass a `human_auth.OrderWriteAuthorization`
+down the chain — bound to the exact body about to be sent (`_order_write_scope`: display keys
+dropped, keys sorted, SHA-256), 300 s, verified with the same `covers(scope)` at the write and
+at every precaution reply, failing closed (no authorization, expired, or another write → a
+prompt), never persisted, never global. Every dialog stays; the reply dialog's title names its
+order (`⚠  CONFIRM ORDER REPLY — BUY 1 ES`). `cancel_order` is unchanged — one Touch ID, one
+dialog. The direct `place_order` / `modify_order` / `reply_order` calls, with no authorization,
+prompt exactly as before. Each grant and each covered reply is logged at INFO (`Gate 1: granted
+for …`, `Gate 1: reply … covered by authorization …`), so the server log witnesses the count.
+The same pass gave the dialogs bold values with regular labels, a MODIFY banner in the order's
+colour, and futures price rows without a currency (index points, not money — the total keeps
+the USD). `ibkr_core_mcp/SECURITY.md` now says what the code does — gap #48's biometrics-only
+claim is corrected there, dated, with the reason. One live cycle still owes the count on screen
+(Live Test Log).
 
 `place_order_and_confirm` loops over `{id, message, messageOptions}` entries, each behind Gate 1
 (*Python is trying to confirm an IBKR order reply <id>.*) and the CONFIRM ORDER REPLY dialog, and
