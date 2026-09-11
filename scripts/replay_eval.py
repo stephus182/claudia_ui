@@ -14,6 +14,8 @@ production implementation follows the plan, with TDD, once the numbers are in):
 
   v0  today's `_history_to_messages` (baseline)
   v1  L1a block separator + L1c withdrawal of detector-contradicted turns
+  v1a L1a alone (separator only)      — sub-variants, to see which half carries v1's effect
+  v1c L1c alone (withdrawal only)
   v2  L1b faithful tool cycles: real tool_use blocks, value-free stub results
   v3  v1 + v2
   v4  v3 + effort xhigh (L5)
@@ -60,7 +62,7 @@ from claudia.conversation_store import ConversationStore
 from claudia.message_sink import ToolStepHandle
 from claudia.opening_status import build_trade_lines
 
-VARIANTS = ("v0", "v1", "v2", "v3", "v4", "v5")
+VARIANTS = ("v0", "v1", "v1a", "v1c", "v2", "v3", "v4", "v5")
 _GLUE = re.compile(r"([a-z0-9)][.!?:])([A-Z])")
 _STUB = "[result not replayed — {n:,} chars. Stale by now: call the tool for the current state.]"
 
@@ -210,8 +212,8 @@ def build_messages(
     rows = _trim_to_first_user(rows)
     if variant in ("v0", "v5"):
         return _history_to_messages(rows)
-    unglue = variant in ("v1", "v3", "v4")
-    withdraw = variant in ("v1", "v3", "v4")
+    unglue = variant in ("v1", "v1a", "v3", "v4")
+    withdraw = variant in ("v1", "v1c", "v3", "v4")
     cycles = variant in ("v2", "v3", "v4")
 
     messages: list[dict[str, Any]] = []
