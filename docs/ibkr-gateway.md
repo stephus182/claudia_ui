@@ -191,7 +191,7 @@ Two follow-ons, both measured rather than reasoned about:
   own `tickler.sh`, the host launchd keepalive, and `ConnectivityChecker` (the last of
   which no longer tickles — the 60s read is now `GatewaySession`'s). **The keepalive
   built to protect a good session cannot tell a good session from a borrowed one**, and had
-  been preserving an unusable one all day.
+  been preserving an unusable one all day. **The three-tickler explanation is not sufficient — measured again 2026-09-10 with the container tickler gone since 2026-08-06 and ClaudIA stopped:** `--release` still returned `{"status": true}` and cleared nothing, and the session still came back with a full ~10-minute window. Treat `POST /logout` as unable to clear a *borrowed* session at all — it is another client's SLS session, not the gateway's to end — and go straight to the container restart.
 
 **What resolved it: `docker restart`.** The session is held in the gateway's local process
 memory, not re-served from IBKR, so a restart drops it with nothing to race. Login then
@@ -343,10 +343,11 @@ exposed by any endpoint. Work the list in order.
 
 1. **Is the slot actually free?** `python -m claudia.gateway_preflight`. If it names another
    `CLIENT_APP`, stop — that is the borrowed session above, and no retry fixes it.
+   **Check once, not in a loop.** The read's `/tickle` resets the keepalive, so polling a borrowed session is what keeps it alive: measured 2026-09-10, a session with `~0.2 min` left — about to lapse on its own — was back to `~9.8 min` after a single check.
 2. **Log out of IBKR Mobile from its Log Out menu item.** Closing or swiping leaves the
    server-side session alive.
 3. **Close every `localhost:5055` tab.** A reloaded login page issues a **new** challenge; a
-   response computed from an older one is permanently invalid.
+   response computed from an older one is permanently invalid. **Log in from a real browser** (Safari or Chrome), never an editor's embedded one: on 2026-09-10 every attempt hung with five connections to `:5055` coming from VS Code's webview, and the same credentials succeeded first try in Chrome minutes later.
 4. **Stop ClaudIA** if you are logging in from the CLI — its poller is a separate process and
    does not read the suspend lock (§Actors).
 5. **Have the phone already on the IB Key two-factor screen before submitting the username**,
