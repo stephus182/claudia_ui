@@ -482,6 +482,42 @@ def _declined_reply_text(reply_log: list[dict[str, Any]]) -> str:
     return f" Declined prompt: {first}" if first else ""
 
 
+# One table behind the user-facing sentence and the recorded stage of a refusal (#50,
+# 2026-09-11): (predicate on (message, exception type name), stage, sentence). Order
+# matters and is the classifier's original order — a dialog cancel is matched before the
+# Touch ID patterns so it is never misreported as a Touch ID failure, and a Touch ID timeout
+# stays a Touch ID failure (the `"touch" not in` guard on the dialog-timeout row).
+_FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
+    (
+        lambda m, _t: "cancelled by user" in m.lower(),
+        "gate2",
+        "Order was cancelled at the confirmation dialog.",
+    ),
+    (
+        lambda m, _t: "declined ibkr order reply" in m.lower(),
+        "reply",
+        "Declined at a follow-up IBKR confirmation prompt after Gate 2 was approved — "
+        "check IBKR for the order's current status.",
+    ),
+    (
+        lambda m, _t: "timed out" in m.lower() and "touch" not in m.lower(),
+        "timeout",
+        "Confirmation dialog timed out (60 seconds) — no action was taken.",
+    ),
+    (
+        lambda m, t: "authentication" in m.lower() or "touch" in m.lower() or "HumanAuth" in t,
+        "touch_id",
+        "Touch ID authentication failed or was cancelled.",
+    ),
+    (
+        lambda m, _t: "403" in m,
+        "rejected",
+        "IBKR rejected the order (HTTP 403) — brokerage session may need "
+        "re-initialisation. Try logging in to the Client Portal gateway and retrying.",
+    ),
+)
+
+
 def _classify_execution_error(exc: Exception) -> str:
     """Map an exception from a Gate 1/2-guarded IBKR call to a user-facing message.
 
@@ -493,27 +529,25 @@ def _classify_execution_error(exc: Exception) -> str:
     """
     error_msg = str(exc)
     exc_type = type(exc).__name__
-    if "cancelled by user" in error_msg.lower():
-        return "Order was cancelled at the confirmation dialog."
-    if "declined ibkr order reply" in error_msg.lower():
-        return (
-            "Declined at a follow-up IBKR confirmation prompt after Gate 2 was approved — "
-            "check IBKR for the order's current status."
-        )
-    if "timed out" in error_msg.lower() and "touch" not in error_msg.lower():
-        return "Confirmation dialog timed out (60 seconds) — no action was taken."
-    if (
-        "authentication" in error_msg.lower()
-        or "touch" in error_msg.lower()
-        or "HumanAuth" in exc_type
-    ):
-        return "Touch ID authentication failed or was cancelled."
-    if "403" in error_msg:
-        return (
-            "IBKR rejected the order (HTTP 403) — brokerage session may need "
-            "re-initialisation. Try logging in to the Client Portal gateway and retrying."
-        )
+    for matches, _stage, sentence in _FAILURE_PATTERNS:
+        if matches(error_msg, exc_type):
+            return sentence
     return f"{exc_type}: {error_msg}"
+
+
+def _refusal_stage(exc: Exception) -> str:
+    """Which gate refused, for the decision row a refusal writes (#50, 2026-09-11).
+
+    `gate2` (DO NOT SEND / KEEP ORDER / LEAVE UNCHANGED), `reply` (a declined precaution),
+    `timeout` (the dialog auto-cancelled), `touch_id` (denied, unavailable, or timed out at
+    the sensor), `rejected` (IBKR 403), or `other`. Read off the same table as
+    `_classify_execution_error`, so the stage and the sentence cannot disagree.
+    """
+    error_msg = str(exc)
+    exc_type = type(exc).__name__
+    return next(
+        (stage for matches, stage, _ in _FAILURE_PATTERNS if matches(error_msg, exc_type)), "other"
+    )
 
 
 _CONID_LOOKUP = {

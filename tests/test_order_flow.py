@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from ibkr_core_mcp.exceptions import HumanAuthError
 
 from claudia import order_flow
 from claudia.order_flow import (
@@ -3304,3 +3305,40 @@ def test_cancel_proposal_contract_label_is_none_for_a_stock_and_never_raises():
     down_client.get_order_status.side_effect = RuntimeError("gateway down")
     with patch.dict("sys.modules", {"ibkr_core_mcp": down_mod, "dotenv": MagicMock()}):
         assert cancel_proposal_contract_label({"order_id": "242538143"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Gap #50 (2026-09-11): a refusal leaves a record
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exc", "stage"),
+    [
+        (HumanAuthError("Order cancelled by user"), "gate2"),
+        (HumanAuthError("User declined IBKR order reply"), "reply"),
+        (RuntimeError("Confirmation dialog timed out"), "timeout"),
+        (
+            HumanAuthError("Touch ID timed out after 60s"),
+            "touch_id",
+        ),  # a sensor timeout is a Touch ID failure
+        (HumanAuthError("Touch ID denied: <error>"), "touch_id"),
+        (HumanAuthError("Touch ID unavailable: no sensor"), "touch_id"),
+        (HumanAuthError("anything else from Gate 1"), "touch_id"),  # every HumanAuthError is
+        (RuntimeError("HTTP 403 Forbidden"), "rejected"),
+        (RuntimeError("boom"), "other"),
+    ],
+    ids=str,
+)
+def test_refusal_stage_uses_the_same_patterns_as_the_user_facing_text(exc, stage):
+    """The stage a refusal is recorded under and the sentence the user reads come from one
+    table (#50, 2026-09-11) — a failure mode added to one cannot be missing from the other.
+    The exception types are the ones each failure really arrives as: the gates raise
+    `HumanAuthError`, which the classifier has always read as a Touch ID failure by default."""
+    from claudia.order_flow import _classify_execution_error, _refusal_stage
+
+    assert _refusal_stage(exc) == stage
+    sentence = _classify_execution_error(exc)
+    assert sentence == _classify_execution_error(type(exc)(str(exc)))
+    if stage == "other":
+        assert sentence == "RuntimeError: boom"
