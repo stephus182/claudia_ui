@@ -1653,6 +1653,7 @@ class ClaudIAAgent:
             tool_calls: list[dict[str, Any]] = []
             thinking_blocks: list[dict[str, Any]] = []
             stop_reason: str | None = None
+            text_blocks = 0  # content_block_start events of type text — see the shape log
 
             # system/tools/messages are built as plain dicts throughout this file rather than
             # the SDK's precise TypedDict unions (far simpler to construct/mutate JSON-shaped
@@ -1706,6 +1707,7 @@ class ClaudIAAgent:
                             # was the token-level cue the model copied when it narrated a
                             # tool cycle it never ran: separator alone, 32/32 clean on the
                             # real contexts; without it, 15/32 (design doc § Phase 0).
+                            text_blocks += 1
                             if response_text:
                                 response_text += "\n\n"
                         elif block.type == "thinking":
@@ -1748,6 +1750,18 @@ class ClaudIAAgent:
                         _log_thinking_usage(event.usage)
 
             # --- Stream complete ---
+
+            # Measurement, not a detector: counted from the stream's content_block_start
+            # events. A block-count detector was proposed and withdrawn on 2026-09-11 —
+            # the replay eval measured a narrated tool cycle inside a single text block
+            # (design doc §1a) — so the shape is logged for the record and nothing keys
+            # on it.
+            log.info(
+                "response shape: text blocks=%d tool_use=%d thinking blocks=%d",
+                text_blocks,
+                len(tool_calls),
+                len(thinking_blocks),
+            )
 
             if stop_reason == "max_tokens":
                 await self._sink.send_max_tokens_warning()

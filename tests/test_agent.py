@@ -4194,6 +4194,22 @@ def test_retry_tool_choice_forces_only_on_probed_models():
     assert retry_tool_choice("some-future-model") is None
 
 
+# --- the response-shape log line (plan Task 4 — measurement, not a detector) ---------------
+
+
+async def test_each_pass_logs_its_response_shape(caplog):
+    """Block counts per pass, from the stream's content_block_start events. Measurement
+    only: the block-count detector was withdrawn on 2026-09-11 when a fabrication was
+    measured inside a single text block (design doc §1a)."""
+    agent, _sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_two_text_blocks_events("Two things.", "First, the calendar."))
+    )
+    with caplog.at_level(logging.INFO, logger="claudia.agent"):
+        await agent.handle_message("hi")
+    assert "response shape: text blocks=2 tool_use=0 thinking blocks=0" in caplog.text
+
+
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------
 #
 # Three request shapes the design depends on, each documented by Anthropic and none of them
