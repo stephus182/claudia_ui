@@ -1289,6 +1289,7 @@ def test_propose_cancel_records_a_cancel_proposal(agent):
 
 def test_propose_modify_records_a_modify_proposal(agent):
     """A modify proposal is recorded under the "modify" kind and acknowledged."""
+    agent._called_tools_this_turn = {"get_order_status"}  # the read the real flow makes first
     result = agent._handle_local_tool("propose_modify", VALID_MODIFY)
     assert agent._pending_proposal == ("modify", VALID_MODIFY)
     assert "accepted" in result.lower()
@@ -1377,6 +1378,7 @@ def test_blank_order_id_is_rejected(agent, tool, payload, order_id):
 
 def test_duplicate_changes_entries_are_rejected(agent):
     """uniqueItems is unsupported, so two entries for one field are schema-valid."""
+    agent._called_tools_this_turn = {"get_order_status"}  # the read the real flow makes first
     result = agent._handle_local_tool(
         "propose_modify",
         {
@@ -1479,11 +1481,13 @@ async def test_handle_message_cancel_proposal_dispatches_to_sink():
 
 
 async def test_handle_message_modify_proposal_dispatches_to_sink():
-    """A recorded modify proposal is handed to the sink unmodified."""
+    """A recorded modify proposal is handed to the sink unmodified — after the
+    get_order_status read the real flow makes first (the modify poka-yoke, 2026-09-11)."""
     agent, sink = _make_agent_with_sink()
     _wire_tool_execution(agent, sink)
     agent._client.messages.stream = MagicMock(
         side_effect=[
+            _FakeStream(_text_then_tool_events("Reading.", "get_order_status", {"order_id": "1"})),
             _FakeStream(_proposal_tool_events("propose_modify", VALID_MODIFY)),
             _FakeStream(_text_response_events("Ready when you are.")),
         ]
@@ -1985,8 +1989,14 @@ async def test_successful_render_still_logs_trade_proposed():
 async def test_cancel_and_modify_render_failures_trip_the_invariant(kind, tool, payload):
     """A render failure on any kind contradicts the claim, records it, and names the kind."""
     agent, sink = _make_agent_recording(RuntimeError("boom"))
+    agent._toolkit.execute = MagicMock(return_value=("{}", None))
+    # A modify is preceded by the get_order_status read the real flow makes (poka-yoke).
+    read = [_FakeStream(_text_then_tool_events("Reading.", "get_order_status", {"order_id": "1"}))]
     agent._client.messages.stream = MagicMock(
-        side_effect=_proposal_turn(tool, payload, DEFENDED_CLAIM_588)
+        side_effect=[
+            *(read if tool == "propose_modify" else []),
+            *_proposal_turn(tool, payload, DEFENDED_CLAIM_588),
+        ]
     )
     await agent.handle_message("do it")
 
@@ -4407,6 +4417,33 @@ async def test_refused_actions_replay_on_the_operator_channel_identity_only():
     assert "REFUSED by the user: BUY 1 ES (STP)" in record
     assert "gate2" in record
     assert "7975" not in record
+
+
+# --- L3b: propose_modify needs get_order_status in this turn (plan Task 9) -----------------
+
+
+def test_propose_modify_is_refused_unless_get_order_status_ran_this_turn():
+    """Poka-yoke ("change the arguments so that it is harder to make mistakes",
+    building-effective-agents): the field set a modify copies from must be in evidence
+    this turn, not recalled. The real CL turn (get_order_status, then propose_modify)
+    passes as is."""
+    agent, _sink = _make_agent_recording()
+    agent._called_tools_this_turn = set()
+    result = agent._record_proposal("propose_modify", VALID_MODIFY)
+    assert result.startswith("REJECTED — get_order_status(")
+    assert "No staging button was created" in result
+    assert agent._pending_proposal is None
+    agent._called_tools_this_turn = {"get_order_status"}
+    assert agent._record_proposal("propose_modify", VALID_MODIFY).startswith("Proposal accepted")
+
+
+def test_propose_order_and_cancel_do_not_need_get_order_status():
+    """The precondition is the modify's: a cancel's order_id comes from any book reader."""
+    agent, _sink = _make_agent_recording()
+    agent._called_tools_this_turn = set()
+    assert agent._record_proposal("propose_order", VALID_ORDER).startswith("Proposal accepted")
+    agent._clear_pending_proposal()
+    assert agent._record_proposal("propose_cancel", VALID_CANCEL).startswith("Proposal accepted")
 
 
 # --- Phase-0 probes for the anti-fabrication framework (design 2026-09-11) ---------------

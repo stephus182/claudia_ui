@@ -2767,6 +2767,24 @@ class ClaudIAAgent:
                 "proposal stands."
             )
 
+        # Poka-yoke (2026-09-11): a modify copies every unchanged field from the order's
+        # current field set, so that read has to be in evidence *this turn*, not recalled
+        # — the immutability rule wants the latest set, and a fresh read costs one call.
+        # The real CL turn (get_order_status, then propose_modify) passes as is; a parallel
+        # call listing the proposal before the read is refused here and re-proposed on the
+        # next pass, since `_called_tools_this_turn` grows in execution order.
+        if kind == "modify" and "get_order_status" not in self._called_tools_this_turn:
+            order_id = inputs.get("order_id", "?")
+            log.warning(
+                "Rejected propose_modify: get_order_status(%s) not called this turn", order_id
+            )
+            return (
+                f"REJECTED — get_order_status({order_id}) was not called in this turn, so "
+                "the field set this modify copies from is not in evidence. Call it now, "
+                "copy every unchanged field from its result, then propose the modify. "
+                "No staging button was created and nothing was staged."
+            )
+
         defect = _proposal_defect(kind, inputs)
         if defect is not None:
             log.warning("Rejected %s proposal: %s", name, defect)

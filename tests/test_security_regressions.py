@@ -826,6 +826,7 @@ def test_accepted_proposal_is_recorded_by_reference_not_reshaped():
     """The dict handed to the render path must be exactly what the model emitted — any
     reshaping in the handler would be a mutation of an order proposal en route to Gate 2."""
     agent = _m1_agent()
+    agent._called_tools_this_turn = {"get_order_status"}  # the read the real flow makes first
     payload = dict(_M1_MODIFY)
     agent._handle_local_tool("propose_modify", payload)
     assert agent._pending_proposal is not None
