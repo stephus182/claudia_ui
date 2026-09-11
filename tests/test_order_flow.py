@@ -3551,3 +3551,34 @@ def test_cancel_display_details_carry_name_and_currency_for_a_stock():
     client.get_contract_info.return_value = {"company_name": "SPDR GOLD SHARES", "currency": "USD"}
     details = _cancel_display_details(client, {"order_id": "2030858970", "symbol": "GLD"})
     assert details["_companyName"] == "SPDR GOLD SHARES" and details["_currency"] == "USD"
+
+
+@pytest.mark.parametrize(
+    ("ibkr_word", "shown"),
+    [
+        ("LIMIT", "LMT"),
+        ("STP", "STP"),
+        ("STOP_LIMIT", "STOP_LIMIT"),
+        ("MARKET", "MKT"),
+        ("STOP", "STP"),
+    ],
+)
+def test_cancel_dialog_speaks_the_proposals_order_type_vocabulary(ibkr_word, shown):
+    """The cancel dialog reads IBKR's status, which says `LIMIT` where every other dialog says
+    `LMT` (read live 2026-09-11 on the same order). One vocabulary on every dialog."""
+    from claudia.order_flow import _cancel_display_details, clear_stock_facts_cache
+
+    clear_stock_facts_cache()
+    client = MagicMock()
+    client.get_order_status.return_value = {
+        "conid": 649180671,
+        "sec_type": "FUT",
+        "symbol": "ES",
+        "side": "B",
+        "size": "1.0",
+        "order_type": ibkr_word,
+        "limit_price": "7300.00",
+        "tif": "GTC",
+    }
+    client.get_contract_info.return_value = {}
+    assert _cancel_display_details(client, {"order_id": "1", "symbol": "ES"})["orderType"] == shown

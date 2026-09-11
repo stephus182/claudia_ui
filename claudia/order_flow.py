@@ -310,6 +310,13 @@ def _apply_contract_display_facts(
         order["_currency"] = currency
 
 
+# IBKR's order status spells a limit `LIMIT` and a stop `STP`; the proposals — and so the
+# place and modify dialogs — say `LMT` / `STP` / `STOP_LIMIT` / `MKT`. Read live 2026-09-11:
+# the cancel dialog said `LIMIT` for the order the place dialog had called `LMT`. One
+# vocabulary on every dialog; the `Currently at IBKR` row keeps IBKR's own sentence.
+_IBKR_ORDER_TYPE_WORDS = {"LIMIT": "LMT", "MARKET": "MKT", "STOP": "STP"}
+
+
 def _cancel_display_details(ibkr: Any, proposal: dict[str, Any]) -> dict[str, Any]:
     """The IBKR-shaped display dict for the cancel dialog (gap #40).
 
@@ -328,7 +335,8 @@ def _cancel_display_details(ibkr: Any, proposal: dict[str, Any]) -> dict[str, An
     if status:
         side_raw = str(status.get("side", "")).upper()
         side = {"B": "BUY", "S": "SELL"}.get(side_raw, side_raw or str(proposal.get("action", "?")))
-        order_type = str(status.get("order_type") or proposal.get("order_type") or "?")
+        raw_type = str(status.get("order_type") or proposal.get("order_type") or "?")
+        order_type = _IBKR_ORDER_TYPE_WORDS.get(raw_type.upper(), raw_type)
         details: dict[str, Any] = {
             "ticker": status.get("symbol") or proposal.get("symbol", "?"),
             "side": side,
