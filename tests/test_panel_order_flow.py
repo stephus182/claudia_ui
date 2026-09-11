@@ -119,7 +119,8 @@ async def test_render_cancel_proposal_sends_message_with_two_buttons():
         "quantity": 1,
         "order_type": "MKT",
     }
-    await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
+    with patch("claudia.panel_order_flow.cancel_proposal_contract_label", return_value=None):
+        await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
     column = chat.send.call_args.args[0]
     button_row = column[1]
     assert button_row[0].name == "Cancel this order"
@@ -138,7 +139,8 @@ async def test_render_cancel_proposal_confirm_click_calls_cancel_core():
         "order_type": "MKT",
     }
     ibkr_mod, client = _make_ibkr_mock()
-    await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
+    with patch("claudia.panel_order_flow.cancel_proposal_contract_label", return_value=None):
+        await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
     column = chat.send.call_args.args[0]
     cancel_btn = column[1][0]
 
@@ -217,6 +219,33 @@ async def test_render_order_proposal_shows_the_contract_line_for_a_future():
         return_value="ESU6 · SEP26 · expires 2026-09-18",
     ) as label:
         await render_order_proposal(chat, proposal, session_id="s1", store=None)
+    label.assert_called_once_with(proposal)
+    column = chat.send.call_args.args[0]
+    assert "ESU6 · SEP26 · expires 2026-09-18" in column[0].object
+
+
+@pytest.mark.asyncio
+async def test_render_cancel_proposal_names_the_resolved_contract():
+    """The cancel card carries the contract it is about to remove (gap #37).
+
+    The resolver is read off the live order rather than the proposal, because
+    `propose_cancel` carries no conid — so this pins the wiring, not just the formatter.
+    """
+    chat = _make_chat()
+    proposal = {
+        "order_id": "1793215923",
+        "symbol": "ES",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "STP",
+        "stop_price": 7900.0,
+        "tif": "GTC",
+    }
+    with patch(
+        "claudia.panel_order_flow.cancel_proposal_contract_label",
+        return_value="ESU6 · SEP26 · expires 2026-09-18",
+    ) as label:
+        await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
     label.assert_called_once_with(proposal)
     column = chat.send.call_args.args[0]
     assert "ESU6 · SEP26 · expires 2026-09-18" in column[0].object

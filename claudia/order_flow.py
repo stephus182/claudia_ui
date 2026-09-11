@@ -168,6 +168,51 @@ def proposal_contract_label(proposal: dict[str, Any]) -> str | None:
     return identity.label if identity is not None else None
 
 
+def cancel_proposal_contract_label(proposal: dict[str, Any]) -> str | None:
+    """The resolved contract's label for a CANCEL proposal's approval text, or None.
+
+    A cancel proposal cannot use `proposal_contract_label`: `propose_cancel`'s schema is the
+    order id plus display context, with **no `conid` and no `sec_type`**, so there is nothing
+    to resolve from. The contract has to come from the live order itself — which is exactly
+    where Gate 2 already reads it (`_cancel_display_details`). Until this existed the cancel
+    card was the one order surface that could not name the contract it was about to remove,
+    rendering a bare `BUY 1 ES` while the place card, both dialogs and the Orders tab all
+    said `ESU6` (gap #37, found live 2026-09-10).
+
+    Read-only and fail-soft, like the place path: any failure returns None and the card
+    renders without the line rather than blocking a cancel.
+
+    Args:
+        proposal: Schema-checked cancel-proposal dict; `order_id` names the live order.
+
+    Returns:
+        The contract label, or None for a non-future or any failed read.
+    """
+    order_id = str(proposal.get("order_id", "") or "")
+    if not order_id:
+        return None
+    try:
+        from dotenv import load_dotenv
+        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+
+        load_dotenv(override=False)
+        ibkr = IBKRClient(
+            config=Config.from_env(),
+            auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
+        )
+        status = ibkr.get_order_status(order_id)
+        if str(status.get("sec_type", "")).upper() not in ("FUT", "FOP"):
+            return None
+        conid = status.get("conid")
+        if conid in (None, ""):
+            return None
+        identity = contract_identity(ibkr, int(conid))
+    except Exception as exc:
+        log.warning("Contract label unavailable for cancel of order %s: %s", order_id, exc)
+        return None
+    return identity.label if identity is not None else None
+
+
 def _number_or_none(value: Any) -> float | None:
     """IBKR's status endpoint reports prices as strings — '7900.00', or '' when absent."""
     if value is None or value == "":
@@ -370,10 +415,12 @@ def _format_order_summary(proposal: dict[str, Any], contract_label: str | None =
     if reason:
         lines.append(f"*Reason:* {reason}")
     lines.append(
-        "\n⚠️ **Clicking 'Stage this order' will initiate IBKR confirmation "
+        "⚠️ **Clicking 'Stage this order' will initiate IBKR confirmation "
         "(Touch ID + visual confirmation dialog). You can still cancel at that step.**"
     )
-    return "\n".join(lines)
+    # Blank line between entries, not a bare newline: Markdown renders a single newline
+    # as a space, which fused every field of this text into one paragraph (gap #44).
+    return "\n\n".join(lines)
 
 
 def _post_dispatch_failure_text(exc: Exception, noun: str) -> str:
@@ -1334,7 +1381,7 @@ async def _execute_staged_order_core(
 # ── Order cancellation ───────────────────────────────────────────────────────
 
 
-def _format_cancel_summary(proposal: dict[str, Any]) -> str:
+def _format_cancel_summary(proposal: dict[str, Any], contract_label: str | None = None) -> str:
     """Build the human-approval text for cancelling a live order.
 
     Same safety-surface role as `_format_order_summary`. Keys: `order_id` (the order being
@@ -1343,6 +1390,10 @@ def _format_cancel_summary(proposal: dict[str, Any]) -> str:
 
     Args:
         proposal: Schema-checked cancel-proposal dict.
+        contract_label: The resolved contract's label from
+            `cancel_proposal_contract_label`, or None for no line. A cancel proposal
+            carries no `sec_type`, so the resolver decides whether there is a contract
+            to name; this function only renders what it is given.
 
     Returns:
         Markdown for the proposal message.
@@ -1362,13 +1413,15 @@ def _format_cancel_summary(proposal: dict[str, Any]) -> str:
     lines = [
         f"**CANCEL order {order_id}: {action} {qty} {symbol}** ({otype}{price_str}, {tif})",
     ]
+    if contract_label:
+        lines.append(f"**Contract:** {contract_label}")
     if reason:
         lines.append(f"*Reason:* {reason}")
     lines.append(
-        "\n⚠️ **Clicking 'Cancel this order' will initiate IBKR confirmation "
+        "⚠️ **Clicking 'Cancel this order' will initiate IBKR confirmation "
         "(Touch ID + visual confirmation dialog). You can still keep the order at that step.**"
     )
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 async def _execute_cancel_order_core(
@@ -1534,24 +1587,31 @@ def _format_modify_summary(proposal: dict[str, Any], contract_label: str | None 
     if rth_line:
         lines.append(rth_line)
     if changes:
+        # One block, so the list items stay newline-separated while the blocks around
+        # them get a blank line — a blank line between items would make it a loose
+        # list (gap #44).
+        change_lines: list[str] = []
         for change in changes:
             if not isinstance(change, dict):
-                lines.append(f"- (malformed change entry: {change!r})")
+                change_lines.append(f"- (malformed change entry: {change!r})")
                 continue
             field = change.get("field")
             if not isinstance(field, str):
-                lines.append(f"- (malformed change entry: {change!r})")
+                change_lines.append(f"- (malformed change entry: {change!r})")
                 continue
-            lines.append(f"- {field}: {change.get('previous_value')} → {proposal.get(field)}")
+            change_lines.append(
+                f"- {field}: {change.get('previous_value')} → {proposal.get(field)}"
+            )
+        lines.append("\n".join(change_lines))
     else:
         lines.append("(no changed fields listed)")
     if reason:
         lines.append(f"*Reason:* {reason}")
     lines.append(
-        "\n⚠️ **Clicking 'Modify this order' will initiate IBKR confirmation "
+        "⚠️ **Clicking 'Modify this order' will initiate IBKR confirmation "
         "(Touch ID + visual confirmation dialog). You can still discard at that step.**"
     )
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 async def _execute_modify_order_core(

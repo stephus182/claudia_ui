@@ -6,6 +6,7 @@ IBKR rejection handling, decision logging), driven through a send_status recorde
 import ast
 import asyncio
 import json
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -315,6 +316,73 @@ def test_format_modify_summary_shows_reason():
     }
     summary = _format_modify_summary(proposal)
     assert "Extending time in force" in summary
+
+
+@pytest.mark.parametrize(
+    ("summary_of", "proposal"),
+    [
+        (
+            _format_order_summary,
+            {
+                "symbol": "ES",
+                "action": "BUY",
+                "quantity": 1,
+                "order_type": "STP",
+                "stop_price": 7900.0,
+                "tif": "GTC",
+                "sec_type": "FUT",
+                "outside_rth": True,
+                "reason": "Test entry",
+            },
+        ),
+        (
+            _format_cancel_summary,
+            {
+                "order_id": "242538143",
+                "symbol": "AAPL",
+                "action": "BUY",
+                "quantity": 1,
+                "order_type": "LMT",
+                "limit_price": 100.0,
+                "tif": "GTC",
+                "reason": "Closing test position",
+            },
+        ),
+        (
+            _format_modify_summary,
+            {
+                "order_id": "242538143",
+                "conid": 265598,
+                "symbol": "AAPL",
+                "limit_price": 105.0,
+                "changes": [{"field": "limit_price", "previous_value": 100.0}],
+                "reason": "Tightening the entry",
+            },
+        ),
+    ],
+    ids=["order", "cancel", "modify"],
+)
+def test_every_approval_summary_separates_its_fields_into_paragraphs(summary_of, proposal):
+    """No field may be joined to the next by a lone newline (gap #44).
+
+    Markdown treats a single newline as a soft break, rendering it as a space, so
+    `"\\n".join(lines)` fused the order spec, the `Contract:` line, the outside-RTH line and
+    `Reason:` into one run-on paragraph on the last screen before Touch ID — read live
+    2026-09-10. Asserted over every approval formatter rather than one of them: the defect
+    lived in the shared idiom, so a test pinned to a single surface would let the next
+    formatter reintroduce it.
+    """
+    summary = summary_of(proposal)
+    rows = summary.split("\n")
+    for above, below in pairwise(rows):
+        if not (above.strip() and below.strip()):
+            continue
+        # Two non-blank lines with one newline between them fuse into a single
+        # paragraph. That is only legitimate inside a Markdown list, whose items are
+        # block elements in their own right.
+        assert above.lstrip().startswith("- ") and below.lstrip().startswith("- "), (
+            f"these fuse into one paragraph: {above!r} + {below!r}"
+        )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -3168,3 +3236,68 @@ def test_proposal_contract_label_returns_the_label_and_never_raises():
         patch("claudia.order_flow.contract_identity", side_effect=RuntimeError("down")),
     ):
         assert proposal_contract_label(_FUT_PROPOSAL) is None
+
+
+def test_cancel_summary_names_the_contract_when_one_is_resolved():
+    """The cancel card carries the same `Contract:` line as the place card (gap #37).
+
+    Found live 2026-09-10: every other surface named `ESU6` — the place card, both Gate 2
+    dialogs and the Orders tab — while the cancel card said a bare `BUY 1 ES`, because this
+    formatter was the only one of the three that took no label at all.
+    """
+    proposal = {
+        "order_id": "1793215923",
+        "symbol": "ES",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "STP",
+        "stop_price": 7900.0,
+        "tif": "GTC",
+    }
+    label = "ESU6 · SEP26 · expires 2026-09-18"
+    assert f"**Contract:** {label}" in _format_cancel_summary(proposal, contract_label=label)
+    assert "**Contract:**" not in _format_cancel_summary(proposal)
+
+
+def test_cancel_proposal_contract_label_reads_the_contract_off_the_live_order():
+    """A cancel proposal has no conid, so the contract comes from the order it names.
+
+    `propose_cancel`'s schema is the order id plus display context — no `conid`, no
+    `sec_type` — so the place path's resolver can never work here. The live order status
+    carries both (measured on order 1793215923: `conid` 649180671, `sec_type` 'FUT').
+    """
+    from claudia.contract_identity import ContractIdentity
+    from claudia.order_flow import cancel_proposal_contract_label
+
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_order_status.return_value = {"conid": 649180671, "sec_type": "FUT"}
+    identity = ContractIdentity(
+        649180671, "ESU6", "SEP26", "2026-09-18", "E-mini S&P 500", 50.0, "USD"
+    )
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        patch("claudia.order_flow.contract_identity", return_value=identity),
+    ):
+        assert (
+            cancel_proposal_contract_label({"order_id": "1793215923"})
+            == "ESU6 · SEP26 · expires 2026-09-18"
+        )
+
+
+def test_cancel_proposal_contract_label_is_none_for_a_stock_and_never_raises():
+    """A stock gets no line, and a failed read must never block a cancel."""
+    from claudia.order_flow import cancel_proposal_contract_label
+
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_order_status.return_value = {"conid": 265598, "sec_type": "STK"}
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        patch("claudia.order_flow.contract_identity") as identity,
+    ):
+        assert cancel_proposal_contract_label({"order_id": "242538143"}) is None
+    identity.assert_not_called()
+
+    down_mod, down_client = _make_ibkr_mock()
+    down_client.get_order_status.side_effect = RuntimeError("gateway down")
+    with patch.dict("sys.modules", {"ibkr_core_mcp": down_mod, "dotenv": MagicMock()}):
+        assert cancel_proposal_contract_label({"order_id": "242538143"}) is None

@@ -24,6 +24,7 @@ from claudia.order_flow import (
     _format_cancel_summary,
     _format_modify_summary,
     _format_order_summary,
+    cancel_proposal_contract_label,
     proposal_contract_label,
 )
 from claudia.panel_markdown import safe_markdown
@@ -133,7 +134,8 @@ async def render_cancel_proposal(
             `render_order_proposal`.
         store: Conversation store for decision logging. Optional, as above.
     """
-    summary_pane = safe_markdown(_format_cancel_summary(proposal))
+    contract_label = await asyncio.to_thread(cancel_proposal_contract_label, proposal)
+    summary_pane = safe_markdown(_format_cancel_summary(proposal, contract_label=contract_label))
     cancel_btn = pn.widgets.Button(label="Cancel this order", color="danger")
     keep_btn = pn.widgets.Button(label="Keep order", color="light")
     send_status = _make_send_status(chat)
