@@ -1050,7 +1050,8 @@ def test_futures_contract_facts_parses_ibkr_strings_and_survives_junk():
         "local_symbol": "ESU6",
         "maturity_date": "20260918",
     }
-    assert _futures_contract_facts(client, 1) == (50.0, "USD", "ESU6 · expires 2026-09-18 · x50")
+    # No `· x50` on the label since 2026-09-11 (gap #45): size sits on the Quantity row.
+    assert _futures_contract_facts(client, 1) == (50.0, "USD", "ESU6 · expires 2026-09-18")
     client.get_contract_info.return_value = {"multiplier": "fifty", "maturity_date": "soon"}
     mult, ccy, label = _futures_contract_facts(client, 1)
     assert mult is None and ccy is None and label == ""

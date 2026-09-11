@@ -112,7 +112,7 @@ def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | 
     total by construction: any failure or unparseable field yields `None`/`""`, and the
     caller then tells Gate 2 the multiplier is unknown rather than printing a wrong number.
 
-    The label, e.g. `ESU6 · expires 2026-09-18 · x50`, is what the dialog shows as the
+    The label, e.g. `ESU6 · expires 2026-09-18`, is what the dialog shows as the
     symbol line — the contract month, which neither the proposal text nor the dialog
     showed before 2026-09-04.
     """
@@ -136,8 +136,9 @@ def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | 
     maturity = str(info.get("maturity_date") or "")
     if len(maturity) == 8 and maturity.isdigit():
         parts.append(f"expires {maturity[:4]}-{maturity[4:6]}-{maturity[6:]}")
-    if multiplier is not None:
-        parts.append(f"x{multiplier:g}")
+    # The multiplier is contract SIZE, not identity: it used to ride here as `· x50`, so the
+    # Symbol line read as if the size were part of the name (gap #45, user 2026-09-10). It
+    # now goes to the dialog's Quantity row (`1 (×50 per contract)`) through `_multiplier`.
     return multiplier, currency, " · ".join(parts)
 
 

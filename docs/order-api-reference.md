@@ -123,7 +123,8 @@ routing depends on `sec_type`:
   until 2026-09-04; the code had stopped sending it on 2026-07-23.
 - **Multiplier, currency and contract label come from `/iserver/contract/{conid}/info`**
   (`order_flow._futures_contract_facts`, on every futures path — conid supplied or resolved),
-  passed as `_multiplier`, `_currency` and `_companyName` (e.g. `ESU6 · expires 2026-09-18 · x50`)
+  passed as `_multiplier`, `_currency` and `_companyName` (e.g. `ESU6 · expires 2026-09-18`; the
+  multiplier reaches the dialog's Quantity row as `1 (×50 per contract)` since 2026-09-11, gap #45)
   display fields. Until 2026-09-04 this line said the multiplier came from `/trsrv/futures`:
   **it never did** — those rows carry only `conid`, `expirationDate`, `ltd`, the cut-offs,
   `symbol` and `underlyingConid` (measured), the tests had invented a `multiplier` key, and
