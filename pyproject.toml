@@ -72,6 +72,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.12",
+    # Session-wide socket/DNS block (CLA-SEC-008). Its own markers are applied at
+    # collection so the block lands before any fixture — see tests/conftest.py.
+    "pytest-socket>=0.7",
     "mypy>=1.8",
     "ruff>=0.16",
     # Direct test dependency, not transitive: tests/test_proposal_tools.py imports
@@ -94,6 +97,9 @@ markers = [
     "real_tv_connect: test exercises the real TradingView connect function (autouse seam disabled)",
 ]
 asyncio_mode = "auto"
+# pytest-socket: AF_UNIX stays open for asyncio's self-pipe, which every async test needs.
+# The block itself is armed in tests/conftest.py, not here.
+addopts = "--allow-unix-socket"
 
 [tool.ruff]
 line-length = 100

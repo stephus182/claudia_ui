@@ -530,6 +530,11 @@ def test_pn_serve_binds_loopback_only():
         patch("claudia.panel_app._port_is_free", return_value=True),
         patch("claudia.panel_app.signal.signal"),
         patch.object(panel_app, "_gdrive_sync", None),
+        # `warn_if_session_borrowed` is a real GET /tickle against the gateway — the
+        # IBKR session keepalive — and `read_state` swallows the failure, so an
+        # unpatched call left the suite touching a live session while staying green
+        # (audit 2026-09-13, finding A-5).
+        patch("claudia.panel_app.warn_if_session_borrowed"),
     ):
         panel_app.main()
 

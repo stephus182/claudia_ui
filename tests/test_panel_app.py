@@ -1114,6 +1114,11 @@ def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
     monkeypatch.setattr("claudia.panel_app._gdrive_sync", mock_sync)
     with (
         patch("claudia.panel_app.pn.serve", side_effect=KeyboardInterrupt) as mock_serve,
+        # `warn_if_session_borrowed` is a real GET /tickle against the gateway — the
+        # IBKR session keepalive — and `read_state` swallows the failure, so an
+        # unpatched call left the suite touching a live session while staying green
+        # (audit 2026-09-13, finding A-5).
+        patch("claudia.panel_app.warn_if_session_borrowed"),
         patch("claudia.panel_app.signal.signal") as mock_signal,
         # main() now refuses to serve on a taken port; without this the suite would
         # depend on whether 8001 happens to be free on the machine running it.
@@ -2650,6 +2655,11 @@ def test_main_logs_a_startup_banner(_restore_root_logging, caplog):
         patch("claudia.panel_app.signal.signal"),
         patch("claudia.panel_app._gdrive_sync", None),
         caplog.at_level(logging.INFO, logger="claudia.panel_app"),
+        # `warn_if_session_borrowed` is a real GET /tickle against the gateway — the
+        # IBKR session keepalive — and `read_state` swallows the failure, so an
+        # unpatched call left the suite touching a live session while staying green
+        # (audit 2026-09-13, finding A-5).
+        patch("claudia.panel_app.warn_if_session_borrowed"),
     ):
         panel_app.main()
 
@@ -2672,6 +2682,10 @@ def test_main_runs_both_startup_checks_before_serving(_restore_root_logging):
 
     with (
         patch("claudia.panel_app.warn_if_stale") as mock_stale,
+        # Unpatched, this reached the live gateway: `warn_if_session_borrowed` does a
+        # real GET /tickle, which is the IBKR session keepalive, and `read_state`
+        # swallows the failure so the test passed either way (audit 2026-09-13, A-5).
+        patch("claudia.panel_app.warn_if_session_borrowed"),
         patch("claudia.panel_app.warn_if_model_lacks_operator_channel") as mock_model,
         patch("claudia.panel_app.pn.serve") as mock_serve,
         # main() now refuses to serve on a taken port; without this the suite would
