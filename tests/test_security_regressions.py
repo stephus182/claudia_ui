@@ -968,3 +968,79 @@ def test_unsafe_str_pane_would_be_vulnerable():
     assert _decodes_to_markup(text), (
         "Panel's Str pane no longer passes raw markup — re-check safe_text's premise"
     )
+
+
+def test_bokeh_env_var_cannot_widen_the_websocket_origin_allowlist(monkeypatch):
+    """CLA-SEC-011: `BOKEH_ALLOW_WS_ORIGIN` must not override ClaudIA's declared origins.
+
+    Not a widening — a **replacement**. Read from bokeh 3.9.2,
+    `bokeh/server/views/ws.py::check_origin`::
+
+        allowed_hosts = self.application.websocket_origins
+        if settings.allowed_ws_origin():
+            allowed_hosts = set(settings.allowed_ws_origin())
+
+    so a single line in `.env` — which `panel_app` loads at module scope, long before the
+    first websocket upgrade — substitutes its own set for the one `pn.serve` was given, and
+    `check_allowlist` accepts `*`. The bind address is still the real boundary, but the
+    origin allowlist is the layer that stops a browser on this machine being driven at the
+    UI cross-origin, and it must mean what this repository declares it to mean.
+
+    `PrioritizedSetting` ranks a user-set value (6) above the environment variable (4) and
+    above both config files (5, 3), so assigning the setting is the whole mechanism.
+    """
+    from bokeh.settings import settings
+
+    from claudia import panel_app
+
+    monkeypatch.setenv("BOKEH_ALLOW_WS_ORIGIN", "*")
+    settings.allowed_ws_origin.unset_value()
+    try:
+        with (
+            patch("claudia.panel_app.pn.serve") as mock_serve,
+            patch("claudia.panel_app._port_is_free", return_value=True),
+            patch("claudia.panel_app.signal.signal"),
+            patch.object(panel_app, "_gdrive_sync", None),
+            patch("claudia.panel_app.warn_if_session_borrowed"),
+        ):
+            panel_app.main()
+
+        declared = mock_serve.call_args.kwargs["websocket_origin"]
+        assert settings.allowed_ws_origin() == list(declared), (
+            f"BOKEH_ALLOW_WS_ORIGIN still decides the allowlist: "
+            f"{settings.allowed_ws_origin()!r} vs the declared {declared!r}"
+        )
+    finally:
+        settings.allowed_ws_origin.unset_value()
+
+
+def test_bokeh_still_lets_the_setting_replace_the_served_origins(monkeypatch):
+    """Guards the guard: if bokeh stops consulting the setting, the pin above is a no-op.
+
+    Two premises, both read from the installed bokeh rather than assumed: `check_origin`
+    prefers `settings.allowed_ws_origin()` over the application's own list when it is
+    non-empty, and the setting reads the environment variable when nothing is user-set.
+    Either changing makes `_WEBSOCKET_ORIGINS`'s pin pointless or wrong, and this test is
+    where that gets noticed rather than in a session.
+    """
+    import inspect
+
+    from bokeh.server.views import ws
+    from bokeh.settings import settings
+
+    source = inspect.getsource(ws.WSHandler.check_origin)
+    assert "settings.allowed_ws_origin()" in source, (
+        "bokeh no longer consults the setting — re-check CLA-SEC-011's mechanism"
+    )
+    assert "allowed_hosts = set(settings.allowed_ws_origin())" in source, (
+        "bokeh no longer *replaces* the served origins with the setting — re-read check_origin"
+    )
+
+    monkeypatch.setenv("BOKEH_ALLOW_WS_ORIGIN", "evil.example")
+    settings.allowed_ws_origin.unset_value()
+    try:
+        assert settings.allowed_ws_origin() == ["evil.example"], (
+            "BOKEH_ALLOW_WS_ORIGIN no longer reaches the setting — the pin guards nothing"
+        )
+    finally:
+        settings.allowed_ws_origin.unset_value()

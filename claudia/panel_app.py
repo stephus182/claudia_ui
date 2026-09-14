@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 import panel as pn
+from bokeh.settings import settings as bokeh_settings
 from dotenv import load_dotenv
 from ibkr_core_mcp import (
     BrowserCookieAuth,
@@ -123,6 +124,23 @@ _DOCS_PATH = Path(os.environ.get("CLAUDIA_DOCS_PATH", "docs"))
 _VERSIONS_PATH = _DOCS_PATH / "versions"
 _DB_PATH = Path(os.environ.get("CLAUDIA_DB_PATH", "data/claudia.db"))
 _PANEL_PORT = int(os.environ.get("CLAUDIA_PANEL_PORT", "8001"))
+
+_WEBSOCKET_ORIGINS = [f"localhost:{_PANEL_PORT}", f"127.0.0.1:{_PANEL_PORT}"]
+"""The exact browser origins allowed to open a session websocket (CLA-SEC-011).
+
+Declared once and used twice — as `pn.serve(websocket_origin=…)` and as the bokeh setting
+`main()` pins over it — because bokeh consults the two in the *opposite* order to the one
+this project intends. `bokeh/server/views/ws.py::check_origin` (read from bokeh 3.9.2)::
+
+    allowed_hosts = self.application.websocket_origins
+    if settings.allowed_ws_origin():
+        allowed_hosts = set(settings.allowed_ws_origin())
+
+so `BOKEH_ALLOW_WS_ORIGIN` does not widen what `pn.serve` was given — it *replaces* it, and
+`check_allowlist` accepts `*`. `panel_app` calls `load_dotenv` at module scope, so one line
+in `.env` was enough, and nothing said so. Two copies of the list would be the same defect
+one refactor later.
+"""
 # Floor on how soon the intro portrait may be settled, measured from the message's
 # construction in the session factory — i.e. server-side, before the page has loaded, so
 # on-screen time is this minus page-load latency (~0.5 s on localhost). An offline IBKR
@@ -1492,6 +1510,12 @@ def main() -> None:
     # ClaudIA looks identical to one that failed to start. Logged by us rather than
     # left to bokeh so it cannot be silenced by a third-party logger setting.
     log.info("ClaudIA serving on http://localhost:%d (Ctrl-C to stop)", _PANEL_PORT)
+    # The origin allowlist is declared here and nowhere else. Assigning the bokeh setting
+    # makes it a *user-set* value, which `PrioritizedSetting` ranks above the environment
+    # variable and above both config files — so `BOKEH_ALLOW_WS_ORIGIN`, a config override,
+    # or a future settings file cannot substitute its own set for `websocket_origin` below.
+    # See `_WEBSOCKET_ORIGINS` for the bokeh source line that makes this necessary.
+    bokeh_settings.allowed_ws_origin = _WEBSOCKET_ORIGINS
     # Panel installs its SIGINT handler inside pn.serve; translating SIGTERM to
     # SIGINT routes both through the same io_loop.stop() → serve-returns path.
     # Empirically verified in this task's smoke step (V5 proved only SIGINT).
@@ -1521,7 +1545,7 @@ def main() -> None:
             # Default allowlist is localhost:<port> only; 127.0.0.1 access would get a
             # 403 websocket refusal without this (probe-verified). Defence-in-depth against
             # cross-origin browser attacks (incl. DNS rebinding), layered on the bind above.
-            websocket_origin=[f"localhost:{_PANEL_PORT}", f"127.0.0.1:{_PANEL_PORT}"],
+            websocket_origin=_WEBSOCKET_ORIGINS,
         )
     finally:
         # Loop is stopped here — synchronous blocking calls are fine (V5).
