@@ -172,6 +172,13 @@ jobs:
     # Informational. A push in the other repository must not be able to make this one
     # un-mergeable; what this lane buys is seeing the drift days before an upgrade, with the
     # failing assertion naming exactly which part of the seam moved.
+    #
+    # READ THE LOG, NOT THE TICK. GitHub documents this as "Prevents a workflow run from
+    # failing when a job fails", so a red run is impossible here by construction and a green
+    # CI tick says nothing whatever about this lane. The evidence is the pytest summary line
+    # in the "Seam tests only" step. Same shape as the gitleaks trap in
+    # docs/security-architecture.md § 7, where a scanner that could not download itself was
+    # indistinguishable from a scanner that found a secret.
     continue-on-error: true
     permissions:
       contents: read

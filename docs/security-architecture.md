@@ -290,13 +290,22 @@ network; every other test in that run stays blocked.
 | ruff format | — | — | yes |
 | mypy strict, over `claudia/` and `tests/` | Type errors | Everything typed correctly and wrong | yes |
 | pytest, including `tests/security/` | Behaviour, and the thirteen invariants | Anything without a test | yes; the `test` job resolves `ibkr_core_mcp` at the SHA in `core-ref.txt` |
-| **forward-compat** | A core `main` push that moves the seam ClaudIA depends on | Anything outside the seam tests it runs | **no — informational by design**: a push in another repository must not make this one un-mergeable |
+| **forward-compat** | A core `main` push that moves the seam ClaudIA depends on | Anything outside the seam tests it runs | **no — informational by design**: a push in another repository must not make this one un-mergeable. **Its tick is not evidence** — see below |
 | **pip-audit** | A known-vulnerable version in the **resolved** tree, audited with the scraper extra a real install carries. The whole Panel/Bokeh/Tornado stack — 18 packages measured 2026-09-13, `tornado` among them — is audited by no other repository | Unknown vulnerabilities | yes; no-fix findings go in `security/pip-audit-ignores.txt` with a reason and a re-check date |
 | **gitleaks** | A committed secret or account identifier in the pushed range | History before the scan started | yes |
 | CodeQL default setup | A fixed set of Python patterns | Taint from this codebase's untrusted source: tool inputs are not "remote flow sources" | no |
 
-Two things to keep straight when reading results. CodeQL's zero is partly blindness, not
-cleanliness — `tests/security/` is the coverage for the model boundary. And **a failure to run
+**Three** things to keep straight when reading results, all the same shape: the status you see
+is a claim about a run, not evidence about a check.
+
+`forward-compat` carries `continue-on-error: true`, which GitHub documents as *"Prevents a
+workflow run from failing when a job fails"* (workflow-syntax reference, read 2026-09-14). A
+red run is therefore impossible for that lane by construction, and a green CI tick says nothing
+whatever about whether the seam still holds. The evidence is the pytest summary line in its
+"Seam tests only" step — `362 passed` on the first run, 2026-09-14. Report that, never the tick.
+
+The other two. **CodeQL's zero is partly blindness, not
+cleanliness** — `tests/security/` is the coverage for the model boundary. And **a failure to run
 the secret scan and a failure of the secret scan are the same red tick**: on 2026-09-14 the
 gitleaks action could not download its own binary and the job failed twice, which reads
 identically to a leak. Read the log before assuming. The scanner version is pinned for that
