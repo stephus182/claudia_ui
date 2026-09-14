@@ -19,18 +19,27 @@ The destination is model-selected and the operator approves nothing. They are no
 it — the URL is streamed into the tool's `ChatStep` — but `collapsed_on_success` is `True`
 in panel 1.9.3, so the step folds away the moment the fetch succeeds.
 
-**This is an accepted residual, not a bug with a fix being deferred.** The model holds the
-data in its context, so a same-turn taint rule is evaded by answering next turn; a
-destination allowlist would end web research, which is the tool's purpose; and a
-confirmation on every fetch after any account read would fire in almost every session and
-be clicked through. Full reasoning: `docs/security-architecture.md` § 9.
+**Nothing in this file prevents that composition, and nothing else in this repository does
+either.** It is reachable today and tracked as an open, deferred gap — Known Gap #53 in
+`docs/project-status.md`, with the full reasoning in `docs/security-architecture.md` § 9. The
+current mitigation is **operational, not structural**: the operator keeps web research and
+private account work in separate ClaudIA sessions — each browser tab on `localhost:8001` is an
+independent session — and nothing enforces that separation. § 9 records the three ways it
+leaks anyway, and names the design to build first if one session ever needs both capabilities:
+a session-tainted, per-host approval card, the same shape as order staging.
+
+The reason first written here — that a confirmation after any account read "would fire in
+almost every session and be clicked through" — was never measured, and the corpus reversed it
+on 2026-09-14: over 85 sessions, 60 read account data and **0** made any outbound web call, so
+that gate would have fired zero times. It is named rather than deleted, because a residual
+accepted on a reason that turns out to be backwards is exactly what § 9 exists to stop.
 
 **What is enforceable, and is what this file does.** The *channel set* must stay closed and
-known. The residual above is accepted on a measured inventory of outbound sinks; a new one
+known. That decision was taken against a measured inventory of outbound sinks; a new one
 — a tool that POSTs, a webhook, a mail sender, a core tool gaining a body parameter — would
 widen the channel from a URL's query string to an arbitrary request body, and every test in
 this repository would stay green. That is the failure class this pins: not the exfiltration,
-which is documented, but the silent growth of the surface it was accepted on.
+which is documented, but the silent growth of the surface the decision was taken on.
 """
 
 from __future__ import annotations
@@ -78,8 +87,8 @@ def test_claudia_declares_exactly_one_model_directed_outbound_tool():
     }
     assert reaching == CLAUDIA_OUTBOUND_TOOLS, (
         f"ClaudIA's model-directed outbound tools changed: {sorted(reaching)}. "
-        "Read docs/security-architecture.md § 9 before widening this — the account-data "
-        "exfiltration residual is accepted against this exact set."
+        "Read docs/security-architecture.md § 9 before widening this — the deferred "
+        "account-data exfiltration gap was accepted against this exact set."
     )
 
 
