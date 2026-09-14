@@ -54,6 +54,22 @@ def _functions(source: str) -> Iterator[FunctionNode]:
             yield node
 
 
+def functions_named(source: str, name: str) -> list[FunctionNode]:
+    """Every function or method called `name`, in source order.
+
+    Plural because a `property` and its setter share one name: `_PanelToolStepHandle.input`
+    is a getter that returns a field and a setter that writes it to the UI, and
+    `function_named` returns the first — which is the one that does nothing.
+
+    Raises:
+        KeyError: no such function, for the same reason `function_named` raises.
+    """
+    found = [fn for fn in _functions(source) if fn.name == name]
+    if not found:
+        raise KeyError(name)
+    return found
+
+
 def function_named(source: str, name: str) -> FunctionNode:
     """The first function or method called `name`.
 
@@ -331,3 +347,96 @@ def dynamic_attribute_sites(node: ast.AST, forbidden: Iterable[str]) -> set[str]
         elif name_arg.value in banned:
             sites.add(f"line {child.lineno}: resolves {name_arg.value!r}")
     return sites
+
+
+def _panel_pane_aliases(source: str) -> dict[str, str]:
+    """Local name → Panel pane class, for every `from panel[.pane] import X [as Y]`.
+
+    `from panel.pane import HTML as Raw` gives `{"Raw": "HTML"}`, so a checker that knows
+    the class names Panel defines still recognises `Raw(...)` as one of them. Only imports
+    rooted at `panel` are recorded: `from pandas import DataFrame` must not make every
+    `DataFrame(...)` in the dashboard look like a markup pane.
+    """
+    aliases: dict[str, str] = {}
+    for node in ast.walk(_tree(source)):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "panel":
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = alias.name
+    return aliases
+
+
+def _attribute_path(node: ast.expr) -> list[str]:
+    """The dotted path of an attribute chain, outermost last: `pn.pane.HTML` → [pn, pane, HTML]."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return list(reversed(parts))
+
+
+def constructor_call_sites(source: str, class_names: Iterable[str]) -> list[tuple[int, str]]:
+    """Every call in `source` constructing one of Panel's `class_names`, as (line, name).
+
+    Recognises the spellings one construction can take, which is the whole reason this is
+    AST and not a line regex: `pn.pane.HTML(x)`, `panel.pane.HTML(x)`, `pane.HTML(x)`,
+    `HTML(x)` after `from panel.pane import HTML`, `Raw(x)` after an aliased import, and any
+    of them split over several lines. The 2026-07-25 regex version saw only the first,
+    spelled exactly.
+
+    The pane's *origin* is resolved, not just its name. An attribute chain qualifies only
+    when the segment before the class is `pane`, and a bare name only when it was imported
+    from `panel`. Without that, `pd.DataFrame(...)` — which the dashboard builds four times —
+    reads as a markup pane, and a rule with four standing exceptions on its first run is one
+    nobody trusts.
+    """
+    wanted = set(class_names)
+    aliases = _panel_pane_aliases(source)
+    sites: list[tuple[int, str]] = []
+    for node in ast.walk(_tree(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Attribute):
+            path = _attribute_path(node.func)
+            if len(path) >= 2 and path[-1] in wanted and path[-2] == "pane":
+                sites.append((node.lineno, path[-1]))
+        elif isinstance(node.func, ast.Name):
+            resolved = aliases.get(node.func.id, "")
+            if resolved in wanted:
+                sites.append((node.lineno, resolved))
+    return sorted(sites)
+
+
+_NOTIFICATION_LEVELS = frozenset({"info", "warning", "error", "success"})
+
+
+def notification_call_sites(source: str) -> list[tuple[int, str]]:
+    """Every `<something-notifications>.<level>(...)` call, as (line, level).
+
+    Panel hands a notification's `message` to notyf unchanged and notyf assigns it with
+    `innerHTML`, with no `html_decode` step — so a direct call is an execution sink for any
+    IBKR, tool or exception text it interpolates. `safe_toast` is the one route, and it
+    reaches the level through `getattr`, which this checker deliberately does not see.
+
+    Matched on the receiver's *name* containing "notification" rather than on an import,
+    because the object has none: it is reached as `pn.state.notifications` — an attribute
+    chain — and usually bound to a local first. Both spellings are recognised.
+    """
+    sites: list[tuple[int, str]] = []
+    for node in ast.walk(_tree(source)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in _NOTIFICATION_LEVELS:
+            continue
+        receiver = node.func.value
+        name = (
+            receiver.id
+            if isinstance(receiver, ast.Name)
+            else receiver.attr
+            if isinstance(receiver, ast.Attribute)
+            else ""
+        )
+        if "notification" in name.lower():
+            sites.append((node.lineno, node.func.attr))
+    return sorted(sites)
