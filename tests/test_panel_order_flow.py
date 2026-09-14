@@ -92,6 +92,75 @@ async def test_render_order_proposal_stage_click_executes_and_disables_buttons()
 
 
 @pytest.mark.asyncio
+async def test_a_second_click_does_not_dispatch_a_second_order():
+    """One proposal, at most one write — enforced in the handler, not by the browser.
+
+    `disabled = True` is set but never read, so the one-shot lived entirely in the client:
+    two `clicks` events arriving before the disabled patch reaches the browser ran the core
+    twice, each with a fresh cOID (audit 2026-09-13, finding A-6). Both gates still fire on
+    the second pass, so this was never a bypass — but "at most once" was a docstring, and a
+    server-side re-entry (a replayed event, a future programmatic trigger) had nothing to
+    stop it.
+    """
+    chat = _make_chat()
+    proposal = {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 10,
+        "conid": 265598,
+        "order_type": "MKT",
+        "limit_price": None,
+        "stop_price": None,
+    }
+    ibkr_mod, client = _make_ibkr_mock()
+    await render_order_proposal(chat, proposal, session_id="s1", store=None)
+    stage_btn = chat.send.call_args.args[0][1][0]
+    click = _get_click_callback(stage_btn)
+
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await click(None)
+        await click(None)
+
+    client.place_order_and_confirm.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_the_card_is_a_snapshot_of_what_the_click_will_send():
+    """What the human read must be what the click sends, whatever happens to the dict after.
+
+    The closure held the model's own proposal object by reference, so anything that wrote
+    to it between render and click would change the order without changing the card
+    (audit 2026-09-13, finding B-4). No writer exists today; the invariant rested on that
+    absence, which is the same shape ibkr_core_mcp closed one layer down on 2026-09-13 by
+    copying the body at method entry.
+    """
+    chat = _make_chat()
+    proposal = {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 10,
+        "conid": 265598,
+        "order_type": "LMT",
+        "limit_price": 100.0,
+        "stop_price": None,
+    }
+    ibkr_mod, client = _make_ibkr_mock()
+    await render_order_proposal(chat, proposal, session_id="s1", store=None)
+    stage_btn = chat.send.call_args.args[0][1][0]
+
+    # Whatever this is — a sink normalisation, a later turn, a future recall path.
+    proposal["quantity"] = 999
+    proposal["limit_price"] = 1.0
+
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        await _get_click_callback(stage_btn)(None)
+
+    body = client.place_order_and_confirm.call_args.args[1]
+    assert body["quantity"] == 10, f"the click sent a quantity the card never showed: {body}"
+    assert body["price"] == 100.0, f"the click sent a price the card never showed: {body}"
+
+
+@pytest.mark.asyncio
 async def test_render_order_proposal_cancel_click_disables_without_executing():
     """Dismissing disables the buttons and reaches no IBKR path."""
     chat = _make_chat()

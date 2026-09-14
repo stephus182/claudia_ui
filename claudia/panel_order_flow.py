@@ -10,6 +10,7 @@ chat message) and the send_status wiring are Panel-specific.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +34,59 @@ if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
 
 log = logging.getLogger(__name__)
+
+
+def _snapshot(proposal: dict[str, Any]) -> dict[str, Any]:
+    """The card's own copy of the proposal, taken before anything is rendered from it.
+
+    What the human reads and what the click sends must be the same values. Until 2026-09-14
+    the click closure held the model's own `tool_use.input` object by reference, so any
+    writer reaching that dict between render and click would have changed the order without
+    changing the card (audit 2026-09-13, finding B-4). No such writer exists — the
+    invariant rested on that absence, which is exactly the shape `ibkr_core_mcp.client`
+    closed one layer down on 2026-09-13 by copying the body at method entry.
+
+    `deepcopy`, not `dict()`: `changes` is a list of dicts and a shallow copy would still
+    share it.
+
+    Args:
+        proposal: The validated proposal dict, as handed to the sink.
+
+    Returns:
+        An independent copy. The caller rebinds its own name to it, so every later read —
+        summary, contract label, click closure — sees the same frozen values.
+    """
+    return copy.deepcopy(proposal)
+
+
+class _OneShot:
+    """A card is acted on at most once, enforced here rather than by the browser.
+
+    `disabled = True` was set on every handler and read by none, so the one-shot lived
+    entirely client-side: two `clicks` events arriving before the disabled patch reached the
+    browser ran the core twice, each with a fresh `cOID` (audit 2026-09-13, finding A-6).
+    Both gates fire on the second pass, so this was never a bypass — but "at most once" was
+    a docstring, and a server-side re-entry had nothing to stop it.
+
+    Claimed synchronously, before the first `await` in any handler, so two coroutines
+    scheduled from the same event cannot both win it on a single-threaded loop. Covers the
+    dismiss buttons too: once a card has been acted on, neither half of it acts again.
+    """
+
+    def __init__(self) -> None:
+        """Unclaimed."""
+        self._claimed = False
+
+    def claim(self) -> bool:
+        """Take the single action this card allows.
+
+        Returns:
+            True for the first caller, False for every later one.
+        """
+        if self._claimed:
+            return False
+        self._claimed = True
+        return True
 
 
 def _make_send_status(chat: pn.chat.ChatInterface) -> SendStatus:
@@ -67,8 +121,10 @@ async def render_order_proposal(
             `store`) means the click is executed but not recorded in the decision log.
         store: Conversation store for decision logging. Optional, as above.
     """
+    proposal = _snapshot(proposal)
     contract_label = await asyncio.to_thread(proposal_contract_label, proposal)
     summary_pane = safe_markdown(_format_order_summary(proposal, contract_label=contract_label))
+    acted = _OneShot()
     stage_btn = pn.widgets.Button(label="Stage this order", color="success")
     cancel_btn = pn.widgets.Button(label="Cancel", color="light")
     send_status = _make_send_status(chat)
@@ -89,6 +145,8 @@ async def render_order_proposal(
         # await suspension point) — the server-side state is stale from the first moment a
         # double-click could happen either way, but there is no reason to leave the earlier
         # window open when closing it costs nothing.
+        if not acted.claim():
+            return
         stage_btn.disabled = True
         cancel_btn.disabled = True
         try:
@@ -99,6 +157,8 @@ async def render_order_proposal(
 
     async def _on_cancel(event: Event) -> None:
         """Dismiss the proposal without contacting IBKR. Disables both buttons first."""
+        if not acted.claim():
+            return
         stage_btn.disabled = True
         cancel_btn.disabled = True
         try:
@@ -134,14 +194,18 @@ async def render_cancel_proposal(
             `render_order_proposal`.
         store: Conversation store for decision logging. Optional, as above.
     """
+    proposal = _snapshot(proposal)
     contract_label = await asyncio.to_thread(cancel_proposal_contract_label, proposal)
     summary_pane = safe_markdown(_format_cancel_summary(proposal, contract_label=contract_label))
+    acted = _OneShot()
     cancel_btn = pn.widgets.Button(label="Cancel this order", color="danger")
     keep_btn = pn.widgets.Button(label="Keep order", color="light")
     send_status = _make_send_status(chat)
 
     async def _on_cancel_click(event: Event) -> None:
         """Cancel the live order — same one-shot and Gate 1/Gate 2 contract as `_on_stage`."""
+        if not acted.claim():
+            return
         cancel_btn.disabled = True
         keep_btn.disabled = True
         try:
@@ -152,6 +216,8 @@ async def render_cancel_proposal(
 
     async def _on_keep_click(event: Event) -> None:
         """Dismiss the proposal, leaving the order untouched. No IBKR call."""
+        if not acted.claim():
+            return
         cancel_btn.disabled = True
         keep_btn.disabled = True
         try:
@@ -195,14 +261,18 @@ async def render_modify_proposal(
             `render_order_proposal`.
         store: Conversation store for decision logging. Optional, as above.
     """
+    proposal = _snapshot(proposal)
     contract_label = await asyncio.to_thread(proposal_contract_label, proposal)
     summary_pane = safe_markdown(_format_modify_summary(proposal, contract_label=contract_label))
+    acted = _OneShot()
     modify_btn = pn.widgets.Button(label="Modify this order", color="success")
     discard_btn = pn.widgets.Button(label="Discard", color="light")
     send_status = _make_send_status(chat)
 
     async def _on_modify_click(event: Event) -> None:
         """Modify the live order — same one-shot and Gate 1/Gate 2 contract as `_on_stage`."""
+        if not acted.claim():
+            return
         modify_btn.disabled = True
         discard_btn.disabled = True
         try:
@@ -213,6 +283,8 @@ async def render_modify_proposal(
 
     async def _on_discard_click(event: Event) -> None:
         """Discard the proposal, leaving the order untouched. No IBKR call."""
+        if not acted.claim():
+            return
         modify_btn.disabled = True
         discard_btn.disabled = True
         try:
