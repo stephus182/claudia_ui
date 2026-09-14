@@ -75,6 +75,38 @@ def test_format_market_order():
     assert "Touch ID" in summary
 
 
+def test_the_card_shows_a_price_to_its_own_precision():
+    """The proposal card is the human's first read of what a click will send.
+
+    `f"{limit:,.2f}"` rounded it: a 6E limit of 1.08455 read `1.08`, a ZN stop of
+    110.171875 read `110.17`, and two NG prices a full tick apart rendered identically —
+    while the body carried the full value (audit 2026-09-13, finding A-3). One definition
+    with Gate 2 (`ibkr_core_mcp.order_confirm.price_text`), so the card and the dialog
+    cannot round differently.
+    """
+    fine = {
+        "symbol": "6E",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "STOP_LIMIT",
+        "limit_price": 1.08455,
+        "stop_price": 110.171875,
+        "sec_type": "FUT",
+        "reason": "precision fixture",
+    }
+    summary = _format_order_summary(fine)
+    assert "1.08455" in summary, f"limit price was rounded: {summary!r}"
+    assert "110.171875" in summary, f"stop price was rounded: {summary!r}"
+
+    a = _format_order_summary({**fine, "order_type": "LMT", "limit_price": 3.001})
+    b = _format_order_summary({**fine, "order_type": "LMT", "limit_price": 3.002})
+    assert a != b, "two prices a full NG tick apart rendered the same"
+
+    # Two decimals stay the floor: every round figure reads as it always did.
+    whole = _format_order_summary({**fine, "order_type": "LMT", "limit_price": 6100.0})
+    assert "6,100.00" in whole
+
+
 def test_format_limit_order():
     """A limit order additionally renders its limit price."""
     proposal = {

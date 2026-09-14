@@ -39,7 +39,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from ibkr_core_mcp.order_confirm import change_value_text
+from ibkr_core_mcp.order_confirm import change_value_text, price_text
 
 from claudia.contract_identity import contract_identity
 
@@ -74,6 +74,12 @@ def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> s
     Shared by `_format_order_summary` and `_format_cancel_summary` so the two cannot drift;
     each used to carry its own copy, and only one of them showed a stop price.
 
+    **Exact, not rounded.** The price goes through `order_confirm.price_text`, the same
+    definition Gate 2 uses, so the card and the dialog cannot round differently — and
+    neither rounds. `f"{limit:,.2f}"` made a 6E limit of 1.08455 read `1.08` and two NG
+    prices a full tick apart render identically, on the human's first read of what a click
+    will send (audit 2026-09-13, finding A-3). Two decimals are the floor, not the ceiling.
+
     **No currency symbol.** A bare `$` is shared by USD/MXN/CAD/AUD/HKD/SGD, so on a
     wrong-currency contract it reads as an ordinary price — and this account trades
     EUR-denominated equities. The proposal carries no currency field, so the honest render
@@ -97,9 +103,11 @@ def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> s
     """
     parts = []
     if order_type in ("LMT", "STOP_LIMIT"):
-        parts.append(f"{limit:,.2f} limit" if limit is not None else _MISSING_PRICE % "LIMIT")
+        parts.append(
+            f"{price_text(limit)} limit" if limit is not None else _MISSING_PRICE % "LIMIT"
+        )
     if order_type in ("STP", "STOP_LIMIT"):
-        parts.append(f"{stop:,.2f} stop" if stop is not None else _MISSING_PRICE % "STOP")
+        parts.append(f"{price_text(stop)} stop" if stop is not None else _MISSING_PRICE % "STOP")
     return f" @ {' / '.join(parts)}" if parts else ""
 
 
