@@ -39,7 +39,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from ibkr_core_mcp.order_confirm import change_value_text
+from ibkr_core_mcp.order_confirm import change_value_text, price_text_safe
 
 from claudia.contract_identity import contract_identity
 
@@ -68,34 +68,17 @@ until that lands, the approval screen must at least not hide it.
 """
 
 
-def _price(value: object) -> str:
-    """Gate 2's price rendering, and never an exception.
-
-    `change_value_text` rather than `price_text` directly, because this layer must be total.
-    The cancel card does not read the model's schema-typed proposal: `_cancel_display_details`
-    builds it from `get_order_status`, so whatever IBKR sends arrives here — a string that
-    already carries a thousands separator parses as no Decimal at all. `price_text` raises
-    there; `f"{v:,.2f}"`, which it replaced, did not. A render that dies is precisely how a
-    proposal disappears, so the fallback (the value as sent) is the right answer for a
-    display surface (review 2026-09-14).
-
-    Args:
-        value: A price from a validated proposal or from an IBKR order-status payload.
-
-    Returns:
-        The price as Gate 2 would print it, or the value unchanged when it is not a number.
-    """
-    return change_value_text("limit_price", value)
-
-
 def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> str:
     """The price clause of an approval line, e.g. `" @ 6,000.00 limit / 5,950.00 stop"`.
 
     Shared by `_format_order_summary` and `_format_cancel_summary` so the two cannot drift;
     each used to carry its own copy, and only one of them showed a stop price.
 
-    **Exact, not rounded.** The price goes through `_price`, which is Gate 2's own
-    definition, so the card and the dialog cannot round differently — and neither rounds.
+    **Exact, not rounded.** The price goes through `order_confirm.price_text_safe`, which is
+    Gate 2's own definition, so the card and the dialog cannot round differently — and
+    neither rounds. Total by design: `_cancel_display_details` builds this card from
+    `get_order_status`, so an IBKR string that parses as no number at all must render as
+    itself rather than take the card down (review 2026-09-14).
     `f"{limit:,.2f}"` made a 6E limit of 1.08455 read `1.08` and two NG prices a full tick
     apart render identically, on the human's first read of what a click will send
     (audit 2026-09-13, finding A-3). Two decimals are the floor, not the ceiling.
@@ -123,9 +106,13 @@ def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> s
     """
     parts = []
     if order_type in ("LMT", "STOP_LIMIT"):
-        parts.append(f"{_price(limit)} limit" if limit is not None else _MISSING_PRICE % "LIMIT")
+        parts.append(
+            f"{price_text_safe(limit)} limit" if limit is not None else _MISSING_PRICE % "LIMIT"
+        )
     if order_type in ("STP", "STOP_LIMIT"):
-        parts.append(f"{_price(stop)} stop" if stop is not None else _MISSING_PRICE % "STOP")
+        parts.append(
+            f"{price_text_safe(stop)} stop" if stop is not None else _MISSING_PRICE % "STOP"
+        )
     return f" @ {' / '.join(parts)}" if parts else ""
 
 

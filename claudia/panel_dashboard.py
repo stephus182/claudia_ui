@@ -571,10 +571,19 @@ _POSITION_WIDTHS = {
 # keeps real floats, so the column still sorts numerically and the `.style` sign
 # colouring still sees a number.
 #
-# Money to 2dp; prices to 4dp with trailing zeros optional (`[00]`), which shows
+# Money to 2dp; prices to 8dp with trailing zeros optional (`[000000]`), which shows
 # 374.0976 for an equity and a bare 6480 for an ES contract rather than 6480.0000.
+#
+# Eight, not four. This is the browser-side twin of `order_confirm.price_text_safe` — the
+# one price rendering in the system that Python cannot perform, because numbro formats in
+# the page — and at four it disagreed with it: a 6E limit of 1.08455 read 1.0846 and a ZN
+# stop of 110.171875 read 110.1719 on the working-order book, while the card and the Gate 2
+# dialog showed both exactly (audit 2026-09-13 finding A-3, on the surface the first fix
+# missed; review 2026-09-14). Eight covers every instrument this account quotes, with the
+# finest at six, and the optional form means nothing gains trailing zeros. A test asserts
+# this against what the shared formatter really produces rather than against a number.
 _MONEY_FORMAT = "0,0.00"
-_PRICE_FORMAT = "0,0.00[00]"
+_PRICE_FORMAT = "0,0.00[000000]"
 _QTY_FORMAT = "0,0.[00000000]"  # fractional-share and futures quantities alike
 # Percentages to 2dp with an explicit sign, so a gain and a loss are never distinguished
 # only by a minus that is easy to miss in a dense numeric column — the same rule
@@ -584,10 +593,10 @@ _QTY_FORMAT = "0,0.[00000000]"  # fractional-share and futures quantities alike
 # — and this renders it as "+4.12%". Storing 4.12 and formatting with "%" would print
 # "+412.00%". Verified in a browser, not inferred from the format string.
 _PERCENT_FORMAT = "+0,0.00%"
-# A price DIFFERENCE, not a price: same 4dp precision as `_PRICE_FORMAT` but with the
+# A price DIFFERENCE, not a price: same precision as `_PRICE_FORMAT` but with the
 # sign always shown. "Change" rendered 8.77 next to "% Change" +2.25 when this was
 # missing (seen in the browser 2026-08-07) — one signed, one not, for the same move.
-_SIGNED_PRICE_FORMAT = "+0,0.00[00]"
+_SIGNED_PRICE_FORMAT = "+0,0.00[000000]"
 
 # Currency symbols the money columns may prefix. **USD only, deliberately.**
 #

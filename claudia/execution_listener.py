@@ -50,6 +50,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from ibkr_core_mcp.auth import BrowserCookieAuth
+from ibkr_core_mcp.order_confirm import price_text_safe
 from ibkr_core_mcp.streaming import IBKRWebSocket, PnLUpdate, TradeExecution
 
 if TYPE_CHECKING:
@@ -78,12 +79,19 @@ _SEEN_EXECUTIONS_MAX = 500
 
 
 def _plain_number(value: float | int, min_decimals: int = 0) -> str:
-    """Render a broker figure without altering it: IBKR's digits, thousands grouped.
+    """Render a broker QUANTITY without altering it: IBKR's digits, thousands grouped.
 
     `f"{x:g}"` drops digits past six significant figures (1234567 → 1.23457e+06) and
-    `:.2f` rounds a 4-dp FX price — a known broker figure must not be altered any more than an
-    unknown one may be guessed (review 2026-09-04, #3). `Decimal(str(x))` keeps the digits
-    the float carried; `min_decimals` pads a price to the conventional two.
+    `:.2f` rounds — a known broker figure must not be altered any more than an unknown one
+    may be guessed (review 2026-09-04, #3). `Decimal(str(x))` keeps the digits the float
+    carried; `min_decimals` pads where a convention asks for it.
+
+    **Prices no longer come here.** This was also the fill line's price renderer, which made
+    it the third implementation of one rule across the two repositories — differing from the
+    others on trailing zeros, because of the `.normalize()` below. The price now goes through
+    `order_confirm.price_text_safe`, the same definition Gate 2 and the proposal card use
+    (review 2026-09-14). A quantity keeps this function because it must not gain a
+    two-decimal floor: one contract is `1`, not `1.00`.
     """
     try:
         q = Decimal(str(value)).normalize()
@@ -122,7 +130,7 @@ class ExecutionReport:
         side = (event.side or "").strip().upper()
         verb = {"B": "BOUGHT", "BUY": "BOUGHT", "S": "SOLD", "SELL": "SOLD"}.get(side, side or "?")
         size = _plain_number(event.size) if isinstance(event.size, (int, float)) else "?"
-        price = _plain_number(event.price, 2) if isinstance(event.price, (int, float)) else "?"
+        price = price_text_safe(event.price) if isinstance(event.price, (int, float)) else "?"
         symbol = (event.symbol or "").strip()
         desc = (event.contract_description_1 or "").strip()
         # IBKR's documented STK shape has contract_description_1 == symbol ("AMD" / "AMD");

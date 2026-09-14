@@ -848,6 +848,31 @@ def toasts(monkeypatch):
     return captured
 
 
+def test_the_browser_side_price_format_keeps_as_many_decimals_as_the_python_one():
+    """The tables are the third rendering of a price, and the only one Python cannot reach.
+
+    `NumberFormatter` formats in the browser with numbro, so it cannot call
+    `order_confirm.price_text_safe` like the card and the dialog do. It can still agree
+    with it. At `0,0.00[00]` it did not: a 6E limit of 1.08455 rendered `1.0846` and a ZN
+    stop of 110.171875 rendered `110.1719` on the working-order book — the audit's A-3
+    finding, on the surface it was not fixed on (review 2026-09-14).
+
+    Asserted against what the shared formatter actually produces, not against a number
+    typed here, so the two cannot drift apart quietly.
+    """
+    from ibkr_core_mcp.order_confirm import price_text_safe
+
+    optional = pdash._PRICE_FORMAT[pdash._PRICE_FORMAT.index("[") :].count("0")
+    mandatory = pdash._PRICE_FORMAT[: pdash._PRICE_FORMAT.index("[")].split(".")[1].count("0")
+    allowed = mandatory + optional
+
+    for finest in (1.08455, 110.171875, 3.001):
+        needed = len(price_text_safe(finest).split(".")[1])
+        assert allowed >= needed, (
+            f"the table rounds {finest} to {allowed} decimals; the card shows {needed}"
+        )
+
+
 def test_going_stale_toasts_once_not_every_poll(toasts):
     """The status line is always right — but only if you are looking at it.
 
