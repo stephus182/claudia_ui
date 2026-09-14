@@ -107,6 +107,59 @@ def test_the_card_shows_a_price_to_its_own_precision():
     assert "6,100.00" in whole
 
 
+def test_the_card_survives_every_price_shape_ibkr_can_send():
+    """A render that dies is how a proposal disappears — so this layer must be total.
+
+    `_price_suffix` moved from `f"{v:,.2f}"`, which formats anything float() accepts, to a
+    `Decimal` parse that raises on text. The cancel card does not read the model's
+    schema-typed proposal: `_cancel_display_details` builds it from `get_order_status`, so
+    whatever IBKR sends arrives here — including a string that already carries a thousands
+    separator. NaN reaches the *order* card the same way, because a proposal's price is
+    typed `number` and `float("nan")` is one (review 2026-09-14, B2).
+    """
+    for price in ("7,900.00", "100.5", float("nan"), float("inf"), "", "n/a"):
+        summary = _format_cancel_summary(
+            {
+                "order_id": "123",
+                "symbol": "ES",
+                "action": "BUY",
+                "quantity": 1,
+                "order_type": "LMT",
+                "limit_price": price,
+                "stop_price": None,
+                "tif": "GTC",
+            }
+        )
+        assert "BUY" in summary, f"the card did not render for price={price!r}"
+
+
+def test_a_non_finite_price_is_rejected_before_a_button_is_drawn():
+    """`quantity > 0` has a bound; a price only had a type, and NaN is a float.
+
+    The proposal schema types a price `number|null`, which admits NaN and Infinity. They
+    are not prices: IBKR would reject them, and every surface that formats one either
+    prints "nan" or raises (review 2026-09-14, B2).
+    """
+    from claudia.agent import _proposal_defect
+
+    base = {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 10,
+        "order_type": "LMT",
+        "stop_price": None,
+        "tif": "DAY",
+        "sec_type": "STK",
+        "conid": 265598,
+        "reason": "fixture",
+    }
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        assert _proposal_defect("order", {**base, "limit_price": bad}) is not None, (
+            f"limit_price={bad!r} was accepted"
+        )
+    assert _proposal_defect("order", {**base, "limit_price": 185.0}) is None
+
+
 def test_format_limit_order():
     """A limit order additionally renders its limit price."""
     proposal = {
