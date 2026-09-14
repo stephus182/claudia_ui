@@ -25,6 +25,22 @@ on:
 # and tests/test_install_check.py runs here against a fresh snapshot). The [scraper] extra is
 # deliberately not installed: every scraper import is lazy, no unit test exercises a web tool,
 # and crawl4ai's install adds minutes to every run.
+#
+# TWO LANES over that checkout, answering two different questions (2026-09-14). Until this
+# date there was one, resolving the core at floating `main`, which conflated them: a green
+# commit here was not reproducible, and a push in the other repository could turn this one
+# red with no commit in it.
+#
+#   `test` + `dependency-audit` — "does ClaudIA work with the core it SUPPORTS?"
+#       Core checked out at the SHA in core-ref.txt, the single source of truth for it.
+#       BLOCKING. This is the lane that decides whether a change here is mergeable.
+#
+#   `forward-compat` — "did core `main` change something ClaudIA depends on?"
+#       Core checked out at `main`, running the seam tests only. INFORMATIONAL
+#       (continue-on-error), deliberately: a push in another repository must not be able to
+#       make this one un-mergeable, and the whole point is to see the drift days before an
+#       upgrade rather than to gate on it. Promote it to blocking only if forward
+#       compatibility becomes a stated requirement, which it is not today.
 
 jobs:
   test:
@@ -46,10 +62,17 @@ jobs:
         with:
           path: claudia_ui
 
+      - name: Read the supported ibkr_core_mcp revision
+        id: core
+        run: echo "ref=$(grep -v '^#' claudia_ui/core-ref.txt | grep -v '^$' | head -1)" >> "$GITHUB_OUTPUT"
+        working-directory: .
+
       - uses: actions/checkout@v5
         with:
           repository: stephus182/ibkr_core_mcp
           path: ibkr_core_mcp
+          # The supported revision, from core-ref.txt. Never a branch: see that file.
+          ref: ${{ steps.core.outputs.ref }}
 
       - uses: actions/setup-python@v6
         with:
@@ -98,10 +121,17 @@ jobs:
         with:
           path: claudia_ui
 
+      - name: Read the supported ibkr_core_mcp revision
+        id: core
+        run: echo "ref=$(grep -v '^#' claudia_ui/core-ref.txt | grep -v '^$' | head -1)" >> "$GITHUB_OUTPUT"
+        working-directory: .
+
       - uses: actions/checkout@v5
         with:
           repository: stephus182/ibkr_core_mcp
           path: ibkr_core_mcp
+          # The supported revision, from core-ref.txt. Never a branch: see that file.
+          ref: ${{ steps.core.outputs.ref }}
 
       - uses: actions/setup-python@v6
         with:
@@ -134,6 +164,64 @@ jobs:
           printf '.[dev]\n../ibkr_core_mcp[scraper]\n' > /tmp/audit-requirements.txt
           IGNORES=$(sed 's/#.*//' security/pip-audit-ignores.txt | awk 'NF { printf "--ignore-vuln %s ", $1 }')
           pip-audit --strict --desc --vulnerability-service osv --progress-spinner off $IGNORES -r /tmp/audit-requirements.txt
+
+  forward-compat:
+    name: Forward compatibility (ibkr_core_mcp @ main)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    # Informational. A push in the other repository must not be able to make this one
+    # un-mergeable; what this lane buys is seeing the drift days before an upgrade, with the
+    # failing assertion naming exactly which part of the seam moved.
+    continue-on-error: true
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: claudia_ui
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: claudia_ui
+
+      - uses: actions/checkout@v5
+        with:
+          repository: stephus182/ibkr_core_mcp
+          path: ibkr_core_mcp
+          # `main`, deliberately — this lane exists because the other one is pinned.
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            claudia_ui/pyproject.toml
+            ibkr_core_mcp/pyproject.toml
+
+      - name: Report which core revision this lane resolved
+        # Printed before the install so a failure below can be attributed to a core commit
+        # without re-running anything. The supported SHA is beside it for the diff.
+        run: |
+          echo "core main:      $(git -C ../ibkr_core_mcp rev-parse HEAD)"
+          echo "core supported: $(grep -v '^#' core-ref.txt | grep -v '^$' | head -1)"
+          git -C ../ibkr_core_mcp log --oneline -5
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+          pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
+
+      - name: Seam tests only
+        # NOT the full suite. The question this lane answers is "did core main change
+        # something ClaudIA depends on?", and 1,900 tests run a second time answer it no
+        # better than these do — collection alone imports every claudia module, so an import
+        # break is caught whatever is selected.
+        #
+        #   tests/security/        — the cross-repo contract, the capability registry, the
+        #                            outbound-sink inventory, and the eleven other invariants
+        #   tests/test_order_flow.py — the three gated entry points, actually driven
+        #   tests/test_install_check.py — the strict-editable snapshot against a fresh tree
+        run: pytest tests/security tests/test_order_flow.py tests/test_install_check.py -v
 
   secret-scan:
     name: Secret scan (gitleaks)

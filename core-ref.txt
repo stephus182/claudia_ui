@@ -1,0 +1,25 @@
+# The ibkr_core_mcp revision claudia_ui is supported against.
+#
+# ONE source of truth, read by CI and by tests/security/test_cross_repo_contract.py. An
+# immutable 40-character commit SHA, never a branch: a green run here must be reproducible
+# a month from now, and `main` is not. A tag would be equally good; v1.2.2 is 206 commits
+# behind the recalibration this repository depends on, so a SHA it is until the core cuts
+# another release.
+#
+# Two CI lanes read this file, and they answer different questions (.github/workflows/ci.yml):
+#
+#   "Does ClaudIA work with the core it supports?"   → the `test` job, pinned here. BLOCKS.
+#   "Did core main change something ClaudIA needs?"  → the `forward-compat` job, at main.
+#                                                      Informational; it is an early warning,
+#                                                      not a merge requirement, because a
+#                                                      push in the other repository must not
+#                                                      be able to make this one un-mergeable.
+#
+# To move the supported revision: change the SHA here, run the whole gate line locally
+# against that checkout, and say in the commit message what changed in the core and why the
+# bump is safe. Nothing else in this repository names a core revision.
+#
+# 2026-09-14 — fada6b29d12b2e89276d0050fae5c2cbab9d92e1 is the core's OWASP MCP security
+# recalibration plus the audit-history commit after it. It is what the cross-repo contract,
+# the outbound-sink inventory and the capability-registry assertions were measured against.
+fada6b29d12b2e89276d0050fae5c2cbab9d92e1
