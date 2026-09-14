@@ -46,16 +46,18 @@ remote author of the system prompt.
 | Proposing reaches nothing and repairs nothing | `agent._record_proposal`, `_proposal_defect` | `tests/security/test_proposal_tools_are_side_effect_free.py` |
 | Order parameters are immutable; every price is a finite non-zero number | `_proposal_defect`, seven terms | `tests/test_security_regressions.py` |
 | What the human reads is what the click sends | `_snapshot` deepcopy; one shared price formatter | `tests/test_panel_order_flow.py`, `tests/test_order_flow.py` |
-| Untrusted text cannot execute in the UI | `panel_markdown`'s four helpers | `tests/test_security_regressions.py`, `tests/test_panel_system_log.py` |
-| History replays at the role it was stored with; withdrawn rows never return | `_history_to_messages`, `search_messages` | `tests/test_conversation_store.py`, `tests/test_agent.py` |
+| Untrusted text cannot execute in the UI, and the four helpers are the only construction sites | `panel_markdown`'s four helpers | `tests/security/test_markup_construction_sites.py` (AST allowlist), `tests/test_security_regressions.py`, `tests/test_panel_system_log.py` |
+| History replays at the role it was stored with; withdrawn rows never return; the one `role: system` channel carries sanitised identity only | `_history_to_messages`, `search_messages`, `_operator_identity` / `_operator_line` | `tests/security/test_stored_content_authority.py` |
 | Claims about actions are ruled on by evidence, not by the model | four detectors, `called_tools` / `_pending_proposal` | `tests/test_agent.py`, `tests/test_corpus_precision.py` |
 | Unit tests reach no live system and see no real secret | `tests/conftest.py`, pytest-socket | `tests/security/test_no_live_io.py` |
-| Subprocesses are list-form, never a shell; the sidecar gets an env allowlist | `tradingview.py`, `gateway_launch.py` | `tests/test_tradingview.py`, `tests/test_security_regressions.py` |
-| The server binds loopback with an exact origin allowlist | `panel_app.main` | `tests/test_security_regressions.py::test_pn_serve_binds_loopback_only` |
-| The cross-repo API contract is pinned in both directions | `IMPORTED_API`, `GATED_ENTRY_POINTS` | `tests/security/test_cross_repo_contract.py` |
+| Subprocesses are list-form, never a shell; the sidecar's **child process** receives only the declared environment | `tradingview._sidecar_env`, `gateway_launch.py` | `tests/security/test_sidecar_child_environment.py` (a real child reports its own environment), `tests/test_tradingview.py` |
+| The server binds loopback with an exact origin allowlist that no environment variable can replace | `panel_app._WEBSOCKET_ORIGINS`, pinned as a bokeh user-set value | `tests/test_security_regressions.py::test_pn_serve_binds_loopback_only` and `::test_bokeh_env_var_cannot_widen_the_websocket_origin_allowlist` |
+| The cross-repo API contract is pinned in both directions, at a named revision | `IMPORTED_API`, `GATED_ENTRY_POINTS`, `core-ref.txt` | `tests/security/test_cross_repo_contract.py` |
+| The set of model-directed outbound channels is closed and known | one local tool plus the core's `WEB_FETCH`/`NETWORK` set; no request bodies | `tests/security/test_outbound_sink_inventory.py` |
 | No private document or account data is git-tracked | `.gitignore`, wholesale rules | `tests/test_security_regressions.py` (tracked **and** ignored) |
 | No known-vulnerable dependency in the resolved tree | `pip-audit` job, own ignore file | CI, blocking; weekly cron |
 | No secret or account identifier in a pushed commit | `gitleaks` job, `.gitleaks.toml` | CI, blocking |
+| ClaudIA is tested against a named core revision, with early warning on the next one | `core-ref.txt`; the `test` and `forward-compat` jobs | CI — pinned lane blocking, `main` lane informational |
 
 `pytest tests/security` runs the structural set in under four seconds (3.7s measured 2026-09-14). It is part of every
 unit run, the pre-push hook, and CI.
@@ -179,9 +181,11 @@ Before any significant change:
 - [ ] Any new client-side JS receives untrusted values as named arguments, never interpolated into the code string
 - [ ] Any new `Tabulator` is `disabled=True` with no click or edit handler
 - [ ] Any new file holding private-document or account content is chmod 0600 immediately after the write, **unconditionally**
-- [ ] Any new subprocess uses an explicit env allowlist and list-form arguments
-- [ ] Any new outbound HTTP path validates the URL and **every redirect hop**
-- [ ] Any new import from `ibkr_core_mcp` is added to the cross-repo contract test in the same commit
+- [ ] Any new subprocess uses an explicit env allowlist and list-form arguments, asserted at the **child**, not at the dictionary handed to a library
+- [ ] Any new outbound HTTP path validates the URL and **every redirect hop** — and read the account-data residual in `docs/security-architecture.md` § 9 before adding a *second* model-directed outbound tool, or any tool that carries a request body
+- [ ] Any new value interpolated into the `role: system` operator channel goes through `_operator_identity` (identity) or `_operator_line` (prose)
+- [ ] Any new import from `ibkr_core_mcp` is added to the cross-repo contract test in the same commit — and if a ClaudIA invariant rests on how it *behaves*, that is pinned too
+- [ ] A move to a newer `ibkr_core_mcp` changes the SHA in `core-ref.txt` and nowhere else
 - [ ] Any new Drive download has a size guard before the loop
 - [ ] Any new shared state touched from a worker thread is lock-protected; cross-thread UI updates go through `call_soon_threadsafe`
 - [ ] A new dependency finding with a fixed release bumps the floor; only a no-fix finding goes in the ignore file, with a reason and a re-check date
@@ -193,6 +197,7 @@ Before any significant change:
 
 | Date | Scope | Findings | Status |
 |---|---|---|---|
+| 2026-09-14 | Application-layer hardening pass after the core's OWASP recalibration | 1 High (model-authored text reaching the `role: system` channel), 1 Medium (`BOKEH_ALLOW_WS_ORIGIN` replacing the origin allowlist), 1 accepted residual (account data to a model-chosen public host) | Both fixed; residual documented in `docs/security-architecture.md` § 9 |
 | 2026-06-12 | Drive sync, TradingView, app, core client | 2 High, 4 Medium, 2 Low | All resolved |
 | 2026-06-25 | Full re-audit, 8 modules | 1 High, 3 Low | High fixed; Lows accepted |
 | 2026-06-27 | Core v1.0 pre-release, ported back | 1 Medium | Decimal/hex IP bypass fixed |

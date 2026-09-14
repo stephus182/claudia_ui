@@ -119,7 +119,7 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (1,906 collected 2026-09-14)
+pytest        # full suite — all unit, no IBKR gateway needed (1,977 collected 2026-09-14)
 pytest tests/security   # the structural invariants alone, ~3s (also part of the full run)
 ruff check . && ruff format --check . && mypy   # lint, format, type gates — all must be clean
 # The ruff rule set (`[tool.ruff.lint]` in pyproject.toml) is identical to ibkr_core_mcp's,
@@ -142,6 +142,18 @@ packages here — the whole Panel/Bokeh/Tornado stack — are audited by no othe
 the floor instead. **If the secret scan is red, read the log before assuming a leak** — a
 failure to run the scanner looks identical to a finding, and that is exactly what happened on
 its first run.
+
+**`ibkr_core_mcp` is resolved from `core-ref.txt`, and CI has two lanes** (2026-09-14). That
+file holds one immutable commit SHA — the revision this repository is *supported* against —
+and it is the only file here allowed to name one (enforced by
+`tests/security/test_cross_repo_contract.py`). The blocking `test` and `dependency-audit` jobs
+check the core out at that SHA, so a green commit is reproducible. A separate `forward-compat`
+job checks out core `main` and runs the seam tests only (`tests/security/`,
+`tests/test_order_flow.py`, `tests/test_install_check.py`); it is **informational**
+(`continue-on-error`) on purpose — a push in the other repository must not be able to make this
+one un-mergeable, and the value is seeing the drift days before an upgrade. To move the
+supported revision: change the SHA, run the whole gate line locally against that checkout, and
+say in the commit message what changed and why the bump is safe.
 
 The original four gates are also `.github/workflows/ci.yml`, step for step the same file as
 ibkr_core_mcp's (aligned 2026-09-08): every push and PR to `main` runs them on Ubuntu for
@@ -340,7 +352,7 @@ the fix that established this (75,480 → 2,910 tokens/session).
 
 - **Security architecture** (the living design — read before changing anything a safety
   property rests on): `docs/security-architecture.md`. Principals and what each is *not*
-  trusted for, the trust-boundary map, the **twelve invariants** with the test that fails when
+  trusted for, the trust-boundary map, the **thirteen invariants** with the test that fails when
   each stops being true and an honest BUILT/PARTIAL/OPEN status per row, a dated decision log,
   and the known limits stated plainly rather than implied. The control inventory and
   vulnerability reporting are `SECURITY.md`; point-in-time evidence is `docs/audits/`.
@@ -348,6 +360,13 @@ the fix that established this (75,480 → 2,910 tokens/session).
   for three days after ibkr_core_mcp changed, and the 2026-09-13 audit found six such stale
   claims. The change recipes in § 10 are the short version of what a new tool, a new UI
   surface, a new button or a new core import each have to do.
+  **One item there is a running-the-app rule, not a coding one** (§ 9, 2026-09-14): web
+  research and live account data are kept in **separate ClaudIA sessions** — each browser tab
+  on `localhost:8001` is an independent session — because a hostile page can steer the model
+  into fetching a URL that carries account figures in its query string, and every public host
+  is allowed by design. Nothing enforces the separation; § 9 records the three ways it leaks
+  anyway (a fill reaches *every* open session) and the two gates that were designed and
+  deliberately not built.
 - Connectivity (IBKR/GDrive/TV status lights, check logic, reconnection flows): `docs/connectivity.md`.
   Since 2026-09-03 the lights are the colours of the action bar's buttons under the chat, and a
   click **reconnects** (IBKR through the session owner's read-only pre-flight, never a forced
