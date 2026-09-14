@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly dependency audit. The dependency floors float upward on purpose, so the
+    # resolved tree can acquire a known vulnerability without a single commit landing here.
+    - cron: "0 6 * * 2"
 
 # Mirrors ibkr_core_mcp/.github/workflows/ci.yml step for step (aligned 2026-09-08) so both
 # repos are held to one gate: ruff check, ruff format --check, mypy, pytest.
@@ -20,6 +24,7 @@ on:
 jobs:
   test:
     name: Python ${{ matrix.python-version }}
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -54,6 +59,13 @@ jobs:
           pip install -e ".[dev]"
           pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
 
+      - name: Show resolved versions of the UI stack
+        # These have no upper bound in pyproject.toml on purpose, so pip always takes the
+        # latest release. Printing them here puts the culprit next to a failing step instead
+        # of requiring a bisection — and `tornado` is the one that serves the UI, so its
+        # version is worth reading on every run (audit 2026-09-13, §0).
+        run: pip show panel bokeh tornado holoviews hvplot param anthropic mcp 2>/dev/null | grep -E "^(Name|Version):"
+
       - name: Lint (ruff)
         run: ruff check .
 
@@ -67,3 +79,69 @@ jobs:
 
       - name: Test (pytest, unit only)
         run: pytest -m "not integration" -v
+
+  # Gates 6 and 7 (docs/audits/2026-09-13-security-architecture-audit.md, "Proposed CI
+  # design"). Each detects a failure class none of the four steps above can see.
+
+  dependency-audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: claudia_ui
+
+      - uses: actions/checkout@v5
+        with:
+          repository: stephus182/ibkr_core_mcp
+          path: ibkr_core_mcp
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+
+      - name: pip-audit
+        working-directory: claudia_ui
+        # Requirements mode: pip-audit resolves the tree with `pip install --dry-run
+        # --report` in a throwaway venv and installs nothing. ibkr_core_mcp is audited from
+        # the checkout beside this one, WITH [scraper] — even though the test job omits it
+        # for speed — because [scraper] is what a real ClaudIA install carries (CLAUDE.md
+        # Dev Setup step 3: without it all four web tools are dark), and an audit of a tree
+        # nobody runs is not an audit.
+        #
+        # 19 packages in this tree exist only here — panel, bokeh, tornado, holoviews,
+        # hvplot and the rest of the UI stack — and ibkr_core_mcp's own pip-audit never sees
+        # them. `tornado` is the HTTP listener, which is why this job is not redundant with
+        # the core's (audit 2026-09-13, §5.2).
+        #
+        # --strict: a dependency that cannot be audited is a failure, not a skip.
+        # Ignores come only from security/pip-audit-ignores.txt, one reason and one re-check
+        # date per line; a finding with a fixed release is never ignored — bump the floor.
+        run: |
+          printf '.[dev]\n../ibkr_core_mcp[scraper]\n' > /tmp/audit-requirements.txt
+          IGNORES=$(sed 's/#.*//' security/pip-audit-ignores.txt | awk 'NF { printf "--ignore-vuln %s ", $1 }')
+          pip-audit --strict --desc --vulnerability-service osv --progress-spinner off $IGNORES -r /tmp/audit-requirements.txt
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # the action diffs the pushed / PR range, which needs history
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml

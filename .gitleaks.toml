@@ -1,0 +1,55 @@
+# gitleaks configuration — CI secret scan
+# (docs/audits/2026-09-13-security-architecture-audit.md, Phase 5.3).
+#
+# Default rules plus the four shapes this repository handles that the defaults do not name.
+# CI scans the pushed / PR commit range (.github/workflows/ci.yml, `secret-scan`); run
+# `gitleaks git --redact` locally for the full history.
+#
+# History note, so nobody re-opens it: a 2026-09-13 manual scan of the full history found no
+# API key, OAuth token or Firecrawl key of any shape. It did find IBKR account identifiers in
+# screenshot blobs added in 63030bd, which remain reachable in history — an accepted residual
+# (user decision 2026-07-25, do not re-raise) and outside the pushed-range scan by design.
+
+title = "claudia_ui"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key (sk-ant-…)"
+regex = '''\bsk-ant-[A-Za-z0-9_\-]{20,}'''
+keywords = ["sk-ant-"]
+
+[[rules]]
+id = "firecrawl-api-key"
+description = "Firecrawl API key (fc-…)"
+regex = '''\bfc-[A-Za-z0-9]{20,}\b'''
+keywords = ["fc-"]
+
+[[rules]]
+id = "ibkr-flex-token"
+description = "IBKR Flex web-service token — a long bare number no default rule matches, and it travels in a URL query string (?t=…), so it reaches logs and exception text"
+regex = '''(?i)\b(?:IBKR_FLEX_TOKEN|flex[_-]?token)\s*[=:]\s*["']?[0-9]{12,}'''
+keywords = ["flex_token", "FLEX_TOKEN", "flextoken"]
+
+[[rules]]
+id = "ibkr-account-id"
+description = "IBKR account identifier (U#######) — not a credential, but it identifies the operator's live brokerage account and belongs in no commit of a public repository"
+regex = '''\b[UD]U?[0-9]{7}\b'''
+# No `keywords` prefilter on purpose: gitleaks uses it to skip files cheaply, and a
+# one-letter keyword like "U" appears in every file, so the filter would cost more than
+# it saves while reading as though it narrowed something.
+
+[allowlist]
+description = "Placeholder identifiers and credential fixtures"
+# Documentation placeholders in the shape of an account id. Kept short and explicit rather
+# than allowlisting whole paths: a doc is exactly where a real id gets pasted by accident.
+regexes = [
+  '''\bU1234567\b''',
+  '''\bU0000000\b''',
+  '''\bDU1234567\b''',
+]
+paths = [
+  '''\.env\.example$''',
+]
