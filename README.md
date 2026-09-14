@@ -137,6 +137,14 @@ ClaudIA proposes trades; you approve them through two physical gates. Proposing 
 call that records a proposal and returns a result — it reaches no IBKR API. The LLM has
 **no** order-execution tools.
 
+Three properties hold that line, and since 2026-09-14 each fails a test when it stops being
+true rather than resting on nobody having written the change that breaks it: the model's own
+layer names no order-write method and imports neither execution module; an execution core is
+reachable only from a function `on_click` registers, each of which claims a one-shot before
+doing anything else; and nothing in the package writes the parameter Panel watches, which is
+how a button gets pressed without a person. See
+[`docs/security-architecture.md`](docs/security-architecture.md) § 6.1.
+
 ```
 ClaudIA calls propose_order (strict-schema tool — records, executes nothing)
     ↓ agent.py hands the validated input → MessageSink.send_order_proposal()
@@ -162,7 +170,13 @@ listing, priced in MXN, in a USD account. FUT is the one exception, resolved by 
 month and unambiguous by construction. Do not restore symbol resolution here: it would
 put a second, drifting definition beside the authoritative one.
 
-The Gate 2 dialog shows correct futures notional: `price × qty × multiplier` (multiplier fetched from `/trsrv/futures`).
+**What the dialog shows is what the body carries.** The futures notional is
+`price × qty × multiplier` with the multiplier read from `/trsrv/futures`. Prices render to
+their own precision rather than to two decimals — most of what this account trades does not
+tick in cents, and rounding made two prices a full tick apart read identically until
+2026-09-14. The card and the dialog share one formatter so they cannot disagree, the card is
+a deep copy taken before anything is drawn from it, and an order type that needs a price is
+refused without one instead of being labelled `MARKET`.
 
 Full field spec and immutability rule: [`docs/order-api-reference.md`](docs/order-api-reference.md),
 summarized in [`CLAUDE.md`](CLAUDE.md) § Order Staging.
@@ -254,7 +268,14 @@ user, a persisted row, its own decision type, and a non-forgeable `role:"system"
 false claim cannot become precedent — and the contradicted row is never replayed as the
 model's words again. **Precision is a measurement, not an argument:** frozen at 21 fires (all individually
 verified fabrications), 22 near-identical texts cleared by their real tool calls, **0 false
-positives** — `tests/test_corpus_precision.py`.
+positives** on that corpus — `tests/test_corpus_precision.py`.
+
+**Precision is not recall, and the 2026-09-13 audit measured the other side.** The detectors
+key on four textual shapes; a claim phrased outside them is not detected, and a turn that ran
+any tool clears two of the four. So this is detection over a named set, not prevention — the
+record of what really happened is always complete, and the blocking is narrow. The limits are
+listed in [`docs/security-architecture.md`](docs/security-architecture.md) § 9 rather than
+left implied.
 
 Of Anthropic's [seven documented hallucination techniques](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-hallucinations)
 (three basic, four advanced) ClaudIA implements **four**, treats one as analogous, declines
@@ -312,6 +333,25 @@ design constraints a future RAG layer must respect) —
 [`docs/audits/2026-07-03-agent-info-architecture-review.md`](docs/audits/2026-07-03-agent-info-architecture-review.md).
 Implementation plan and live-verified numbers —
 `docs/plans/2026-07-03-prompt-caching-upgrade.md`.
+
+---
+
+## Security
+
+ClaudIA can reach a live brokerage account, so the interesting question is not "is it
+secure" but "which properties are enforced, and which are merely true today". Both are
+written down.
+
+- [`SECURITY.md`](SECURITY.md) — the control inventory and how to report a vulnerability
+- [`docs/security-architecture.md`](docs/security-architecture.md) — the living design:
+  principals and what each is *not* trusted for, the twelve invariants with the test that
+  fails when each stops being true, a dated decision log, and the known limits stated plainly
+- [`docs/audits/`](docs/audits/) — point-in-time evidence, never edited after publication
+
+The gates themselves, the order endpoints and the tool capability registry belong to
+`ibkr_core_mcp` and are documented there. This project points at them rather than restating
+them: a copied gate policy here was wrong for three days after the core changed, which is
+exactly the failure mode the 2026-09-13 audit was looking for.
 
 ---
 
@@ -408,11 +448,23 @@ ClaudIA is designed to run on any machine — all persistent state lives in a si
 ## Testing
 
 ```bash
-pytest                                        # full suite — all unit, no IBKR gateway needed (1,725 tests as of 2026-09-08)
-ruff check . && ruff format --check . && mypy   # lint, format, type gates — CI runs all four
+pytest                                        # full suite — all unit, no IBKR gateway needed (1,906 collected 2026-09-14)
+pytest tests/security                         # the structural invariants, ~3 seconds
+ruff check . && ruff format --check . && mypy   # lint, format, type gates
 
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api   # opt-in; bills real Anthropic API calls
 ```
+
+**No unit test opens a socket, resolves a name, or sees a real secret.** pytest-socket is
+armed before collection and `load_dotenv` is neutralised there too, because importing the app
+loads `.env` at module scope. Four tests are exempted by name for real DNS, with the reason
+recorded; one binds a loopback socket because socket behaviour is what it tests. An opted-in
+`live_api` run keeps its key and its network, and everything else in that run stays blocked —
+a block that silently retired those four tests would be worse than no block.
+
+CI adds two gates beyond the four above: a dependency audit of the resolved tree, and a secret
+scan. If the secret scan is red, **read the log before assuming a leak** — a failure to run
+the scanner and a finding look identical in the summary.
 
 The `live_api` tests are skipped by default. They exist because a local schema validator
 cannot prove the API accepts a request — three defects that would have returned a 400 on

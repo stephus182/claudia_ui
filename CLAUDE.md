@@ -119,16 +119,31 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (1,725 tests as of 2026-09-08)
+pytest        # full suite — all unit, no IBKR gateway needed (1,906 collected 2026-09-14)
+pytest tests/security   # the structural invariants alone, ~3s (also part of the full run)
 ruff check . && ruff format --check . && mypy   # lint, format, type gates — all must be clean
 # The ruff rule set (`[tool.ruff.lint]` in pyproject.toml) is identical to ibkr_core_mcp's,
 # aligned 2026-09-08 — change it in both repos or in neither.
+#
+# No unit test opens a socket, resolves a name, or sees a real secret: pytest-socket is armed
+# in pytest_configure and `load_dotenv` is neutralised there too, because importing panel_app
+# loads `.env` at module scope and a fixture would be far too late. Two exemption lists in
+# tests/conftest.py, each with its reason, each held against collection by a staleness test.
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
 ```
 
-Those four gates are also `.github/workflows/ci.yml`, step for step the same file as
+CI runs those four and **two more** since 2026-09-14: `pip-audit` over the resolved tree
+(with `ibkr_core_mcp[scraper]`, because that is what a real install carries, and because 19
+packages here — the whole Panel/Bokeh/Tornado stack — are audited by no other repository) and
+`gitleaks` over the pushed range. Both block. A no-fix dependency finding goes in
+`security/pip-audit-ignores.txt` with a reason and a re-check date; a finding with a fix bumps
+the floor instead. **If the secret scan is red, read the log before assuming a leak** — a
+failure to run the scanner looks identical to a finding, and that is exactly what happened on
+its first run.
+
+The original four gates are also `.github/workflows/ci.yml`, step for step the same file as
 ibkr_core_mcp's (aligned 2026-09-08): every push and PR to `main` runs them on Ubuntu for
 Python 3.11 and 3.12, with ibkr_core_mcp checked out beside the repo and installed by the
 Dev Setup step 3 command. `mypy` runs in **strict mode** over `tests/` as well as `claudia/`
@@ -274,10 +289,14 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   "restore" symbol resolution here — re-implementing it would put a second, drifting
   definition next to the authoritative one.
 - `strict: true` enforces types, `enum`s, required keys and closed objects at the API
-  boundary. Four guarantees it cannot express — positive quantity, non-blank `symbol`,
-  non-blank `order_id`, no duplicate `changes` entries — are checked by `_proposal_defect()`
-  in `claudia/agent.py`. A defective proposal is **rejected whole and never repaired**: the
-  model gets an honest `tool_result` saying no button was created.
+  boundary. **Seven** guarantees it cannot express are checked by `_proposal_defect()` in
+  `claudia/agent.py`: positive quantity, non-blank `symbol`, non-blank `order_id`, no
+  duplicate `changes` entries, `outside_rth` strictly boolean-or-null, every present price a
+  finite non-zero number, and a priced `order_type` carrying the price it is priced by. A
+  defective proposal is **rejected whole and never repaired**: the model gets an honest
+  `tool_result` saying no button was created. The last two were added 2026-09-14 — a schema
+  can say "number or null" but not "null only when the type is MKT", and `number` admits NaN
+  and zero, which are not prices. Negatives stay legal: crude has printed below zero.
 - **Narrated actions (2026-09-11):** a turn that ran no tool and still claims a tool result
   or an order action is withdrawn before display and retried once (`_RETRIES_PER_TURN`,
   `tool_choice: any` on the first request where the model is probed for it); a contradicted
@@ -319,6 +338,16 @@ a real import ("expanded and loaded into context at launch"); backtick-wrapping 
 literal path instead. See `docs/plans/2026-07-10-claude-md-delink-imports.md` for
 the fix that established this (75,480 → 2,910 tokens/session).
 
+- **Security architecture** (the living design — read before changing anything a safety
+  property rests on): `docs/security-architecture.md`. Principals and what each is *not*
+  trusted for, the trust-boundary map, the **twelve invariants** with the test that fails when
+  each stops being true and an honest BUILT/PARTIAL/OPEN status per row, a dated decision log,
+  and the known limits stated plainly rather than implied. The control inventory and
+  vulnerability reporting are `SECURITY.md`; point-in-time evidence is `docs/audits/`.
+  **Facts the core owns are pointed at, never restated here** — a copied gate policy was wrong
+  for three days after ibkr_core_mcp changed, and the 2026-09-13 audit found six such stale
+  claims. The change recipes in § 10 are the short version of what a new tool, a new UI
+  surface, a new button or a new core import each have to do.
 - Connectivity (IBKR/GDrive/TV status lights, check logic, reconnection flows): `docs/connectivity.md`.
   Since 2026-09-03 the lights are the colours of the action bar's buttons under the chat, and a
   click **reconnects** (IBKR through the session owner's read-only pre-flight, never a forced

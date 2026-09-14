@@ -51,6 +51,7 @@ owns a question. Within each group, the file that answers "where do I start" is 
 
 | File | Description |
 | --- | --- |
+| [`security-architecture.md`](security-architecture.md) | **The living security design — start here for anything about what protects what.** Principals and what each is *not* trusted for, the trust-boundary map, the twelve invariants with the test that fails when each stops being true (and which are only partially enforced), the subsystem designs behind the click boundary and display correspondence, CI as a security instrument, a dated decision log, and the known limits stated plainly |
 | [`project-status.md`](project-status.md) | Living status — milestone history, test coverage, live testing (index/outstanding/log), work plan, known gaps |
 | [`api-reference.md`](api-reference.md) | Anthropic / IBKR / Drive / Panel source-of-truth URLs; the scraped-evidence convention |
 
