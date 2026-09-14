@@ -54,15 +54,38 @@ def test_format_line_is_timestamp_level_text_with_markdown_dropped():
 
 
 def test_lines_are_rendered_as_raw_strings_not_html():
-    """Security (2026-07-25 audit H-1): tool results and exception text land here verbatim.
-    `Str` escapes every character of its object, so a payload renders as text."""
+    """Security: tool results, IBKR strings and exception text land here verbatim.
+
+    Corrected 2026-09-14 (audit 2026-09-13, finding A-1). The assertion used to be
+    `"&lt;img" in model.text`, which is the signature of a pane the browser WILL execute:
+    the client calls `html_decode` once before `innerHTML`, so single-escaped text becomes
+    live markup. The line must survive that decode as text, i.e. stay double-escaped.
+    """
     from bokeh.document import Document
 
     log = SystemLog()
     log.say("<img src=x onerror=alert(1)>")
     model = log.lines.objects[0].get_root(Document())
-    assert "&lt;img" in model.text
+    assert "&amp;lt;img" in model.text, f"System log line decodes to markup: {model.text!r}"
     assert "<img" not in model.text
+
+
+def test_toast_text_is_escaped_before_reaching_notyf(monkeypatch):
+    """The toast body is assigned with `innerHTML`, so its text must arrive escaped.
+
+    Panel hands `message` to notyf verbatim and notyf does `r.innerHTML = t.message` — no
+    decode step, unlike the pane path, so exactly one escape is the control here. Same
+    sources as the line above: a gateway detail, a fill headline, an exception string.
+    """
+    notifications = MagicMock()
+    monkeypatch.setattr(type(pn.state), "notifications", notifications, raising=False)
+
+    log = SystemLog()
+    log.say("<img src=x onerror=alert(1)>", "error")
+
+    sent = notifications.error.call_args.args[0]
+    assert "<img" not in sent, f"raw markup reached the toast: {sent!r}"
+    assert "&lt;img" in sent, f"toast text was not escaped: {sent!r}"
 
 
 def test_every_chat_feed_in_the_package_installs_the_safe_renderer():

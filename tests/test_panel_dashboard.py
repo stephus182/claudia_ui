@@ -866,6 +866,20 @@ def test_going_stale_toasts_once_not_every_poll(toasts):
     assert "stale" in toasts.errors[0]
 
 
+def test_a_stale_toast_escapes_the_ibkr_error_text(toasts):
+    """The stale toast interpolates IBKR/exception text into a body notyf assigns with
+    `innerHTML` (audit 2026-09-13, finding A-1). One escape is the control there — the
+    toast path has no `html_decode` step, unlike the pane path.
+    """
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(), now=_NOW)
+    v.refresh(_snapshot(error="boom <img src=x onerror=alert(1)>"), now=_NOW)
+
+    assert toasts.errors, "expected one stale toast"
+    assert "<img" not in toasts.errors[0], f"raw markup reached the toast: {toasts.errors[0]!r}"
+    assert "&lt;img" in toasts.errors[0], f"toast text was not escaped: {toasts.errors[0]!r}"
+
+
 def test_recovery_toasts_once(toasts):
     """Coming back from stale toasts exactly once, not on every poll."""
     v = pdash.build_dashboard()

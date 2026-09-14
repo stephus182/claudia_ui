@@ -890,16 +890,32 @@ def test_flex_validation_record_rewrite_stays_600(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600, "pre-existing 0644 record was not corrected"
 
 
-def test_safe_text_renders_a_payload_as_literal_text():
-    """`safe_text` (2026-09-04, the System log's terminal lines) is the one sanctioned `Str`
-    construction: every character of the object is escaped, so markup reaches the browser
-    as text. Sits with H-1 because it is the same guarantee for a different pane."""
-    from bokeh.document import Document
+@pytest.mark.parametrize("payload", [_XSS_PAYLOAD, _FENCE_BREAKOUT])
+def test_safe_text_neutralises_html(payload):
+    """`safe_text` (the System log's terminal lines) must leave the model DOUBLE-escaped.
 
+    Corrected 2026-09-14 (audit 2026-09-13, finding A-1). This test previously asserted
+    `"&lt;img" in model.text` and passed — but that is exactly `_decodes_to_markup`, the
+    signature of a *vulnerable* pane. `Str` carries the same bokeh `HTML` model as
+    `Markdown`, with `run_scripts=True`; its `_transform_object` escape is transport only,
+    and the client's single `html_decode` undoes it before `innerHTML`. One escape is not a
+    control, it is the wire format. The guard below proves a bare `Str` is vulnerable.
+    """
     from claudia.panel_markdown import safe_text
 
-    pane = safe_text("<img src=x onerror=alert(1)> **not bold**")
-    model = pane.get_root(Document())
-    assert isinstance(model, HTMLModel)
-    assert "&lt;img" in model.text
-    assert "<img" not in model.text
+    text = _rendered_text(safe_text(f"Output: {payload}"))
+    assert not _decodes_to_markup(text), f"safe_text left executable markup: {text!r}"
+
+
+def test_unsafe_str_pane_would_be_vulnerable():
+    """Guards the guard: a bare `pn.pane.Str` IS vulnerable, so the test above is meaningful.
+
+    If Panel ever stops re-executing scripts in the `Str` pane's model, this fails and
+    `safe_text`'s escaping can be re-evaluated rather than silently becoming a no-op.
+    """
+    import panel as pn
+
+    text = _rendered_text(pn.pane.Str(f"Output: {_XSS_PAYLOAD}"))
+    assert _decodes_to_markup(text), (
+        "Panel's Str pane no longer passes raw markup — re-check safe_text's premise"
+    )

@@ -80,7 +80,7 @@ from claudia.dashboard_data import (
     reconcile,
 )
 from claudia.dashboard_poller import STALE_AFTER
-from claudia.panel_markdown import safe_markdown
+from claudia.panel_markdown import safe_markdown, safe_toast
 
 log = logging.getLogger(__name__)
 
@@ -1441,12 +1441,16 @@ class DashboardView:
         if notifications is None:
             return
         if stale:
-            notifications.error(
+            # `safe_toast`, not `notifications.error`: the body is assigned with innerHTML
+            # and this one interpolates IBKR/exception text (audit 2026-09-13, finding A-1).
+            safe_toast(
+                notifications,
+                "error",
                 f"Account data is stale — {short_reason(snapshot.error) or 'no recent poll'}",
                 duration=0,  # 0 = sticky: a stale trading surface should not self-dismiss
             )
         else:
-            notifications.success("Account data is live again.", duration=4000)
+            safe_toast(notifications, "success", "Account data is live again.", duration=4000)
 
     def _refresh_tiles(self, snapshot: DashboardSnapshot, now: datetime | None) -> None:
         """KPI strip: ledger balances, live unrealised, the two realised figures.

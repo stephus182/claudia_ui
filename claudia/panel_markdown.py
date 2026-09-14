@@ -16,13 +16,24 @@ Untrusted text reaches those panes from the LLM, from raw tool results (a page f
 ``fetch_web_page``/``firecrawl_*`` needs no LLM cooperation at all), from IBKR and
 TradingView responses, and from exception strings.
 
-Two helpers, because the UI has two distinct rendering paths:
+Four helpers, because the UI has four distinct rendering paths:
 
 - :func:`safe_markdown` — for panes we construct, and as the ``renderers`` hook on the
   ChatInterface so every ``chat.send()`` string is covered.
+- :func:`safe_text` — for the System log's monospace ``Str`` lines.
 - :func:`escape_markup` — for text streamed into a ``pn.chat.ChatStep``. ``ChatStep`` has
   no ``renderers`` parameter and builds its own Markdown panes internally, so the feed-level
   renderer cannot reach it; the text must be escaped before it is handed over.
+- :func:`safe_toast` — for ``pn.state.notifications``, whose body notyf assigns with
+  ``innerHTML``.
+
+**How many escapes each path needs is not the same, and that is the whole trap.** A pane
+path (Markdown, Str) escapes once for transport and the client decodes once before
+``innerHTML``, so the text must arrive already escaped to survive as text — two escapes
+total, one of which Panel adds. The toast path has no decode step, so exactly one escape is
+the control. Asserting the pane's single transport escape as if it were a control is how
+``safe_text`` shipped vulnerable from 2026-09-04 to 2026-09-14 with a green test
+(audit 2026-09-13, finding A-1).
 
 **Fencing is not a substitute.** A ```` ``` ```` fence around untrusted text was tested and
 is bypassable — content containing its own closing fence escapes it and renders as markup.
@@ -70,16 +81,27 @@ def safe_text(text: str, **params: Any) -> pn.pane.Str:
     """Build a ``Str`` pane: the text is shown as a raw string, every character escaped.
 
     ``pn.pane.Str`` is Panel's literal-text pane — no Markdown, no HTML; its
-    ``_transform_object`` escapes the whole ``<pre>…</pre>`` it emits (panel/pane/markup.py,
-    verified 2026-09-04). It is constructed here, and only here, so the structural test that
-    bans direct ``pn.pane.*`` markup constructors elsewhere in the package keeps one
-    sanctioned site for every markup pane. Used by the System log's terminal-style lines.
+    ``_transform_object`` emits ``escape('<pre>' + str(obj) + '</pre>')`` — but that escape
+    is **transport encoding, not a control**: ``Str`` carries the same bokeh ``HTML`` model
+    as ``Markdown``, ``run_scripts=True`` included, and the client's ``html_decode`` undoes
+    it before ``innerHTML``. So the text is escaped *here* first, and Panel's own escape
+    makes it double — which is what survives the decode as characters rather than markup.
+
+    Corrected 2026-09-14 (audit 2026-09-13, finding A-1). The 2026-09-04 version passed the
+    object through unescaped and its test asserted the single-escaped form as success; the
+    System log carries IBKR fill strings, gateway detail, tool output and exception text, so
+    that pane executed markup from those sources. ``test_unsafe_str_pane_would_be_vulnerable``
+    now guards the premise.
+
+    It is constructed here, and only here, so the structural test that bans direct
+    ``pn.pane.*`` markup constructors elsewhere in the package keeps one sanctioned site for
+    every markup pane. Used by the System log's terminal-style lines.
 
     Args:
         text: The line to show. Untrusted input is expected and safe to pass.
         **params: Extra pane parameters (``margin``, sizing).
     """
-    return pn.pane.Str(text, **params)
+    return pn.pane.Str(escape_markup(text), **params)
 
 
 def escape_markup(text: str) -> str:
@@ -107,3 +129,24 @@ def escape_markup(text: str) -> str:
         The text with ``&``, ``<`` and ``>`` replaced by entities.
     """
     return html.escape(text, quote=False)
+
+
+def safe_toast(notifications: Any, level: str, text: str, *, duration: int) -> None:
+    """Raise one toast whose body cannot become markup.
+
+    The single route for ``pn.state.notifications``. Panel hands ``message`` to notyf
+    unchanged and notyf assigns it with ``innerHTML`` (no ``html_decode`` on this path, so
+    one escape is exactly the control — two would show entities to the user).
+
+    A function rather than escaping at each call site because the sites drift: the System
+    log and the dashboard's stale-data toast both interpolate IBKR and exception text, and
+    a third site would be written by copying whichever one was found first.
+
+    Args:
+        notifications: A live ``pn.state.notifications``; callers check it is not None
+            first, since it is None outside a served session.
+        level: ``"info"``, ``"warning"``, ``"error"`` or ``"success"`` — the notyf method.
+        text: The message. Untrusted input is expected and safe to pass.
+        duration: Milliseconds; ``0`` is sticky.
+    """
+    getattr(notifications, level)(escape_markup(text), duration=duration)

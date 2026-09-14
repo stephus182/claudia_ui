@@ -9,10 +9,14 @@ inventory behind it: `docs/panel/ui-customisation-reference.md` § System log an
 The body is terminal-style (user request 2026-09-04, "more like a terminal than a chat"):
 a scrolling `pn.Column` of one monospace `pn.pane.Str` per event, `HH:MM:SS  [LEVEL]  text`,
 newest at the bottom and scrolled into view. It replaced a `ChatFeed` of bubbles the same
-day. Each line is `panel_markdown.safe_text` — a `Str` pane, which renders its object as a
-raw string, every character escaped, no Markdown, no HTML — so tool results and exception
-text are safe here by construction (the ChatFeed before it needed `renderers=[safe_markdown]`
-for the same guarantee), and the one sanctioned construction site for markup panes stays one.
+day. Each line is `panel_markdown.safe_text` — a `Str` pane whose text that helper escapes
+before Panel's own transport escape, so markup survives the client's single `html_decode` as
+characters. Tool results, IBKR strings and exception text land here verbatim, so that is a
+control and not a formality: until 2026-09-14 the pane took its object unescaped and this
+docstring's "every character escaped" described Panel's transport encoding, which the browser
+undoes (audit 2026-09-13, finding A-1). Toasts go through `safe_toast` for the same reason,
+with one escape rather than two, because notyf assigns the body with `innerHTML` and never
+decodes. The one sanctioned construction site for markup panes stays one.
 
 Panel-only: no IBKR, no SQL, no `panel_app` import (same rule as the dashboard modules).
 """
@@ -25,7 +29,7 @@ from typing import Literal
 
 import panel as pn
 
-from claudia.panel_markdown import safe_text
+from claudia.panel_markdown import safe_text, safe_toast
 
 Level = Literal["info", "warning", "error"]
 
@@ -112,8 +116,7 @@ class SystemLog:
         notifications = self._notifications
         if notifications is None:
             return
-        duration = _TOAST_DURATION_MS[level]
-        if level == "warning":
-            notifications.warning(text, duration=duration)
-        else:
-            notifications.error(text, duration=duration)
+        # Through `safe_toast`, never `notifications.<level>` directly: the toast body is
+        # assigned with innerHTML, and `text` here is a fill headline, a gateway detail or
+        # an exception string (audit 2026-09-13, finding A-1).
+        safe_toast(notifications, level, text, duration=_TOAST_DURATION_MS[level])
