@@ -8,6 +8,11 @@ on:
   schedule:
     # Weekly dependency audit. The dependency floors float upward on purpose, so the
     # resolved tree can acquire a known vulnerability without a single commit landing here.
+    #
+    # Tuesday, where ibkr_core_mcp runs Monday: deliberately staggered, so a new advisory
+    # against a shared dependency is seen once, triaged in the repo that owns the floor, and
+    # then confirmed here a day later — rather than two red runs at the same minute saying
+    # the same thing. Not drift; do not "align" it.
     - cron: "0 6 * * 2"
 
 # Mirrors ibkr_core_mcp/.github/workflows/ci.yml step for step (aligned 2026-09-08) so both

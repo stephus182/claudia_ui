@@ -281,3 +281,53 @@ def called_names(node: ast.AST) -> set[str]:
         for child in ast.walk(node)
         if isinstance(child, ast.Call) and (name := callee_name(child)) is not None
     }
+
+
+def call_line_numbers(node: ast.AST, names: Iterable[str]) -> list[int]:
+    """Line numbers of every call to one of `names` inside `node`, ascending."""
+    wanted = set(names)
+    return sorted(
+        child.lineno
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call) and callee_name(child) in wanted
+    )
+
+
+def first_call_line(node: ast.AST) -> int | None:
+    """Line number of the first call of any kind inside `node`, or None if it makes none.
+
+    Used to assert that a guard runs *before* everything else in a handler, which is what
+    "claimed synchronously, before the first await" has to mean in a test.
+    """
+    lines = [child.lineno for child in ast.walk(node) if isinstance(child, ast.Call)]
+    return min(lines) if lines else None
+
+
+def dynamic_attribute_sites(node: ast.AST, forbidden: Iterable[str]) -> set[str]:
+    """Every `getattr`/`setattr` call that a name probe cannot see through.
+
+    A name probe reads `x.place_order` and `place_order`; it reads nothing at all from
+    `getattr(x, "place_order")` or `getattr(x, name)` (verified 2026-09-14). Two shapes are
+    reported, and only two:
+
+    * the attribute name is not a string literal — the probe cannot know what it resolves to;
+    * the attribute name is a literal in `forbidden` — the probe was evaded in plain sight.
+
+    A literal read of an ordinary field is neither. `agent.py` does
+    `getattr(usage, "cache_read_input_tokens", None)` half a dozen times because the
+    Anthropic SDK's usage object gains and loses fields between versions, and a rule that
+    called that a violation would be deleted rather than obeyed.
+    """
+    banned = set(forbidden)
+    sites: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call) or callee_name(child) not in ("getattr", "setattr"):
+            continue
+        if len(child.args) < 2:
+            continue
+        name_arg = child.args[1]
+        if not isinstance(name_arg, ast.Constant) or not isinstance(name_arg.value, str):
+            sites.add(f"line {child.lineno}: attribute name is not a literal")
+        elif name_arg.value in banned:
+            sites.add(f"line {child.lineno}: resolves {name_arg.value!r}")
+    return sites

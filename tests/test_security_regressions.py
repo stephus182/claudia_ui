@@ -796,6 +796,13 @@ def _m1_agent():
             "STOP_LIMIT missing its limit price",
         ),
         ("propose_modify", {**_M1_MODIFY, "limit_price": None}, "modify to LMT with no price"),
+        # Not a price, on any kind: NaN and Infinity are `number`s, and zero is what an
+        # unset field looks like after a coercion (review 2026-09-14). Negatives are
+        # deliberately absent from this table — crude has printed below zero.
+        ("propose_order", {**_M1_ORDER, "limit_price": float("nan")}, "NaN limit price"),
+        ("propose_order", {**_M1_ORDER, "limit_price": float("inf")}, "infinite limit price"),
+        ("propose_order", {**_M1_ORDER, "limit_price": 0}, "zero limit price"),
+        ("propose_cancel", {**_M1_ORDER, "order_id": "42", "limit_price": 0}, "zero on a cancel"),
     ],
 )
 def test_malformed_order_proposal_is_rejected(tool, payload, reason):
@@ -836,6 +843,9 @@ def test_malformed_order_proposal_is_rejected(tool, payload, reason):
         {**_M1_ORDER, "order_type": "MKT", "limit_price": None, "stop_price": None},
         # A stop-limit with both prices — the one type that needs two.
         {**_M1_ORDER, "order_type": "STOP_LIMIT", "limit_price": 185.0, "stop_price": 180.0},
+        # A negative price is legal and must stay so: crude printed below zero in April 2020
+        # and a calendar spread quotes negative by construction.
+        {**_M1_ORDER, "limit_price": -3.75},
     ],
 )
 def test_valid_order_proposal_is_accepted(payload):

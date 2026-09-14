@@ -19,11 +19,18 @@ involved — which is exactly how `tests/conftest.py` drives one on purpose.
 
 from __future__ import annotations
 
+import ast
+
 from tests.security.structural import (
     PACKAGE_DIR,
     assignment_targets,
+    call_line_numbers,
+    called_names,
+    first_call_line,
+    function_named,
     functions_calling,
     handlers_bound_to,
+    keyword_arguments_used,
     package_sources,
     referenced_names,
 )
@@ -44,6 +51,11 @@ CLICK_LAYER = "panel_order_flow.py"
 # the parameter fires every registered handler.
 CLICK_PARAMETER = "clicks"
 TRIGGER_NAMES = frozenset({"trigger"})
+
+
+def _module(source: str) -> ast.Module:
+    """Parse a source string so the subtree checkers can read a whole module."""
+    return ast.parse(source)
 
 
 def test_only_the_click_layer_calls_an_execution_core():
@@ -71,6 +83,49 @@ def test_every_core_call_sits_in_a_function_bound_to_a_click():
     assert callers <= bound, f"cores called from unbound functions: {sorted(callers - bound)}"
 
 
+def test_every_click_handler_claims_the_one_shot_before_anything_else():
+    """The guard covers the class of handlers, not the one that has a test.
+
+    Measured 2026-09-14: deleting `if not acted.claim(): return` from five of the six
+    handlers — keeping only the staged-order one, which is the only one a behavioural test
+    drives — left the whole suite green. Two of those five are live IBKR writes. The
+    behavioural test stays; this one is what makes it a rule.
+
+    "Before anything else" is the substance: the claim is what makes two events racing on a
+    single-threaded loop resolve to one action, so it has to be the first call in the body,
+    ahead of every await.
+    """
+    source = (PACKAGE_DIR / CLICK_LAYER).read_text(encoding="utf-8")
+    handlers = handlers_bound_to(source, "on_click")
+    assert len(handlers) == 6, f"expected six bound handlers, found {sorted(handlers)}"
+
+    for name in sorted(handlers):
+        fn = function_named(source, name)
+        claims = call_line_numbers(fn, ("claim",))
+        assert claims, f"{name} does not claim the one-shot"
+        assert claims[0] == first_call_line(fn), f"{name} does something before claiming"
+
+
+def test_every_renderer_takes_its_own_snapshot_of_the_proposal():
+    """Same class argument: the snapshot was tested on one renderer of three.
+
+    Deleting `proposal = _snapshot(proposal)` from the cancel and modify renderers left the
+    suite green (measured 2026-09-14). What the human reads has to be what the click sends
+    on every card, not on the one that happens to be covered.
+    """
+    source = (PACKAGE_DIR / CLICK_LAYER).read_text(encoding="utf-8")
+    renderers = [
+        "render_order_proposal",
+        "render_cancel_proposal",
+        "render_modify_proposal",
+    ]
+    for name in renderers:
+        fn = function_named(source, name)
+        assert "_snapshot" in called_names(fn), f"{name} renders the caller's own dict"
+        snap = call_line_numbers(fn, ("_snapshot",))
+        assert snap[0] == first_call_line(fn), f"{name} reads the proposal before copying it"
+
+
 def test_nothing_fires_a_button_from_code():
     """No module writes `clicks` or triggers the parameter `on_click` watches.
 
@@ -83,8 +138,19 @@ def test_nothing_fires_a_button_from_code():
     for path, source in package_sources():
         if CLICK_PARAMETER in assignment_targets(source):
             offenders.append(f"{path.name}: assigns .{CLICK_PARAMETER}")
-        if TRIGGER_NAMES & referenced_names(source):
-            offenders.append(f"{path.name}: references param trigger")
+        # `param.update(clicks=1)` fires every handler and writes no attribute, so the
+        # assignment probe cannot see it (verified against a live Button, 2026-09-14).
+        if CLICK_PARAMETER in keyword_arguments_used(source):
+            offenders.append(f"{path.name}: passes {CLICK_PARAMETER}= to a call")
+        # A *call* to `.trigger(...)`, not any name called `trigger`: a stop trigger is an
+        # ordinary variable in this application, and a rule that breaks on one would be
+        # deleted rather than obeyed.
+        if TRIGGER_NAMES & called_names(_module(source)):
+            offenders.append(f"{path.name}: calls param trigger")
+        # `setattr(btn, "clicks", 1)` also fires the handler and is invisible to every
+        # probe above. Nothing in the package needs dynamic attribute writing.
+        if "setattr" in called_names(_module(source)):
+            offenders.append(f"{path.name}: calls setattr")
     assert not offenders, "a button can be pressed from code: " + "; ".join(offenders)
 
 
@@ -126,6 +192,9 @@ def test_the_binding_probe_sees_an_unbound_caller():
     assert callers - handlers_bound_to(snippet, "on_click") == {"_retry_later"}
 
 
-def test_the_click_probe_sees_a_programmatic_press():
+def test_the_click_probe_sees_every_way_to_press_a_button():
+    """All four were verified to fire a real `pn.widgets.Button`'s handler (2026-09-14)."""
     assert "clicks" in assignment_targets("def go(btn):\n    btn.clicks = 1\n")
-    assert "trigger" in referenced_names('def go(btn):\n    btn.param.trigger("clicks")\n')
+    assert "trigger" in called_names(_module('def go(btn):\n    btn.param.trigger("clicks")\n'))
+    assert "clicks" in keyword_arguments_used("def go(btn):\n    btn.param.update(clicks=1)\n")
+    assert "setattr" in called_names(_module('def go(btn):\n    setattr(btn, "clicks", 1)\n'))

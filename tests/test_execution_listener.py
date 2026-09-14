@@ -571,7 +571,7 @@ def test_get_live_pnl_text_uses_cache_when_populated():
 
     toolkit = MagicMock()
     toolkit._store.get_latest_pnl.return_value = {
-        "account": "U1675699.Core",
+        "account": "U1234567.Core",
         "dpl": 12.5,
         "nl": 10000.0,
         "upl": 3.0,
@@ -579,7 +579,7 @@ def test_get_live_pnl_text_uses_cache_when_populated():
         "mv": 5000.0,
     }
     result = get_live_pnl_text(toolkit)
-    assert "U1675699.Core" in result
+    assert "U1234567.Core" in result
     toolkit.execute.assert_not_called()
 
 
@@ -680,7 +680,7 @@ _TODAYS_FILL: dict[str, Any] = {  # the real event of 2026-09-04 16:47:05 UTC, v
     "order_ref": "CLAUDIA-1788538622110",
     "exchange": "CME",
     "net_amount": 386600.0,
-    "account": "U1675699",
+    "account": "U1234567",
     "company_name": "E-mini S&P 500",
     "contract_description_1": "Sep18 '26",
     "sec_type": "FUT",

@@ -3,12 +3,19 @@
 #
 # Default rules plus the four shapes this repository handles that the defaults do not name.
 # CI scans the pushed / PR commit range (.github/workflows/ci.yml, `secret-scan`); run
-# `gitleaks git --redact` locally for the full history.
+# `gitleaks git --redact` locally for the full history. **Not `gitleaks dir`** — that reads
+# the working tree including git-ignored paths, and `data/ibkr_flex_archive/` is thousands
+# of real account statements, so it returns thousands of findings about files git will never
+# see (measured 2026-09-14).
 #
 # History note, so nobody re-opens it: a 2026-09-13 manual scan of the full history found no
-# API key, OAuth token or Firecrawl key of any shape. It did find IBKR account identifiers in
-# screenshot blobs added in 63030bd, which remain reachable in history — an accepted residual
-# (user decision 2026-07-25, do not re-raise) and outside the pushed-range scan by design.
+# API key, OAuth token or Firecrawl key of any shape. It did find IBKR account identifiers,
+# and in more than the screenshot blobs this note first named: a full-history run on
+# 2026-09-14 reported 69, in plain text across test files, project-status prose, local plans
+# and Playwright snapshots. The blobs in history remain an accepted residual (user decision
+# 2026-07-25, do not re-raise) and are outside a pushed-range scan by design. What was NOT
+# acceptable and is now fixed: the live account id was in a tracked test file at HEAD. That
+# is the untrack-at-HEAD half of the standing rule, not the declined history rewrite.
 
 title = "claudia_ui"
 

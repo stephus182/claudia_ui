@@ -62,9 +62,11 @@ valid proposal. Rendering that as a bare `(LMT, DAY)` would put a limit order wi
 visible limit in front of the user — the same silent omission as the STOP_LIMIT gap, and
 the execution core would then send IBKR a LMT body with no `price` field at all.
 
-This only makes the gap visible. Refusing the proposal outright belongs in
-`agent._proposal_defect`, alongside the other four guarantees `strict` cannot express;
-until that lands, the approval screen must at least not hide it.
+Refusing such a proposal outright landed in `agent._proposal_defect` on 2026-09-14 (audit
+2026-09-13, finding A-2), so on the `order` and `modify` paths this text is now unreachable:
+no button is drawn at all. It stays for the `cancel` path, whose price fields are display
+context describing a live order and are deliberately not required — and as the render-layer
+backstop for any future caller that does not go through the proposal handler.
 """
 
 

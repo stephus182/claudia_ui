@@ -15,10 +15,14 @@ walk is `ibkr_core_mcp/**`. No test in either repo read ClaudIA's model layer un
 
 from __future__ import annotations
 
+import ast
+
 import pytest
 
 from tests.security.structural import (
     PACKAGE_DIR,
+    called_names,
+    dynamic_attribute_sites,
     function_named,
     imported_modules,
     keyword_arguments_used,
@@ -61,6 +65,25 @@ EXECUTION_MODULES = ("claudia.order_flow", "claudia.panel_order_flow")
 
 def _source(name: str) -> str:
     return (PACKAGE_DIR / name).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("module", MODEL_LAYER)
+def test_the_model_layer_resolves_no_attribute_dynamically(module):
+    """`getattr(client, "place_order")()` is invisible to every name probe above.
+
+    Verified 2026-09-14: `referenced_names` sees only `getattr` for that expression. Two
+    shapes are banned and no more — a non-literal attribute name, which nothing can follow,
+    and a literal that is one of the forbidden names, which is evasion in plain sight. A
+    literal read of an ordinary field stays legal, because `agent.py` uses half a dozen of
+    them on the SDK's usage object, and a rule that called those violations would be deleted
+    rather than obeyed.
+    """
+    tree = ast.parse(_source(module))
+    evaded = dynamic_attribute_sites(tree, ORDER_WRITE_NAMES | GATE_AND_TRANSPORT_NAMES)
+    assert not evaded, f"{module} resolves an attribute the name probes cannot follow: {evaded}"
+    assert not {"eval", "exec", "__import__"} & called_names(tree), (
+        f"{module} evaluates code at runtime"
+    )
 
 
 @pytest.mark.parametrize("module", MODEL_LAYER)
@@ -154,6 +177,19 @@ def test_the_name_probe_sees_a_write_reached_through_a_toolkit():
         "        return self._toolkit.client.place_order(inputs['acct'], inputs)\n"
     )
     assert ORDER_WRITE_NAMES & referenced_names(snippet) == {"place_order"}
+
+
+def test_the_dynamic_probe_sees_the_escape_hatch_and_ignores_an_ordinary_read():
+    evaded = 'def f(c, b):\n    return getattr(c, "place_order")(b)\n'
+    computed = "def f(c, b, name):\n    return getattr(c, name)(b)\n"
+    ordinary = 'def f(u):\n    return getattr(u, "cache_read_input_tokens", None) or 0\n'
+    banned = ORDER_WRITE_NAMES | GATE_AND_TRANSPORT_NAMES
+    assert dynamic_attribute_sites(ast.parse(evaded), banned)
+    assert dynamic_attribute_sites(ast.parse(computed), banned)
+    assert not dynamic_attribute_sites(ast.parse(ordinary), banned)
+    assert not ORDER_WRITE_NAMES & referenced_names(evaded), (
+        "if a name probe ever sees through getattr, this ban can be reconsidered"
+    )
 
 
 def test_the_name_probe_ignores_a_docstring_mention():

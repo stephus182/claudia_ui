@@ -47,7 +47,7 @@ https://panel.holoviz.org/reference/panes/Markdown.html
 from __future__ import annotations
 
 import html
-from typing import Any
+from typing import Any, Literal
 
 import panel as pn
 
@@ -131,7 +131,13 @@ def escape_markup(text: str) -> str:
     return html.escape(text, quote=False)
 
 
-def safe_toast(notifications: Any, level: str, text: str, *, duration: int) -> None:
+def safe_toast(
+    notifications: Any,
+    level: Literal["info", "warning", "error", "success"],
+    text: str,
+    *,
+    duration: int,
+) -> None:
     """Raise one toast whose body cannot become markup.
 
     The single route for ``pn.state.notifications``. Panel hands ``message`` to notyf
@@ -140,12 +146,19 @@ def safe_toast(notifications: Any, level: str, text: str, *, duration: int) -> N
 
     A function rather than escaping at each call site because the sites drift: the System
     log and the dashboard's stale-data toast both interpolate IBKR and exception text, and
-    a third site would be written by copying whichever one was found first.
+    a third site would be written by copying whichever one was found first. The levels
+    actually raised today are ``warning``, ``error`` and ``success``; ``info`` is accepted
+    because notyf has it, not because anything here sends one — `SystemLog.say` returns
+    before the toast for an info line.
 
     Args:
         notifications: A live ``pn.state.notifications``; callers check it is not None
             first, since it is None outside a served session.
-        level: ``"info"``, ``"warning"``, ``"error"`` or ``"success"`` — the notyf method.
+        level: The notyf method to call. A ``Literal`` rather than ``str`` because the name
+            is data here: `getattr` turns a typo into an ``AttributeError`` at the moment a
+            toast is raised, which mypy cannot see and which the dashboard's call sites —
+            passing the level directly, with no dict in front — would hit first
+            (review 2026-09-14).
         text: The message. Untrusted input is expected and safe to pass.
         duration: Milliseconds; ``0`` is sticky.
     """

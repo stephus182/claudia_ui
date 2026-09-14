@@ -22,6 +22,12 @@ from tests.conftest import (
     _REAL_DNS_EXEMPT_TESTS,
     _REAL_LOOPBACK_BIND_TESTS,
     _SECRET_ENV_PREFIXES,
+    live_api_opted_in,
+)
+
+pytestmark = pytest.mark.skipif(
+    live_api_opted_in(),
+    reason="an opted-in live-API run deliberately keeps the operator's key and .env",
 )
 
 

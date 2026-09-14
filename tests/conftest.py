@@ -73,23 +73,49 @@ def _neutralise_dotenv() -> None:
     dotenv.main.load_dotenv = noop
 
 
+def live_api_opted_in() -> bool:
+    """True when the operator asked for the live-API checks on this run.
+
+    `CLAUDIA_LIVE_SCHEMA_CHECK=1` is the documented opt-in (CLAUDE.md § Testing). Those four
+    tests exist because local validation cannot prove what the tools endpoint accepts — three
+    schema defects once passed a docs read and a green suite and would each have 400'd every
+    request — so they need the real key and the network, and a block that quietly retires
+    them is worse than no block. The first version of this file scrubbed `ANTHROPIC_*` and
+    no-op'd `load_dotenv` unconditionally, which made `pytest -m live_api` unpassable even
+    with the key exported, and failed pointing at `.env` (review 2026-09-14).
+    """
+    return os.environ.get("CLAUDIA_LIVE_SCHEMA_CHECK") == "1"
+
+
 def pytest_configure(config):
     """Arm the block for the whole session, import and collection included.
 
     From the first test onward pytest-socket's own per-test hooks take over (see
     `pytest_collection_modifyitems`); its teardown re-enables sockets after every test,
     which is why this call alone is not the per-test guarantee.
+
+    On an opted-in live-API run the secret scrub and the dotenv no-op are skipped: the
+    sockets stay blocked for every other test through the per-test markers, so the
+    protection that matters is unchanged, while the run the operator asked for can happen.
     """
     from pytest_socket import disable_socket
 
-    _neutralise_dotenv()
-    for name in [k for k in os.environ if k.startswith(_SECRET_ENV_PREFIXES)]:
-        del os.environ[name]
+    if not live_api_opted_in():
+        _neutralise_dotenv()
+        for name in [k for k in os.environ if k.startswith(_SECRET_ENV_PREFIXES)]:
+            del os.environ[name]
     disable_socket(allow_unix_socket=True)
 
 
 def pytest_unconfigure(config):
-    """Hand the process back as it was found."""
+    """Re-enable sockets.
+
+    Only sockets: the dotenv no-op and the scrubbed variables are left as they are, because
+    the process is ending and restoring them would put the operator's key back into an
+    interpreter that no longer needs it. Said explicitly because an earlier version of this
+    docstring claimed to hand the process back as it was found, which was not true
+    (review 2026-09-14).
+    """
     from pytest_socket import enable_socket
 
     enable_socket()
@@ -104,11 +130,16 @@ def pytest_collection_modifyitems(config, items):
     `integration` tests are opt-in and genuinely need the network.
     """
     for item in items:
+        # `originalname` rather than `name`: a parametrised test is `test_x[case]`, which
+        # would never match an exemption written as `test_x` — the exemption would look
+        # present and do nothing (review 2026-09-14). `originalname` is unset for a plain
+        # test, so fall back to `name`.
+        base = getattr(item, "originalname", None) or item.name
         needs_network = (
             item.get_closest_marker("integration")
             or item.get_closest_marker("live_api")
-            or item.name in _REAL_DNS_EXEMPT_TESTS
-            or item.name in _REAL_LOOPBACK_BIND_TESTS
+            or base in _REAL_DNS_EXEMPT_TESTS
+            or base in _REAL_LOOPBACK_BIND_TESTS
         )
         item.add_marker(pytest.mark.enable_socket if needs_network else pytest.mark.disable_socket)
 

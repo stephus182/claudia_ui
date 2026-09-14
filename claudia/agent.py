@@ -1253,9 +1253,10 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     5. `outside_rth` is True, False or None (2026-09-04). Strict mode types it on the API
        path; this is the guard for every other caller, because `bool("false")` is True and
        a coerced order attribute is a fabricated one.
-    6. Every price present is a finite number, on every kind (2026-09-14, review). `number`
-       admits NaN and Infinity; they are not prices, and a card that raises while formatting
-       one is how a proposal disappears.
+    6. Every price present is a finite non-zero number, on every kind (2026-09-14, review).
+       `number` admits NaN, Infinity and 0; none is a price, and a card that raises while
+       formatting one is how a proposal disappears. Negatives stay legal — crude has printed
+       below zero and a calendar spread quotes negative by construction.
     7. A priced `order_type` carries its price (2026-09-14, audit 2026-09-13 finding A-2).
        JSON Schema can express "number or null" but not "null only when order_type is MKT";
        `dependentRequired` would need the type in a sibling object and is unprobed against
@@ -1303,10 +1304,18 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
             continue
         if isinstance(price, bool) or not isinstance(price, int | float) or not isfinite(price):
             return f"{field}={price!r} is not a price"
+        if price == 0:
+            # Zero is never a price on an outright order, and it is what an unset field
+            # looks like after a coercion. Negatives are NOT banned: crude has printed
+            # below zero and a calendar spread quotes negative by construction, so a hard
+            # sign rule would refuse a legitimate order (review 2026-09-14).
+            return f"{field}=0 is not a price"
 
-    # A priced type must carry the price it is priced by. Cancel is excluded: its price
-    # fields describe a live order for the human to recognise and are never sent, so
-    # requiring them would refuse a legitimate cancel over a display field.
+    # A priced type must carry the price it is priced by. Cancel is excluded from THIS rule
+    # only — it is a requiredness rule, and a cancel's price fields are display context for
+    # the human, never sent, so demanding them would refuse a legitimate cancel over a
+    # label. The check above is a different rule and does apply to cancel: a value that is
+    # present must be a real number, whichever kind carries it.
     if kind in ("order", "modify"):
         order_type = inputs.get("order_type")
         for field in _REQUIRED_PRICES.get(order_type, ()) if isinstance(order_type, str) else ():
