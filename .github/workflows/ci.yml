@@ -150,3 +150,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
+          # Pinned, and not at the action's default. Two reasons, one of which bit on the
+          # first push carrying this job (run 34858125121, 2026-09-14): the action downloads
+          # its binary at run time, and its hard-coded default 8.24.3 was returning HTTP 504
+          # from the release CDN on both the current and the legacy org path, while 8.30.0
+          # returned 200 — so the gate failed twice for a reason that had nothing to do with
+          # this repository. The other reason is the one that matters longer: a security gate
+          # whose scanner version is whatever the action happens to default to is not a
+          # reproducible control, and an unreviewed scanner upgrade can change what it finds
+          # in either direction. Bump deliberately.
+          GITLEAKS_VERSION: "8.30.0"
