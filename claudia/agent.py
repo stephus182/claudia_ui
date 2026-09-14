@@ -1965,6 +1965,13 @@ class ClaudIAAgent:
         # turn — deliberately NOT cleared per turn like _pending_proposal, since a note
         # queued by a turn that then raised must still reach the model.
         self._pending_operator_notes: list[str] = []
+        # Stop reasons from THIS attempt's passes that mean the turn is not a whole answer.
+        # Collected rather than sent as they occur, and reset at the top of every
+        # _stream_turn, so the warning belongs to the attempt the user is actually shown:
+        # the same-turn retry calls _stream_turn again after withdrawing the first attempt,
+        # and a warning emitted during that attempt described a message that never reached
+        # the screen (gap #54). Same idiom as _pending_proposal, one line above.
+        self._incomplete_reasons: list[str] = []
         self._called_tools_this_turn: set[str] = set()
 
     def set_tv_bridge(self, bridge: TradingViewBridge, tools: list[dict[str, Any]]) -> None:
@@ -2117,6 +2124,11 @@ class ClaudIAAgent:
         if display_text:
             await self._sink.send_message(display_text)
 
+        # ...then qualify it. After, never before: this is a footnote about the text the
+        # user has just read, and reading "Response truncated" above the response made it
+        # look like a preamble to a reply that had not arrived yet (gap #54).
+        await self._emit_incomplete_warnings()
+
         # Render the staging button for whichever proposal was recorded — then assert it
         # happened. `rendered` is set on the line *after* a specific await returns, never
         # after the dispatch as a whole, because the failure this closes was a silent skip:
@@ -2194,6 +2206,10 @@ class ClaudIAAgent:
             The turn's text (passes joined with a paragraph break) and the set of tools that
             really ran, also kept on `self._called_tools_this_turn` for the proposal handler.
         """
+        # Per ATTEMPT, not per turn: the same-turn retry calls this again after
+        # withdrawing the first attempt, and that attempt's truncation is not the
+        # user's to hear about — they never saw its text (gap #54).
+        self._incomplete_reasons = []
         first_pass = True
         full_response_text = ""
         # Every tool that actually ran this turn. `tool_calls` below is per-iteration and is
@@ -2345,18 +2361,17 @@ class ClaudIAAgent:
                         getattr(stop_details, "category", None),
                         getattr(stop_details, "explanation", None),
                     )
-                warning = _INCOMPLETE_STOP_REASONS.get(stop_reason)
-                if warning is None:
+                if stop_reason not in _INCOMPLETE_STOP_REASONS:
                     log.error(
                         "unclassified stop_reason %r — treating the turn as incomplete; "
                         "classify it in _INCOMPLETE_STOP_REASONS or _COMPLETE_STOP_REASONS",
                         stop_reason,
                     )
-                    warning = (
-                        "⚠ The response ended for an unrecognised reason "
-                        f"({stop_reason}) — treat it as incomplete."
-                    )
-                await self._sink.send_incomplete_response_warning(warning)
+                # Collected, not sent: the warning is a footnote to text this attempt has
+                # not produced yet, and the attempt may yet be withdrawn. Emitted by
+                # _emit_incomplete_warnings once the text is on screen.
+                if stop_reason not in self._incomplete_reasons:
+                    self._incomplete_reasons.append(stop_reason)
 
             # Append assistant turn to the running message list. Thinking blocks come
             # first and are echoed back unmodified: the docs require it during tool use,
@@ -2960,6 +2975,34 @@ class ClaudIAAgent:
                 messages[-1]["role"] if messages else None,
             )
         self._pending_operator_notes.clear()
+
+    async def _emit_incomplete_warnings(self) -> None:
+        """Tell the user, once per reason, that the turn they just read is not whole.
+
+        Called from the final-response block rather than from the streaming loop, for two
+        reasons that both come down to "a warning belongs to text the user has seen":
+
+        * It reads as a footnote to the answer, not as a preamble to one that has not
+          arrived. Before 2026-09-14 a truncated turn rendered "Response truncated" and
+          then the truncated text.
+        * The same-turn retry withdraws an attempt before display and calls `_stream_turn`
+          again. Emitting mid-stream meant a withdrawn attempt's truncation was announced
+          over a replacement answer that was perfectly complete.
+
+        Order is first-seen, and a reason repeats across passes without repeating here — a
+        turn whose every pass hit the cap is still one truncated turn to the reader.
+        """
+        for reason in self._incomplete_reasons:
+            await self._sink.send_incomplete_response_warning(
+                _INCOMPLETE_STOP_REASONS.get(
+                    reason,
+                    # Unclassified: warn anyway and name it. The ERROR log went out when it
+                    # was collected; this is the user's half of the same honesty.
+                    f"⚠ The response ended for an unrecognised reason ({reason}) — "
+                    "treat it as incomplete.",
+                )
+            )
+        self._incomplete_reasons = []
 
     def _clear_pending_proposal(self) -> None:
         """Discard any proposal left over from an earlier turn.

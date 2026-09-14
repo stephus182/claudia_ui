@@ -4849,3 +4849,65 @@ def test_every_sdk_stop_reason_is_classified():
     classified = set(_INCOMPLETE_STOP_REASONS) | set(_COMPLETE_STOP_REASONS)
     assert set(get_args(StopReason)) == classified
     assert not set(_INCOMPLETE_STOP_REASONS) & set(_COMPLETE_STOP_REASONS)
+
+
+# ── Where the incompleteness warning goes, and which attempt it belongs to (gap #54) ──
+#
+# Emitting the warning from inside `_stream_turn` put it in the wrong place twice over:
+# before the text it qualifies, and — worse — on behalf of an attempt the user never saw,
+# because the same-turn retry calls `_stream_turn` again after withdrawing the first one.
+
+
+@pytest.mark.asyncio
+async def test_the_incompleteness_warning_follows_the_text_it_qualifies():
+    """A footnote, not a preamble: the warning is about text the user has already read."""
+    agent, sink = _make_agent_recording()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events("The answer so f", stop_reason="max_tokens"))
+    )
+    await agent.handle_message("Hi")
+    assert len(sink.messages) == 2
+    assert sink.messages[0] == "The answer so f"
+    assert "truncated" in sink.messages[1].lower()
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawn_attempt_does_not_warn_about_its_own_truncation():
+    """The retry's whole point is that the first attempt never reached the user.
+
+    A warning emitted for it is a notice about a message that does not exist on screen —
+    strictly worse than the ordering defect, because the user is told their answer was cut
+    off when the answer they can actually see is complete.
+    """
+    agent, sink = _make_agent_recording()
+    agent._model = "claude-opus-4-8"
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(_text_response_events(NARRATED_STAGING[0], stop_reason="max_tokens")),
+            _FakeStream(_text_then_tool_events("Checking.", "propose_cancel", VALID_CANCEL)),
+            _FakeStream(_text_response_events("The cancel button is above.")),
+        ]
+    )
+    await agent.handle_message("cancel that one")
+    assert sink.messages == ["Checking.\n\nThe cancel button is above."]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_truncated_before_its_tool_call_still_warns():
+    """Truncation on an intermediate pass survives to the end of the turn.
+
+    `max_tokens` can land mid-`tool_use`, so a truncated pass can still carry tool calls and
+    the loop goes round again. Last-write-wins on the final pass's `end_turn` would drop the
+    warning entirely and present a turn containing a cut-off fragment as whole.
+    """
+    agent, sink = _make_agent_recording()
+    truncated_pass = _text_then_tool_events("Reading the book", "propose_cancel", VALID_CANCEL)
+    truncated_pass[-1] = _message_delta("max_tokens")
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(truncated_pass),
+            _FakeStream(_text_response_events("Done.")),
+        ]
+    )
+    await agent.handle_message("cancel that one")
+    assert any("truncated" in m.lower() for m in sink.messages)
