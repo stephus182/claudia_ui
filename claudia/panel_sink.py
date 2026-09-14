@@ -193,14 +193,13 @@ class PanelMessageSink:
         self._chat.send(chat_step, user="System", respond=False)
         return _PanelToolStepHandle(chat_step)
 
-    async def send_max_tokens_warning(self) -> None:
-        """Tell the user the response was cut off at the model's output-token limit."""
-        self._chat.send(
-            "⚠ Response truncated — token limit reached. "
-            "Ask me to continue if the answer is incomplete.",
-            user="System",
-            respond=False,
-        )
+    async def send_incomplete_response_warning(self, text: str) -> None:
+        """Render an incomplete-turn warning in the chat, attributed to System.
+
+        `respond=False` matters: this is a notice about the turn, and must not be fed back
+        to the model as if the user had said it.
+        """
+        self._chat.send(text, user="System", respond=False)
 
     async def send_system_note(self, text: str) -> None:
         """A session-level event for the System log card, not the chat (§2.6 routing rule)."""

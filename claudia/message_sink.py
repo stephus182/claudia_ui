@@ -50,8 +50,19 @@ class MessageSink(Protocol):
         """Return an async-context-manager tool-call indicator for tool `name`."""
         ...
 
-    async def send_max_tokens_warning(self) -> None:
-        """Notify the user a response was truncated at the token limit."""
+    async def send_incomplete_response_warning(self, text: str) -> None:
+        """Tell the user that the turn on screen is NOT a complete answer.
+
+        One method for the whole class of `stop_reason` values that end a turn early —
+        truncation at the output cap, a filled context window, a model refusal — rather
+        than one method per value. The agent owns the wording (it is the layer that knows
+        the API's semantics); the sink owns the rendering and the attribution.
+
+        This is a CHAT message, not a System-log note: it is about the answer the user just
+        asked for, not about the session. A refusal in particular can arrive with empty
+        content, so this may be the only thing the user sees for their turn — a sink that
+        drops it leaves the turn indistinguishable from a hang.
+        """
         ...
 
     async def send_system_note(self, text: str) -> None:

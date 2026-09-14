@@ -60,14 +60,19 @@ async def test_send_message_without_pine_block_does_not_render_pinescript():
 
 
 @pytest.mark.asyncio
-async def test_send_max_tokens_warning_sends_as_system():
-    """The truncation warning is attributed to System, not to ClaudIA."""
+async def test_send_incomplete_response_warning_sends_as_system():
+    """The incompleteness warning is attributed to System, not to ClaudIA.
+
+    `respond=False` is asserted too: a notice about the turn must not re-enter the model
+    as though the user had typed it.
+    """
     chat = _make_chat()
     sink = PanelMessageSink(chat=chat, session_id="s1")
-    await sink.send_max_tokens_warning()
+    await sink.send_incomplete_response_warning("⚠ Response truncated — token limit reached.")
     args, kwargs = chat.send.call_args
     assert "truncated" in args[0].lower()
     assert kwargs["user"] == "System"
+    assert kwargs["respond"] is False
 
 
 @pytest.mark.asyncio

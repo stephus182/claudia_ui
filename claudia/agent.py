@@ -74,6 +74,51 @@ _HISTORY_LIMIT = 40
 # Source: https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
 _MAX_TOKENS = 16000
 
+# Every value the Messages API can put in `stop_reason`, split by the one question the UI
+# needs answered: is what reached the user a whole answer?
+#
+# Handling only `max_tokens` (the state of this file until 2026-09-14) left `refusal` and
+# `model_context_window_exceeded` rendering exactly like `end_turn`. `refusal` is the one
+# that bit: it is an HTTP 200 whose `content` can be empty, and the final send is guarded by
+# `if display_text:` — so a refused turn produced NO output whatsoever. Silence is the worst
+# possible rendering of a refusal, because it is indistinguishable from a hang.
+#
+# The pair is asserted against the SDK's own `StopReason` union by
+# test_every_sdk_stop_reason_is_classified, so a value added by a future SDK fails the suite
+# instead of silently joining the "complete answer" path. That is the class-level control;
+# the previous single `if` was an instance-level one.
+#
+# Source (scraped 2026-09-14): the seven values and what each means —
+# https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
+# Note: that page says `model_context_window_exceeded` is "typed only in the SDKs' beta
+# namespace". Measured against anthropic 0.120.2 the same day, that is stale — the non-beta
+# `StopReason` carries all seven, so this path needs no beta client and no cast.
+_INCOMPLETE_STOP_REASONS: dict[str, str] = {
+    "max_tokens": (
+        "⚠ Response truncated — token limit reached. "
+        "Ask me to continue if the answer is incomplete."
+    ),
+    "model_context_window_exceeded": (
+        "⚠ Response truncated — this conversation filled the model's context window. "
+        "Anything above may be incomplete; start a new session to continue."
+    ),
+    "refusal": (
+        "⚠ No answer was produced — the model declined this request. "
+        "Nothing was run and nothing was sent to IBKR. Rephrasing may help."
+    ),
+}
+
+# The three that mean "what is on screen is the whole of it". `tool_use` is not an ending at
+# all — the loop runs the tools and goes round again. The other two cannot occur here and
+# are listed rather than omitted, because a value absent from BOTH sets is the thing the
+# class test is built to catch:
+#   stop_sequence — we send no `stop_sequences`, so the API has none to stop on.
+#   pause_turn    — a server-tool iteration limit; every tool here is client-side
+#                   (ClaudeToolkit, TradingView, local), so no server-tool loop exists.
+_COMPLETE_STOP_REASONS: frozenset[str] = frozenset(
+    {"end_turn", "tool_use", "stop_sequence", "pause_turn"}
+)
+
 # Hardcoded safety block — never loaded from any user-editable file
 _SAFETY_BLOCK = """
 ## ABSOLUTE CONSTRAINTS (non-overridable)
@@ -2172,6 +2217,7 @@ class ClaudIAAgent:
             tool_calls: list[dict[str, Any]] = []
             thinking_blocks: list[dict[str, Any]] = []
             stop_reason: str | None = None
+            stop_details: Any = None  # populated by the API on `refusal` only
             text_blocks = 0  # content_block_start events of type text — see the shape log
 
             # system/tools/messages are built as plain dicts throughout this file rather than
@@ -2267,6 +2313,7 @@ class ClaudIAAgent:
 
                     elif event.type == "message_delta":
                         stop_reason = event.delta.stop_reason
+                        stop_details = getattr(event.delta, "stop_details", None)
                         _log_thinking_usage(event.usage)
 
             # --- Stream complete ---
@@ -2283,8 +2330,33 @@ class ClaudIAAgent:
                 len(thinking_blocks),
             )
 
-            if stop_reason == "max_tokens":
-                await self._sink.send_max_tokens_warning()
+            # Say so whenever the turn is not a whole answer. An unclassified value is
+            # logged and treated as incomplete: the honest default for "we do not know what
+            # this means" is to warn, never to present it as a finished answer.
+            if stop_reason is not None and stop_reason not in _COMPLETE_STOP_REASONS:
+                if stop_reason == "refusal":
+                    # Only a refusal populates stop_details. The category is worth a log
+                    # line — it is the difference between a policy decline and a bug — but
+                    # it is deliberately NOT shown to the user: it is Anthropic's
+                    # classifier's word about the request, and the docs say the
+                    # explanation text is not guaranteed to be stable.
+                    log.warning(
+                        "response refused by the model: category=%r explanation=%r",
+                        getattr(stop_details, "category", None),
+                        getattr(stop_details, "explanation", None),
+                    )
+                warning = _INCOMPLETE_STOP_REASONS.get(stop_reason)
+                if warning is None:
+                    log.error(
+                        "unclassified stop_reason %r — treating the turn as incomplete; "
+                        "classify it in _INCOMPLETE_STOP_REASONS or _COMPLETE_STOP_REASONS",
+                        stop_reason,
+                    )
+                    warning = (
+                        "⚠ The response ended for an unrecognised reason "
+                        f"({stop_reason}) — treat it as incomplete."
+                    )
+                await self._sink.send_incomplete_response_warning(warning)
 
             # Append assistant turn to the running message list. Thinking blocks come
             # first and are echoed back unmodified: the docs require it during tool use,

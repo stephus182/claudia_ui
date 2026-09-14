@@ -157,12 +157,17 @@ The safety-critical agent loop — streaming, tool routing, the hardcoded safety
 
 [`claudia/message_sink.py`](../../claudia/message_sink.py) is a pure `typing.Protocol` module
 with **zero Panel imports**, defining `ToolStepHandle` (mutable `input`/`output` +
-`__aenter__`/`__aexit__`) and `MessageSink` (six methods: `send_message`, `tool_step`,
-`send_max_tokens_warning`, `send_order_proposal`, `send_cancel_proposal`,
-`send_modify_proposal`).
+`__aenter__`/`__aexit__`) and `MessageSink` (seven methods, measured 2026-09-14 with
+`grep -cE '^    (async )?def ' claudia/message_sink.py` minus `ToolStepHandle`'s:
+`send_message`, `tool_step`, `send_incomplete_response_warning`, `send_system_note`,
+`send_order_proposal`, `send_cancel_proposal`, `send_modify_proposal`).
+
+`send_incomplete_response_warning` replaced `send_max_tokens_warning` on 2026-09-14: it
+carries the text rather than implying it, because it now covers every `stop_reason` that
+ends a turn early, not just the output cap (gap #16).
 
 `claudia/agent.py` imports it **only under `TYPE_CHECKING`** (`agent.py:43`), takes it as a
-constructor parameter (`agent.py:494`), and touches it at exactly six call sites:
+constructor parameter, and touches it at eight call sites (`grep -c 'self\._sink\.' claudia/agent.py`, measured 2026-09-14):
 `agent.py:714, 756, 798, 803, 805, 807`. Swapping UI frameworks means writing one new sink.
 
 [`PanelMessageSink`](../../claudia/panel_sink.py#L77) **duck-types** the protocol (no explicit

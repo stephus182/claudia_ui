@@ -878,7 +878,7 @@ def _make_agent_with_sink(sink=None):
     with async methods pre-wired as AsyncMock so callers can assert on them."""
     sink = sink or MagicMock()
     sink.send_message = AsyncMock()
-    sink.send_max_tokens_warning = AsyncMock()
+    sink.send_incomplete_response_warning = AsyncMock()
     sink.send_system_note = AsyncMock()
     sink.send_order_proposal = AsyncMock()
     sink.send_cancel_proposal = AsyncMock()
@@ -925,7 +925,9 @@ async def test_handle_message_max_tokens_calls_sink_warning():
         return_value=_FakeStream(_text_response_events("Truncated...", stop_reason="max_tokens"))
     )
     await agent.handle_message("Hi")
-    sink.send_max_tokens_warning.assert_awaited_once()
+    sink.send_incomplete_response_warning.assert_awaited_once()
+    (text,), _ = sink.send_incomplete_response_warning.await_args
+    assert "token limit" in text.lower()
 
 
 @pytest.mark.asyncio
@@ -1654,9 +1656,9 @@ class _RecordingSink:
         """Capture the assistant text instead of rendering it."""
         self.messages.append(text)
 
-    async def send_max_tokens_warning(self) -> None:
-        """Capture the truncation warning as a marker line."""
-        self.messages.append("[max tokens]")
+    async def send_incomplete_response_warning(self, text: str) -> None:
+        """Capture the incomplete-turn warning alongside the messages it qualifies."""
+        self.messages.append(text)
 
     def tool_step(self, name: str):
         """Return a no-op async step handle, so the tool loop can run without a UI."""
@@ -4751,3 +4753,99 @@ def test_live_api_forced_tool_choice_under_adaptive_thinking():
             f"{excluded} ACCEPTED tool_choice=any — the docs' 400 no longer holds; widen the "
             "forced-tool-choice model table rather than treating this as a defect"
         )
+
+
+# ── Stop reasons: the turn that is not a complete answer (gap #16) ───────────────────
+#
+# `stop_reason` is on every successful Messages API response, and only three of the seven
+# values mean "what is on screen is the whole answer". Before 2026-09-14 exactly one of the
+# other four was handled (`max_tokens`); `refusal` and `model_context_window_exceeded` fell
+# through to the same code path as `end_turn`. `refusal` is the one that bites: it is an
+# HTTP 200 whose `content` can be empty, and the final send is guarded by `if display_text:`
+# — so a refused turn rendered NOTHING AT ALL. No answer, no error, no signal.
+#
+# Source (scraped 2026-09-14, all seven values and what each means):
+# https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
+
+
+def _refusal_delta(stop_reason: str, category: str | None = None, explanation: str | None = None):
+    """A message_delta carrying `stop_details`, which the API populates only on a refusal."""
+    details = (
+        SimpleNamespace(type="refusal", category=category, explanation=explanation)
+        if category is not None or explanation is not None
+        else None
+    )
+    return SimpleNamespace(
+        type="message_delta",
+        delta=SimpleNamespace(stop_reason=stop_reason, stop_details=details),
+        usage=SimpleNamespace(output_tokens=1400, output_tokens_details=None),
+    )
+
+
+@pytest.mark.asyncio
+async def test_refusal_with_empty_content_is_not_silent():
+    """A refusal returns HTTP 200 with no text — the user must still be told something.
+
+    This is the defect's sharp edge: with no text there is no `send_message`, so without
+    this warning the turn ends in complete silence and the user cannot tell a refusal from
+    a hang.
+    """
+    agent, sink = _make_agent_with_sink()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(
+            [
+                SimpleNamespace(
+                    type="message_start", message=SimpleNamespace(usage=SimpleNamespace())
+                ),
+                _refusal_delta("refusal", category="cyber", explanation="Declined."),
+            ]
+        )
+    )
+    await agent.handle_message("Hi")
+    sink.send_incomplete_response_warning.assert_awaited_once()
+    assert sink.send_message.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_model_context_window_exceeded_warns_the_user():
+    """Context-window exhaustion is truncation, and is distinct from `max_tokens`."""
+    agent, sink = _make_agent_with_sink()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(
+            _text_response_events("Partial…", stop_reason="model_context_window_exceeded")
+        )
+    )
+    await agent.handle_message("Hi")
+    sink.send_incomplete_response_warning.assert_awaited_once()
+    (text,), _ = sink.send_incomplete_response_warning.await_args
+    assert "context" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_end_turn_warns_about_nothing():
+    """The false-positive side: a complete answer must not carry an incompleteness warning."""
+    agent, sink = _make_agent_with_sink()
+    agent._client.messages.stream = MagicMock(
+        return_value=_FakeStream(_text_response_events("All done."))
+    )
+    await agent.handle_message("Hi")
+    sink.send_incomplete_response_warning.assert_not_awaited()
+
+
+def test_every_sdk_stop_reason_is_classified():
+    """The control covers the CLASS, not the three instances we happen to know about.
+
+    `max_tokens` was handled alone for months because nothing forced a decision about its
+    siblings. This asserts against the SDK's own `StopReason` union, so the day Anthropic
+    adds a value (the beta union already carries `compaction`) this test fails and someone
+    has to classify it deliberately — rather than it silently rendering as a whole answer.
+    """
+    from typing import get_args
+
+    from anthropic.types import StopReason
+
+    from claudia.agent import _COMPLETE_STOP_REASONS, _INCOMPLETE_STOP_REASONS
+
+    classified = set(_INCOMPLETE_STOP_REASONS) | set(_COMPLETE_STOP_REASONS)
+    assert set(get_args(StopReason)) == classified
+    assert not set(_INCOMPLETE_STOP_REASONS) & set(_COMPLETE_STOP_REASONS)

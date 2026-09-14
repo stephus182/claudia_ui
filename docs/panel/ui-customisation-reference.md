@@ -229,7 +229,7 @@ stays with the answer; what happens *to the session* goes to the log.
 | Stays in the chat (per-turn) | Moves to the System log (session-level) |
 |---|---|
 | tool-call `ChatStep`s (`panel_sink.tool_step`) | connectivity alerts (`ConnectivityChecker.subscribe` → `_make_alert_subscriber`) — `warning` |
-| "Response truncated" (`send_max_tokens_warning`) | Flex sync result (`info`), validation / coverage warnings (`warning`) |
+| "Response truncated" / refused / context-window-filled (`send_incomplete_response_warning`, 2026-09-14) | Flex sync result (`info`), validation / coverage warnings (`warning`) |
 | upload rejected / upload failed / the echoed screenshot | document reloaded (`info`), doc-version warning (`warning`) |
 | Pine inject outcomes (`panel_pinescript`) | gateway and TradingView reconnect progress and outcome |
 | — | the same-turn retry's note (`MessageSink.send_system_note` → `PanelMessageSink(system_log=…)`, 2026-09-11) — `warning`; the only visible trace of a withdrawn first reply |
