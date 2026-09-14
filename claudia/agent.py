@@ -1215,11 +1215,22 @@ def _claims_verbatim_tool_result(text: str) -> str | None:
     return None
 
 
+# Which price each order type cannot be sent without. MKT is absent deliberately: it needs
+# none. The schema types both prices nullable because of MKT, so only a handler can tie the
+# price to the type — and until 2026-09-14 nothing did, so a LMT with a null price reached
+# Gate 2 rendered "Price: MARKET" beside "Order Type: LMT" (audit 2026-09-13, finding A-2).
+_REQUIRED_PRICES: dict[str, tuple[str, ...]] = {
+    "LMT": ("limit_price",),
+    "STP": ("stop_price",),
+    "STOP_LIMIT": ("limit_price", "stop_price"),
+}
+
+
 def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     """Return why a proposal must be rejected, or None when it carries no defect.
 
     `strict: true` already guarantees the types, enums, required keys and closed objects of
-    `proposal_tools.py`'s schemas, so nothing here re-checks those. Five things it cannot
+    `proposal_tools.py`'s schemas, so nothing here re-checks those. Six things it cannot
     express are checked here instead, because retiring `order_proposal_schema.py` would
     otherwise drop each guarantee silently. Each applies to every proposal kind that
     declares the field — the schemas share `_QUANTITY` across all three tools:
@@ -1239,6 +1250,14 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     5. `outside_rth` is True, False or None (2026-09-04). Strict mode types it on the API
        path; this is the guard for every other caller, because `bool("false")` is True and
        a coerced order attribute is a fabricated one.
+    6. A priced `order_type` carries its price (2026-09-14, audit 2026-09-13 finding A-2).
+       JSON Schema can express "number or null" but not "null only when order_type is MKT";
+       `dependentRequired` would need the type in a sibling object and is unprobed against
+       a `strict: true` tool anyway. Without this, `_execute_staged_order_core` simply omits
+       `price` and `order_confirm._order_rows` falls back to "MARKET" — so the last screen
+       before Touch ID named an order type the body did not carry. Cancel is excluded: its
+       price fields describe a live order for the human to recognise and are never sent, so
+       requiring them would refuse a legitimate cancel over a display field.
 
     The type checks below are belt-and-braces against a caller that is not the strict tool
     loop (tests, a future non-API path); they are not a claim that the schema fails.
@@ -1268,6 +1287,13 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
         outside_rth = inputs["outside_rth"]
         if outside_rth is not None and not isinstance(outside_rth, bool):
             return f"outside_rth={outside_rth!r} must be true, false or null"
+
+    if kind in ("order", "modify"):
+        order_type = inputs.get("order_type")
+        for field in _REQUIRED_PRICES.get(order_type, ()) if isinstance(order_type, str) else ():
+            price = inputs.get(field)
+            if isinstance(price, bool) or not isinstance(price, int | float):
+                return f"order_type={order_type!r} requires {field}, got {price!r}"
 
     if kind == "modify":
         changes = inputs.get("changes")

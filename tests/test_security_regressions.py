@@ -769,11 +769,40 @@ def _m1_agent():
             },
             "duplicate changes entries",
         ),
+        # A priced order type whose price is null (audit 2026-09-13, finding A-2). The
+        # schema types the price nullable because MKT carries none; only the handler can
+        # tie the price to the type. Left unchecked, the body omits `price` and the Gate 2
+        # dialog prints "Price: MARKET" / "Total: Market" beside "Order Type: LMT" — the
+        # last human surface naming an order the body does not carry.
+        ("propose_order", {**_M1_ORDER, "limit_price": None}, "LMT without a limit price"),
+        (
+            "propose_order",
+            {**_M1_ORDER, "order_type": "STP", "limit_price": None, "stop_price": None},
+            "STP without a stop price",
+        ),
+        (
+            "propose_order",
+            {**_M1_ORDER, "order_type": "STOP_LIMIT", "limit_price": 185.0, "stop_price": None},
+            "STOP_LIMIT missing its stop price",
+        ),
+        (
+            "propose_order",
+            {**_M1_ORDER, "order_type": "STOP_LIMIT", "limit_price": None, "stop_price": 180.0},
+            "STOP_LIMIT missing its limit price",
+        ),
+        ("propose_modify", {**_M1_MODIFY, "limit_price": None}, "modify to LMT with no price"),
     ],
 )
 def test_malformed_order_proposal_is_rejected(tool, payload, reason):
-    """A proposal the model was not permitted to emit must never reach the staging button (M-1)."""
+    """A proposal the model was not permitted to emit must never reach the staging button (M-1).
+
+    `_called_tools_this_turn` is seeded because `propose_modify` is refused outright unless
+    `get_order_status` ran in the same turn (2026-09-11). Without it every modify case here
+    passed on that refusal and proved nothing about the defect it names — found 2026-09-14
+    while adding the A-2 cases, and true of the two modify rows that predate them.
+    """
     agent = _m1_agent()
+    agent._called_tools_this_turn = {"get_order_status"}
     result = agent._handle_local_tool(tool, payload)
     assert agent._pending_proposal is None, f"{reason} was recorded for rendering"
     assert "REJECTED" in result
@@ -797,6 +826,11 @@ def test_malformed_order_proposal_is_rejected(tool, payload, reason):
             "tif": "GTC",
             "reason": "Live-proven shape",
         },
+        # MKT carries no price and must stay acceptable: the A-2 check ties a price to the
+        # types that need one, it does not start requiring prices everywhere.
+        {**_M1_ORDER, "order_type": "MKT", "limit_price": None, "stop_price": None},
+        # A stop-limit with both prices — the one type that needs two.
+        {**_M1_ORDER, "order_type": "STOP_LIMIT", "limit_price": 185.0, "stop_price": 180.0},
     ],
 )
 def test_valid_order_proposal_is_accepted(payload):
