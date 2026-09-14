@@ -515,6 +515,15 @@ class ConversationStore:
         Returns [] when the text holds no searchable token, rather than running a query
         that cannot match anything.
 
+        **Withdrawn rows are excluded** (2026-09-14, audit 2026-09-13 finding A-4). A row
+        `withdraw_message` stamped is one a claim detector contradicted; it was already kept
+        out of `agent._history_to_messages`, but this query joined neither table, so
+        `search_past_conversations` handed the withdrawn text back as a `tool_result` — and
+        the safety block names a tool result a guaranteed source, which is a stronger claim
+        than the assistant turn it was withdrawn from. Hidden rather than marked, to match
+        the replay path exactly; the row stays in the database for the audit trail, the
+        session report and the chat the user already saw.
+
         max_tokens is a rough budget: results are trimmed when the cumulative
         character count exceeds max_tokens * 4 (i.e. ~4 chars per token, not
         exact token counting).
@@ -527,7 +536,8 @@ class ConversationStore:
                 """SELECT m.*, highlight(messages_fts, 0, '[', ']') AS snippet
                    FROM messages_fts
                    JOIN messages m ON m.id = messages_fts.rowid
-                   WHERE messages_fts MATCH ?
+                   LEFT JOIN message_withdrawals w ON w.message_id = m.id
+                   WHERE messages_fts MATCH ? AND w.message_id IS NULL
                    ORDER BY rank
                    LIMIT ?""",
                 (expression, max_results),

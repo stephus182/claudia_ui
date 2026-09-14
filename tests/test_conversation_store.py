@@ -795,6 +795,29 @@ def test_withdraw_message_stamps_the_row_and_get_history_returns_it(store):
     assert row["content"] == "Cancel staged — button above."
 
 
+def test_a_withdrawn_row_is_not_returned_by_search(store):
+    """A contradicted claim must not come back as tool output one turn later.
+
+    `withdraw_message` kept the row out of `_history_to_messages`, but `search_messages`
+    joined neither table, so `search_past_conversations` returned the withdrawn text as a
+    `tool_result` — and the safety block names a tool result a guaranteed source. Measured
+    on 2026-09-13 (audit finding A-4): a withdrawn "Cancel staged" line came back with no
+    marker at all. Hidden rather than marked, to match the replay path: the row is still
+    in the database for the audit trail, the report and the chat the user already saw.
+    """
+    store.create_session("s1")
+    kept = store.add_message("s1", "assistant", "NVDA position sized against the plan.")
+    withdrawn = store.add_message("s1", "assistant", "NVDA cancel staged — button above.")
+    store.withdraw_message(withdrawn)
+
+    hits = store.search_messages("NVDA")
+
+    ids = {h["id"] for h in hits}
+    assert kept in ids, "the ordinary row should still be searchable"
+    assert withdrawn not in ids, "a withdrawn row came back through search"
+    assert all("cancel staged" not in (h.get("content") or "").lower() for h in hits)
+
+
 # --- refused / rejected / unverified order actions (plan Task 8) ---------------------------
 
 
