@@ -206,13 +206,22 @@ def build_expiries(
 
     `identities` is the `DashboardSnapshot.identities` mapping the poller already
     resolved (design 2026-09-10, gap #37) — **no I/O happens here**. When a row's conid
-    has an entry, `ExpiringContract` carries the identity's `local_symbol`/`name` (IB's
-    own strings, e.g. `ESU6` / `E-mini S&P 500`) instead of the row's raw `symbol`/
-    `description` (`ES` / `ES       SEP2026`). `identities=None` behaves exactly like an
+    has an entry, `ExpiringContract` carries IB's own strings — `local_symbol`/`name`,
+    e.g. `ESU6` / `E-mini S&P 500` — instead of the row's raw `symbol`/`description`
+    (`ES` / `ES       SEP2026`). The fallback is **per field, not per identity**:
+    `identity.local_symbol or row.symbol` and `identity.name or row.description`
+    independently. This matters because `parse_contract_info` only guards
+    `local_symbol` against being empty — `name` (IBKR's `company_name`) is not
+    guaranteed non-blank, so a real, resolvable contract can carry `local_symbol="ESU6"`
+    next to `name=""`. Falling back per identity as a whole would render that as
+    `ESU6 ()` — not dropped, not crashed, but a blank the docstring never promised.
+    Per-field fallback means a half-resolved identity degrades exactly like a missing
+    one on the field that is actually missing. `identities=None` behaves exactly like an
     empty mapping, and a row whose conid is absent from it — no futures on the book, or
-    a per-conid read that failed — falls back to the row's own fields: fail-soft, so a
-    missing identity never blanks or drops the row. Resolved here, at build time, so the
-    renderer (`_render_expiries`) stays dumb and needs no change.
+    a per-conid read that failed — falls back to the row's own fields on every field:
+    fail-soft, so a missing or partially-resolved identity never blanks or drops the
+    row. Resolved here, at build time, so the renderer (`_render_expiries`) stays dumb
+    and needs no change.
     """
     if positions is None:
         return Degraded(reason="positions have not been polled yet")
@@ -228,10 +237,12 @@ def build_expiries(
         if days_left < 0 or days_left > horizon_days:
             continue
         identity = identity_map.get(row.conid)
+        local_symbol = identity.local_symbol if identity is not None else ""
+        name = identity.name if identity is not None else ""
         out.append(
             ExpiringContract(
-                symbol=identity.local_symbol if identity is not None else row.symbol,
-                description=identity.name if identity is not None else row.description,
+                symbol=local_symbol or row.symbol,
+                description=name or row.description,
                 expiry=when,
                 days_left=days_left,
                 quantity=row.quantity,

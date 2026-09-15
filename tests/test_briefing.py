@@ -86,7 +86,14 @@ class _Row:
         """Build a row with only the fields `build_expiries` reads.
 
         `conid` defaults to 0 so every pre-existing call site in this file — none of
-        which cares about contract identity — keeps working unmodified.
+        which cares about contract identity — keeps working unmodified. THIS IS A
+        LATENT TRAP, not a safe default in general: every `_Row()` built without an
+        explicit `conid` shares the same `0`, so a test that builds two or more such
+        rows AND passes a non-empty `identities` mapping (e.g. `identities={0: ...}`)
+        would have that one identity silently resolve for every row, producing a
+        false pass. It is inert today only because no test in this file does both at
+        once. Any test exercising `identities` with more than one row must give each
+        row its own distinct, explicit `conid`.
         """
         self.symbol = symbol
         self.description = description
@@ -189,6 +196,28 @@ def test_expiries_ignores_instruments_without_an_expiry() -> None:
     assert br.build_expiries(rows, today=date(2026, 9, 15)) == br.Ready(items=())
 
 
+def test_expiries_ignores_a_stock_even_with_a_non_empty_identities_mapping() -> None:
+    """Belt-and-braces on the previous test: the claim "a stock row is unaffected by
+    identities" currently holds only by call order — the expiry-parse filter runs
+    before the identity lookup ever sees the row, since a row with no expiry is
+    `continue`d out of the loop first. Make that explicit rather than incidental: a
+    STK row with no expiry is still excluded even when a real, non-empty identities
+    mapping is in play (the mapping just happens to key on a different conid, as a
+    real futures-only identities map always would for a stock's conid)."""
+    identity = ContractIdentity(
+        conid=495512563,
+        local_symbol="ESU6",
+        month="SEP26",
+        expires="2026-09-18",
+        name="E-mini S&P 500",
+        multiplier=50.0,
+        currency=None,
+    )
+    rows = [_Row("IGV", "IGV", 100.0, None, asset_class="STK", conid=1)]
+    out = br.build_expiries(rows, today=date(2026, 9, 15), identities={495512563: identity})
+    assert out == br.Ready(items=())
+
+
 def test_expiries_degraded_when_positions_have_not_been_polled() -> None:
     """The poller may not have published its first snapshot yet. That is not "nothing
     expiring" — it is "we have not looked"."""
@@ -247,6 +276,30 @@ def test_expiries_falls_back_to_the_raw_row_when_no_identities_are_supplied() ->
     assert isinstance(out, br.Ready)
     (item,) = out.items
     assert item.symbol == "ES"
+    assert item.description == "ES       SEP2026"
+
+
+def test_expiries_falls_back_per_field_when_the_identity_has_no_company_name() -> None:
+    """Code review finding: `parse_contract_info` only guards `local_symbol` against
+    being empty — `name` (IBKR's `company_name`) is not guaranteed non-blank, so a real,
+    resolvable contract can carry a good `local_symbol` next to `name=""`. Falling back
+    per IDENTITY (all-or-nothing) would render `ESU6 ()`; the fallback must be per
+    FIELD, so `local_symbol` still resolves to `ESU6` while `description` falls back to
+    the row's own `description` rather than rendering blank."""
+    identity = ContractIdentity(
+        conid=495512563,
+        local_symbol="ESU6",
+        month="SEP26",
+        expires="2026-09-18",
+        name="",
+        multiplier=50.0,
+        currency=None,
+    )
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260918", conid=495512563)]
+    out = br.build_expiries(rows, today=date(2026, 9, 15), identities={495512563: identity})
+    assert isinstance(out, br.Ready)
+    (item,) = out.items
+    assert item.symbol == "ESU6"
     assert item.description == "ES       SEP2026"
 
 

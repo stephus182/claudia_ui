@@ -3337,6 +3337,62 @@ def test_a_failing_store_degrades_the_closures_section_rather_than_the_whole_bri
     assert "could not be read" in text or "unavailable" in text
 
 
+def test_build_briefing_text_never_names_a_contract_from_an_untrusted_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the "no trust guard needed" comment at the layer where the claim is actually
+    made — `_build_briefing_text` — rather than one layer down in `briefing.py`.
+
+    A REAL `DashboardSnapshot` with `error` set (the IBKR half of the poll failed) next
+    to a non-empty, real `identities` mapping — the shape `_publish_stale` produces when
+    a mid-session poll fails after identities were already resolved on an earlier good
+    poll (`dashboard_poller._publish_stale` carries `identities=previous.identities`
+    forward unconditionally, independent of `error`). `positions_for_briefing` must key
+    on `error` alone and discard the positions, and `build_expiries` must return
+    `Degraded` before it ever consults `identities` — so the briefing must come back
+    warning, and the identity's `local_symbol`/`name` must never reach the rendered
+    text, even though the mapping handed to `_build_briefing_text` genuinely has them.
+    """
+    from datetime import UTC, datetime
+
+    import claudia.panel_app as pa
+    from claudia.contract_identity import ContractIdentity
+    from claudia.dashboard_data import DashboardSnapshot
+
+    identity = ContractIdentity(
+        conid=495512563,
+        local_symbol="ESU6",
+        month="SEP26",
+        expires="2026-09-18",
+        name="E-mini S&P 500",
+        multiplier=50.0,
+        currency=None,
+    )
+    snapshot = DashboardSnapshot(
+        as_of=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+        positions=(),
+        error="IBKR session not authenticated (401)",
+        identities={495512563: identity},
+    )
+    poller = MagicMock()
+    poller.snapshot.return_value = snapshot
+
+    class _Toolkit:
+        """A minimal toolkit whose calendar read is irrelevant to this seam."""
+
+        @property
+        def _store(self):
+            """No calendar available — the closures section is not what this test pins."""
+            raise RuntimeError("no calendar in this test")
+
+    monkeypatch.setattr(pa, "_dashboard_poller", poller)
+    text = pa._build_briefing_text(_Toolkit())  # type: ignore[arg-type]
+
+    assert "⚠" in text
+    assert "ESU6" not in text
+    assert "E-mini S&P 500" not in text
+
+
 def test_build_briefing_text_returns_empty_string_when_rendering_itself_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
