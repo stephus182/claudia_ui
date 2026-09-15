@@ -100,15 +100,78 @@ def test_expiries_reports_a_future_inside_the_horizon() -> None:
 
 
 def test_expiries_excludes_a_future_beyond_the_horizon() -> None:
-    """Dec is months away and would be permanent noise in the briefing."""
+    """Dec is months away and would be permanent noise in the briefing. This does NOT pin
+    the horizon_days boundary despite the name — Dec is months out, not one day past the
+    cutoff. See test_expiries_excludes_a_contract_one_day_past_the_horizon for that."""
     rows = [_Row("ES", "ES       DEC2026", -1.0, "20261218")]
     assert br.build_expiries(rows, today=date(2026, 9, 15)) == br.Ready(items=())
+
+
+def test_expiries_includes_a_contract_expiring_today() -> None:
+    """Pins the lower boundary: days_left == 0 (expires TODAY) must be INCLUDED — this is
+    exactly the day a roll warning matters most."""
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260915")]
+    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
+    assert isinstance(out, br.Ready)
+    (item,) = out.items
+    assert item.days_left == 0
+
+
+def test_expiries_includes_a_contract_exactly_at_the_horizon() -> None:
+    """Pins the inclusive upper boundary: days_left == horizon_days (7) must be INCLUDED."""
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260922")]
+    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
+    assert isinstance(out, br.Ready)
+    (item,) = out.items
+    assert item.days_left == 7
+
+
+def test_expiries_excludes_a_contract_one_day_past_the_horizon() -> None:
+    """Pins the off-by-one just past the boundary: days_left == horizon_days + 1 (8) must
+    be EXCLUDED. This is the case test_expiries_excludes_a_future_beyond_the_horizon's
+    December example does not actually exercise."""
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260923")]
+    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
+    assert out == br.Ready(items=())
+
+
+def test_expiries_excludes_a_contract_that_expired_yesterday() -> None:
+    """Pins the lower exclusion: days_left == -1 (expired YESTERDAY, still non-flat in the
+    payload) must be EXCLUDED — a briefing reports what's ahead, not what already lapsed."""
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260914")]
+    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
+    assert out == br.Ready(items=())
+
+
+def test_expiries_sorts_by_days_left_then_symbol() -> None:
+    """Nearest deadline first; a tie on days_left breaks by symbol. Pins the actual sort
+    (every other test yields at most one item, so the sort itself was never exercised
+    before this): [NQ@5, ES@1, CL@3, ZB@1] -> [ES(1), ZB(1), CL(3), NQ(5)]."""
+    rows = [
+        _Row("NQ", "NQ       SEP2026", -1.0, "20260920"),  # days_left 5
+        _Row("ES", "ES       SEP2026", -1.0, "20260916"),  # days_left 1
+        _Row("CL", "CL       OCT2026", -1.0, "20260918"),  # days_left 3
+        _Row("ZB", "ZB       SEP2026", -1.0, "20260916"),  # days_left 1, tie with ES
+    ]
+    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
+    assert isinstance(out, br.Ready)
+    assert [c.symbol for c in out.items] == ["ES", "ZB", "CL", "NQ"]
+    assert [c.days_left for c in out.items] == [1, 1, 3, 5]
 
 
 def test_expiries_excludes_a_flat_row() -> None:
     """IBKR keeps a closed contract in the payload at position 0.0 (measured 2026-09-15,
     both ES conids read 0.0 after the round trips). A flat book expires nothing."""
     rows = [_Row("ES", "ES       SEP2026", 0.0, "20260918")]
+    assert br.build_expiries(rows, today=date(2026, 9, 15)) == br.Ready(items=())
+
+
+def test_expiries_skips_a_non_finite_quantity() -> None:
+    """ "Flat" means quantity == 0 exactly, not any falsy value. A NaN quantity is a
+    distinct defect from being flat — it cannot arise from IBKR's real payload as far as
+    observed, but a size the operator cannot act on must not render as a position, so it
+    is skipped the same way an unparseable expiry is."""
+    rows = [_Row("ES", "ES       SEP2026", float("nan"), "20260918")]
     assert br.build_expiries(rows, today=date(2026, 9, 15)) == br.Ready(items=())
 
 

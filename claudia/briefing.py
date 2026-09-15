@@ -18,6 +18,7 @@ Design: `docs/plans/2026-09-15-morning-briefing-sources.md` §7.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -165,12 +166,18 @@ def build_expiries(
     A row whose expiry will not parse is skipped rather than failing the section: the other
     rows are still true, and a section-wide failure would overstate one bad field. This is
     the same local-defect-vs-whole-read distinction `build_closures` makes.
+
+    "Flat" means `quantity == 0` exactly — not any falsy value. A row whose quantity is not
+    a finite number (`NaN` or `+/-inf`) is skipped on the same defensive reasoning as an
+    unparseable expiry: it is not observed in IBKR's real payload, but a size the operator
+    cannot act on must not render as a position, and a non-finite quantity is a distinct
+    defect from being flat rather than a variant of it.
     """
     if positions is None:
         return Degraded(reason="positions have not been polled yet")
     out: list[ExpiringContract] = []
     for row in positions:
-        if not row.quantity:
+        if not math.isfinite(row.quantity) or row.quantity == 0:
             continue
         when = _parse_ibkr_date(row.expiry)
         if when is None:
