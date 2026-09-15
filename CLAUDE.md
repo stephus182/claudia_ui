@@ -122,7 +122,8 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (2,024 collected 2026-09-15)
+pytest        # full suite — all unit, no IBKR gateway needed (2,027 collected 2026-09-15
+              # in the main checkout; `pytest --collect-only -q | tail -1` reports it)
 pytest tests/security   # the structural invariants alone, ~3s (also part of the full run)
 ruff check . && ruff format --check . && mypy   # lint, format, type gates — all must be clean
 # The ruff rule set (`[tool.ruff.lint]` in pyproject.toml) is identical to ibkr_core_mcp's,
@@ -178,6 +179,11 @@ more tests than a local run does (29 against 4 on 2026-09-08): the extra skips a
 keyed on git-ignored account fixtures and the local conversation corpus, absent from a fresh
 clone by design — not a regression. Three git-ignored personal documents are absent there
 too, which is why the docs gate treats a git-ignored pointer as a local one.
+**A `git worktree` has the same gap, for the same reason** — `git worktree add` does not copy
+git-ignored files, so a suite run inside one silently skips those suites. Measured 2026-09-15
+on the startup-briefing branch: **32 skips in the worktree against 7 in the main checkout**,
+from an identical 2,027 collected. Those 25 tests only ran, and passed, after the merge.
+**Verify a merge from the main checkout, never from the worktree the work was built in.**
 
 **The `live_api` marker exists because local validation cannot prove API acceptance.** During
 the 2026-07-27 guardrail work, three separate defects passed a docs read *and* a green suite
