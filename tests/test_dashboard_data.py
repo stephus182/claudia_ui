@@ -999,8 +999,22 @@ def test_position_carries_ibkr_expiry_for_futures() -> None:
 
 
 def test_position_expiry_is_none_for_a_stock() -> None:
-    """A stock carries no expiry; the field must be None, never "", so callers make one check."""
+    """A stock row omits the `expiry` key entirely; the absent key must type to None."""
     (pos,) = dd.parse_positions([_position_row(assetClass="STK", ticker="IGV", contractDesc="IGV")])
+    assert pos.expiry is None
+
+
+@pytest.mark.parametrize("raw_expiry", ["", "  "])
+def test_position_expiry_blank_string_is_none_not_empty_string(raw_expiry: str) -> None:
+    """A *present* but blank `expiry` — empty or whitespace-only — must still type to None.
+
+    IBKR's own field is not guaranteed absent on a stock row; `""` is at least as likely a
+    real shape as a missing key. Both must land on None, never on `""`, so a caller can
+    make one `is None` check rather than also handling a falsy-but-truthy-looking string.
+    """
+    (pos,) = dd.parse_positions(
+        [_position_row(assetClass="STK", ticker="IGV", contractDesc="IGV", expiry=raw_expiry)]
+    )
     assert pos.expiry is None
 
 
