@@ -122,7 +122,7 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (2,027 collected 2026-09-15
+pytest        # full suite — all unit, no IBKR gateway needed (2,035 collected 2026-09-15
               # in the main checkout; `pytest --collect-only -q | tail -1` reports it)
 pytest tests/security   # the structural invariants alone, ~3s (also part of the full run)
 ruff check . && ruff format --check . && mypy   # lint, format, type gates — all must be clean
