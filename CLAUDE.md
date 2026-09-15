@@ -26,6 +26,9 @@ claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propo
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
 claudia/order_flow.py       — framework-agnostic order-execution cores → ibkr_core_mcp biometric gates
 claudia/opening_status.py   — UI-free opening-status builders (session state + trade line; no account figures)
+claudia/briefing.py         — startup briefing: expiring positions + today's exchange closures,
+                              pure builders, no network (section state is Ready/Degraded/Unavailable
+                              so a failed read can never render as "nothing today")
 claudia/flex_sync.py        — session-start dataset validation + the "did this pull change anything" gate
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
@@ -119,7 +122,7 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (1,977 collected 2026-09-14)
+pytest        # full suite — all unit, no IBKR gateway needed (2,024 collected 2026-09-15)
 pytest tests/security   # the structural invariants alone, ~3s (also part of the full run)
 ruff check . && ruff format --check . && mypy   # lint, format, type gates — all must be clean
 # The ruff rule set (`[tool.ruff.lint]` in pyproject.toml) is identical to ibkr_core_mcp's,

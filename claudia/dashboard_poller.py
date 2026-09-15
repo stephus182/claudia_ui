@@ -181,6 +181,13 @@ class DashboardPoller:
         The snapshot is a frozen dataclass replaced wholesale by the poll, so a reader
         can never observe a half-updated one: the attribute either still points at the
         old object or already points at the complete new one.
+
+        **This never returns None, and that is a trap for a caller reading `positions`.**
+        Before the first poll it serves `empty_snapshot(error="Dashboard has not polled
+        yet.")`, whose `positions` is `()` — identical in shape to a clean poll that found
+        nothing open, and the opposite claim. **Check `.error` before trusting `.positions`
+        or `.ledger`**; `claudia.briefing.positions_for_briefing` is the worked example.
+        Found 2026-09-15 while planning the startup briefing, before it could ship.
         """
         return self._snapshot
 
