@@ -428,6 +428,12 @@ def _build_briefing_text(toolkit: ClaudeToolkit) -> str:
     try:
         snapshot = _dashboard_poller.snapshot() if _dashboard_poller is not None else None
         positions = positions_for_briefing(snapshot)
+        # No trust guard of its own: identities only ever label positions that already
+        # passed positions_for_briefing above, and when positions are untrusted (error
+        # set, or no snapshot yet) build_expiries returns Degraded before it ever looks
+        # at identities — so a stale/failed identities mapping can only ever be paired
+        # with positions that were already withheld.
+        identities = snapshot.identities if snapshot is not None else None
         try:
             mkt = toolkit._store.get_market_calendar_context()
         except Exception:
@@ -435,7 +441,7 @@ def _build_briefing_text(toolkit: ClaudeToolkit) -> str:
         today = date.today()
         return render_briefing(
             Briefing(
-                expiries=build_expiries(positions, today=today),
+                expiries=build_expiries(positions, today=today, identities=identities),
                 closures=build_closures(mkt, today=today),
             ),
             escape=escape_markup,

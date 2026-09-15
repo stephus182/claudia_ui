@@ -10,6 +10,7 @@ import dataclasses
 from datetime import date
 
 from claudia import briefing as br
+from claudia.contract_identity import ContractIdentity
 
 
 def test_closures_lists_only_exchanges_closed_today() -> None:
@@ -80,13 +81,19 @@ class _Row:
         quantity: float,
         expiry: str | None,
         asset_class: str = "FUT",
+        conid: int = 0,
     ) -> None:
-        """Build a row with only the fields `build_expiries` reads."""
+        """Build a row with only the fields `build_expiries` reads.
+
+        `conid` defaults to 0 so every pre-existing call site in this file — none of
+        which cares about contract identity — keeps working unmodified.
+        """
         self.symbol = symbol
         self.description = description
         self.quantity = quantity
         self.expiry = expiry
         self.asset_class = asset_class
+        self.conid = conid
 
 
 def test_expiries_reports_a_future_inside_the_horizon() -> None:
@@ -209,6 +216,120 @@ def test_expiries_is_not_keyed_on_sec_type() -> None:
     out = br.build_expiries(rows, today=date(2026, 9, 15))
     assert isinstance(out, br.Ready)
     assert len(out.items) == 1
+
+
+def test_expiries_names_a_future_using_its_identity_when_present() -> None:
+    """Design 2026-09-15 (gap #37 applied to the briefing): a futures row whose conid
+    resolves against the identities map renders IB's own local symbol and long name —
+    `ESU6` / `E-mini S&P 500` — not the raw ticker and IBKR's padded `contractDesc`."""
+    identity = ContractIdentity(
+        conid=495512563,
+        local_symbol="ESU6",
+        month="SEP26",
+        expires="2026-09-18",
+        name="E-mini S&P 500",
+        multiplier=50.0,
+        currency=None,
+    )
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260918", conid=495512563)]
+    out = br.build_expiries(rows, today=date(2026, 9, 15), identities={495512563: identity})
+    assert isinstance(out, br.Ready)
+    (item,) = out.items
+    assert item.symbol == "ESU6"
+    assert item.description == "E-mini S&P 500"
+
+
+def test_expiries_falls_back_to_the_raw_row_when_no_identities_are_supplied() -> None:
+    """`identities` omitted entirely (the pre-existing call shape) must still fall back to
+    the row's own symbol/description — fail-soft, never a blanked or dropped row."""
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260918", conid=495512563)]
+    out = br.build_expiries(rows, today=date(2026, 9, 15))
+    assert isinstance(out, br.Ready)
+    (item,) = out.items
+    assert item.symbol == "ES"
+    assert item.description == "ES       SEP2026"
+
+
+def test_expiries_falls_back_when_the_conid_is_absent_from_the_mapping() -> None:
+    """The mapping exists and is non-empty, but carries no entry for THIS row's conid —
+    an identity read that failed for this contract, or an identity for a different one.
+    Must fall back exactly like a missing mapping, never render blank or a wrong name."""
+    other = ContractIdentity(
+        conid=999,
+        local_symbol="NQZ6",
+        month="DEC26",
+        expires="2026-12-18",
+        name="E-mini Nasdaq-100",
+        multiplier=20.0,
+        currency=None,
+    )
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260918", conid=495512563)]
+    out = br.build_expiries(rows, today=date(2026, 9, 15), identities={999: other})
+    assert isinstance(out, br.Ready)
+    (item,) = out.items
+    assert item.symbol == "ES"
+    assert item.description == "ES       SEP2026"
+
+
+def test_expiries_identities_none_behaves_exactly_like_an_empty_mapping() -> None:
+    """`identities=None` and `identities={}` must be indistinguishable to the caller —
+    the poller's first snapshot before any futures are on the book looks like the former,
+    a healthy poll with only stocks open looks like the latter, and both mean the same
+    thing to this builder: nothing to resolve against."""
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260918", conid=495512563)]
+    none_out = br.build_expiries(rows, today=date(2026, 9, 15), identities=None)
+    empty_out = br.build_expiries(rows, today=date(2026, 9, 15), identities={})
+    assert none_out == empty_out
+
+
+def test_a_real_position_and_identity_reach_the_rendered_text_with_the_local_symbol() -> None:
+    """End to end through REAL types, not hand-written doubles for either: a real
+    `dashboard_data.Position` keyed by a real conid, resolved against a real
+    `ContractIdentity`, through `positions_for_briefing` -> `build_expiries` ->
+    `render_briefing`. Closes gap #37 on the briefing surface the same way it is already
+    closed on Positions/Orders/proposal cards/Gate 2."""
+    from datetime import UTC, datetime
+
+    from claudia.dashboard_data import DashboardSnapshot, Position
+
+    pos = Position(
+        conid=495512563,
+        symbol="ES",
+        description="ES       SEP2026",
+        asset_class="FUT",
+        quantity=-1.0,
+        average_cost=450000.0,
+        market_price=4500.0,
+        market_value=900000.0,
+        unrealised_pnl=0.0,
+        realised_pnl=0.0,
+        currency="USD",
+        expiry="20260918",
+    )
+    identity = ContractIdentity(
+        conid=495512563,
+        local_symbol="ESU6",
+        month="SEP26",
+        expires="2026-09-18",
+        name="E-mini S&P 500",
+        multiplier=50.0,
+        currency=None,
+    )
+    snap = DashboardSnapshot(
+        as_of=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+        positions=(pos,),
+        identities={495512563: identity},
+    )
+
+    positions = br.positions_for_briefing(snap)
+    section = br.build_expiries(positions, today=date(2026, 9, 15), identities=snap.identities)
+    text = br.render_briefing(
+        br.Briefing(expiries=section, closures=br.Ready(items=())), escape=str
+    )
+
+    assert "ESU6" in text
+    assert "E-mini S&P 500" in text
+    assert "ES       SEP2026" not in text
 
 
 def test_render_names_the_expiring_contract_and_the_closed_exchange() -> None:
@@ -378,12 +499,14 @@ def test_a_degraded_section_is_never_rendered_as_an_empty_one() -> None:
 
 
 class _Snap:
-    """Stand-in for DashboardSnapshot — only the two fields the guard reads."""
+    """Stand-in for DashboardSnapshot — only the three fields BriefingSnapshot declares."""
 
     def __init__(self, positions: tuple[_Row, ...], error: str | None = None) -> None:
-        """Build a snapshot double; `error` is what the guard keys on."""
+        """Build a snapshot double; `error` is what the guard keys on. `identities`
+        defaults empty — none of these tests exercise contract naming, only the guard."""
         self.positions = positions
         self.error = error
+        self.identities: dict[int, ContractIdentity] = {}
 
 
 def test_guard_returns_none_when_the_poller_has_not_polled() -> None:

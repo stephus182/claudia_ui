@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Generic, Protocol, TypeAlias, TypeVar, assert_never
 
+from claudia.contract_identity import ContractIdentity
 from claudia.opening_status import EXCHANGE_LABELS
 
 T = TypeVar("T")
@@ -138,6 +139,12 @@ class ExpiringRow(Protocol):
         ...
 
     @property
+    def conid(self) -> int:
+        """The contract's IBKR conid — its only unambiguous identity. Used to look up an
+        already-resolved `ContractIdentity` on the snapshot; never fetched here."""
+        ...
+
+    @property
     def description(self) -> str:
         """IBKR's `contractDesc` — the field that disambiguates a contract month."""
         ...
@@ -174,6 +181,7 @@ def build_expiries(
     positions: Sequence[ExpiringRow] | None,
     today: date,
     horizon_days: int = DEFAULT_HORIZON_DAYS,
+    identities: Mapping[int, ContractIdentity] | None = None,
 ) -> ExpirySection:
     """Open positions expiring within `horizon_days`, nearest deadline first.
 
@@ -195,9 +203,20 @@ def build_expiries(
     unparseable expiry: it is not observed in IBKR's real payload, but a size the operator
     cannot act on must not render as a position, and a non-finite quantity is a distinct
     defect from being flat rather than a variant of it.
+
+    `identities` is the `DashboardSnapshot.identities` mapping the poller already
+    resolved (design 2026-09-10, gap #37) — **no I/O happens here**. When a row's conid
+    has an entry, `ExpiringContract` carries the identity's `local_symbol`/`name` (IB's
+    own strings, e.g. `ESU6` / `E-mini S&P 500`) instead of the row's raw `symbol`/
+    `description` (`ES` / `ES       SEP2026`). `identities=None` behaves exactly like an
+    empty mapping, and a row whose conid is absent from it — no futures on the book, or
+    a per-conid read that failed — falls back to the row's own fields: fail-soft, so a
+    missing identity never blanks or drops the row. Resolved here, at build time, so the
+    renderer (`_render_expiries`) stays dumb and needs no change.
     """
     if positions is None:
         return Degraded(reason="positions have not been polled yet")
+    identity_map = identities or {}
     out: list[ExpiringContract] = []
     for row in positions:
         if not math.isfinite(row.quantity) or row.quantity == 0:
@@ -208,10 +227,11 @@ def build_expiries(
         days_left = (when - today).days
         if days_left < 0 or days_left > horizon_days:
             continue
+        identity = identity_map.get(row.conid)
         out.append(
             ExpiringContract(
-                symbol=row.symbol,
-                description=row.description,
+                symbol=identity.local_symbol if identity is not None else row.symbol,
+                description=identity.name if identity is not None else row.description,
                 expiry=when,
                 days_left=days_left,
                 quantity=row.quantity,
@@ -332,12 +352,13 @@ def _render_closures(section: ClosureSection, escape: Callable[[str], str]) -> s
 
 
 class BriefingSnapshot(Protocol):
-    """What the guard reads off `DashboardSnapshot` — its two relevant fields only.
+    """What `_build_briefing_text` reads off `DashboardSnapshot` — its three relevant
+    fields only (`error`/`positions` for the trust guard, `identities` for naming).
 
-    Both members are declared as read-only `@property`, not plain attributes: the real
-    `DashboardSnapshot` this is checked against is a frozen dataclass, and mypy treats a
-    frozen dataclass's fields as read-only. A Protocol with a plain (settable) attribute
-    is not satisfied by a read-only one — a property is.
+    All three members are declared as read-only `@property`, not plain attributes: the
+    real `DashboardSnapshot` this is checked against is a frozen dataclass, and mypy
+    treats a frozen dataclass's fields as read-only. A Protocol with a plain (settable)
+    attribute is not satisfied by a read-only one — a property is.
     """
 
     @property
@@ -348,6 +369,12 @@ class BriefingSnapshot(Protocol):
     @property
     def positions(self) -> tuple[ExpiringRow, ...]:
         """Open positions, meaningful only when `error` is None."""
+        ...
+
+    @property
+    def identities(self) -> Mapping[int, ContractIdentity]:
+        """Futures contracts already named in IB's own strings, keyed by conid — read
+        once per poll by `DashboardPoller._read_identities`, never fetched here."""
         ...
 
 
