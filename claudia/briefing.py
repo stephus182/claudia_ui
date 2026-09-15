@@ -18,10 +18,10 @@ Design: `docs/plans/2026-09-15-morning-briefing-sources.md` §7.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Generic, TypeAlias, TypeVar
+from typing import Generic, Protocol, TypeAlias, TypeVar
 
 from claudia.opening_status import _EXCHANGE_LABELS
 
@@ -106,3 +106,99 @@ def build_closures(mkt: Mapping[str, object] | None, today: date) -> ClosureSect
             continue
         closed.append(ClosedExchange(code=code, label=_EXCHANGE_LABELS.get(code, code)))
     return Ready(items=tuple(closed))
+
+
+@dataclass(frozen=True)
+class ExpiringContract:
+    """One open position near its expiry. `days_left` is calendar days, not sessions."""
+
+    symbol: str
+    description: str
+    expiry: date
+    days_left: int
+    quantity: float
+
+
+class ExpiringRow(Protocol):
+    """What `build_expiries` reads off a position row — a subset of
+    `dashboard_data.Position`, stated structurally so a test double needs no cast."""
+
+    symbol: str
+    description: str
+    quantity: float
+    expiry: str | None
+
+
+ExpirySection: TypeAlias = "Ready[ExpiringContract] | Degraded | Unavailable"
+
+DEFAULT_HORIZON_DAYS = 7
+"""How far ahead an expiry is worth mentioning. A week covers the roll window without
+making the briefing a standing fixture."""
+
+
+def _parse_ibkr_date(value: str | None) -> date | None:
+    """IBKR's `YYYYMMDD` → date, or None when absent or malformed."""
+    if not value or len(value) != 8 or not value.isdigit():
+        return None
+    try:
+        return date(int(value[:4]), int(value[4:6]), int(value[6:]))
+    except ValueError:
+        return None
+
+
+def build_expiries(
+    positions: Sequence[ExpiringRow] | None,
+    today: date,
+    horizon_days: int = DEFAULT_HORIZON_DAYS,
+) -> ExpirySection:
+    """Open positions expiring within `horizon_days`, nearest deadline first.
+
+    `positions` is None when the dashboard poller has not published a snapshot yet — that
+    is `Degraded`, never an empty `Ready`, because "we have not looked" and "nothing is
+    expiring" are opposite claims.
+
+    **Not keyed on `asset_class`.** The scope ruling of 2026-09-15 is futures-first, but
+    any instrument that carries an expiry is picked up, so options later are a predicate
+    change rather than a rewrite. The expiry comes from IBKR's own payload, never from a
+    contract-specific rule of ours.
+
+    A row whose expiry will not parse is skipped rather than failing the section: the other
+    rows are still true, and a section-wide failure would overstate one bad field. This is
+    the same local-defect-vs-whole-read distinction `build_closures` makes.
+    """
+    if positions is None:
+        return Degraded(reason="positions have not been polled yet")
+    out: list[ExpiringContract] = []
+    for row in positions:
+        if not row.quantity:
+            continue
+        when = _parse_ibkr_date(row.expiry)
+        if when is None:
+            continue
+        days_left = (when - today).days
+        if days_left < 0 or days_left > horizon_days:
+            continue
+        out.append(
+            ExpiringContract(
+                symbol=row.symbol,
+                description=row.description,
+                expiry=when,
+                days_left=days_left,
+                quantity=row.quantity,
+            )
+        )
+    out.sort(key=lambda c: (c.days_left, c.symbol))
+    return Ready(items=tuple(out))
+
+
+@dataclass(frozen=True)
+class Briefing:
+    """The whole briefing: one section per topic, each carrying its own state.
+
+    Adding a section here means adding it to `render_briefing` and to the positive-sentence
+    map in `test_a_degraded_section_is_never_rendered_as_an_empty_one`, which fails loudly
+    until you do.
+    """
+
+    expiries: ExpirySection
+    closures: ClosureSection

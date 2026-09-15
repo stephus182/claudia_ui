@@ -67,3 +67,81 @@ def test_closures_skips_non_string_keys_without_crashing_on_the_sort() -> None:
     out = br.build_closures(mkt, today=date(2026, 9, 21))
     assert isinstance(out, br.Ready)
     assert [c.code for c in out.items] == ["XTKS"]
+
+
+class _Row:
+    """Minimal stand-in for dashboard_data.Position — only what the builder reads."""
+
+    def __init__(
+        self,
+        symbol: str,
+        description: str,
+        quantity: float,
+        expiry: str | None,
+        asset_class: str = "FUT",
+    ) -> None:
+        """Build a row with only the fields `build_expiries` reads."""
+        self.symbol = symbol
+        self.description = description
+        self.quantity = quantity
+        self.expiry = expiry
+        self.asset_class = asset_class
+
+
+def test_expiries_reports_a_future_inside_the_horizon() -> None:
+    """The real 2026-09-15 case: ES Sep expiring on the 18th, three days out."""
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260918")]
+    out = br.build_expiries(rows, today=date(2026, 9, 15))
+    assert isinstance(out, br.Ready)
+    (item,) = out.items
+    assert item.symbol == "ES"
+    assert item.expiry == date(2026, 9, 18)
+    assert item.days_left == 3
+
+
+def test_expiries_excludes_a_future_beyond_the_horizon() -> None:
+    """Dec is months away and would be permanent noise in the briefing."""
+    rows = [_Row("ES", "ES       DEC2026", -1.0, "20261218")]
+    assert br.build_expiries(rows, today=date(2026, 9, 15)) == br.Ready(items=())
+
+
+def test_expiries_excludes_a_flat_row() -> None:
+    """IBKR keeps a closed contract in the payload at position 0.0 (measured 2026-09-15,
+    both ES conids read 0.0 after the round trips). A flat book expires nothing."""
+    rows = [_Row("ES", "ES       SEP2026", 0.0, "20260918")]
+    assert br.build_expiries(rows, today=date(2026, 9, 15)) == br.Ready(items=())
+
+
+def test_expiries_ignores_instruments_without_an_expiry() -> None:
+    """A stock has no expiry at all, so it can never enter this section."""
+    rows = [_Row("IGV", "IGV", 100.0, None, asset_class="STK")]
+    assert br.build_expiries(rows, today=date(2026, 9, 15)) == br.Ready(items=())
+
+
+def test_expiries_degraded_when_positions_have_not_been_polled() -> None:
+    """The poller may not have published its first snapshot yet. That is not "nothing
+    expiring" — it is "we have not looked"."""
+    out = br.build_expiries(None, today=date(2026, 9, 15))
+    assert isinstance(out, br.Degraded)
+    assert "polled" in out.reason.lower()
+
+
+def test_expiries_skips_an_unparseable_expiry_without_failing_the_section() -> None:
+    """One bad row must not take the whole section down — the others are still true."""
+    rows = [
+        _Row("ES", "ES       SEP2026", -1.0, "not-a-date"),
+        _Row("ES", "ES       SEP2026", -1.0, "20260918"),
+    ]
+    out = br.build_expiries(rows, today=date(2026, 9, 15))
+    assert isinstance(out, br.Ready)
+    assert len(out.items) == 1
+
+
+def test_expiries_is_not_keyed_on_sec_type() -> None:
+    """Scope ruling 2026-09-15 is futures-first, but the DATA PATH must stay
+    instrument-agnostic so options later are a predicate change, not a rewrite.
+    An option row carrying an expiry must therefore be picked up by the builder."""
+    rows = [_Row("SPY", "SPY 19SEP26 500 C", 1.0, "20260918", asset_class="OPT")]
+    out = br.build_expiries(rows, today=date(2026, 9, 15))
+    assert isinstance(out, br.Ready)
+    assert len(out.items) == 1
