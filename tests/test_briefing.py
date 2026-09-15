@@ -45,3 +45,25 @@ def test_closures_unavailable_when_the_calendar_lacks_its_key() -> None:
     """A dict that arrived but carries no holiday map is a failed read, not a quiet day."""
     out = br.build_closures({}, today=date(2026, 9, 15))
     assert isinstance(out, br.Unavailable)
+
+
+def test_closures_skips_non_string_keys_without_crashing_on_the_sort() -> None:
+    """A malformed key must not crash the whole builder via `sorted()`.
+
+    The filter that drops non-string keys has to run BEFORE `sorted()`, not merely
+    guard the loop body: `sorted()` compares every entry against every other entry up
+    front, so a single `int`/`str` (or `None`/`str`) key pair anywhere in the dict raises
+    `TypeError` before the first well-formed entry is even reached — an in-loop
+    `isinstance` continue placed after the sort call is unreachable and protects
+    nothing. This is the exact mixed-key shape that reproduced the crash.
+    """
+    mkt = {
+        "holidays_by_exchange": {
+            "XTKS": ["2026-09-21"],
+            1: ["2026-09-21"],
+            None: [],
+        }
+    }
+    out = br.build_closures(mkt, today=date(2026, 9, 21))
+    assert isinstance(out, br.Ready)
+    assert [c.code for c in out.items] == ["XTKS"]

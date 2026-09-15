@@ -59,6 +59,12 @@ class ClosedExchange:
 
 
 ClosureSection: TypeAlias = "Ready[ClosedExchange] | Degraded | Unavailable"
+"""The three constructors are a shared vocabulary across every section builder in this
+module, not a per-function contract: `build_closures` below only ever returns `Ready` or
+`Unavailable` (there is nothing about "today's closures" that is a benign not-yet-available
+state), while Task 3's expiries builder does return `Degraded`. A caller that matches on
+`build_closures` alone will see a `Degraded` branch it can never reach — that is intentional,
+not a sign the branch belongs here."""
 
 
 def build_closures(mkt: Mapping[str, object] | None, today: date) -> ClosureSection:
@@ -75,6 +81,17 @@ def build_closures(mkt: Mapping[str, object] | None, today: date) -> ClosureSect
     Holidays arrive as bare ISO date strings with no names (measured 2026-09-15:
     `["2026-01-01", "2026-02-16", ...]`). The operator ruled the missing name cosmetic the
     same day — "knowing it's closed is what matters" — so no name resolution is attempted.
+
+    A key in `holidays_by_exchange` that is not a string is dropped rather than turned into
+    an `Unavailable`: the other, well-formed entries are still true statements about today,
+    and a real closure this function would otherwise suppress is worse than one dropped
+    junk key. Unlike a missing/malformed top-level dict — which means the whole read failed
+    and nothing here can be trusted — a single bad key is a local defect in one entry, not
+    evidence the rest of the map is wrong. The non-string keys **must be filtered out before
+    `sorted()` runs**, not merely skipped inside the loop: `sorted()` compares every key
+    against every other key, so one `int`/`str` (or `None`/`str`) pair anywhere in the dict
+    raises `TypeError` before a single iteration — an in-loop guard placed after the sort
+    can never run.
     """
     if mkt is None:
         return Unavailable(reason="market calendar could not be read")
@@ -82,10 +99,9 @@ def build_closures(mkt: Mapping[str, object] | None, today: date) -> ClosureSect
     if not isinstance(raw, dict):
         return Unavailable(reason="market calendar carried no holiday map")
     stamp = today.isoformat()
+    string_keyed = [(code, days) for code, days in raw.items() if isinstance(code, str)]
     closed: list[ClosedExchange] = []
-    for code, days in sorted(raw.items()):
-        if not isinstance(code, str):
-            continue
+    for code, days in sorted(string_keyed):
         if not isinstance(days, (list, tuple)) or stamp not in days:
             continue
         closed.append(ClosedExchange(code=code, label=_EXCHANGE_LABELS.get(code, code)))
