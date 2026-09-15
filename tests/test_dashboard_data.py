@@ -987,6 +987,23 @@ def test_parse_positions_skips_non_mapping_rows():
     )
 
 
+def test_position_carries_ibkr_expiry_for_futures() -> None:
+    """The positions payload carries `expiry`; the typed row must not drop it.
+
+    Measured 2026-09-15 on the live account: ES DEC2026 came back with
+    `expiry: '20261218'`. Without this field the briefing would have to make a second
+    call per conid for a fact already in hand.
+    """
+    (pos,) = dd.parse_positions([_position_row(expiry="20261218")])
+    assert pos.expiry == "20261218"
+
+
+def test_position_expiry_is_none_for_a_stock() -> None:
+    """A stock carries no expiry; the field must be None, never "", so callers make one check."""
+    (pos,) = dd.parse_positions([_position_row(assetClass="STK", ticker="IGV", contractDesc="IGV")])
+    assert pos.expiry is None
+
+
 class _PagingClient:
     """A client that serves `pages` in order and records which pages were asked for."""
 

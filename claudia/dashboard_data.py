@@ -499,6 +499,13 @@ class Position:
     currency: str
     average_price: float = 0.0
     multiplier: float | None = None
+    expiry: str | None = None
+    """IBKR's `expiry` as `YYYYMMDD`, or None for an instrument that does not expire.
+
+    Carried, not rendered by the positions table. The startup briefing reads it so a
+    futures expiry costs no second call — the payload already has it (measured
+    2026-09-15: ES DEC2026 `expiry: '20261218'`, `lastTradingDay: '20261217'`).
+    """
     economic_entry: float | None = None
     # IBKR's `name`: the instrument's descriptive name, so a row cannot be misread off a
     # ticker alone. NOT `fullName`, which despite the name is the contract *label* —
@@ -702,6 +709,7 @@ def parse_positions(rows: Sequence[Any]) -> tuple[Position, ...]:
                 currency=str(row.get("currency") or "").strip().upper(),
                 average_price=avg_price,
                 multiplier=multiplier,
+                expiry=(str(row.get("expiry") or "").strip() or None),
             )
         )
     return tuple(out)
