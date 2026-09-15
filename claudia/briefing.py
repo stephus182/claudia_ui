@@ -19,7 +19,7 @@ Design: `docs/plans/2026-09-15-morning-briefing-sources.md` §7.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Generic, Protocol, TypeAlias, TypeVar
@@ -209,3 +209,57 @@ class Briefing:
 
     expiries: ExpirySection
     closures: ClosureSection
+
+
+def _render_expiries(section: ExpirySection, escape: Callable[[str], str]) -> str:
+    """The expiries section. Degraded and Unavailable carry ⚠ and their reason; only a
+    `Ready` with no items may say the positive "nothing expiring"."""
+    if isinstance(section, Degraded):
+        return f"⚠ Expiring positions unavailable — {section.reason}."
+    if isinstance(section, Unavailable):
+        return f"⚠ Expiring positions could not be read — {section.reason}."
+    if not section.items:
+        return "No position expiring in the next week."
+    lines = ["**Expiring soon:**"]
+    for c in section.items:
+        when = "today" if c.days_left == 0 else f"{c.days_left} days"
+        # IBKR-supplied strings: escaped. Our own literals and the formatted date are not.
+        lines.append(
+            f"- {escape(c.symbol)} ({escape(c.description.strip())}) — {c.quantity:+g} — "
+            f"expires {c.expiry.isoformat()}, {when}"
+        )
+    return "\n".join(lines)
+
+
+def _render_closures(section: ClosureSection) -> str:
+    """The closures section. Takes no escaper on purpose — see the comment below."""
+    # `_EXCHANGE_LABELS` values are our own literals, and the code falls back to an MIC
+    # from our own 20-entry map — neither is IBKR-supplied, so neither is escaped.
+    if isinstance(section, Degraded):
+        return f"⚠ Exchange closures unavailable — {section.reason}."
+    if isinstance(section, Unavailable):
+        return f"⚠ Exchange closures could not be read — {section.reason}."
+    if not section.items:
+        return "All tracked exchanges open today."
+    names = ", ".join(c.label for c in section.items)
+    return f"**Closed today:** {names}."
+
+
+def render_briefing(briefing: Briefing, escape: Callable[[str], str]) -> str:
+    """One Markdown block. Each section renders its own state; no section can borrow
+    another's. A `Degraded` or `Unavailable` section always carries ⚠ and its reason, and
+    never the positive "we looked and found nothing" sentence.
+
+    `escape` is applied to every IBKR-supplied string and is **required, with no default**:
+    a security control that a caller can forget by omission is not a control. `panel_app`
+    passes `panel_markdown.escape_markup`, which is what
+    `docs/security-architecture.md` §10 requires of a surface that shows text. Tests that
+    care about wording rather than escaping pass `str` explicitly, which makes the choice
+    visible at every call site.
+    """
+    return "\n\n".join(
+        (
+            _render_expiries(briefing.expiries, escape),
+            _render_closures(briefing.closures),
+        )
+    )

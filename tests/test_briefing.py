@@ -6,6 +6,7 @@ same property that makes them safe to call during session start.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import date
 
 from claudia import briefing as br
@@ -208,3 +209,93 @@ def test_expiries_is_not_keyed_on_sec_type() -> None:
     out = br.build_expiries(rows, today=date(2026, 9, 15))
     assert isinstance(out, br.Ready)
     assert len(out.items) == 1
+
+
+def test_render_names_the_expiring_contract_and_the_closed_exchange() -> None:
+    """The happy path names the contract, the date, the days left and the exchange."""
+    b = br.Briefing(
+        expiries=br.Ready(
+            items=(
+                br.ExpiringContract(
+                    symbol="ES",
+                    description="ES       SEP2026",
+                    expiry=date(2026, 9, 18),
+                    days_left=3,
+                    quantity=-1.0,
+                ),
+            )
+        ),
+        closures=br.Ready(items=(br.ClosedExchange(code="XTKS", label="TSE Tokyo"),)),
+    )
+    text = br.render_briefing(b, escape=str)
+    assert "ES" in text
+    assert "2026-09-18" in text
+    assert "3 days" in text
+    assert "TSE Tokyo" in text
+
+
+def test_render_says_plainly_when_there_is_genuinely_nothing() -> None:
+    """A clean read that found nothing says so, and says nothing about availability."""
+    b = br.Briefing(expiries=br.Ready(items=()), closures=br.Ready(items=()))
+    text = br.render_briefing(b, escape=str)
+    assert "No position expiring" in text
+    assert "All tracked exchanges open" in text
+    assert "unavailable" not in text.lower()
+
+
+def test_ibkr_supplied_strings_are_escaped_not_rendered_as_markup() -> None:
+    """The §10 canary. `symbol` and `description` come from IBKR, not from us, and this
+    text lands in a Markdown chat message. Neither field has ever carried markup in
+    practice — the control is that it would not matter if one did.
+    """
+    from claudia.panel_markdown import escape_markup
+
+    b = br.Briefing(
+        expiries=br.Ready(
+            items=(
+                br.ExpiringContract(
+                    symbol="<img src=x onerror=alert(1)>",
+                    description="ES <script>alert(1)</script>",
+                    expiry=date(2026, 9, 18),
+                    days_left=3,
+                    quantity=-1.0,
+                ),
+            )
+        ),
+        closures=br.Ready(items=()),
+    )
+    text = br.render_briefing(b, escape=escape_markup)
+    assert "<script>" not in text
+    assert "<img" not in text
+    assert "alert(1)" in text, "escaped, not deleted — the operator still sees the value"
+
+
+def test_a_degraded_section_is_never_rendered_as_an_empty_one() -> None:
+    """THE invariant, asserted over EVERY section on Briefing rather than one of them.
+
+    Hard rule 2 (operator, 2026-09-15): a failed read must never read as "nothing today" —
+    called the worst possible outcome. The check is structural, so a third section added
+    later is covered without anyone remembering to extend this test.
+    """
+    empty = br.Briefing(expiries=br.Ready(items=()), closures=br.Ready(items=()))
+    fields = dataclasses.fields(br.Briefing)
+    assert fields, "Briefing has no sections — the invariant would be vacuous"
+
+    # The positive sentence each section emits when it looked and genuinely found nothing.
+    # A degraded section of that name must never produce its own sentence.
+    positive = {"expiries": "No position expiring", "closures": "All tracked exchanges open"}
+    assert set(positive) == {f.name for f in fields}, (
+        "a section was added or renamed — give it its positive sentence here so the "
+        "invariant keeps covering every section"
+    )
+
+    for field in fields:
+        for bad in (br.Degraded(reason="poller asleep"), br.Unavailable(reason="no calendar")):
+            b = dataclasses.replace(empty, **{field.name: bad})
+            text = br.render_briefing(b, escape=str)
+            assert "⚠" in text, f"{field.name}={type(bad).__name__} rendered no warning"
+            assert bad.reason in text, f"{field.name}: the reason was dropped"
+            assert positive[field.name] not in text, (
+                f"{field.name}={type(bad).__name__} rendered as a positive empty result — "
+                "this is hard rule 2 violated"
+            )
