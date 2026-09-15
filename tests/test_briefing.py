@@ -234,6 +234,65 @@ def test_render_names_the_expiring_contract_and_the_closed_exchange() -> None:
     assert "TSE Tokyo" in text
 
 
+def test_render_formats_quantity_without_scientific_notation_or_rounding() -> None:
+    """Code review 2026-09-15: `f'{-1234567.0:+g}'` renders `'-1.23457e+06'` — 6
+    significant figures then scientific notation, unreadable and imprecise for a
+    trader-facing number. The builder is deliberately instrument-agnostic (options/stocks
+    are "a predicate change rather than a rewrite" per its docstring), and a six-figure
+    share position is ordinary even though no futures test ever exercises more than one
+    contract. Every quantity must render comma-grouped, in fixed-point, with its exact
+    fraction kept when it has one.
+    """
+    cases = {
+        -1.0: "-1",
+        2.0: "+2",
+        0.5: "+0.5",
+        1000000.0: "+1,000,000",
+        -1234567.0: "-1,234,567",
+        1.5: "+1.5",
+    }
+    for quantity, expected in cases.items():
+        b = br.Briefing(
+            expiries=br.Ready(
+                items=(
+                    br.ExpiringContract(
+                        symbol="ES",
+                        description="ES       SEP2026",
+                        expiry=date(2026, 9, 18),
+                        days_left=3,
+                        quantity=quantity,
+                    ),
+                )
+            ),
+            closures=br.Ready(items=()),
+        )
+        text = br.render_briefing(b, escape=str)
+        assert f"— {expected} —" in text, f"quantity {quantity}: expected {expected!r} in {text!r}"
+
+
+def test_render_singularises_one_day_left() -> None:
+    """`f"{c.days_left} days"` renders "1 days" for a same-day-tomorrow expiry — a UI-feel
+    defect the operator called out (code review 2026-09-15). days_left == 1 must read
+    "1 day"."""
+    b = br.Briefing(
+        expiries=br.Ready(
+            items=(
+                br.ExpiringContract(
+                    symbol="ES",
+                    description="ES       SEP2026",
+                    expiry=date(2026, 9, 16),
+                    days_left=1,
+                    quantity=-1.0,
+                ),
+            )
+        ),
+        closures=br.Ready(items=()),
+    )
+    text = br.render_briefing(b, escape=str)
+    assert "1 day" in text
+    assert "1 days" not in text
+
+
 def test_render_says_plainly_when_there_is_genuinely_nothing() -> None:
     """A clean read that found nothing says so, and says nothing about availability."""
     b = br.Briefing(expiries=br.Ready(items=()), closures=br.Ready(items=()))
@@ -268,6 +327,23 @@ def test_ibkr_supplied_strings_are_escaped_not_rendered_as_markup() -> None:
     assert "<script>" not in text
     assert "<img" not in text
     assert "alert(1)" in text, "escaped, not deleted — the operator still sees the value"
+
+
+def test_closure_labels_are_escaped_too() -> None:
+    """Code review 2026-09-15: every label in play today traces to `_EXCHANGE_LABELS` or
+    its own-literal fallback, never to IBKR — but nothing pins that, and the cost of
+    escaping a label unconditionally is zero. `escape` must reach `_render_closures`, not
+    just `_render_expiries`.
+    """
+    from claudia.panel_markdown import escape_markup
+
+    b = br.Briefing(
+        expiries=br.Ready(items=()),
+        closures=br.Ready(items=(br.ClosedExchange(code="XTKS", label="<b>TSE Tokyo</b>"),)),
+    )
+    text = br.render_briefing(b, escape=escape_markup)
+    assert "<b>" not in text
+    assert "TSE Tokyo" in text
 
 
 def test_a_degraded_section_is_never_rendered_as_an_empty_one() -> None:

@@ -22,7 +22,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Generic, Protocol, TypeAlias, TypeVar
+from typing import Generic, Protocol, TypeAlias, TypeVar, assert_never
 
 from claudia.opening_status import _EXCHANGE_LABELS
 
@@ -211,38 +211,101 @@ class Briefing:
     closures: ClosureSection
 
 
+def _format_quantity(quantity: float) -> str:
+    """Format a position size the way a trader reads one: signed, comma-grouped, never
+    scientific notation, never silently rounded.
+
+    `f"{-1234567.0:+g}"` renders `'-1.23457e+06'` — 6 significant figures then scientific
+    notation, which is not a number an operator can read or act on (code review, 2026-09-15).
+    This project's standing rule against silent rounding of a trader-facing figure applies
+    here just as it does to an order parameter.
+
+    `f"{quantity:,}"` (no type character) is Python's shortest round-tripping decimal string
+    for the float, with `,` grouping applied — so a whole quantity keeps every digit
+    (`1,234,567`) and a fractional one keeps its fraction exactly as given (`0.5`, `1.5`);
+    nothing is truncated to a fixed number of decimals. It only reaches scientific notation
+    at `1e16` and above, a magnitude no real position size approaches. The trailing `.0`
+    Python adds to a whole float is stripped, since a position size is conventionally
+    written without one.
+    """
+    text = f"{quantity:,}"
+    if text.endswith(".0"):
+        text = text[:-2]
+    if not text.startswith("-"):
+        text = f"+{text}"
+    return text
+
+
+def _degraded_reason(section: Degraded) -> str:
+    """The Degraded sentence fragment: the reason, plus the staleness stamp when the
+    caller set one. No builder in this module sets `as_of` today — `build_expiries`
+    always passes a bare `reason` — but staleness is exactly the context an operator wants
+    on a degraded section, so the renderer surfaces it the moment a caller starts setting
+    one rather than silently dropping a field that already exists on the type.
+    """
+    if section.as_of is None:
+        return section.reason
+    return f"{section.reason} (as of {section.as_of})"
+
+
 def _render_expiries(section: ExpirySection, escape: Callable[[str], str]) -> str:
     """The expiries section. Degraded and Unavailable carry ⚠ and their reason; only a
-    `Ready` with no items may say the positive "nothing expiring"."""
+    `Ready` with no items may say the positive "nothing expiring".
+
+    The `elif isinstance(section, Ready)` plus a final `assert_never` (rather than an
+    unconditional `else` for the content path) is deliberate: if a fourth section
+    constructor is ever added and happens to carry an `.items` attribute, it must not
+    fall through and render silently as if it were `Ready` — that is exactly the bug class
+    this module exists to prevent. mypy flags the `else` as unreachable only while the
+    union really is exhausted; add a constructor and both mypy and `assert_never` fail loudly.
+    """
     if isinstance(section, Degraded):
-        return f"⚠ Expiring positions unavailable — {section.reason}."
-    if isinstance(section, Unavailable):
+        return f"⚠ Expiring positions unavailable — {_degraded_reason(section)}."
+    elif isinstance(section, Unavailable):
         return f"⚠ Expiring positions could not be read — {section.reason}."
-    if not section.items:
-        return "No position expiring in the next week."
-    lines = ["**Expiring soon:**"]
-    for c in section.items:
-        when = "today" if c.days_left == 0 else f"{c.days_left} days"
-        # IBKR-supplied strings: escaped. Our own literals and the formatted date are not.
-        lines.append(
-            f"- {escape(c.symbol)} ({escape(c.description.strip())}) — {c.quantity:+g} — "
-            f"expires {c.expiry.isoformat()}, {when}"
-        )
-    return "\n".join(lines)
+    elif isinstance(section, Ready):
+        if not section.items:
+            return "No position expiring in the next week."
+        lines = ["**Expiring soon:**"]
+        for c in section.items:
+            if c.days_left == 0:
+                when = "today"
+            elif c.days_left == 1:
+                when = "1 day"
+            else:
+                when = f"{c.days_left} days"
+            # IBKR-supplied strings: escaped. Our own literals and the formatted date are not.
+            lines.append(
+                f"- {escape(c.symbol)} ({escape(c.description.strip())}) — "
+                f"{_format_quantity(c.quantity)} — expires {c.expiry.isoformat()}, {when}"
+            )
+        return "\n".join(lines)
+    else:
+        assert_never(section)
 
 
-def _render_closures(section: ClosureSection) -> str:
-    """The closures section. Takes no escaper on purpose — see the comment below."""
-    # `_EXCHANGE_LABELS` values are our own literals, and the code falls back to an MIC
-    # from our own 20-entry map — neither is IBKR-supplied, so neither is escaped.
+def _render_closures(section: ClosureSection, escape: Callable[[str], str]) -> str:
+    """The closures section. Same exhaustiveness shape as `_render_expiries` — see there.
+
+    `escape` is applied to `label` even though every label in play today traces to our own
+    20-entry `_EXCHANGE_LABELS` map or its own-literal fallback (`_EXCHANGE_LABELS.get(code,
+    code)` in `build_closures`), never to IBKR-supplied text. That provenance argument holds
+    only as long as `get_market_calendar_context()` keeps being called with no arguments at
+    its one call site — nothing pins that, and a future caller passing a derived exchange
+    list would silently break it with no test going red. Escaping here removes the need to
+    keep that argument true forever: §10's point is not having to reason about provenance.
+    """
     if isinstance(section, Degraded):
-        return f"⚠ Exchange closures unavailable — {section.reason}."
-    if isinstance(section, Unavailable):
+        return f"⚠ Exchange closures unavailable — {_degraded_reason(section)}."
+    elif isinstance(section, Unavailable):
         return f"⚠ Exchange closures could not be read — {section.reason}."
-    if not section.items:
-        return "All tracked exchanges open today."
-    names = ", ".join(c.label for c in section.items)
-    return f"**Closed today:** {names}."
+    elif isinstance(section, Ready):
+        if not section.items:
+            return "All tracked exchanges open today."
+        names = ", ".join(escape(c.label) for c in section.items)
+        return f"**Closed today:** {names}."
+    else:
+        assert_never(section)
 
 
 def render_briefing(briefing: Briefing, escape: Callable[[str], str]) -> str:
@@ -250,16 +313,17 @@ def render_briefing(briefing: Briefing, escape: Callable[[str], str]) -> str:
     another's. A `Degraded` or `Unavailable` section always carries ⚠ and its reason, and
     never the positive "we looked and found nothing" sentence.
 
-    `escape` is applied to every IBKR-supplied string and is **required, with no default**:
-    a security control that a caller can forget by omission is not a control. `panel_app`
-    passes `panel_markdown.escape_markup`, which is what
-    `docs/security-architecture.md` §10 requires of a surface that shows text. Tests that
-    care about wording rather than escaping pass `str` explicitly, which makes the choice
-    visible at every call site.
+    `escape` is applied to every string of unpinned provenance and is **required, with no
+    default**: a security control that a caller can forget by omission is not a control.
+    Task 6 wires this to `panel_app`, which will pass `panel_markdown.escape_markup` — what
+    `docs/security-architecture.md` §10 requires of a surface that shows text; that wiring
+    does not exist yet, so this docstring makes no claim about `panel_app`'s current
+    contents. Tests that care about wording rather than escaping pass `str` explicitly,
+    which makes the choice visible at every call site.
     """
     return "\n\n".join(
         (
             _render_expiries(briefing.expiries, escape),
-            _render_closures(briefing.closures),
+            _render_closures(briefing.closures, escape),
         )
     )
