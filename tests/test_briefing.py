@@ -412,6 +412,46 @@ def test_guard_passes_positions_through_on_a_healthy_snapshot() -> None:
     assert br.positions_for_briefing(snap) == ()
 
 
+def test_guard_returns_none_when_stale_positions_are_republished_alongside_an_error() -> None:
+    """The realistic degraded shape is non-empty positions WITH an error, not empty ones.
+
+    `DashboardPoller._publish_stale` (claudia/dashboard_poller.py) republishes the
+    PREVIOUS snapshot's positions unaged when a mid-session poll fails, and attaches the
+    new `error` to that same snapshot — it does not blank `positions` to `()`. So the
+    runtime shape of "the account half just failed" is a snapshot carrying real, stale
+    position rows next to a non-None `error`, not the empty-tuple case every other guard
+    test here exercises.
+
+    A guard written as `error is not None and not snapshot.positions` would pass every
+    other test in this module — they all build `_Snap(positions=(), error=...)` — while
+    silently falling through to `return snapshot.positions` whenever positions are
+    non-empty, leaking stale rows into the briefing as if they were freshly polled. That
+    is precisely the failure hard rule 2 exists to prevent: presenting unreliable data as
+    reliable. This test pins the guard against that specific wrong shape by giving it a
+    near-expiry row alongside the error, the same rows `_publish_stale` would carry
+    forward from a healthy poll two ticks earlier.
+    """
+    stale_row = _Row(
+        symbol="ESZ6",
+        description="E-mini S&P 500",
+        quantity=2.0,
+        expiry="20260918",
+    )
+    snap = _Snap(positions=(stale_row,), error="IBKR read failed")
+
+    assert br.positions_for_briefing(snap) is None
+
+    text = br.render_briefing(
+        br.Briefing(
+            expiries=br.build_expiries(br.positions_for_briefing(snap), today=date(2026, 9, 15)),
+            closures=br.Ready(items=()),
+        ),
+        escape=str,
+    )
+    assert "⚠" in text
+    assert "ESZ6" not in text
+
+
 def test_degraded_reason_from_the_guard_survives_into_the_render() -> None:
     """End to end for the rule: unpolled snapshot in, warning out — never "nothing"."""
     snap = _Snap(positions=(), error="Dashboard has not polled yet.")

@@ -3356,3 +3356,104 @@ def test_build_briefing_text_returns_empty_string_when_rendering_itself_raises(
     monkeypatch.setattr(pa, "_dashboard_poller", None)
     monkeypatch.setattr(pa, "render_briefing", _explode)
     assert pa._build_briefing_text(object()) == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_send_opening_status_appends_a_present_briefing_as_a_further_part():
+    """Finding 4 (final-review cleanup, 2026-09-15): pins `_send_opening_status`'s
+    `if briefing_text: parts.append(briefing_text)` guard on its POSITIVE path.
+
+    Every existing briefing-adjacent test here (`test_a_failing_store_degrades...`,
+    `test_build_briefing_text_returns_empty_string...`) calls `_build_briefing_text`
+    directly and never reaches the wiring in `_send_opening_status` that appends its
+    result to the sent message. Both tests that DO exercise `_send_opening_status` for
+    real (`test_init_sends_opening_status_and_stamps_trade_context`,
+    `test_init_offline_flag_flows_from_gather_to_trade_lines`) predate the briefing and
+    never gave it a non-empty return, so the append was untested: removing the `if`
+    entirely would add a stray blank `\n\n`-joined part and nothing here would notice.
+
+    Same harness as `test_init_sends_opening_status_and_stamps_trade_context` — init is
+    driven for real via `chat.callback`, `gather_session_state`/`build_trade_lines` are
+    mocked for deterministic text, and TradingView is already forced offline=False by the
+    autouse `tv_connect` fixture. The only addition is patching `_build_briefing_text`
+    itself, which is the seam `_send_opening_status` calls through
+    `asyncio.to_thread` — nothing here needs a real dashboard poller or market calendar.
+    """
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch(
+            "claudia.panel_app.gather_session_state",
+            new=AsyncMock(return_value=("", False)),
+        ),
+        patch(
+            "claudia.panel_app.build_trade_lines",
+            return_value=("trade status line", "TRADE CTX"),
+        ),
+        patch(
+            "claudia.panel_app._build_briefing_text",
+            return_value="**Expiring soon:**\n- ESZ6 (E-mini S&P 500) — +2 — expires "
+            "2026-09-18, 3 days",
+        ),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    texts = _message_texts(chat)
+    status = [t for t in texts if "trade status line" in t]
+    assert len(status) == 1
+    # A present briefing is a THIRD \n\n-joined part, after the trade line and the
+    # TradingView line — not merged into either, and not dropped.
+    assert status[0] == (
+        "_trade status line_\n\n_TradingView: connected._\n\n"
+        "**Expiring soon:**\n- ESZ6 (E-mini S&P 500) — +2 — expires 2026-09-18, 3 days"
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_opening_status_omits_an_empty_briefing_without_a_trailing_blank_part():
+    """Finding 4's negative path: when `_build_briefing_text` returns "" (no expiries, no
+    closures, or the whole builder degraded to its outer catch-all), the message must end
+    cleanly after the TradingView line — no trailing `\n\n` and no empty part joined in.
+    Same harness as the positive-path test above."""
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch(
+            "claudia.panel_app.gather_session_state",
+            new=AsyncMock(return_value=("", False)),
+        ),
+        patch(
+            "claudia.panel_app.build_trade_lines",
+            return_value=("trade status line", "TRADE CTX"),
+        ),
+        patch("claudia.panel_app._build_briefing_text", return_value=""),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    texts = _message_texts(chat)
+    status = [t for t in texts if "trade status line" in t]
+    assert len(status) == 1
+    assert status[0] == "_trade status line_\n\n_TradingView: connected._"
+    assert not status[0].endswith("\n\n")

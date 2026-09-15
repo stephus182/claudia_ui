@@ -128,8 +128,8 @@ class ExpiringRow(Protocol):
     frozen dataclass, so mypy treats its fields as read-only, and a Protocol declaring a
     plain (settable) attribute is not satisfied by a read-only one. A property requirement
     is still satisfied by an ordinary mutable attribute (e.g. the `_Row` test double), so
-    this costs nothing on the test side while letting the real, frozen `Position` through
-    Task 6 will pass.
+    this costs nothing on the test side while letting the real, frozen `Position` satisfy
+    the Protocol too.
     """
 
     @property
@@ -376,11 +376,15 @@ def render_briefing(briefing: Briefing, escape: Callable[[str], str]) -> str:
 
     `escape` is applied to every string of unpinned provenance and is **required, with no
     default**: a security control that a caller can forget by omission is not a control.
-    Task 6 wires this to `panel_app`, which will pass `panel_markdown.escape_markup` — what
-    `docs/security-architecture.md` §10 requires of a surface that shows text; that wiring
-    does not exist yet, so this docstring makes no claim about `panel_app`'s current
-    contents. Tests that care about wording rather than escaping pass `str` explicitly,
-    which makes the choice visible at every call site.
+    `panel_app._build_briefing_text` passes `panel_markdown.escape_markup` — what
+    `docs/security-architecture.md` §10 requires of a surface that shows text — wired and
+    verified 2026-09-15. That verification also measured the extra escape pass as
+    redundant: the resulting bokeh model text was byte-identical with and without it,
+    because the chat feed already renders through `safe_markdown` (`renderers=
+    [safe_markdown]`), which itself escapes. So passing `escape_markup` here is
+    defence-in-depth, not a correctness requirement — see `_build_briefing_text`'s
+    docstring for the check itself. Tests that care about wording rather than escaping
+    pass `str` explicitly, which makes the choice visible at every call site.
     """
     return "\n\n".join(
         (
