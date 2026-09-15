@@ -330,7 +330,7 @@ def test_ibkr_supplied_strings_are_escaped_not_rendered_as_markup() -> None:
 
 
 def test_closure_labels_are_escaped_too() -> None:
-    """Code review 2026-09-15: every label in play today traces to `_EXCHANGE_LABELS` or
+    """Code review 2026-09-15: every label in play today traces to `EXCHANGE_LABELS` or
     its own-literal fallback, never to IBKR — but nothing pins that, and the cost of
     escaping a label unconditionally is zero. `escape` must reach `_render_closures`, not
     just `_render_expiries`.

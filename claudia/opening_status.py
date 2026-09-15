@@ -54,7 +54,10 @@ BROKERAGE_SESSION_DOWN = (
     "Gateway** below.*"
 )
 
-_EXCHANGE_LABELS = {
+# Public: `claudia/briefing.py` imports this map across the module boundary (build_closures'
+# label lookup) rather than keeping its own copy, so it is a cross-module contract, not a
+# module-private detail — reshaping or renaming it here breaks that consumer.
+EXCHANGE_LABELS = {
     "XNYS": "NYSE",
     "CME": "CME Futures",
     "XLON": "LSE London",
@@ -339,7 +342,7 @@ def _format_market_calendar(mkt: dict[str, Any]) -> str:
     Calendar' system-prompt block (verbatim port from the removed app.py)."""
     holiday_lines = []
     for xcode, holidays in mkt.get("holidays_by_exchange", {}).items():
-        name = _EXCHANGE_LABELS.get(xcode, xcode)
+        name = EXCHANGE_LABELS.get(xcode, xcode)
         holiday_lines.append(
             f"{name}: {', '.join(holidays)}" if holidays else f"{name}: no holidays this year/next"
         )

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Generic, Protocol, TypeAlias, TypeVar, assert_never
 
-from claudia.opening_status import _EXCHANGE_LABELS
+from claudia.opening_status import EXCHANGE_LABELS
 
 T = TypeVar("T")
 
@@ -105,7 +105,7 @@ def build_closures(mkt: Mapping[str, object] | None, today: date) -> ClosureSect
     for code, days in sorted(string_keyed):
         if not isinstance(days, (list, tuple)) or stamp not in days:
             continue
-        closed.append(ClosedExchange(code=code, label=_EXCHANGE_LABELS.get(code, code)))
+        closed.append(ClosedExchange(code=code, label=EXCHANGE_LABELS.get(code, code)))
     return Ready(items=tuple(closed))
 
 
@@ -311,7 +311,7 @@ def _render_closures(section: ClosureSection, escape: Callable[[str], str]) -> s
     """The closures section. Same exhaustiveness shape as `_render_expiries` — see there.
 
     `escape` is applied to `label` even though every label in play today traces to our own
-    20-entry `_EXCHANGE_LABELS` map or its own-literal fallback (`_EXCHANGE_LABELS.get(code,
+    20-entry `EXCHANGE_LABELS` map or its own-literal fallback (`EXCHANGE_LABELS.get(code,
     code)` in `build_closures`), never to IBKR-supplied text. That provenance argument holds
     only as long as `get_market_calendar_context()` keeps being called with no arguments at
     its one call site — nothing pins that, and a future caller passing a derived exchange
