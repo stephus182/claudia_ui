@@ -437,3 +437,50 @@ def test_the_real_snapshot_type_satisfies_the_guard_protocol() -> None:
 
     snap = empty_snapshot(error="Dashboard has not polled yet.")
     assert br.positions_for_briefing(snap) is None
+
+
+def test_a_real_position_survives_the_whole_chain_to_the_rendered_text() -> None:
+    """The positive path, pinned against the REAL frozen `Position`, not `_Row`.
+
+    Every other positive-path test in this file (build_expiries, render_briefing) uses
+    `_Row`, a plain mutable class that is structurally EASIER to satisfy than the real,
+    frozen `dashboard_data.Position` — that gap is exactly how the `ExpiringRow` mismatch
+    survived: every test stayed green on the double while the real chain would have
+    failed mypy. `test_the_real_snapshot_type_satisfies_the_guard_protocol` above only
+    exercises the real type on the empty/failure path (`positions == ()`), so it cannot
+    catch a rename or type drift on `Position.symbol`/`.description`/`.quantity`/
+    `.expiry` — a field that stopped matching `ExpiringRow` would leave every `positions=()`
+    test green while a real, non-empty snapshot broke. This test closes that hole: a real
+    `Position` in a real `DashboardSnapshot`, run through the full
+    `positions_for_briefing` -> `build_expiries` -> `render_briefing` chain, asserting the
+    contract actually appears in the rendered text.
+    """
+    from datetime import UTC, datetime
+
+    from claudia.dashboard_data import DashboardSnapshot, Position
+
+    pos = Position(
+        conid=495512563,
+        symbol="ESZ6",
+        description="E-mini S&P 500",
+        asset_class="FUT",
+        quantity=2.0,
+        average_cost=450000.0,
+        market_price=4500.0,
+        market_value=900000.0,
+        unrealised_pnl=0.0,
+        realised_pnl=0.0,
+        currency="USD",
+        expiry="20260918",
+    )
+    snap = DashboardSnapshot(as_of=datetime(2026, 9, 15, 12, 0, tzinfo=UTC), positions=(pos,))
+
+    out = br.positions_for_briefing(snap)
+    section = br.build_expiries(out, today=date(2026, 9, 15))
+    text = br.render_briefing(
+        br.Briefing(expiries=section, closures=br.Ready(items=())), escape=str
+    )
+
+    assert "**Expiring soon:**" in text
+    assert "ESZ6" in text
+    assert "2026-09-18" in text
