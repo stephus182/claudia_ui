@@ -122,12 +122,35 @@ class ExpiringContract:
 
 class ExpiringRow(Protocol):
     """What `build_expiries` reads off a position row — a subset of
-    `dashboard_data.Position`, stated structurally so a test double needs no cast."""
+    `dashboard_data.Position`, stated structurally so a test double needs no cast.
 
-    symbol: str
-    description: str
-    quantity: float
-    expiry: str | None
+    All four members are read-only `@property`, not plain attributes: `Position` is a
+    frozen dataclass, so mypy treats its fields as read-only, and a Protocol declaring a
+    plain (settable) attribute is not satisfied by a read-only one. A property requirement
+    is still satisfied by an ordinary mutable attribute (e.g. the `_Row` test double), so
+    this costs nothing on the test side while letting the real, frozen `Position` through
+    Task 6 will pass.
+    """
+
+    @property
+    def symbol(self) -> str:
+        """The instrument's ticker, or IBKR's `contractDesc` fallback."""
+        ...
+
+    @property
+    def description(self) -> str:
+        """IBKR's `contractDesc` — the field that disambiguates a contract month."""
+        ...
+
+    @property
+    def quantity(self) -> float:
+        """Position size, signed. Zero means flat."""
+        ...
+
+    @property
+    def expiry(self) -> str | None:
+        """IBKR's `expiry` as `YYYYMMDD`, or None for an instrument that does not expire."""
+        ...
 
 
 ExpirySection: TypeAlias = "Ready[ExpiringContract] | Degraded | Unavailable"
@@ -306,6 +329,44 @@ def _render_closures(section: ClosureSection, escape: Callable[[str], str]) -> s
         return f"**Closed today:** {names}."
     else:
         assert_never(section)
+
+
+class BriefingSnapshot(Protocol):
+    """What the guard reads off `DashboardSnapshot` — its two relevant fields only.
+
+    Both members are declared as read-only `@property`, not plain attributes: the real
+    `DashboardSnapshot` this is checked against is a frozen dataclass, and mypy treats a
+    frozen dataclass's fields as read-only. A Protocol with a plain (settable) attribute
+    is not satisfied by a read-only one — a property is.
+    """
+
+    @property
+    def error(self) -> str | None:
+        """Set when the IBKR half of the poll failed; None on a clean read."""
+        ...
+
+    @property
+    def positions(self) -> tuple[ExpiringRow, ...]:
+        """Open positions, meaningful only when `error` is None."""
+        ...
+
+
+def positions_for_briefing(
+    snapshot: BriefingSnapshot | None,
+) -> Sequence[ExpiringRow] | None:
+    """Positions to brief on, or None when they must not be trusted.
+
+    `DashboardPoller.snapshot()` never returns None: before its first poll it serves
+    `empty_snapshot(error="Dashboard has not polled yet.")`, whose `positions` is `()`.
+    An empty tuple from *that* snapshot means "we have not looked"; an empty tuple from a
+    clean poll means "nothing is open". They are opposite claims, and `error` is the only
+    field that tells them apart — so this function keys on `error`, never on emptiness.
+    """
+    if snapshot is None:
+        return None
+    if snapshot.error is not None:
+        return None
+    return snapshot.positions
 
 
 def render_briefing(briefing: Briefing, escape: Callable[[str], str]) -> str:

@@ -375,3 +375,65 @@ def test_a_degraded_section_is_never_rendered_as_an_empty_one() -> None:
                 f"{field.name}={type(bad).__name__} rendered as a positive empty result — "
                 "this is hard rule 2 violated"
             )
+
+
+class _Snap:
+    """Stand-in for DashboardSnapshot — only the two fields the guard reads."""
+
+    def __init__(self, positions: tuple[_Row, ...], error: str | None = None) -> None:
+        """Build a snapshot double; `error` is what the guard keys on."""
+        self.positions = positions
+        self.error = error
+
+
+def test_guard_returns_none_when_the_poller_has_not_polled() -> None:
+    """The poller serves empty_snapshot(error="Dashboard has not polled yet.") before its
+    first poll — positions is () but nothing was read. Passing that () through would
+    render "No position expiring", which is hard rule 2 violated in the wiring."""
+    snap = _Snap(positions=(), error="Dashboard has not polled yet.")
+    assert br.positions_for_briefing(snap) is None
+
+
+def test_guard_returns_none_when_the_ibkr_half_failed() -> None:
+    """A failed IBKR poll is not an empty book; positions must not be trusted."""
+    snap = _Snap(positions=(), error="IBKR session not authenticated (401)")
+    assert br.positions_for_briefing(snap) is None
+
+
+def test_guard_returns_none_when_there_is_no_poller() -> None:
+    """The very first session has no poller yet."""
+    assert br.positions_for_briefing(None) is None
+
+
+def test_guard_passes_positions_through_on_a_healthy_snapshot() -> None:
+    """A clean poll that found nothing open is a POSITIVE result and must reach the
+    builder as an empty sequence, not as None."""
+    snap = _Snap(positions=(), error=None)
+    assert br.positions_for_briefing(snap) == ()
+
+
+def test_degraded_reason_from_the_guard_survives_into_the_render() -> None:
+    """End to end for the rule: unpolled snapshot in, warning out — never "nothing"."""
+    snap = _Snap(positions=(), error="Dashboard has not polled yet.")
+    text = br.render_briefing(
+        br.Briefing(
+            expiries=br.build_expiries(br.positions_for_briefing(snap), today=date(2026, 9, 15)),
+            closures=br.Ready(items=()),
+        ),
+        escape=str,
+    )
+    assert "⚠" in text
+    assert "No position expiring" not in text
+
+
+def test_the_real_snapshot_type_satisfies_the_guard_protocol() -> None:
+    """The guard must accept the ACTUAL DashboardSnapshot, not only the double.
+
+    DashboardSnapshot is a frozen dataclass; a Protocol declaring a plain mutable
+    attribute would not be satisfied by it, and Task 6 is where that would blow up.
+    Pinning it here means the failure lands in this task, not in the wiring.
+    """
+    from claudia.dashboard_data import empty_snapshot
+
+    snap = empty_snapshot(error="Dashboard has not polled yet.")
+    assert br.positions_for_briefing(snap) is None
