@@ -3308,3 +3308,51 @@ async def test_run_session_cleanup_passes_ended_by_through(monkeypatch):
     store.close_session.assert_called_once_with(
         "sid-2", metadata={"model": ANY, "ended_by": "disconnect"}
     )
+
+
+def test_a_failing_store_degrades_the_closures_section_rather_than_the_whole_briefing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A calendar read that raises must NOT blank the briefing — it must say so.
+
+    The store failure is caught by the INNER handler (`mkt = None`), so `build_closures`
+    renders `Unavailable`. Returning "" here would throw away the expiries section too,
+    and would tell the operator nothing about why. Hard rule 2 in the wiring: a failed
+    read is reported, not silently dropped.
+    """
+    import claudia.panel_app as pa
+
+    class _Boom:
+        """A toolkit whose store access raises — the calendar half fails, nothing else."""
+
+        @property
+        def _store(self):
+            """Always raises, standing in for an unreadable market calendar."""
+            raise RuntimeError("store exploded")
+
+    monkeypatch.setattr(pa, "_dashboard_poller", None)
+    text = pa._build_briefing_text(_Boom())  # type: ignore[arg-type]
+    assert text != ""
+    assert "⚠" in text
+    assert "could not be read" in text or "unavailable" in text
+
+
+def test_build_briefing_text_returns_empty_string_when_rendering_itself_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hard rule 1 (NEVER BREAK STARTUP) made structural.
+
+    The OUTER handler is the last line of defence: if anything the inner handlers do not
+    anticipate raises, the helper returns "" and the session still opens. Patching
+    `render_briefing` is how we reach that handler — the inner one already absorbs the
+    store, which is why a store failure alone does NOT exercise this path.
+    """
+    import claudia.panel_app as pa
+
+    def _explode(*_args: object, **_kwargs: object) -> str:
+        """Stand in for an unanticipated failure inside rendering."""
+        raise RuntimeError("render exploded")
+
+    monkeypatch.setattr(pa, "_dashboard_poller", None)
+    monkeypatch.setattr(pa, "render_briefing", _explode)
+    assert pa._build_briefing_text(object()) == ""  # type: ignore[arg-type]

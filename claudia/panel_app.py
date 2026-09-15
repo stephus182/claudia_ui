@@ -32,7 +32,7 @@ import signal
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -51,6 +51,13 @@ from ibkr_core_mcp import (
 from ibkr_core_mcp.gateway import GatewayManager
 
 from claudia.agent import ClaudIAAgent, warn_if_model_lacks_operator_channel
+from claudia.briefing import (
+    Briefing,
+    build_closures,
+    build_expiries,
+    positions_for_briefing,
+    render_briefing,
+)
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.dashboard_poller import DashboardPoller
@@ -64,7 +71,7 @@ from claudia.opening_status import build_trade_lines, gather_session_state
 from claudia.panel_action_bar import SERVICE_LABELS, ActionBar
 from claudia.panel_chart import build_chart_pane
 from claudia.panel_dashboard import build_dashboard
-from claudia.panel_markdown import safe_markdown
+from claudia.panel_markdown import escape_markup, safe_markdown
 from claudia.panel_sink import PanelMessageSink
 from claudia.panel_system_log import SystemLog
 from claudia.panel_theme import (
@@ -379,23 +386,62 @@ async def _connect_tradingview(agent: ClaudIAAgent) -> bool:
         return True
 
 
+def _build_briefing_text(toolkit: ClaudeToolkit) -> str:
+    """Render the startup briefing, or "" when anything unanticipated goes wrong.
+
+    Returning "" rather than raising is hard rule 1 (2026-09-15) made structural: a
+    briefing failure must never delay or prevent a session opening. The failure is logged,
+    never silently dropped.
+
+    Note the two handlers are not interchangeable. The inner one turns an unreadable
+    calendar into `mkt = None`, so `build_closures` reports `Unavailable` and the
+    expiries section still renders — a failed read is shown, not swallowed. The outer one
+    is the last line of defence for anything unanticipated, and only it yields "".
+
+    Reads only what is already in this process. `get_market_calendar_context()` is called
+    with no arguments, exactly as `opening_status` calls it, so it hits the process-wide
+    `_market_calendar_cache` that `build_trade_lines` has already populated on this path —
+    a cache hit, not a second computation. No network call happens here.
+    """
+    try:
+        snapshot = _dashboard_poller.snapshot() if _dashboard_poller is not None else None
+        positions = positions_for_briefing(snapshot)
+        try:
+            mkt = toolkit._store.get_market_calendar_context()
+        except Exception:
+            mkt = None
+        today = date.today()
+        return render_briefing(
+            Briefing(
+                expiries=build_expiries(positions, today=today),
+                closures=build_closures(mkt, today=today),
+            ),
+            escape=escape_markup,
+        )
+    except Exception as exc:
+        log.warning("briefing skipped: %s: %s", type(exc).__name__, exc)
+        return ""
+
+
 async def _send_opening_status(
     chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, tv_offline: bool
 ) -> tuple[str | None, bool]:
-    """Send the second chat message — what is *not* working, plus the local dataset — and
-    return (trade_context, ibkr_offline): the trade/calendar context for the caller to
-    stamp on agent._trade_context, and the offline flag so _init_session can
-    decide whether to offer the Start-Gateway button (Task 5.3/5.6b —
+    """Send the second chat message — what is *not* working, plus the local dataset and
+    the startup briefing — and return (trade_context, ibkr_offline): the trade/calendar
+    context for the caller to stamp on agent._trade_context, and the offline flag so
+    _init_session can decide whether to offer the Start-Gateway button (Task 5.3/5.6b —
     parity with the removed app.py). tv_offline (from _connect_tradingview) drives the
     TradingView status line. Effectively non-raising: both builders catch their
-    own IBKR/store failures internally and degrade to offline/fallback text; an
+    own IBKR/store failures internally and degrade to offline/fallback text, and the
+    briefing has its own two-layer failure handling (`_build_briefing_text`); an
     unexpected escape is caught by _init_session's generic handler.
 
     The IBKR half is a caveat, not a report: `gather_session_state` returns `""` when both
     halves of the gateway answer, and the empty part is dropped rather than sent as a
     leading blank line. Account figures and the order book live in the dashboard and are
-    no longer echoed here (2026-08-05) — so on a healthy start this message is two lines:
-    the trade dataset and TradingView."""
+    no longer echoed here (2026-08-05) — so on a healthy start this message is three lines:
+    the trade dataset, TradingView, and the briefing (expiring positions + today's
+    closures) — omitted rather than sent blank when `_build_briefing_text` returns ""."""
     ibkr_caveat, ibkr_offline = await gather_session_state(toolkit)
     trade_status, trade_context = await asyncio.to_thread(build_trade_lines, toolkit, ibkr_offline)
     tv_line = (
@@ -404,6 +450,9 @@ async def _send_opening_status(
         else "_TradingView: connected._"
     )
     parts = ([ibkr_caveat] if ibkr_caveat else []) + [f"_{trade_status}_", tv_line]
+    briefing_text = await asyncio.to_thread(_build_briefing_text, toolkit)
+    if briefing_text:
+        parts.append(briefing_text)
     chat.send("\n\n".join(parts), user="ClaudIA", respond=False)
     return trade_context, ibkr_offline
 
