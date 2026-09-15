@@ -389,19 +389,41 @@ async def _connect_tradingview(agent: ClaudIAAgent) -> bool:
 def _build_briefing_text(toolkit: ClaudeToolkit) -> str:
     """Render the startup briefing, or "" when anything unanticipated goes wrong.
 
-    Returning "" rather than raising is hard rule 1 (2026-09-15) made structural: a
-    briefing failure must never delay or prevent a session opening. The failure is logged,
-    never silently dropped.
+    Returning "" rather than raising is this function's contribution to hard rule 1
+    (2026-09-15, NEVER BREAK STARTUP): it never lets a briefing failure propagate past
+    itself. The rule as a whole is not a property this function guarantees alone —
+    `_send_opening_status` has no guard of its own around the call, so the outer except
+    below is backstopped by `_init_session`'s generic catch-all for the (very unlikely)
+    case that the `log.warning` call in that except block itself raised. That is the same
+    composition `gather_session_state` and `build_trade_lines` already rely on, not a new
+    pattern. A reader relaxing `_init_session`'s catch-all on the belief that this function
+    is unconditionally non-raising would be wrong.
 
     Note the two handlers are not interchangeable. The inner one turns an unreadable
     calendar into `mkt = None`, so `build_closures` reports `Unavailable` and the
     expiries section still renders — a failed read is shown, not swallowed. The outer one
     is the last line of defence for anything unanticipated, and only it yields "".
 
-    Reads only what is already in this process. `get_market_calendar_context()` is called
-    with no arguments, exactly as `opening_status` calls it, so it hits the process-wide
-    `_market_calendar_cache` that `build_trade_lines` has already populated on this path —
-    a cache hit, not a second computation. No network call happens here.
+    Reads only what is already in this process — no network call happens here, unconditionally.
+    `get_market_calendar_context()` is called with no arguments, exactly as `opening_status`
+    calls it, so **when the calendar read succeeds** it hits the process-wide
+    `_market_calendar_cache` that `build_trade_lines` has already populated on this path: a
+    cache hit, not a second computation. A *failing* read is deliberately not cached
+    (`ibkr_core_mcp/store.py`'s `get_market_calendar_context` returns its error-marker dict
+    before the line that populates `_market_calendar_cache`, verified 2026-09-15 by
+    monkeypatching `exchange_calendars.get_calendar` to raise and counting calls) — so a
+    transient failure isn't frozen in for the rest of the day, at the cost that this
+    function repeats `build_trade_lines`'s work every time the calendar library is
+    unhealthy, not just on the first failure. Still not a hard-rule-1 problem:
+    `exchange_calendars` is local with no network, runs in a worker thread via
+    `asyncio.to_thread`, and the failure is caught.
+
+    `escape` is passed as `escape_markup` even though `chat.send` already renders through
+    `renderers=[safe_markdown]`, which itself escapes. Checked 2026-09-15: the two do not
+    double-escape each other — the resulting bokeh model text was byte-identical with and
+    without the extra `escape_markup` pass, against `"E-mini S&P 500"`, raw `<script>`
+    payloads and markdown-injection strings. So this is redundant defence-in-depth per
+    `docs/security-architecture.md` §10, not a correctness requirement, and it is harmless.
     """
     try:
         snapshot = _dashboard_poller.snapshot() if _dashboard_poller is not None else None
@@ -439,9 +461,14 @@ async def _send_opening_status(
     The IBKR half is a caveat, not a report: `gather_session_state` returns `""` when both
     halves of the gateway answer, and the empty part is dropped rather than sent as a
     leading blank line. Account figures and the order book live in the dashboard and are
-    no longer echoed here (2026-08-05) — so on a healthy start this message is three lines:
-    the trade dataset, TradingView, and the briefing (expiring positions + today's
-    closures) — omitted rather than sent blank when `_build_briefing_text` returns ""."""
+    no longer echoed here (2026-08-05) — so on a healthy start this message is three
+    `\n\n`-joined parts: the trade dataset, TradingView, and the briefing (expiring
+    positions + today's closures) — omitted rather than sent blank when
+    `_build_briefing_text` returns "". The first two parts are each one line; the briefing
+    part is not — `render_briefing` itself joins two sections with `\n\n`, and the
+    expiries section, when it has items, emits a `**Expiring soon:**` header plus one
+    bullet per position, so the whole message can run to several lines on a healthy
+    start."""
     ibkr_caveat, ibkr_offline = await gather_session_state(toolkit)
     trade_status, trade_context = await asyncio.to_thread(build_trade_lines, toolkit, ibkr_offline)
     tv_line = (
