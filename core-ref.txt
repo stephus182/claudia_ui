@@ -2,9 +2,8 @@
 #
 # ONE source of truth, read by CI and by tests/security/test_cross_repo_contract.py. An
 # immutable 40-character commit SHA, never a branch: a green run here must be reproducible
-# a month from now, and `main` is not. A tag would be equally good; v1.2.2 is 206 commits
-# behind the recalibration this repository depends on, so a SHA it is until the core cuts
-# another release.
+# a month from now, and `main` is not. The SHA below is what the core's `v2.0.0` tag points
+# at; the SHA rather than the tag, because a tag can be moved and a SHA cannot.
 #
 # Two CI lanes read this file, and they answer different questions (.github/workflows/ci.yml):
 #
@@ -19,7 +18,20 @@
 # against that checkout, and say in the commit message what changed in the core and why the
 # bump is safe. Nothing else in this repository names a core revision.
 #
-# 2026-09-14 — fada6b29d12b2e89276d0050fae5c2cbab9d92e1 is the core's OWASP MCP security
-# recalibration plus the audit-history commit after it. It is what the cross-repo contract,
-# the outbound-sink inventory and the capability-registry assertions were measured against.
-fada6b29d12b2e89276d0050fae5c2cbab9d92e1
+# 2026-09-17 — d88169c is the core's v2.0.0 release commit: the whole-package
+# release-readiness audit (175 findings, none open) with its pre-tag security audit. What
+# changed for this repository since fada6b2: 29 IBKRClient methods return Mapping models
+# rather than dicts (this repository's parsers were widened for that in 698b492 and are
+# tested with non-dict mappings); the four keyed-list methods raise IBKRAPIError on a 2xx
+# error object instead of fabricating rows; requests are paced per endpoint, retries
+# included. Nothing this repository calls changed signature — the three gated entry points
+# and every imported symbol are held by tests/security/test_cross_repo_contract.py against
+# the installed core — and the core's other breaking changes (the Config key removal, the
+# SSE bearer token, the alert tif vocabulary, update_delivery_option) touch no ClaudIA
+# call site. The whole gate line was run locally against a strict editable install of this
+# revision before the pin moved.
+#
+# 2026-09-14 — fada6b2 was the core's OWASP MCP security recalibration plus the
+# audit-history commit after it, what the cross-repo contract, the outbound-sink inventory
+# and the capability-registry assertions were first measured against.
+d88169c299de9d961eea8ec070e3417a2b51cdce

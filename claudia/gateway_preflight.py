@@ -301,10 +301,12 @@ DEFAULT_GATEWAY_URL = "https://localhost:5055/v1/api"
 def gateway_url() -> str:
     """The gateway URL, read directly from the environment rather than via `Config`.
 
-    `Config.from_env()` raises unless `ANTHROPIC_API_KEY` is set, which has nothing to do
-    with reaching the IBKR gateway. A diagnostic that refuses to run because an unrelated
-    key is missing is useless precisely when it is needed — a half-configured environment
-    is one of the states this is for. `.env` is still loaded so the normal setup works.
+    `Config.from_env()` raised unless `ANTHROPIC_API_KEY` was set — the core stopped
+    reading that key in 2.0.0 (2026-09-17) — and the reason stands without it: a full
+    configuration has nothing to do with reaching the IBKR gateway, and a diagnostic that
+    refuses to run because an unrelated setting is missing is useless precisely when it is
+    needed — a half-configured environment is one of the states this is for. `.env` is
+    still loaded so the normal setup works.
     """
     import os
 
