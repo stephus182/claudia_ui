@@ -36,7 +36,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ibkr_core_mcp.order_confirm import change_value_text, price_text_safe
@@ -821,8 +821,11 @@ def _needs_conid_text(sec_type: str, symbol: str) -> str:
     )
 
 
-def _resolve_account_id(accounts: list[dict[str, Any]]) -> str:
+def _resolve_account_id(accounts: Sequence[Mapping[str, Any]]) -> str:
     """Extract an account ID from IBKRClient.get_accounts()'s response.
+
+    Rows are mappings — `Account` models since ibkr_core_mcp's 2026-09-17 typed returns, plain
+    dicts on the core pinned in `core-ref.txt` — and only `.get` is used on them.
 
     IBKR's account objects have used different key names (accountId/acctId/id)
     across endpoints/API versions — try each in turn. Empty string if no accounts.

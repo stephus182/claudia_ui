@@ -80,11 +80,14 @@ from typing import Any, Protocol
 class TradeSource(Protocol):
     """Whatever can answer `/iserver/account/trades` — `fetch_fills`' only read.
 
-    Mirrors `IBKRClient.get_trades` exactly (verified 2026-09-08); the dashboard poller's
-    test double satisfies it structurally, and so does the real client.
+    Declared as the supertype `IBKRClient.get_trades` returns — `list[dict]` on the core
+    pinned in `core-ref.txt`, `list[Trade | dict]` from 2026-09-17, both
+    `Sequence[Mapping[str, Any]]` (`list` is invariant, so `list[dict]` would refuse the
+    second). The dashboard poller's test double satisfies it structurally, and so does the
+    real client.
     """
 
-    def get_trades(self) -> list[dict[str, Any]]:
+    def get_trades(self) -> Sequence[Mapping[str, Any]]:
         """Recent fills in IBKR's own window, one row per execution."""
         ...
 

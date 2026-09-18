@@ -1898,3 +1898,30 @@ def test_display_symbol_prefers_the_local_symbol_for_a_known_future():
 def test_snapshot_carries_identities_and_defaults_to_none_known():
     """`DashboardSnapshot.identities` is a mapping keyed by conid; empty by default."""
     assert dict(dd.empty_snapshot().identities) == {}
+
+
+def test_parse_orders_keeps_a_mapping_that_is_not_a_dict():
+    """ibkr_core_mcp's typed returns (2026-09-17) are `IBKRResponse` models: mappings over
+    IBKR's payload that are not dicts. Measured that day against rows built from its live
+    fixture, `get_live_orders()` handed this parser 1 row and it kept 0 — the live-orders
+    table empty, this suite green because every mock here is a dict. A `MappingProxyType` is
+    the same shape without importing the model."""
+    from types import MappingProxyType
+
+    row = MappingProxyType(
+        {
+            "orderId": 314390101,
+            "ticker": "AAPL",
+            "side": "BUY",
+            "totalSize": 1,
+            "remainingQuantity": 1,
+            "price": 100.0,
+            "orderType": "Limit",
+            "timeInForce": "GTC",
+            "status": "Submitted",
+        }
+    )
+
+    orders = dd.parse_orders([row])
+
+    assert len(orders) == 1 and orders[0].order_id == "314390101"

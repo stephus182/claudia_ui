@@ -17,6 +17,7 @@ Source: https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-contra
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -28,7 +29,9 @@ _MONTH_TOKENS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", 
 class ContractInfoSource(Protocol):
     """Whatever can answer `/iserver/contract/{conid}/info` — the one read this module makes."""
 
-    def get_contract_info(self, conid: int) -> dict[str, Any]:
+    # `Mapping`, not `dict`: ibkr_core_mcp returns a `ContractDetails` model since
+    # 2026-09-17 — a mapping that is not a dict — and the pinned core's dict satisfies it too.
+    def get_contract_info(self, conid: int) -> Mapping[str, Any]:
         """Contract metadata for one conid, as IBKR reports it."""
         ...
 
@@ -76,8 +79,14 @@ def _iso_date(yyyymmdd: Any) -> str | None:
 
 
 def parse_contract_info(conid: int, info: Any) -> ContractIdentity | None:
-    """Type IBKR's contract-info payload; None when it carries no local symbol."""
-    if not isinstance(info, dict):
+    """Type IBKR's contract-info payload; None when it carries no local symbol.
+
+    Any `Mapping` is accepted: `IBKRClient.get_contract_info` returns a `ContractDetails`
+    model since 2026-09-17, a mapping over IBKR's payload that is not a dict, and a `dict`
+    check here answered None for every contract that day — the order dialog lost its
+    contract-month line, with this suite green.
+    """
+    if not isinstance(info, Mapping):
         return None
     local_symbol = str(info.get("local_symbol") or "").strip()
     if not local_symbol:

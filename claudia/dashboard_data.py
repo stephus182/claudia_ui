@@ -146,6 +146,10 @@ log = logging.getLogger(__name__)
 # test double that implements the one method type-checks structurally — no casts, no
 # `type: ignore`, no fake that must impersonate the whole client. Signatures mirror
 # `IBKRClient`'s exactly (verified 2026-09-08), so the real client satisfies each of them.
+# Row types are `Sequence[Mapping[str, Any]]`, not `list[dict[str, Any]]`, since 2026-09-17:
+# ibkr_core_mcp returns `IBKRResponse` models — mappings, not dicts — and `list` is invariant,
+# so this is the one declaration both the core pinned in `core-ref.txt` and the next satisfy.
+# A `dict` here made mypy red against the new core before a single row was parsed.
 
 
 class LedgerSource(Protocol):
@@ -159,7 +163,7 @@ class LedgerSource(Protocol):
 class PositionSource(Protocol):
     """Whatever can page `/portfolio/{account}/positions/{page}` — `fetch_positions`' only read."""
 
-    def get_positions(self, account_id: str, page: int = 0) -> list[dict[str, Any]]:
+    def get_positions(self, account_id: str, page: int = 0) -> Sequence[Mapping[str, Any]]:
         """One page of open positions, 30 rows per page; `[]` past the last page."""
         ...
 
@@ -177,7 +181,7 @@ class QuoteSource(Protocol):
 class OrderSource(Protocol):
     """Whatever can answer `/iserver/account/orders` — `fetch_orders`' only read."""
 
-    def get_live_orders(self) -> list[dict[str, Any]]:
+    def get_live_orders(self) -> Sequence[Mapping[str, Any]]:
         """Working orders only, as IBKR reports them."""
         ...
 
@@ -1315,10 +1319,14 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
     as `LIMIT` on one call and the placement vocabulary on another. Nothing here
     normalises that: this layer reports what IBKR said, and the comparison logic in
     `order_flow` owns the equivalences.
+
+    Rows are any `Mapping`, not only dicts: since 2026-09-17 ibkr_core_mcp returns
+    `IBKRResponse` models, which serve IBKR's payload as a mapping and are not dicts. A
+    `dict` check here kept 0 of 1 live orders that day, with this suite green.
     """
     out: list[LiveOrder] = []
     for row in rows or ():
-        if not isinstance(row, dict):
+        if not isinstance(row, Mapping):
             continue
         order_id = row.get("orderId") or row.get("order_id")
         if order_id in (None, ""):

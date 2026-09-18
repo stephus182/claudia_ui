@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -103,7 +104,8 @@ class DashboardClient(
     behind guards in `_with_quotes` / `_read_entries`, and a raise there is a tested path.
     """
 
-    def get_accounts(self) -> list[dict[str, Any]]:
+    # `Sequence[Mapping]`, not `list[dict]` — see the note above `LedgerSource` in dashboard_data.
+    def get_accounts(self) -> Sequence[Mapping[str, Any]]:
         """The accounts this session may read, `accountId` and `currency` per row."""
         ...
 

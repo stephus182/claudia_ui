@@ -94,3 +94,15 @@ def test_contract_identity_never_raises_and_does_not_cache_a_failure():
     client.get_contract_info.return_value = _ES_INFO
     assert ci.contract_identity(client, 1) is not None
     assert client.get_contract_info.call_count == 2
+
+
+def test_parse_contract_info_accepts_a_mapping_that_is_not_a_dict():
+    """`IBKRClient.get_contract_info` returns a `ContractDetails` model since 2026-09-17 — a
+    mapping over IBKR's payload, not a dict. Measured against the live fixture, this parser
+    answered None for it and the order dialog lost its contract-month line. A
+    `MappingProxyType` is the same shape without importing the model."""
+    from types import MappingProxyType
+
+    identity = ci.parse_contract_info(649180671, MappingProxyType(_ES_INFO))
+
+    assert identity is not None and identity.local_symbol == "ESU6"
