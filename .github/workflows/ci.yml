@@ -236,13 +236,18 @@ jobs:
           pip install -e ".[dev]"
           pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
 
-      - name: Confirm the editable checkout is what imports
-        # One line of evidence rather than an assumption. The override is the reason this
-        # lane can answer anything about unreleased code at all; if the PyPI copy were still
-        # winning, every assertion below would be testing the pinned release and passing for
-        # the wrong reason — the shape of failure this file's continue-on-error note warns
-        # about elsewhere.
-        run: python -c "import ibkr_core_mcp, pathlib; print(pathlib.Path(ibkr_core_mcp.__file__))"
+      - name: Prove the editable override took
+        # FAILS the step if it did not. Until 2026-09-19 this only *printed* the import path
+        # — a claim nobody reads, in a job that carries continue-on-error, so a silently
+        # failed override would leave every assertion below running against the pinned
+        # release and reporting forward compatibility. A printed line is not a check; that
+        # is the same lesson as the green tick two comments up.
+        #
+        # It asks about PROVENANCE, not versions: core `main` and the published release
+        # declared the same 2.0.1 on 2026-09-19, nine commits apart, so a version comparison
+        # cannot tell the checkout from the wheel. PEP 610's direct_url.json can, and
+        # `claudia.install_check` is where that reading lives, unit-tested both ways.
+        run: python -m claudia.install_check --require-editable
 
       - name: Seam tests only
         # NOT the full suite. The question this lane answers is "did core main change

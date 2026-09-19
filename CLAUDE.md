@@ -123,6 +123,14 @@ git config core.hooksPath .githooks   # the four CI gates as a pre-push hook (se
 # real source tree. panel_app logs a loud ERROR naming the modules and this command at
 # startup, and tests/test_install_check.py fails in the ordinary pytest run. You should
 # never have to diagnose this from a bare ModuleNotFoundError again.
+#
+# WHICH install is in this venv? `python -m claudia.install_check` says so — `editable`
+# (the override), `index` (the PyPI release), `directory` (a frozen copy) or `unknown`.
+# Read from PEP 610 metadata, not from the version, because the checkout and the release
+# can declare the SAME version (both 2.0.1 on 2026-09-19, nine commits apart). Add
+# `--require-editable` to make it exit non-zero on anything but the override; that is what
+# CI's forward-compat lane runs, so a silently failed override cannot leave it testing the
+# released core while reporting forward compatibility.
 
 # 4. Copy and fill in env vars
 cp .env.example .env

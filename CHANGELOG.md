@@ -40,8 +40,24 @@ documents under `docs/`.
   describe the PyPI pin plus forward-compat design. The editable install remains documented as
   the *override* for working on both repositories at once.
 
+### Fixed
+
+- **The forward-compatibility CI lane now proves its editable override took, instead of
+  printing a path.** That lane installs `ibkr_core_mcp` from a checkout of `main` over the
+  PyPI copy; if the install silently failed, every seam assertion in it ran against the
+  *pinned release* and passed for the wrong reason — and because the job carries
+  `continue-on-error`, nothing turned red. The step ran `print(ibkr_core_mcp.__file__)` and
+  exited 0 regardless. It now runs `python -m claudia.install_check --require-editable`,
+  which fails the step. A version comparison could not have closed this: core `main` and the
+  published release both declared `2.0.1` on 2026-09-19, nine commits apart, so the question
+  has to be about provenance (PEP 610 `direct_url.json`), not version.
+
 ### Added
 
+- `claudia.install_check.core_install_origin()` — `editable` / `directory` / `index` /
+  `unknown` for the installed core, read from PEP 610 metadata, with `python -m
+  claudia.install_check [--require-editable]` as its entry point. The module had no entry
+  point before, so that command exited 0 in silence, which read exactly like a clean report.
 - `tests/security/test_cross_repo_contract.py` asserts that the **installed** distribution
   version equals the pin, that the pin satisfies the declared dependency range, that each
   blocking CI lane resolves the core from `core-ref.txt` rather than from the floor, and that
