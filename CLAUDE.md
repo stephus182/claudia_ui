@@ -63,10 +63,41 @@ cd /Users/steph/Claude_Projects/claudia_ui
 # 2. Create venv
 python3.11 -m venv .venv && source .venv/bin/activate
 
-# 3. Install claudia_ui + ibkr_core_mcp (editable)
+# 3. Install claudia_ui (ibkr_core_mcp comes with it, from PyPI)
 pip install -e ".[dev]"
-pip install -e "../ibkr_core_mcp[scraper]" --config-settings editable_mode=strict
 git config core.hooksPath .githooks   # the four CI gates as a pre-push hook (see Testing)
+#
+# ibkr_core_mcp is a DECLARED DEPENDENCY since 2026-09-19 — `ibkr-core-mcp>=2.0.1,<3` in
+# pyproject.toml, resolved from https://pypi.org/project/ibkr-core-mcp/ (first release
+# 2.0.1, 2026-09-19, Trusted Publishing). It is no longer a sibling checkout you install by
+# hand, and CI no longer checks it out. The one release this repository is *supported*
+# against is `core-ref.txt`; the floor above is a compatibility range, a different claim,
+# and `tests/security/test_cross_repo_contract.py` holds the two together.
+#
+# THE DEVELOPER OVERRIDE — working on both repositories at once. Add, after the line above:
+#
+#   pip install -e "../ibkr_core_mcp[scraper]" --config-settings editable_mode=strict
+#
+# It is the same distribution name, so pip uninstalls the PyPI wheel and installs the
+# editable tree in its place; `python -c "import ibkr_core_mcp, pathlib;
+# print(pathlib.Path(ibkr_core_mcp.__file__))"` then prints a path under
+# ../ibkr_core_mcp/build/__editable__…/ instead of one under .venv/lib/…/site-packages/
+# (both measured 2026-09-19). Re-running `pip install -e ".[dev]"` afterwards does NOT undo
+# it: the editable version satisfies the floor, and pip does not upgrade a satisfied
+# requirement. To go back, `pip install --force-reinstall "ibkr-core-mcp==$(grep -v '^#'
+# core-ref.txt | grep -v '^$' | head -1)"`.
+#
+# While the override is in place, one assertion — "the installed core is the supported
+# release" — compares the CHECKOUT's declared version with the pin. It passes while the two
+# agree (both 2.0.1 on 2026-09-19) and fails the moment the core bumps its version, which is
+# the signal working as intended rather than a problem to work around. Set
+# `CLAUDIA_CORE_UNPINNED=1` to skip that one assertion — the whole rest of the contract still
+# runs — exactly as the forward-compat CI lane does, unconditionally, so that lane cannot go
+# red on the day the core bumps.
+#
+# Everything below applies to the OVERRIDE ONLY. A plain PyPI install is a wheel: it cannot
+# go stale, needs no strict mode, and `stale_modules()` returns [] for it by construction.
+#
 # [scraper] is NOT optional in practice — it is what installs crawl4ai, and without it all
 # four web tools (fetch_page, crawl_site, search_site, firecrawl_search) are dark. Every
 # scraper import is lazy, so ClaudIA starts perfectly and each tool fails only when the
@@ -139,7 +170,8 @@ CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
 ```
 
 CI runs those four and **two more** since 2026-09-14: `pip-audit` over the resolved tree
-(with `ibkr_core_mcp[scraper]`, because that is what a real install carries, and because 19
+(with `ibkr-core-mcp[scraper]` at the pinned release, because that is what a real install
+carries, and because 19
 packages here — the whole Panel/Bokeh/Tornado stack — are audited by no other repository) and
 `gitleaks` over the pushed range. Both block. A no-fix dependency finding goes in
 `security/pip-audit-ignores.txt` with a reason and a re-check date; a finding with a fix bumps
@@ -147,22 +179,30 @@ the floor instead. **If the secret scan is red, read the log before assuming a l
 failure to run the scanner looks identical to a finding, and that is exactly what happened on
 its first run.
 
-**`ibkr_core_mcp` is resolved from `core-ref.txt`, and CI has two lanes** (2026-09-14). That
-file holds one immutable commit SHA — the revision this repository is *supported* against —
-and it is the only file here allowed to name one (enforced by
-`tests/security/test_cross_repo_contract.py`). The blocking `test` and `dependency-audit` jobs
-check the core out at that SHA, so a green commit is reproducible. A separate `forward-compat`
-job checks out core `main` and runs the seam tests only (`tests/security/`,
-`tests/test_order_flow.py`, `tests/test_install_check.py`); it is **informational**
-(`continue-on-error`) on purpose — a push in the other repository must not be able to make this
-one un-mergeable, and the value is seeing the drift days before an upgrade. To move the
-supported revision: change the SHA, run the whole gate line locally against that checkout, and
-say in the commit message what changed and why the bump is safe.
+**`ibkr_core_mcp` is resolved from `core-ref.txt`, and CI has two lanes** (2026-09-14;
+PyPI since 2026-09-19). That file holds one exact released version — the release this
+repository is *supported* against — and it is the only file here allowed to name one
+(enforced by `tests/security/test_cross_repo_contract.py`, which also asserts that the
+**installed** distribution version equals it). The blocking `test` and `dependency-audit`
+jobs install exactly that release from PyPI, so a green commit is reproducible and a core
+release published between two pushes here cannot silently become the tested core. A separate
+`forward-compat` job still **checks out** core `main` — that is the one lane a checkout is
+right for, since its whole subject is unreleased changes — installs it editable over the
+PyPI copy, and runs the seam tests only (`tests/security/`, `tests/test_order_flow.py`,
+`tests/test_install_check.py`) with `CLAUDIA_CORE_UNPINNED=1`, which switches off the
+supported-release assertion and nothing else. It is **informational** (`continue-on-error`)
+on purpose — a push in the other repository must not be able to make this one un-mergeable,
+and the value is seeing the drift days before an upgrade. To move the supported release:
+change the version, check the published artifact against its git tag (core-ref.txt records
+how), run the whole gate line locally against it, and say in the commit message what changed
+and why the bump is safe. **The file held a commit SHA until 2026-09-19**; the reasoning for
+the change, and why a PyPI version is at least as immutable as a SHA, is in its own comment
+block.
 
 The original four gates are also `.github/workflows/ci.yml`, step for step the same file as
 ibkr_core_mcp's (aligned 2026-09-08): every push and PR to `main` runs them on Ubuntu for
-Python 3.11 and 3.12, with ibkr_core_mcp checked out beside the repo and installed by the
-Dev Setup step 3 command. `mypy` runs in **strict mode** over `tests/` as well as `claudia/`
+Python 3.11 and 3.12, with ibkr_core_mcp installed from PyPI at the release in
+`core-ref.txt`. `mypy` runs in **strict mode** over `tests/` as well as `claudia/`
 (both since 2026-09-08, the same configuration as ibkr_core_mcp; the fetchers in
 `dashboard_data` take read-only Protocols, so a test double type-checks without casts).
 
@@ -330,8 +370,10 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
 
 ## ibkr_core_mcp Dependency
 
-Local editable install: see Dev Setup step 3 above for the exact command (strict editable
-mode required for `mypy` to resolve it) — re-run after ibkr_core_mcp adds new tools. No
+A PyPI dependency (`ibkr-core-mcp>=2.0.1,<3`), pinned for CI to the release in
+`core-ref.txt`; `pip install -e ".[dev]"` brings it in. Dev Setup step 3 above documents the
+editable override for working on both repositories at once, and the re-install that override
+needs after ibkr_core_mcp adds, renames or removes a module — a PyPI wheel never needs it. No
 Panel restart needed for tool definition changes; restart required for Python module
 changes. Full tool catalog (40 core + 4 optional web-scraper = 44 total, verified against
 `TOOL_DEFINITIONS` 2026-07-30): `ibkr_core_mcp/docs/tools-reference.md` — check there
@@ -342,7 +384,8 @@ plus the TradingView extras when the sidecar is up (17 curated), plus 5 local ut
 (`_LOCAL_TOOLS`) and the 3 `PROPOSAL_TOOLS`, both declared in claudia_ui. The proposal tools
 are appended last so the tools cache breakpoint on the final entry stays stable.
 
-No extras (e.g. `[server]`) are needed for the install above. `websockets` — the sole
+No extras (e.g. `[server]`) are needed for the install above; `[scraper]` is the one that
+matters, and it is not pulled in by the dependency — see Dev Setup step 3. `websockets` — the sole
 runtime dependency of `IBKRWebSocket`, which `claudia/execution_listener.py` uses
 unconditionally for live P&L/execution tracking — is a base dependency of ibkr_core_mcp, not
 gated behind an extra. (It briefly wasn't: a bare install used to leave `websockets` missing

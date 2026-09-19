@@ -1,9 +1,10 @@
-# The ibkr_core_mcp revision claudia_ui is supported against.
+# The ibkr_core_mcp release claudia_ui is supported against.
 #
 # ONE source of truth, read by CI and by tests/security/test_cross_repo_contract.py. An
-# immutable 40-character commit SHA, never a branch: a green run here must be reproducible
-# a month from now, and `main` is not. The SHA below is what the core's `v2.0.0` tag points
-# at; the SHA rather than the tag, because a tag can be moved and a SHA cannot.
+# exact released version, never a range: a green run here must be reproducible a month from
+# now, and ">=2.0.1" is not. Nothing else in this repository may name an exact core version
+# — the pyproject dependency declares a compatibility RANGE, which is a different claim and
+# is held against this file by the contract test.
 #
 # Two CI lanes read this file, and they answer different questions (.github/workflows/ci.yml):
 #
@@ -14,24 +15,51 @@
 #                                                      push in the other repository must not
 #                                                      be able to make this one un-mergeable.
 #
-# To move the supported revision: change the SHA here, run the whole gate line locally
-# against that checkout, and say in the commit message what changed in the core and why the
-# bump is safe. Nothing else in this repository names a core revision.
+# 2026-09-19 — A VERSION, NOT A SHA. Until today this file held a 40-character commit SHA and
+# both blocking jobs resolved the core by checking that commit out of GitHub. The core is now
+# published on PyPI (https://pypi.org/project/ibkr-core-mcp/, first release 2.0.1 on
+# 2026-09-19 via Trusted Publishing), claudia_ui declares it as an ordinary dependency, and
+# what CI installs is therefore a version — so a version is what this file must name. A SHA
+# kept here would be a second definition of "the supported core" that nothing installs: the
+# exact drift this file exists to prevent.
 #
-# 2026-09-17 — d88169c is the core's v2.0.0 release commit: the whole-package
-# release-readiness audit (175 findings, none open) with its pre-tag security audit. What
-# changed for this repository since fada6b2: 29 IBKRClient methods return Mapping models
-# rather than dicts (this repository's parsers were widened for that in 698b492 and are
-# tested with non-dict mappings); the four keyed-list methods raise IBKRAPIError on a 2xx
-# error object instead of fabricating rows; requests are paced per endpoint, retries
-# included. Nothing this repository calls changed signature — the three gated entry points
-# and every imported symbol are held by tests/security/test_cross_repo_contract.py against
-# the installed core — and the core's other breaking changes (the Config key removal, the
-# SSE bearer token, the alert tif vocabulary, update_delivery_option) touch no ClaudIA
-# call site. The whole gate line was run locally against a strict editable install of this
-# revision before the pin moved.
+# The reason the SHA was chosen over a tag survives the change, and is stronger for a
+# version. "A tag can be moved and a SHA cannot" — a PyPI version cannot be moved either:
+# the index refuses a second upload of a filename that already exists, and a release can be
+# yanked or deleted but never silently replaced with different content
+# (https://docs.pypi.org/project-management/yanking-and-deleting/). An exact version pin is
+# therefore as immutable as the SHA was, and unlike the SHA it is the thing pip resolves.
 #
-# 2026-09-14 — fada6b2 was the core's OWASP MCP security recalibration plus the
-# audit-history commit after it, what the cross-repo contract, the outbound-sink inventory
-# and the capability-registry assertions were first measured against.
-d88169c299de9d961eea8ec070e3417a2b51cdce
+# PROVENANCE of the release below, so the commit is still recoverable from this file even
+# though nothing installs it: 2.0.1 was built from tag v2.0.1 =
+# 4a70f8b17a71862a6d01c6e7c290a59beb40ba32, verified 2026-09-19 by unpacking the published
+# wheel and comparing it with `git show v2.0.1:<path>` — all 34 payload files byte-identical,
+# none missing. That is the check to repeat when the pin moves; a version whose artifact does
+# not match its tag is not the revision anyone reviewed.
+#
+# WHAT CHANGED since the previous pin, d88169c (the core's v2.0.0 release commit, pinned here
+# 2026-09-17): `git diff --stat d88169c 4a70f8b -- ibkr_core_mcp/` is EMPTY. Nothing under the
+# package changed — 2.0.1 is packaging and repository furniture only (PEP 639 license
+# metadata, a MANIFEST.in that prunes an un-runnable partial test copy from the sdist, the
+# publish workflow, CONTRIBUTING/CODE_OF_CONDUCT, README and docs). The library this
+# repository imports is the same code the whole gate line was last run against, which is why
+# this bump carries no behavioural review: there is no behaviour in it.
+#
+# To move the supported release: change the version here, verify the new artifact against its
+# tag as above, run the whole gate line locally against it, and say in the commit message what
+# changed in the core and why the bump is safe. The forward-compat lane has usually already
+# told you which assertion moves.
+#
+# 2026-09-17 — d88169c was the core's v2.0.0: the whole-package release-readiness audit (175
+# findings, none open) with its pre-tag security audit. What changed for this repository since
+# fada6b2: 29 IBKRClient methods return Mapping models rather than dicts (this repository's
+# parsers were widened for that in 698b492 and are tested with non-dict mappings); the four
+# keyed-list methods raise IBKRAPIError on a 2xx error object instead of fabricating rows;
+# requests are paced per endpoint, retries included. Nothing this repository calls changed
+# signature, and the core's other breaking changes (the Config key removal, the SSE bearer
+# token, the alert tif vocabulary, update_delivery_option) touch no ClaudIA call site.
+#
+# 2026-09-14 — fada6b2 was the core's OWASP MCP security recalibration plus the audit-history
+# commit after it, what the cross-repo contract, the outbound-sink inventory and the
+# capability-registry assertions were first measured against.
+2.0.1

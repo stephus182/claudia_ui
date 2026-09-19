@@ -18,25 +18,43 @@ on:
 # Mirrors ibkr_core_mcp/.github/workflows/ci.yml step for step (aligned 2026-09-08) so both
 # repos are held to one gate: ruff check, ruff format --check, mypy, pytest.
 #
-# ibkr_core_mcp is not on PyPI. It is checked out beside this repo and installed with the
-# exact command CLAUDE.md § Dev Setup step 3 documents — strict editable mode from
-# ../ibkr_core_mcp — so CI executes the documented instruction rather than a CI-only variant
-# of it (a lazy editable install fails mypy; the trap is described in claudia/install_check.py,
-# and tests/test_install_check.py runs here against a fresh snapshot). The [scraper] extra is
-# deliberately not installed: every scraper import is lazy, no unit test exercises a web tool,
-# and crawl4ai's install adds minutes to every run.
+# ibkr_core_mcp is installed from PyPI (2026-09-19). It is a declared dependency in
+# pyproject.toml, so `pip install -e ".[dev]"` brings it in; the install step then pins it to
+# the exact release named in core-ref.txt, which is the file CI reads rather than a version
+# typed into this one. The [scraper] extra is deliberately not installed in the test lane:
+# every scraper import is lazy, no unit test exercises a web tool, and crawl4ai's install
+# adds minutes to every run. The audit lane does install it — see there.
 #
-# TWO LANES over that checkout, answering two different questions (2026-09-14). Until this
-# date there was one, resolving the core at floating `main`, which conflated them: a green
-# commit here was not reproducible, and a push in the other repository could turn this one
-# red with no commit in it.
+# TWO CONSEQUENCES OF THE SWITCH, stated rather than left to be discovered:
+#
+#   1. The blocking lanes no longer run *only* the documented developer command. They add a
+#      pin line, which a developer does not run and should not: a developer tracks the floor
+#      and works against a local checkout, while CI has to prove one exact release. The
+#      forward-compat lane is where the documented editable install is still executed
+#      verbatim, which is why its install step is deliberately not simplified.
+#   2. tests/test_install_check.py::test_this_machines_install_is_actually_current is
+#      VACUOUS in the blocking lanes now — a wheel has no snapshot to drift, so it returns []
+#      by construction. It keeps its teeth in the forward-compat lane and on a developer
+#      machine under the override, which is where the failure it guards can actually occur.
+#      Do not read a green blocking lane as evidence about the editable snapshot.
+#
+# TWO LANES, answering two different questions (2026-09-14). Until that date there was one,
+# resolving the core at floating `main`, which conflated them: a green commit here was not
+# reproducible, and a push in the other repository could turn this one red with no commit in
+# it.
 #
 #   `test` + `dependency-audit` — "does ClaudIA work with the core it SUPPORTS?"
-#       Core checked out at the SHA in core-ref.txt, the single source of truth for it.
-#       BLOCKING. This is the lane that decides whether a change here is mergeable.
+#       The release named in core-ref.txt, installed from PyPI. BLOCKING. This is the lane
+#       that decides whether a change here is mergeable. Pinning it to an exact version, and
+#       not merely to the `>=` floor in pyproject.toml, is what stops a core release
+#       published between two pushes here from silently becoming the tested core — which
+#       would hand the other repository the power to fail this one, the thing the two-lane
+#       split was built to prevent.
 #
 #   `forward-compat` — "did core `main` change something ClaudIA depends on?"
-#       Core checked out at `main`, running the seam tests only. INFORMATIONAL
+#       Core checked OUT of GitHub at `main` and installed editable over the PyPI copy,
+#       running the seam tests only. This lane keeps a checkout on purpose and cannot use
+#       PyPI: its whole subject is changes that have not been released yet. INFORMATIONAL
 #       (continue-on-error), deliberately: a push in another repository must not be able to
 #       make this one un-mergeable, and the whole point is to see the drift days before an
 #       upgrade rather than to gate on it. Promote it to blocking only if forward
@@ -62,37 +80,39 @@ jobs:
         with:
           path: claudia_ui
 
-      - name: Read the supported ibkr_core_mcp revision
-        id: core
-        run: echo "ref=$(grep -v '^#' claudia_ui/core-ref.txt | grep -v '^$' | head -1)" >> "$GITHUB_OUTPUT"
-        working-directory: .
-
-      - uses: actions/checkout@v5
-        with:
-          repository: stephus182/ibkr_core_mcp
-          path: ibkr_core_mcp
-          # The supported revision, from core-ref.txt. Never a branch: see that file.
-          ref: ${{ steps.core.outputs.ref }}
-
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
             claudia_ui/pyproject.toml
-            ibkr_core_mcp/pyproject.toml
+            claudia_ui/core-ref.txt
 
       - name: Install dependencies
+        # The pin goes in FIRST, at the exact release core-ref.txt names, so the resolver
+        # never has to choose: `.[dev]` then finds ibkr-core-mcp already satisfying its
+        # `>=2.0.1,<3` floor and leaves it alone (pip only upgrades a satisfied requirement
+        # when asked to — https://pip.pypa.io/en/stable/cli/pip_install/#cmdoption-U). The
+        # version is read from the file rather than typed here: core-ref.txt is the single
+        # source of truth, and tests/security/test_cross_repo_contract.py fails if any
+        # workflow, pyproject.toml, CLAUDE.md or README.md names an exact core version.
+        #
+        # tests/security/test_cross_repo_contract.py then asserts that the INSTALLED
+        # distribution version equals the pin, so a silent resolver surprise is a red test
+        # and not a quiet substitution.
         run: |
+          pip install "ibkr-core-mcp==$(grep -v '^#' core-ref.txt | grep -v '^$' | head -1)"
           pip install -e ".[dev]"
-          pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
 
       - name: Show resolved versions of the UI stack
         # These have no upper bound in pyproject.toml on purpose, so pip always takes the
         # latest release. Printing them here puts the culprit next to a failing step instead
         # of requiring a bisection — and `tornado` is the one that serves the UI, so its
         # version is worth reading on every run (audit 2026-09-13, §0).
-        run: pip show panel bokeh tornado holoviews hvplot param anthropic mcp 2>/dev/null | grep -E "^(Name|Version):"
+        #
+        # ibkr-core-mcp is in the list since 2026-09-19: it is resolved from PyPI now rather
+        # than checked out, so this line is where a run states which core it actually got.
+        run: pip show ibkr-core-mcp panel bokeh tornado holoviews hvplot param anthropic mcp 2>/dev/null | grep -E "^(Name|Version):"
 
       - name: Lint (ruff)
         run: ruff check .
@@ -121,18 +141,6 @@ jobs:
         with:
           path: claudia_ui
 
-      - name: Read the supported ibkr_core_mcp revision
-        id: core
-        run: echo "ref=$(grep -v '^#' claudia_ui/core-ref.txt | grep -v '^$' | head -1)" >> "$GITHUB_OUTPUT"
-        working-directory: .
-
-      - uses: actions/checkout@v5
-        with:
-          repository: stephus182/ibkr_core_mcp
-          path: ibkr_core_mcp
-          # The supported revision, from core-ref.txt. Never a branch: see that file.
-          ref: ${{ steps.core.outputs.ref }}
-
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -146,11 +154,15 @@ jobs:
       - name: pip-audit
         working-directory: claudia_ui
         # Requirements mode: pip-audit resolves the tree with `pip install --dry-run
-        # --report` in a throwaway venv and installs nothing. ibkr_core_mcp is audited from
-        # the checkout beside this one, WITH [scraper] — even though the test job omits it
+        # --report` in a throwaway venv and installs nothing. ibkr_core_mcp is audited at the
+        # exact release in core-ref.txt, WITH [scraper] — even though the test job omits it
         # for speed — because [scraper] is what a real ClaudIA install carries (CLAUDE.md
         # Dev Setup step 3: without it all four web tools are dark), and an audit of a tree
-        # nobody runs is not an audit.
+        # nobody runs is not an audit. It came from a sibling checkout until 2026-09-19; the
+        # checkout is gone with the switch to PyPI, and auditing the pin rather than the
+        # `>=` floor is what keeps this lane's answer about the same tree the `test` lane
+        # proves. The extra is requested on the pinned line, because `.[dev]` pulls the core
+        # without it.
         #
         # 19 packages in this tree exist only here — panel, bokeh, tornado, holoviews,
         # hvplot and the rest of the UI stack — and ibkr_core_mcp's own pip-audit never sees
@@ -161,7 +173,7 @@ jobs:
         # Ignores come only from security/pip-audit-ignores.txt, one reason and one re-check
         # date per line; a finding with a fixed release is never ignored — bump the floor.
         run: |
-          printf '.[dev]\n../ibkr_core_mcp[scraper]\n' > /tmp/audit-requirements.txt
+          printf '.[dev]\nibkr-core-mcp[scraper]==%s\n' "$(grep -v '^#' core-ref.txt | grep -v '^$' | head -1)" > /tmp/audit-requirements.txt
           IGNORES=$(sed 's/#.*//' security/pip-audit-ignores.txt | awk 'NF { printf "--ignore-vuln %s ", $1 }')
           pip-audit --strict --desc --vulnerability-service osv --progress-spinner off $IGNORES -r /tmp/audit-requirements.txt
 
@@ -214,9 +226,23 @@ jobs:
           git -C ../ibkr_core_mcp log --oneline -5
 
       - name: Install dependencies
+        # The same two lines a developer runs to work on both repositories at once
+        # (CLAUDE.md § Dev Setup step 3): `.[dev]` brings the PyPI core in as a declared
+        # dependency, and the editable install of the same distribution replaces it — pip
+        # uninstalls the wheel first, so `ibkr_core_mcp.__file__` resolves into the checkout.
+        # Running the documented override here is deliberate: it is the only place CI
+        # exercises it, and a break in it is a break in the developer instructions.
         run: |
           pip install -e ".[dev]"
           pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
+
+      - name: Confirm the editable checkout is what imports
+        # One line of evidence rather than an assumption. The override is the reason this
+        # lane can answer anything about unreleased code at all; if the PyPI copy were still
+        # winning, every assertion below would be testing the pinned release and passing for
+        # the wrong reason — the shape of failure this file's continue-on-error note warns
+        # about elsewhere.
+        run: python -c "import ibkr_core_mcp, pathlib; print(pathlib.Path(ibkr_core_mcp.__file__))"
 
       - name: Seam tests only
         # NOT the full suite. The question this lane answers is "did core main change
@@ -228,6 +254,13 @@ jobs:
         #                            outbound-sink inventory, and the eleven other invariants
         #   tests/test_order_flow.py — the three gated entry points, actually driven
         #   tests/test_install_check.py — the strict-editable snapshot against a fresh tree
+        #
+        # CLAUDIA_CORE_UNPINNED switches off exactly one assertion in
+        # tests/security/test_cross_repo_contract.py — "the installed core is the supported
+        # release" — which is false here by construction and by design. Every other contract
+        # check still runs; that is the whole payload of this lane.
+        env:
+          CLAUDIA_CORE_UNPINNED: "1"
         run: pytest tests/security tests/test_order_flow.py tests/test_install_check.py -v
 
   secret-scan:

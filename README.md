@@ -46,9 +46,11 @@ git clone <this-repo> && cd claudia_ui
 
 # 2. Python env
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-pip install -e "../ibkr_core_mcp" --config-settings editable_mode=strict
-# strict mode required for mypy to resolve ibkr_core_mcp — see CLAUDE.md Dev Setup
+pip install -e ".[dev]"   # pulls ibkr-core-mcp from PyPI as a declared dependency
+# Working on ibkr_core_mcp at the same time? Override the PyPI copy with the local
+# checkout — same distribution name, so pip replaces it:
+#   pip install -e "../ibkr_core_mcp[scraper]" --config-settings editable_mode=strict
+# strict mode is required for mypy to resolve an editable core — see CLAUDE.md Dev Setup
 
 # 3. Environment
 cp .env.example .env

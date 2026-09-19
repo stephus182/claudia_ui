@@ -173,9 +173,18 @@ def test_claudia_exposes_the_whole_registry_to_the_model_and_knows_it():
 
 # ── The supported core revision ──────────────────────────────────────────────────────────
 
+# Set by the forward-compatibility CI lane, and by a developer who has overridden the PyPI
+# copy with an editable checkout that has moved past the supported release. It disables one
+# assertion — "the installed core is the supported release" — and nothing else: the import
+# list, the gated entry points, the registry claims and the two pinned behaviours all still
+# run, because those are exactly what that lane exists to check against an unreleased core.
+UNPINNED_ENV_VAR = "CLAUDIA_CORE_UNPINNED"
+
+CORE_DISTRIBUTION = "ibkr-core-mcp"
+
 
 def _supported_core_ref() -> str:
-    """The one ref this repository is supported against, read from `core-ref.txt`."""
+    """The one release this repository is supported against, read from `core-ref.txt`."""
     from pathlib import Path
 
     path = Path(__file__).resolve().parents[2] / "core-ref.txt"
@@ -185,25 +194,126 @@ def _supported_core_ref() -> str:
     return values[0]
 
 
+def _declared_core_specifier() -> str:
+    """The version range `pyproject.toml` declares for the core dependency."""
+    import tomllib
+    from pathlib import Path
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    root = Path(__file__).resolve().parents[2]
+    with (root / "pyproject.toml").open("rb") as handle:
+        metadata = tomllib.load(handle)
+    for raw in metadata["project"]["dependencies"]:
+        requirement = Requirement(raw)
+        if canonicalize_name(requirement.name) == CORE_DISTRIBUTION:
+            return str(requirement.specifier)
+    raise AssertionError(
+        f"pyproject.toml declares no {CORE_DISTRIBUTION} dependency — the core is resolved "
+        "from PyPI since 2026-09-19 and must be a declared dependency, not a side install"
+    )
+
+
 def test_the_supported_core_revision_is_immutable_and_named_once():
-    """CI resolves the core from this file; a branch name there is not a pinned build.
+    """CI resolves the core from this file; anything but an exact version is not a pin.
 
     Until 2026-09-14 both CI jobs checked out `ibkr_core_mcp` at floating `main`, so a green
     commit here was not reproducible and a push in the other repository could turn this one
-    red with no commit in it. The fix is one file, and this test is what stops a later
+    red with no commit in it. The fix was one file, and this test is what stops a later
     "just point it at main for now" from being invisible.
+
+    Since 2026-09-19 the value is a **released version**, not a commit SHA, because the core
+    is installed from PyPI and a version is what `pip` resolves. The immutability argument
+    survives the change and is in fact stronger: PyPI refuses to re-upload a file for a
+    version that already exists, where a git tag can be moved
+    (https://docs.pypi.org/project-management/yanking-and-deleting/ — a release may be
+    yanked or deleted, never silently replaced). A range, a floor or a pre-release is not a
+    pin, so each is rejected here.
     """
-    import re
+    from packaging.version import InvalidVersion, Version
 
     ref = _supported_core_ref()
-    assert re.fullmatch(r"[0-9a-f]{40}", ref), (
-        f"core-ref.txt must hold a full 40-character commit SHA, not {ref!r} — a branch or "
-        "a short SHA is not an immutable reference"
+    try:
+        version = Version(ref)
+    except InvalidVersion:  # pragma: no cover - the assertion below reports it
+        version = None
+    assert version is not None, (
+        f"core-ref.txt must hold one exact released version of {CORE_DISTRIBUTION}, not "
+        f"{ref!r} — a branch, a commit SHA or a range is not what pip resolves"
+    )
+    assert not version.is_prerelease and not version.is_devrelease, (
+        f"{ref!r} is a pre-release; the supported revision must be a final release"
+    )
+    assert str(version) == ref, (
+        f"core-ref.txt holds {ref!r}, which normalises to {version!s} — write the normalised "
+        "form, so a string comparison against the installed distribution cannot drift"
+    )
+
+
+def test_the_installed_core_is_the_supported_release():
+    """The blocking lane must run against the version this repository claims support for.
+
+    This is the assertion that replaces "checkout at the pinned SHA". The `test` job no
+    longer checks the core out at all: it installs it from PyPI, and *this* is what proves
+    the resolver landed on the supported release rather than on whatever the floor in
+    `pyproject.toml` happened to admit that morning. Without it, a core release published
+    between two pushes here would silently become the tested core.
+
+    Skipped — this assertion only, never the contract checks above — when the installed core
+    is deliberately not the supported release: the `forward-compat` lane, and a developer
+    working on both repositories at once through the editable override. Both set
+    `CLAUDIA_CORE_UNPINNED`. Note that an editable core *satisfies* this assertion for as long
+    as the checkout's declared version equals the pin (both 2.0.1 on 2026-09-19); what the
+    variable buys is that neither the lane nor the developer goes red on the day the core
+    bumps its version, which is not a fact about this repository.
+    """
+    import os
+    from importlib.metadata import version
+
+    if os.environ.get(UNPINNED_ENV_VAR):
+        import pytest
+
+        pytest.skip(f"{UNPINNED_ENV_VAR} is set: the installed core is deliberately unpinned")
+
+    installed = version(CORE_DISTRIBUTION)
+    supported = _supported_core_ref()
+    assert installed == supported, (
+        f"the installed {CORE_DISTRIBUTION} is {installed}, the supported release is "
+        f"{supported}. Either re-install (`pip install -e '.[dev]'`), or move the pin "
+        f"deliberately: change core-ref.txt, run the whole gate line, and say in the commit "
+        f"message what changed in the core and why the bump is safe. If the override is "
+        f"intentional, set {UNPINNED_ENV_VAR}=1."
+    )
+
+
+def test_the_supported_release_satisfies_the_declared_dependency():
+    """Two files now name the core, and they make different claims — hold them together.
+
+    `pyproject.toml` declares the range this code is *compatible* with; `core-ref.txt` names
+    the one release it is *tested* against. They are not the same statement and must not be
+    collapsed into one, but a pin outside its own declared range is incoherent: the
+    dependency would forbid installing the very version CI proves the repository against.
+    """
+    from packaging.specifiers import SpecifierSet
+
+    supported = _supported_core_ref()
+    specifier = SpecifierSet(_declared_core_specifier())
+    assert supported in specifier, (
+        f"core-ref.txt pins {supported}, which pyproject.toml's {CORE_DISTRIBUTION}"
+        f"{specifier} excludes"
     )
 
 
 def test_nothing_else_in_the_repository_names_a_core_revision():
-    """One variable owns the SHA. A second copy is the thing that goes stale.
+    """One file owns the supported revision. A second copy is the thing that goes stale.
+
+    Two spellings are forbidden outside `core-ref.txt`: a 40-character commit SHA (nothing
+    here may pin the core to a commit any more — the artifact is a release), and an exact
+    `==` pin of the distribution, which is what a CI install line would grow if someone
+    typed the version instead of reading the file. `pyproject.toml`'s floor is deliberately
+    not caught: a range is a compatibility claim, held against the pin by
+    `test_the_supported_release_satisfies_the_declared_dependency`.
 
     Checked over the files a reader would expect to carry one: the workflows, the packaging
     metadata and the setup instructions.
@@ -219,15 +329,139 @@ def test_nothing_else_in_the_repository_names_a_core_revision():
         root / "CLAUDE.md",
         root / "README.md",
     ]
-    offenders = [
-        str(p.relative_to(root))
-        for p in candidates
-        if p.exists() and re.search(r"\b[0-9a-f]{40}\b", p.read_text(encoding="utf-8"))
-    ]
+    sha = re.compile(r"\b[0-9a-f]{40}\b")
+    # `==` followed by a digit: a literal version typed into the file. `==$(…)`, the shell
+    # substitution that reads core-ref.txt, is the required spelling and is not an offender.
+    exact_pin = re.compile(r"ibkr[-_]core[-_]mcp\s*(?:\[[^\]]*\]\s*)?==\s*\d")
+    offenders = {}
+    for path in candidates:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        found = [
+            name
+            for name, pattern in (("a commit SHA", sha), ("an exact == pin", exact_pin))
+            if pattern.search(text)
+        ]
+        if found:
+            offenders[str(path.relative_to(root))] = found
     assert not offenders, (
-        f"a 40-character SHA is written outside core-ref.txt, in {offenders} — "
-        f"core-ref.txt ({ref[:12]}…) is the only place that may name one"
+        f"the core revision is named outside core-ref.txt: {offenders} — core-ref.txt "
+        f"({ref}) is the only place that may name one, and CI reads it rather than "
+        "repeating it"
     )
+
+
+def _ci_jobs_without_comments() -> dict[str, str]:
+    """`ci.yml`'s jobs, keyed by name, with every comment line removed.
+
+    Comments are stripped because this file's comments *discuss* the mechanism they assert —
+    a bare substring search found "CLAUDIA_CORE_UNPINNED" in the sentence explaining it and
+    passed a mutation that had deleted the actual `env:` entry (measured 2026-09-19 while
+    writing this test). What a workflow does is its non-comment lines.
+
+    Split per job rather than into "blocking" and "the rest", for the same reason: a whole-
+    half search let a job stop reading the pin while a sibling's mention kept the assertion
+    green (the M9 mutation, same session).
+    """
+    import re
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    live = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+
+    jobs: dict[str, list[str]] = {}
+    current: str | None = None
+    in_jobs = False
+    for line in live:
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        if not in_jobs:
+            continue
+        header = re.fullmatch(r"  ([A-Za-z0-9_-]+):\s*", line)
+        if header:
+            current = header.group(1)
+            jobs[current] = []
+        elif current is not None:
+            jobs[current].append(line)
+    return {name: "\n".join(lines) for name, lines in jobs.items()}
+
+
+# The lanes that decide whether a change here is mergeable. Both resolve the core at the
+# pinned release; neither may check its source out, and neither may switch the pin assertion
+# off. `secret-scan` touches no Python and is not in scope.
+BLOCKING_JOBS = ("test", "dependency-audit")
+FORWARD_COMPAT_JOB = "forward-compat"
+
+
+def test_ci_reads_the_pin_rather_than_repeating_it():
+    """The mechanism, not just the rule: the workflow must resolve the core from this file.
+
+    A rule that no file may name the version is worth nothing if the install line stopped
+    naming *any* version — the blocking lanes would then track the floor in `pyproject.toml`,
+    not the pin, and a core release published between two pushes here would silently become
+    the tested core. So this asserts the positive, per job: each blocking lane reads
+    `core-ref.txt` where it resolves the core, and no blocking lane checks the core's source
+    out any more.
+    """
+    import re
+
+    jobs = _ci_jobs_without_comments()
+    missing = sorted(set(BLOCKING_JOBS) - set(jobs))
+    assert not missing, f"ci.yml no longer defines {missing}"
+
+    # One LINE that pins the distribution and reads the file, not two facts anywhere in the
+    # job: `core-ref.txt` also appears in a cache key and `ibkr-core-mcp` in a `pip show`,
+    # and a whole-job search passed a mutation that had deleted the install line outright
+    # (M10, 2026-09-19).
+    pinned_from_the_file = re.compile(r"ibkr[-_]core[-_]mcp(\[[^\]]*\])?\s*==")
+    for name in BLOCKING_JOBS:
+        resolves = [
+            line
+            for line in jobs[name].splitlines()
+            if pinned_from_the_file.search(line) and "core-ref.txt" in line
+        ]
+        assert resolves, (
+            f"the {name} job has no line that pins ibkr-core-mcp to the version in "
+            "core-ref.txt; it is tracking the dependency floor, which is a compatibility "
+            "range and not a pin"
+        )
+        body = jobs[name]
+        assert "repository: stephus182/ibkr_core_mcp" not in body, (
+            f"the {name} job still checks the core out of GitHub; since 2026-09-19 the "
+            "supported core is installed from PyPI and only the forward-compatibility lane "
+            "uses a checkout"
+        )
+
+    assert "repository: stephus182/ibkr_core_mcp" in jobs[FORWARD_COMPAT_JOB], (
+        "the forward-compatibility lane no longer checks out core main — it cannot come "
+        "from PyPI, because its whole subject is unreleased changes"
+    )
+
+
+def test_only_the_forward_compatibility_lane_switches_the_pin_assertion_off():
+    """The escape hatch must be reachable from exactly one lane, and that lane must use it.
+
+    Both halves matter and each was mutated to prove it (2026-09-19). If the informational
+    lane stops setting the variable, it goes red for the one reason it is designed to
+    tolerate and its real signal is lost in the noise. If a blocking lane starts setting it,
+    the assertion that proves CI ran against the supported release is switched off with
+    nothing to say so — a green tick over an unchecked claim.
+    """
+    jobs = _ci_jobs_without_comments()
+
+    assert f'{UNPINNED_ENV_VAR}: "1"' in jobs[FORWARD_COMPAT_JOB], (
+        f"the forward-compatibility lane does not set {UNPINNED_ENV_VAR}, so the "
+        "supported-release assertion will fail there for the reason that lane exists"
+    )
+    for name in BLOCKING_JOBS:
+        assert UNPINNED_ENV_VAR not in jobs[name], (
+            f"the {name} job sets {UNPINNED_ENV_VAR}, which switches off the one assertion "
+            "that proves it ran against the supported release"
+        )
 
 
 # ── Core behaviours a ClaudIA invariant rests on ─────────────────────────────────────────
