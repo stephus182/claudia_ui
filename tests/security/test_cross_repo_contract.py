@@ -478,6 +478,30 @@ def test_only_the_forward_compatibility_lane_switches_the_pin_assertion_off():
         )
 
 
+def test_the_forward_compatibility_lane_proves_its_override_took():
+    """That lane's every assertion is void if the editable install silently failed.
+
+    It installs the core editable over the PyPI copy, then runs the seam tests. If the
+    override does not take, those tests run against the *pinned release* and pass for the
+    wrong reason — and the job carries `continue-on-error`, so nothing turns red and the
+    only signal is a line in a log nobody opens.
+
+    Version strings cannot close this: core `main` and the published release declared the
+    same 2.0.1 on 2026-09-19, nine commits apart. Provenance can, which is what
+    `claudia.install_check --require-editable` checks (PEP 610 `direct_url.json`).
+
+    Until 2026-09-19 the step merely *printed* the import path. A printed claim is not a
+    check, which is the same lesson this repository already wrote down about a green tick.
+    """
+    lane = _ci_jobs_without_comments()[FORWARD_COMPAT_JOB]
+
+    assert "--require-editable" in lane, (
+        "the forward-compatibility lane does not verify that its editable override took, so "
+        "a silently failed install would leave it testing the released core and reporting "
+        "forward compatibility"
+    )
+
+
 # ── Core behaviours a ClaudIA invariant rests on ─────────────────────────────────────────
 
 
