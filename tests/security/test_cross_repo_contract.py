@@ -271,6 +271,8 @@ def test_the_installed_core_is_the_supported_release():
     import os
     from importlib.metadata import version
 
+    from packaging.version import Version
+
     if os.environ.get(UNPINNED_ENV_VAR):
         import pytest
 
@@ -278,7 +280,10 @@ def test_the_installed_core_is_the_supported_release():
 
     installed = version(CORE_DISTRIBUTION)
     supported = _supported_core_ref()
-    assert installed == supported, (
+    # Compared as PEP 440 versions, not as strings: the pinned side is held in normalised
+    # form by the test above, but the installed side is whatever the core's own metadata
+    # says, and "2.1" and "2.1.0" are the same release to pip and different strings to us.
+    assert Version(installed) == Version(supported), (
         f"the installed {CORE_DISTRIBUTION} is {installed}, the supported release is "
         f"{supported}. Either re-install (`pip install -e '.[dev]'`), or move the pin "
         f"deliberately: change core-ref.txt, run the whole gate line, and say in the commit "
