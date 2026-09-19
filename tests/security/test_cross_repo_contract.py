@@ -357,6 +357,13 @@ def test_nothing_else_in_the_repository_names_a_core_revision():
     )
 
 
+# The lanes that decide whether a change here is mergeable. Both resolve the core at the
+# pinned release; neither may check its source out, and neither may switch the pin assertion
+# off. `secret-scan` touches no Python and is not in scope.
+BLOCKING_JOBS = ("test", "dependency-audit")
+FORWARD_COMPAT_JOB = "forward-compat"
+
+
 def _ci_jobs_without_comments() -> dict[str, str]:
     """`ci.yml`'s jobs, keyed by name, with every comment line removed.
 
@@ -392,14 +399,18 @@ def _ci_jobs_without_comments() -> dict[str, str]:
             jobs[current] = []
         elif current is not None:
             jobs[current].append(line)
-    return {name: "\n".join(lines) for name, lines in jobs.items()}
 
-
-# The lanes that decide whether a change here is mergeable. Both resolve the core at the
-# pinned release; neither may check its source out, and neither may switch the pin assertion
-# off. `secret-scan` touches no Python and is not in scope.
-BLOCKING_JOBS = ("test", "dependency-audit")
-FORWARD_COMPAT_JOB = "forward-compat"
+    found = {name: "\n".join(lines) for name, lines in jobs.items()}
+    # Named here rather than at each call site, so a renamed or deleted job reports itself
+    # instead of surfacing as a KeyError three frames away.
+    expected = (*BLOCKING_JOBS, FORWARD_COMPAT_JOB)
+    missing = [name for name in expected if name not in found]
+    assert not missing, (
+        f"ci.yml no longer defines {missing} (it has {sorted(found)}) — these job names are "
+        "part of the cross-repo contract, because which lane blocks and which lane is "
+        "informational is the whole two-lane design"
+    )
+    return found
 
 
 def test_ci_reads_the_pin_rather_than_repeating_it():
@@ -415,8 +426,6 @@ def test_ci_reads_the_pin_rather_than_repeating_it():
     import re
 
     jobs = _ci_jobs_without_comments()
-    missing = sorted(set(BLOCKING_JOBS) - set(jobs))
-    assert not missing, f"ci.yml no longer defines {missing}"
 
     # One LINE that pins the distribution and reads the file, not two facts anywhere in the
     # job: `core-ref.txt` also appears in a cache key and `ibkr-core-mcp` in a `pip show`,

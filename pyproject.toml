@@ -106,6 +106,12 @@ dev = [
     # specifier and compares it with the pinned release, which needs real PEP 440 version
     # and specifier semantics — a string comparison would call 2.0.10 older than 2.0.9. It
     # resolves today only because pytest requires it.
+    #
+    # The floor is conservative, NOT the measured minimum: every API used there
+    # (`Requirement`, `SpecifierSet`, `canonicalize_name`, `Version.is_prerelease` /
+    # `.is_devrelease`) works on 22.0 too, probed 2026-09-19. 23.0 is simply older than
+    # anything a supported pytest drags in, so raising it would be churn and lowering it
+    # would buy nothing.
     "packaging>=23.0",
 ]
 
