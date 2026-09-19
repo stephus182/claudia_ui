@@ -52,12 +52,12 @@ remote author of the system prompt.
 | Unit tests reach no live system and see no real secret | `tests/conftest.py`, pytest-socket | `tests/security/test_no_live_io.py` |
 | Subprocesses are list-form, never a shell; the sidecar's **child process** receives only the declared environment | `tradingview._sidecar_env`, `gateway_launch.py` | `tests/security/test_sidecar_child_environment.py` (a real child reports its own environment), `tests/test_tradingview.py` |
 | The server binds loopback with an exact origin allowlist that no environment variable can replace | `panel_app._WEBSOCKET_ORIGINS`, pinned as a bokeh user-set value | `tests/test_security_regressions.py::test_pn_serve_binds_loopback_only` and `::test_bokeh_env_var_cannot_widen_the_websocket_origin_allowlist` |
-| The cross-repo API contract is pinned in both directions, at a named revision | `IMPORTED_API`, `GATED_ENTRY_POINTS`, `core-ref.txt` | `tests/security/test_cross_repo_contract.py` |
+| The cross-repo API contract is pinned in both directions, at a named release | `IMPORTED_API`, `GATED_ENTRY_POINTS`, `core-ref.txt` (the supported PyPI version) | `tests/security/test_cross_repo_contract.py` |
 | The set of model-directed outbound channels is closed and known | one local tool plus the core's `WEB_FETCH`/`NETWORK` set; no request bodies | `tests/security/test_outbound_sink_inventory.py` |
 | No private document or account data is git-tracked | `.gitignore`, wholesale rules | `tests/test_security_regressions.py` (tracked **and** ignored) |
 | No known-vulnerable dependency in the resolved tree | `pip-audit` job, own ignore file | CI, blocking; weekly cron |
 | No secret or account identifier in a pushed commit | `gitleaks` job, `.gitleaks.toml` | CI, blocking |
-| ClaudIA is tested against a named core revision, with early warning on the next one | `core-ref.txt`; the `test` and `forward-compat` jobs | CI — pinned lane blocking, `main` lane informational |
+| ClaudIA is tested against a named core release, with early warning on the next one | `core-ref.txt`; the `test` and `forward-compat` jobs | CI — pinned lane blocking (installed release asserted to equal the pin), `main` lane informational |
 
 `pytest tests/security` runs the structural set in under four seconds (3.7s measured 2026-09-14). It is part of every
 unit run, the pre-push hook, and CI.
@@ -185,7 +185,7 @@ Before any significant change:
 - [ ] Any new outbound HTTP path validates the URL and **every redirect hop** — and read the account-data residual in `docs/security-architecture.md` § 9 before adding a *second* model-directed outbound tool, or any tool that carries a request body
 - [ ] Any new value interpolated into the `role: system` operator channel goes through `_operator_identity` (identity) or `_operator_line` (prose)
 - [ ] Any new import from `ibkr_core_mcp` is added to the cross-repo contract test in the same commit — and if a ClaudIA invariant rests on how it *behaves*, that is pinned too
-- [ ] A move to a newer `ibkr_core_mcp` changes the SHA in `core-ref.txt` and nowhere else
+- [ ] A move to a newer `ibkr_core_mcp` changes the version in `core-ref.txt` and nowhere else — the `pyproject.toml` floor is a compatibility range, not a second pin, and is held against it
 - [ ] Any new Drive download has a size guard before the loop
 - [ ] Any new shared state touched from a worker thread is lock-protected; cross-thread UI updates go through `call_soon_threadsafe`
 - [ ] A new dependency finding with a fixed release bumps the floor; only a no-fix finding goes in the ignore file, with a reason and a re-check date

@@ -1,7 +1,14 @@
 """Detect a stale editable install of `ibkr_core_mcp` before it silently breaks a tool.
 
-**This has cost real debugging three times.** `ibkr_core_mcp` is installed here with
-`pip install -e ../ibkr_core_mcp --config-settings editable_mode=strict`. Strict mode does
+**Scope, since 2026-09-19: the developer override only.** `ibkr_core_mcp` is an ordinary
+PyPI dependency now (`ibkr-core-mcp>=2.0.1,<3`), and a wheel cannot go stale this way —
+`stale_modules()` returns `[]` for one by construction, as it always has. What is described
+below is what happens when a developer overrides that copy with the local checkout to work on
+both repositories at once (CLAUDE.md § Dev Setup step 3). That override is still the normal
+state on this machine, and the trap below is still live in it.
+
+**This has cost real debugging three times.** Under the override, `ibkr_core_mcp` is installed
+with `pip install -e ../ibkr_core_mcp --config-settings editable_mode=strict`. Strict mode does
 not put the source directory on `sys.path`; it builds a **snapshot** of symlinks under
 `build/__editable__…/ibkr_core_mcp/`, one per module *that existed at install time*. Add,
 rename or remove a module in the library and this project keeps resolving the old set until

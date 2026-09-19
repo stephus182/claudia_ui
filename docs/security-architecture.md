@@ -156,7 +156,7 @@ intention with no enforcement yet, and the audit is the record of why.
 | **CLA-SEC-009** | Unit tests reach no live system and see no real secret | pytest-socket armed at configure time, markers applied at collection; dotenv neutralised before import | `test_no_live_io.py`, plus a staleness test over both exemption lists | BUILT |
 | **CLA-SEC-010** | Processes are spawned from two modules, list-form, never through a shell; the sidecar gets an env allowlist | `tradingview.py` (`_SIDECAR_ENV_PASSTHROUGH` → `_sidecar_env`), `gateway_launch.py` | `test_sidecar_child_environment.py`: a **real child process**, spawned through the real MCP stdio client, reports the environment it was given; the library's own floor is measured by a control spawn rather than listed. Proven discriminating by widening `DEFAULT_INHERITED_ENV_VARS` to leak `ANTHROPIC_API_KEY` (goes red). Plus `test_tradingview.py`, `test_security_regressions.py` | BUILT (2026-09-14) |
 | **CLA-SEC-011** | The Panel server is reachable only from loopback, with an exact origin allowlist | `pn.serve(address="127.0.0.1", websocket_origin=_WEBSOCKET_ORIGINS)`, and `main()` pins `bokeh_settings.allowed_ws_origin` to the same list — a *user-set* value, which outranks the environment variable and both config files | `test_pn_serve_binds_loopback_only`, `test_bokeh_env_var_cannot_widen_the_websocket_origin_allowlist` (with `BOKEH_ALLOW_WS_ORIGIN=*` set), `test_bokeh_still_lets_the_setting_replace_the_served_origins` (the premise), `test_panel_app.py` | BUILT (2026-09-14) |
-| **CLA-SEC-012** | The cross-repo contract is pinned in both directions, at a named revision | One import list, three gated entry points, the registry as the only source of tool claims, two core behaviours a ClaudIA invariant rests on, and `core-ref.txt` as the single source of the supported core revision | `test_cross_repo_contract.py`, including the SHA's shape and a rule that no other file in the repository names one | BUILT (§ 7) |
+| **CLA-SEC-012** | The cross-repo contract is pinned in both directions, at a named revision | One import list, three gated entry points, the registry as the only source of tool claims, two core behaviours a ClaudIA invariant rests on, and `core-ref.txt` as the single source of the supported core revision | `test_cross_repo_contract.py`, including the pinned release's shape, that the *installed* distribution version equals it, and a rule that no other file in the repository names one | BUILT (§ 7) |
 
 | **CLA-SEC-013** | The set of model-directed outbound channels is closed and known | One local tool (`fetch_web_page`) and the core's `WEB_FETCH`/`NETWORK` set; no local tool may carry a request body | `test_outbound_sink_inventory.py`: ClaudIA's outbound tools detected **structurally** (a schema taking a `url`/`domain`/`endpoint`/`webhook`), the core's computed from the registry, and the SSRF guard's scope pinned as *destination*, not payload | BUILT (2026-09-14) — it pins the surface, **not** the exfiltration itself, which is an accepted residual (§ 9) |
 
@@ -289,7 +289,7 @@ network; every other test in that run stays blocked.
 | ruff check (incl. `S`) | Known-bad calls | Architecture | yes |
 | ruff format | — | — | yes |
 | mypy strict, over `claudia/` and `tests/` | Type errors | Everything typed correctly and wrong | yes |
-| pytest, including `tests/security/` | Behaviour, and the thirteen invariants | Anything without a test | yes; the `test` job resolves `ibkr_core_mcp` at the SHA in `core-ref.txt` |
+| pytest, including `tests/security/` | Behaviour, and the thirteen invariants | Anything without a test | yes; the `test` job installs `ibkr-core-mcp` from PyPI at the release in `core-ref.txt` |
 | **forward-compat** | A core `main` push that moves the seam ClaudIA depends on | Anything outside the seam tests it runs | **no — informational by design**: a push in another repository must not make this one un-mergeable. **Its tick is not evidence** — see below |
 | **pip-audit** | A known-vulnerable version in the **resolved** tree, audited with the scraper extra a real install carries. The whole Panel/Bokeh/Tornado stack — 18 packages measured 2026-09-13, `tornado` among them — is audited by no other repository | Unknown vulnerabilities | yes; no-fix findings go in `security/pip-audit-ignores.txt` with a reason and a re-check date |
 | **gitleaks** | A committed secret or account identifier in the pushed range | History before the scan started | yes |
@@ -482,10 +482,12 @@ is the inner one. Reject; never repair. Add the case to the malformed table with
 *behaves* — as CLA-SEC-005 rests on `price_text_safe` rendering a price exactly — pin the
 behaviour too, not only the name.
 
-**Move to a newer `ibkr_core_mcp`.** Change the SHA in `core-ref.txt` — the only file in this
-repository that may name one, enforced — run the whole gate line locally against that checkout,
-and say in the commit message what changed in the core and why the bump is safe. The
-`forward-compat` lane has usually already told you which assertion moves.
+**Move to a newer `ibkr_core_mcp`.** Change the version in `core-ref.txt` — the only file in
+this repository that may name one, enforced — check the published artifact against its git tag
+(core-ref.txt records the check), run the whole gate line locally against it, and say in the
+commit message what changed in the core and why the bump is safe. The `forward-compat` lane has
+usually already told you which assertion moves. The file held a commit SHA until 2026-09-19,
+when the core moved to PyPI and a version became the thing CI actually installs.
 
 **Add anything that makes an outbound request.** Read § 9's residual first: the account-data
 exfiltration is accepted *against the current sink set*, and a new sink is a change to the

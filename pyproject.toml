@@ -53,7 +53,25 @@ dependencies = [
     "holoviews>=1.23",
     "hvplot>=0.12",
     "anthropic>=0.28",
-    # ibkr_core_mcp is installed separately: pip install -e ../ibkr_core_mcp
+    # The core, from PyPI since 2026-09-19 (first release: 2.0.1, published via Trusted
+    # Publishing — https://pypi.org/project/ibkr-core-mcp/). It used to be installed
+    # separately from a sibling checkout, which meant this file did not declare the one
+    # dependency the whole application is built on: nothing here said which versions work,
+    # and `pip install claudia_ui` produced a tree that could not import `ibkr_core_mcp`.
+    #
+    # This is the COMPATIBILITY range, and it is not the pin. `core-ref.txt` names the one
+    # release CI is run against, and `tests/security/test_cross_repo_contract.py` holds the
+    # two together — the pin must satisfy this range, and no other file may name an exact
+    # version. The `<3` bound is the core's own advice to consumers
+    # (ibkr_core_mcp/docs/consumers.md § "2.0.1 — the package is on PyPI"): 2.0.0 was a
+    # breaking release, so a major bump is assumed breaking until the seam tests say
+    # otherwise.
+    #
+    # A developer working on both repositories at once overrides this copy with
+    # `pip install -e "../ibkr_core_mcp[scraper]" --config-settings editable_mode=strict`
+    # (CLAUDE.md § Dev Setup step 3). Same distribution name, so pip uninstalls the PyPI
+    # copy and installs the editable one in its place — verified 2026-09-19.
+    "ibkr-core-mcp>=2.0.1,<3",
     "watchdog>=4.0",
     "python-dotenv>=1.0",
     # <2 pin required: the SDK's own README (verified 2026-07-22) documents v2 as a
@@ -83,6 +101,12 @@ dev = [
     # that dropped or vendored that dependency would have broken the suite at import
     # time. Test-only: the Anthropic API is what enforces these schemas in production.
     "jsonschema>=4.0",
+    # Same rule as jsonschema above: a direct test dependency, declared rather than
+    # inherited. `tests/security/test_cross_repo_contract.py` parses the core dependency's
+    # specifier and compares it with the pinned release, which needs real PEP 440 version
+    # and specifier semantics — a string comparison would call 2.0.10 older than 2.0.9. It
+    # resolves today only because pytest requires it.
+    "packaging>=23.0",
 ]
 
 [tool.setuptools.packages.find]
