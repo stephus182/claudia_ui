@@ -348,7 +348,8 @@ An expectation is confirmed live before it is relied on; it is not re-derived.
   array. Indicies of the order reply message objects in this array correspond to the indicies of
   the order tickets in the submission request's array."* So a bracket can return a reply for the
   child at index 1 while index 0 is terminal, and `place_order_and_confirm`'s loop, which keys on
-  `response[0]` only, would never answer it. IBKR's own worked example (IBKR API group, 2021, the
+  `response[0]` only, would never answer it. **That is the DOCUMENTED shape; a live send on
+  2026-09-21 produced a serialised chain instead — see § Measured live 2026-09-21.** IBKR's own worked example (IBKR API group, 2021, the
   only place the per-ticket keys appear) returns:
 
   ```json
@@ -456,7 +457,7 @@ Every layer carries exactly one ticket:
 |---|---|---|
 | Proposal schema | `claudia/proposal_tools.py` | `propose_order` is 11 closed keys, no child; a strict-schema change needs the live-API probe (`live_api` marker) |
 | Order body | `claudia/order_flow.py` (`order_body`) | one dict; `cOID` is set, `parentId` never |
-| Client | `ibkr_core_mcp/client.py` `place_order(account_id, order: dict)` and `get_order_preview` | both wrap the single dict as `{"orders": [api_order]}` — a caller cannot pass two tickets. `place_order_and_confirm` answers replies for `response[0]` only; the reply chain is documented as one entry per ticket, index-aligned (above), so a child's reply would go unanswered and the child be dropped silently |
+| Client | `ibkr_core_mcp/client.py` `place_order(account_id, order: dict)` and `get_order_preview` | both wrap the single dict as `{"orders": [api_order]}` — a caller cannot pass two tickets **through those two methods**, and `place_order_and_confirm` answers replies for `response[0]` only. **No longer the blocker, 2026-09-21:** the bracket seam exists on core `main` (unreleased) — `place_bracket_and_confirm` and `get_bracket_preview` take a parent plus children, and it resolves every ticket's reply chain rather than the first entry; the single-order path is deliberately untouched. What remains is the claudia_ui layers in this table, and the fact that the release named in `core-ref.txt` does not carry the seam |
 | Gate 2 | `ibkr_core_mcp/order_confirm.py` | renders one order; the human must see **both** legs before **SEND TO IBKR** |
 | Read-back | `order_flow._read_back` | one order id; the documented bracket response carries one entry per ticket (above), so both ids are available to read back — the child's `PreSubmitted` must read as *held*, not *working* |
 | Orders tab | `claudia/panel_dashboard.py` | no parent column; two candidate fields to measure before adding one — `order_ref` and `child_order_type` (above) |
@@ -521,6 +522,37 @@ account margin figures).
 - **`get_market_snapshot` needs a warm-up call.** The first returns only `conid`; prices
   arrive on the second onward. Treating the first empty answer as "no price" reads a live
   instrument as unquoted.
+
+### Measured live 2026-09-21 — the reply chain is SERIALISED; the terminal shape is confirmed
+
+One bracket (a parent plus one attached limit child) sent through `place_bracket_and_confirm` on a
+live account, behind one Touch ID and one Gate 2. The round instrumentation was a pass-through
+wrapper on `_post` recording shapes only, never values.
+
+| round | request | entries returned | entries carrying an `id` |
+|---|---|---|---|
+| 0 | `POST /iserver/account/{acct}/orders` | 1 | 1 |
+| 1 | `POST /iserver/reply/{id}` | 1 | 1 |
+| 2 | `POST /iserver/reply/{id}` | 1 | 1 |
+| 3 | `POST /iserver/reply/{id}` | 2 | 0 — both legs terminal |
+
+**IBKR serialised the replies: every round returned at most one reply id.** The index-aligned array
+the reference schema documents (above) did not appear. Two consequences, stated carefully, because a
+single run is easy to over-read:
+
+- On this run the single-ticket idiom `while response and "id" in response[0]` would **not** have
+  dropped a reply. `place_bracket_and_confirm`'s every-index loop is still correct and still handles
+  the documented shape, but **this send did not demonstrate it preventing a live drop, and nothing
+  should later claim that it did.** Whether a **two-child** bracket batches its replies is untested.
+- **A child raises its OWN precaution message** — round 2 was about the child leg, not the parent.
+  No whatif can show this, because the whatif previews the first ticket only, and it must be
+  answered or the bracket does not proceed. That is the half of this question the run does settle.
+
+**The terminal response IS the documented shape**, and arrived in a single round: one entry per
+ticket, the parent carrying `order_status: "Submitted"` with `local_order_id` (the `cOID` we sent),
+the child carrying `order_status: "PreSubmitted"` with `parent_order_id`. Accumulating entries
+across rounds rather than replacing them was **not** exercised here, since the terminal pair arrived
+together — so the loop's accumulate-don't-replace behaviour remains unproven live.
 
 ## Order Cancellation
 
