@@ -425,20 +425,25 @@ was built for. The supported-release assertion passes unmodified in this state
 **`CLAUDIA_CORE_UNPINNED` is not needed and must not be set.**
 
 **The one API that will bite.** The blocking `test` lane installs the release named in
-`core-ref.txt` from PyPI while you develop against `main`. **Three** public names exist on main
-and not in 2.0.1 — **`IBKRClient.get_bracket_preview`**,
-**`IBKRClient.place_bracket_and_confirm`** and **`order_confirm.confirm_bracket_dialog`**, the
-bracket seam (Known Gaps #36, Phase 1) — measured 2026-09-21 by walking every top-level function,
-class and public method in `ibkr_core_mcp/` at tag `v2.0.1` and at `main`: 317 public names
-against 320, **none removed**. `__all__` is unchanged: the two new `IBKRClient` methods ride on a
-class 2.0.1 already exported, and `confirm_bracket_dialog` is not exported from
-`ibkr_core_mcp/__init__.py`, as no Gate 2 dialog is. `TOOL_DEFINITIONS` is unchanged at 48
-entries — the bracket seam is reachable from the UI layer and from no tool the model can call —
-and no module was added (29 `.py` files at the tag, 29 on main), so the strict editable install
-does **not** need re-running for any of them. Everything else alters the *behaviour* of APIs
+`core-ref.txt` from PyPI while you develop against `main`. **Six** public names exist on main and
+not in 2.0.1, all of them the bracket seam (Known Gaps #36) —
+**`IBKRClient.get_bracket_preview`**, **`IBKRClient.place_bracket_and_confirm`**,
+**`order_confirm.confirm_bracket_dialog`**, and from the 2026-09-21 live session
+**`client.pair_bracket_response`**, **`client.BracketPairing`** and **`BracketPairing.ok`** —
+re-measured 2026-09-21 by walking every top-level function, class and public method in
+`ibkr_core_mcp/` at tag `v2.0.1` and at `main`: 317 public names against 323, **none removed**.
+`__all__` is unchanged: the `IBKRClient` methods ride on a class 2.0.1 already exported, and
+neither `confirm_bracket_dialog` nor the pairing pair is exported from
+`ibkr_core_mcp/__init__.py` — import them from `ibkr_core_mcp.client` / `.order_confirm`.
+`TOOL_DEFINITIONS` is unchanged at **44** entries — the bracket seam is reachable from the UI
+layer and from no tool the model can call — and no module was added (29 `.py` files at the tag,
+29 on main), so the strict editable install does **not** need re-running for any of them.
+**Corrected 2026-09-21: this sentence said 48**, which never matched the 44 stated in § Pointers
+below; both counts are now measured (`TOOL_DEFINITIONS` is a list literal — count it at each ref
+with AST, not by hand). The "unchanged" half was right. Everything else alters the *behaviour* of APIs
 2.0.1 already has — the front-month `ltd` rule and the `extOperator` removal from
 `preview_order` — so those shapes are safe to call, but the 2.0.1 lane will not carry the fixed
-behaviour. Code here that calls **any of these three** names **passes locally and fails the
+behaviour. Code here that calls **any of these six** names **passes locally and fails the
 blocking lane, and that is the lane working correctly.** Keep such work on a branch, do not merge it, and report it as blocked on core
 2.1.0. Re-measure rather than incrementing this number: the command is in
 `docs/plans/2026-09-07-attached-profit-taker-bracket-plan.md` § Phase 1, and a count edited by
