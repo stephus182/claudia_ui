@@ -37,6 +37,7 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from ibkr_core_mcp.order_confirm import change_value_text, price_text_safe
@@ -68,6 +69,38 @@ no button is drawn at all. It stays for the `cancel` path, whose price fields ar
 context describing a live order and are deliberately not required — and as the render-layer
 backstop for any future caller that does not go through the proposal handler.
 """
+
+
+def _today_key() -> int:
+    """Today as a YYYYMMDD int, in UTC.
+
+    A date field carries no timezone and `ltd`'s own is the exchange's, so exactness is not
+    achievable from it; comparing with `>=` keeps a contract through its last trade date,
+    which errs toward keeping rather than dropping.
+    """
+    return int(datetime.now(tz=UTC).date().strftime("%Y%m%d"))
+
+
+def _last_trade_key(row: Mapping[str, Any]) -> int:
+    """`ltd` when IBKR supplies one, else `expirationDate`, else 0 meaning "unknown".
+
+    They differ: ES Dec-26 reports `expirationDate` 20261218 and `ltd` 20261217 (measured
+    2026-09-20). Trading stops at `ltd`, so that is the field that decides tradeability.
+
+    **This duplicates `ibkr_core_mcp.claude_tools`'s rule by necessity, not by choice.** The
+    core owns the same logic for the tools path, but this repo's CI installs the core from
+    PyPI at the pinned release (`core-ref.txt`), where that helper does not yet exist — an
+    import would go red until the next core release. Consolidate to one definition when the
+    core is next released and the pin moves; until then the two must be changed together.
+    """
+    for key in ("ltd", "expirationDate"):
+        try:
+            value = int(row.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value:
+            return value
+    return 0
 
 
 def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> str:
@@ -1409,10 +1442,27 @@ async def _execute_staged_order_core(
                     "System",
                 )
                 return
+            # Front month = earliest contract STILL TRADEABLE, not simply the lowest expiry.
+            # IBKR keeps returning a contract after its last trade date (measured 2026-09-20,
+            # two days after the Sep roll: ESU6, ltd 20260918, still among 22 ES rows), so
+            # "lowest expirationDate" staged a dead contract — which IBKR rejects with
+            # "Order is already expired." only AFTER Touch ID and Gate 2, making a human
+            # authenticate an order that could never work. Gap #58.
+            tradeable = [
+                f for f in futures if _last_trade_key(f) == 0 or _last_trade_key(f) >= _today_key()
+            ]
+            if not tradeable:
+                latest = max((_last_trade_key(f) for f in futures), default=0)
+                await send_status(
+                    f"Every futures contract IBKR returned for {symbol} has passed its last trade "
+                    f"date (latest {latest or 'unknown'}). Order not placed.",
+                    "System",
+                )
+                return
             try:
-                contract = min(futures, key=lambda f: int(f.get("expirationDate") or 0))
+                contract = min(tradeable, key=lambda f: int(f.get("expirationDate") or 0))
             except (ValueError, TypeError):
-                contract = futures[0]
+                contract = tradeable[0]
             # conid is IBKR's mandatory contract identifier — always present on a successful
             # get_futures() lookup (the `if not futures` guard above already handles the
             # no-match case). Not user/LLM-supplied, so order-parameter-immutability doesn't
