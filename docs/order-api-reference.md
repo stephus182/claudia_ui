@@ -67,7 +67,8 @@ Yes / No / `—` (`—` = IBKR did not report it; measured `None` on a resting E
 the IBKR request body** (below), which also accepts `MIDPRICE`, `TRAIL` and `TRAILLMT`:
 `order_flow.py` populates `price`/`auxPrice` only for `LMT`/`STP`/`STOP_LIMIT`, so widening
 the enum without widening both execute paths would send a trailing order with no price. See
-Known Gaps #6 in `docs/project-status.md`.
+Known Gaps #8 in `docs/project-status.md`, and
+§ Trailing and algorithmic order types below for the field semantics that gap needs.
 `tif` values: `DAY`, `GTC`, `IOC`, `OPG`.
 `quantity` is `"type": "integer"` — a fractional value is rejected at the API boundary rather
 than silently truncated by `int(qty)` in `order_flow.py`. Positivity is *not* schema-enforced
@@ -91,6 +92,8 @@ Bracket fields (`parentId`, `isSingleGroup`, verbatim rules): https://ibkrcampus
 | `quantity` | int | yes | whole shares/contracts only |
 | `price` | float | LMT / STOP_LIMIT | limit price |
 | `auxPrice` | float | STOP_LIMIT / TRAILLMT | stop price |
+| `trailingAmt` | float | TRAIL / TRAILLMT | trail offset; `0`–`100` when `trailingType` is `%` (scraped 2026-09-20) |
+| `trailingType` | str | TRAIL / TRAILLMT | `amt` (absolute) or a **literal `%`** character (scraped 2026-09-20) |
 | `acctId` | str | no | defaults to first account |
 | `ticker` | str | no | underlying symbol — valid IBKR field, not stripped |
 | `cOID` | str | no | customer order ID; max 64 chars; unique per 24h |
@@ -103,6 +106,41 @@ Bracket fields (`parentId`, `isSingleGroup`, verbatim rules): https://ibkrcampus
 
 Display-only fields use `_` prefix (`_companyName`, `_multiplier`) — stripped by `client.py`
 before the API call. `ticker` is **not** stripped (valid IBKR field).
+
+## Trailing and algorithmic order types — researched 2026-09-20, deliberately NOT built
+
+`order_type` stays `MKT` | `LMT` | `STP` | `STOP_LIMIT` (user decision, 2026-09-20). The
+research below is recorded so the future build starts from evidence rather than repeating it.
+
+Sources, scraped 2026-09-20 into `.firecrawl/ibkr/` (git-ignored):
+- https://www.interactivebrokers.com/docs/general/order-types/trailing-stop/cp-api-trailing-stop
+- https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md (TRAILLMT example body)
+- https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md
+
+**`price` does not mean the same thing on the two trailing types.** This is the whole hazard:
+
+| Type | `price` | `auxPrice` | also required |
+|---|---|---|---|
+| `TRAIL` | **stop price** | — | `trailingAmt` + `trailingType` |
+| `TRAILLMT` | **limit price** | **stop price** | `trailingAmt` + `trailingType` |
+
+TRAIL's `price` is documented as *"Stop Price"* on the CP API trailing-stop page. TRAILLMT's
+split is read off IBKR's own place-order example (`BUY`, `price: 185.50`, `auxPrice: 183`),
+which matches the `STOP_LIMIT` convention `order_flow.py` already uses. Swap the two and both
+proposal schemas still validate, and the order goes live at the wrong level — so whichever
+build takes this on, that asymmetry is the first thing its tests must pin.
+
+**The formal reference cannot settle it, so a live probe is required.** `submit-new-order.md`
+marks `price`, `auxPrice`, `trailingAmt` and `trailingType` **all `optional`**, and documents
+`orderType` as only *"IB order type identifier"* — with **no allowed-values list at all**
+(the enumeration above comes from the place-order example page, not from a schema). Per the
+house rule that a doc is a claim and not evidence, per-type requirements must be confirmed by
+`preview_order` (whatif) against a real contract before anything is sent.
+
+**`MIDPRICE` is an algorithmic order, not a plain type.** IBKR files it under IB Algorithms,
+not beside `LMT`/`STP`. It carries its own routing and field rules and it does nothing for the
+bracket work, so it is **excluded by decision (2026-09-20)** and belongs in a separate, clean
+project of its own — not bolted onto the trailing work.
 
 ## Instrument-specific paths
 
