@@ -469,6 +469,53 @@ by hand, or proposed through ClaudIA **only after** the parent's fill has been r
 IBKR (§ Automatic execution reports). This rule belongs in ClaudIA's safety block when the
 feature is built, so the model can never "help" by splitting a bracket into two proposals.
 
+### The whatif is BLIND to bracket children — measured live 2026-09-20
+
+**`POST /iserver/account/{acct}/orders/whatif` previews only the FIRST ticket of an `orders`
+array and silently discards the rest.** So a bracket preview returns the parent's figures
+while looking like a preview of the whole bracket.
+
+Measured through `client.get_bracket_preview` against a live gateway, ES Dec-26 (conid
+`515416632`), parent a valid `SELL 1 LMT 8126.00 GTC`. The child was given three separately
+disqualifying defects, one at a time:
+
+| Child | Response |
+|---|---|
+| valid `BUY 1 LMT 8101.00 GTC` (control) | `amount 406,300 USD`, `initial.change 28,766` |
+| price `8101.11` — **violates the 0.25 tick** | identical |
+| quantity **9999** | identical |
+| a **different instrument** (the expired Sep conid `649180671`) | identical |
+
+Byte-identical in all four. `406,300 = 8126 × 50` is the **parent's notional alone**, and the
+response is a single object with no per-ticket structure — unlike the place endpoint, which
+returns one entry per ticket. A non-tick price on the *parent* rejects the whole request
+(`"The price 8040.11 does not conform to the minimum price variation of 0.25"`), so the
+endpoint does validate — just not past ticket one.
+
+**Consequences, all load-bearing for the build:**
+
+1. **An `ACCEPTED` bracket whatif is not evidence the bracket is acceptable.** Whether IBKR
+   takes a one-child bracket, a mixed-TIF bracket, or a bracket as a unit cannot be measured
+   this way. Those answers must come from a real placement through the bracket path.
+2. **A bracket cost or margin preview drawn from the whatif would understate it**, showing one
+   leg's figures with an authoritative face. If a preview surface is ever built for brackets,
+   it must say which legs the figure covers, or not show one.
+3. The plan's Phase 0 design of reading a one-child case against a parent-alone control cannot
+   discriminate: the two are identical by construction, not by IBKR agreeing with us.
+
+The price band was *not* the obstacle — the parent-alone control was accepted at +5 % over
+market, so nothing above was a band refusal.
+
+Raw captures: `data/test-sessions/2026-09-20-captures/` (git-ignored — whatif responses carry
+account margin figures).
+
+**Also measured the same session, both relevant to any live futures probe:**
+- **ES minimum price variation is 0.25.** A price of `8040.11` is rejected outright with
+  `"does not conform to the minimum price variation"` — round to the tick before sending.
+- **`get_market_snapshot` needs a warm-up call.** The first returns only `conid`; prices
+  arrive on the second onward. Treating the first empty answer as "no price" reads a live
+  instrument as unquoted.
+
 ## Order Cancellation
 
 Mirrors the placement flow exactly: ClaudIA calls `propose_cancel` →
