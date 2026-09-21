@@ -153,7 +153,11 @@ routing depends on `sec_type`:
 - `manualIndicator` / `extOperator` omitted (equity orders; would cause 400 if included)
 
 **Futures (FUT):**
-- Conid resolved via `IBKRClient.get_futures()` → `/trsrv/futures`, front month picked by lowest `expirationDate`
+- Conid resolved via `IBKRClient.get_futures()` → `/trsrv/futures`, front month = the earliest
+  contract **still tradeable**, decided by `ltd` (gap #58). Not simply the lowest `expirationDate`:
+  IBKR keeps returning a contract after its last trade date, so that rule staged an expired one for
+  days after each roll — measured 2026-09-20, and IBKR then refuses it with `"Order is already
+  expired."` only *after* Touch ID and Gate 2
 - `/iserver/secdef/search` does **not** support FUT — do not use it for futures conid resolution
 - `manualIndicator: True` added automatically (CME Rule 536-B, mandatory since May 1, 2025). `extOperator` is
   **not** sent: IBKR rejects any non-empty value as undocumented field 8089 on this account class — proven by
@@ -185,7 +189,9 @@ routing depends on `sec_type`:
 ### The resolved contract is named on the approval text (2026-09-10, gap #37)
 
 A bare root in a futures proposal (`symbol: "ES"`, `sec_type: "FUT"`) keeps meaning the front
-month — the lowest `expirationDate` on `/trsrv/futures`, IB's own default — and the approval
+month — the earliest **still-tradeable** contract on `/trsrv/futures`, IB's own default (it was
+"the lowest `expirationDate`" until gap #58, 2026-09-20, which resolved an expired contract for
+days after each roll) — and the approval
 text now says which contract that is: `**Contract:** ESU6 · SEP26 · expires 2026-09-18`, from
 `claudia/contract_identity.py` (one cached `GET /iserver/contract/{conid}/info` per conid:
 `local_symbol`, `contract_month` → IB's `MMMYY` token, `maturity_date`, `company_name`). The

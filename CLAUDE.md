@@ -351,7 +351,10 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   back to `search_contract` → `contracts[0]`, which is `/iserver/secdef/search`: no `isUS`,
   no currency, and an undocumented result order, so `contracts[0]` for IGV is the *Mexican*
   listing — the defect ibkr_core_mcp had already removed from every read path. FUT is the
-  one exception, resolved by front month via `get_futures`, unambiguous by construction.
+  one exception, resolved by front month via `get_futures` — the earliest contract **still
+  tradeable**, decided by `ltd` (gap #58, 2026-09-20). "Lowest `expirationDate`" was the rule
+  until then and was not safe: IBKR keeps returning a contract after its last trade date, so a
+  bare root resolved to an expired one for days after each roll.
   This costs nothing: the model gets its conid from `get_market_snapshot`/`preview_order`,
   which route through the authoritative resolver, and **every real placement proposal since
   2026-07-10 already carried one** (measured over the full order history 2026-08-05). Do not
