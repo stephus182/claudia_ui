@@ -425,15 +425,21 @@ was built for. The supported-release assertion passes unmodified in this state
 **`CLAUDIA_CORE_UNPINNED` is not needed and must not be set.**
 
 **The one API that will bite.** The blocking `test` lane installs the release named in
-`core-ref.txt` from PyPI while you develop against `main`. Exactly one public name exists on main and not in
-2.0.1: **`IBKRClient.get_bracket_preview`** (0 hits at tag `v2.0.1`, 1 on main, verified
-2026-09-21). `__all__` is unchanged, no entry was added to `TOOL_DEFINITIONS`, no module was
-added. Everything else alters the *behaviour* of APIs 2.0.1 already has — the front-month
-`ltd` rule and the `extOperator` removal from `preview_order` — so those shapes are safe to
-call, but the 2.0.1 lane will not carry the fixed behaviour. Code here that calls
-`get_bracket_preview` **passes locally and fails the blocking lane, and that is the lane
-working correctly.** Keep such work on a branch, do not merge it, and report it as blocked on
-core 2.1.0.
+`core-ref.txt` from PyPI while you develop against `main`. **Two** public names exist on main and
+not in 2.0.1 — **`IBKRClient.get_bracket_preview`** and
+**`order_confirm.confirm_bracket_dialog`** — measured 2026-09-21 by walking every top-level
+function, class and public method in `ibkr_core_mcp/` at tag `v2.0.1` and at `main`: 317 public
+names against 319, **none removed**. `__all__` is unchanged (neither name is exported from
+`ibkr_core_mcp/__init__.py`, as none of the Gate 2 dialogs are), `TOOL_DEFINITIONS` is unchanged
+at 48 entries, and no module was added — so the strict editable install does **not** need
+re-running for either. Everything else alters the *behaviour* of APIs 2.0.1 already has — the
+front-month `ltd` rule and the `extOperator` removal from `preview_order` — so those shapes are
+safe to call, but the 2.0.1 lane will not carry the fixed behaviour. Code here that calls
+either new name **passes locally and fails the blocking lane, and that is the lane working
+correctly.** Keep such work on a branch, do not merge it, and report it as blocked on core
+2.1.0. Re-measure rather than incrementing this number: the command is in
+`docs/plans/2026-09-07-attached-profit-taker-bracket-plan.md` § Phase 1, and a count edited by
+hand is how the test-count claim drifted twice.
 
 **While the window is open, do not:**
 
