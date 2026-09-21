@@ -106,7 +106,7 @@ session-resilience work:
   `_run_checks()` behind a narrow safety condition (previous poll confirmed `OK`, current poll
   shows this exact signature — never on a fresh/settling login or hard disconnect). Unit-tested
   (15 dedicated tests), not yet live-verified — see
-  `docs/plans/2026-07-17-ibkr-soft-timeout-recovery.md` Task 5.
+  `docs/plans/archive/gateway/2026-07-17-ibkr-soft-timeout-recovery.md` Task 5.
 - `POST /iserver/auth/ssodh/init` body params: `publish` (bool, required, must be `true` or a
   500 is returned) and `compete` (bool, required — *"Determines if other brokerage sessions
   should be disconnected to prioritize this connection"*). `compete:true` would force-evict a
@@ -291,7 +291,7 @@ rather than duplicated here (single source, scraped 2026-07-24).
 Scraped with Firecrawl on 2026-09-11 to answer one question: is there security value in a
 second, third or fourth Touch ID for the *same* order (Gate 1 on the write, then one per IBKR
 precaution reply — measured at 3 for a BUY ES stop and 4 for a SELL stop-limit on 2026-09-10)?
-Verbatim quotes and the synthesis: `docs/plans/2026-09-11-repeated-touch-id-research.md`
+Verbatim quotes and the synthesis: `docs/plans/archive/orders/2026-09-11-order-write-authorization.md`
 (local archive). Decision record: `docs/project-status.md` gap #47.
 
 | Topic | Official source |

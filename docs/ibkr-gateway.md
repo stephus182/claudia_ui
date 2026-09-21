@@ -379,7 +379,7 @@ reactivation with IBKR, not something to retry:
 | 2026-08-06 | Container fix had no effect for a day | Image never rebuilt, **and could not be** | §The image trap |
 
 Full diagnosis of the 2026-08-05 borrowed session and the six 2026-08-06 gaps:
-`docs/plans/2026-08-06-gateway-session-lifecycle-owner.md` (local, git-ignored).
+`docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md` (local, git-ignored).
 
 ---
 

@@ -854,7 +854,7 @@ def _is_ibkr_rejection(result: object) -> bool:
 
     IBKR returns order rejections as an HTTP 200 payload — no exception raised —
     proven live 2026-07-23 on a FUT order (see
-    docs/plans/2026-07-23-futures-order-field-8089-bug.md). The rejection entry carries
+    docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md). The rejection entry carries
     ``"action": "order_submit_issue"``, an ``"error"`` string, and
     ``order_id: "0"`` inside ``cqe.post_payload``. Historically, without this
     classification the callers labelled such a rejection "staged successfully" — that
@@ -1476,7 +1476,7 @@ async def _execute_staged_order_core(
         #                                    field 8089 on this account class (the "Required*"
         #                                    evidently scopes to institutional/multi-operator
         #                                    setups). Proven via whatif isolation 2026-07-23:
-        #                                    docs/plans/2026-07-23-futures-order-field-8089-bug.md
+        #                                    docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md
         # Source (536-B): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
         # ----------------------------------------------------------------
         order_body: dict[str, Any] = {
@@ -1496,7 +1496,7 @@ async def _execute_staged_order_core(
             # rejects it with any non-empty value as undocumented field 8089 on
             # this account class — proven via whatif isolation 2026-07-23
             # (manualIndicator alone is accepted); see
-            # docs/plans/2026-07-23-futures-order-field-8089-bug.md
+            # docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md
             order_body["manualIndicator"] = True
             if multiplier is not None:
                 order_body["_multiplier"] = multiplier  # display only — stripped by client.py
@@ -1534,7 +1534,7 @@ async def _execute_staged_order_core(
 
         # IBKR returns rejections as HTTP 200 payloads — no exception — so the
         # result must be classified before claiming success (proven live 2026-07-23;
-        # see _is_ibkr_rejection and docs/plans/2026-07-23-futures-order-field-8089-bug.md).
+        # see _is_ibkr_rejection and docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md).
         if _is_ibkr_rejection(result):
             log.warning("IBKR rejected order for %s: %s", symbol, result)
             _record_rejection(
@@ -1957,7 +1957,7 @@ async def _execute_modify_order_core(
             # CME Rule 536-B — manualIndicator only, same as the place path above.
             # extOperator deliberately NOT sent (IBKR rejects it as undocumented
             # field 8089 on this account class — proven 2026-07-23; see
-            # docs/plans/2026-07-23-futures-order-field-8089-bug.md).
+            # docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md).
             order_body["manualIndicator"] = True
         if otype == "LMT" and limit_price is not None:
             order_body["price"] = float(limit_price)

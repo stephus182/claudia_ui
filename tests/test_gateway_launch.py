@@ -2,7 +2,7 @@
 
 This module used to hold the gateway orchestration and its ordering tests. Both moved to
 `claudia.gateway_session` in stage 2 of
-`docs/plans/2026-08-06-gateway-session-lifecycle-owner.md`, and the sequence assertions
+`docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md`, and the sequence assertions
 moved with them to `tests/test_gateway_session.py`, where the owner's call order is
 observable.
 

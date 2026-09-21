@@ -330,7 +330,7 @@ cannot contain.**
 ### 4d. Transcript fidelity and the same-turn retry (2026-09-11)
 
 The mechanism §7 called *"unexplained"* was measured on 2026-09-11 (the full record:
-`docs/plans/2026-09-11-anti-fabrication-framework-design.md`, git-ignored; the numbers also
+`docs/plans/archive/anti-fabrication/2026-09-11-anti-fabrication-framework.md`, git-ignored; the numbers also
 sit in `docs/project-status.md` § Live Test Log). Two facts about the transcript ClaudIA
 replays were the cause:
 

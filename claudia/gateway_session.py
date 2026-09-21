@@ -1,6 +1,6 @@
 """The authoritative state of the IBKR gateway session — one owner, one answer.
 
-**Stages 1-3 of `docs/plans/2026-08-06-gateway-session-lifecycle-owner.md`.** The file
+**Stages 1-3 of `docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md`.** The file
 is layered, and the layering is deliberate:
 
 * **Stage 1 (pure).** `SessionPhase`, `SessionState`, `classify`, `observe`, `declare`,

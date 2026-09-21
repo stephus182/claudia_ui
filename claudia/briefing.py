@@ -13,7 +13,7 @@ has items**, so `Ready(items=())` ("we looked, there is genuinely nothing") and
 same reasoning as `DashboardSnapshot.orders` being `tuple | None`: `()` and a failed lookup
 are opposite claims.
 
-Design: `docs/plans/2026-09-15-morning-briefing-sources.md` §7.
+Design: `docs/plans/archive/briefing/2026-09-15-morning-briefing.md` §7.
 """
 
 from __future__ import annotations
