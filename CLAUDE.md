@@ -161,7 +161,7 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (2,037 collected 2026-09-17
+pytest        # full suite — all unit, no IBKR gateway needed (2,052 collected 2026-09-20
               # in the main checkout; `pytest --collect-only -q | tail -1` reports it)
 pytest tests/security   # the structural invariants alone, ~3s (also part of the full run)
 ruff check . && ruff format --check . && mypy   # lint, format, type gates — all must be clean
@@ -351,7 +351,10 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   back to `search_contract` → `contracts[0]`, which is `/iserver/secdef/search`: no `isUS`,
   no currency, and an undocumented result order, so `contracts[0]` for IGV is the *Mexican*
   listing — the defect ibkr_core_mcp had already removed from every read path. FUT is the
-  one exception, resolved by front month via `get_futures`, unambiguous by construction.
+  one exception, resolved by front month via `get_futures` — the earliest contract **still
+  tradeable**, decided by `ltd` (gap #58, 2026-09-20). "Lowest `expirationDate`" was the rule
+  until then and was not safe: IBKR keeps returning a contract after its last trade date, so a
+  bare root resolved to an expired one for days after each roll.
   This costs nothing: the model gets its conid from `get_market_snapshot`/`preview_order`,
   which route through the authoritative resolver, and **every real placement proposal since
   2026-07-10 already carried one** (measured over the full order history 2026-08-05). Do not
@@ -400,6 +403,64 @@ gated behind an extra. (It briefly wasn't: a bare install used to leave `websock
 and `ExecutionListener` would silently retry-loop forever on `ModuleNotFoundError`. Fixed
 ibkr_core_mcp-side by moving `websockets` out of `[server]` into base `dependencies`, since
 `IBKRWebSocket`/`AlertManager` are core public API, not server-only.)
+
+### Release batching — core changes accumulate into ONE release (window opened 2026-09-21)
+
+**The core is deliberately unreleased ahead of PyPI right now.** `main` in `../ibkr_core_mcp`
+is 21 commits past its `v2.0.1` tag (measured 2026-09-21), all pushed, none released on
+purpose. They ship as a single `2.1.0` once ClaudIA's current round of work settles — not
+incrementally, because small changes driven from this repository would otherwise cost a
+release each. This is Keep a Changelog's `[Unreleased]` section used for exactly what it is
+for — "Keep an `Unreleased` section at the top to track upcoming changes … At release time,
+you can move the `Unreleased` section changes into a new release version section"
+(https://keepachangelog.com/en/1.1.0/) — and the core's CHANGELOG already declares that format.
+
+**Which core you are actually running.** The developer override (Dev Setup step 3) is in
+place, so this venv imports core `main`, not 2.0.1. `pip show ibkr-core-mcp` reports `2.0.1`,
+which is the *checkout's declared version*, not the code — do not read it as the answer. Ask
+`python -m claudia.install_check`, which reads PEP 610 provenance and prints
+`ibkr-core-mcp install origin: editable` (measured 2026-09-21); that is precisely the case it
+was built for. The supported-release assertion passes unmodified in this state
+(`pytest tests/security/test_cross_repo_contract.py` → 18 passed, 2026-09-21), so
+**`CLAUDIA_CORE_UNPINNED` is not needed and must not be set.**
+
+**The one API that will bite.** The blocking `test` lane installs the release named in
+`core-ref.txt` from PyPI while you develop against `main`. Exactly one public name exists on main and not in
+2.0.1: **`IBKRClient.get_bracket_preview`** (0 hits at tag `v2.0.1`, 1 on main, verified
+2026-09-21). `__all__` is unchanged, no entry was added to `TOOL_DEFINITIONS`, no module was
+added. Everything else alters the *behaviour* of APIs 2.0.1 already has — the front-month
+`ltd` rule and the `extOperator` removal from `preview_order` — so those shapes are safe to
+call, but the 2.0.1 lane will not carry the fixed behaviour. Code here that calls
+`get_bracket_preview` **passes locally and fails the blocking lane, and that is the lane
+working correctly.** Keep such work on a branch, do not merge it, and report it as blocked on
+core 2.1.0.
+
+**While the window is open, do not:**
+
+- change `core-ref.txt` — it stays `2.0.1` until 2.1.0 is live on PyPI;
+- tag, release, or bump the version of `../ibkr_core_mcp`;
+- loosen `ibkr-core-mcp>=2.0.1,<3`, add `--pre`, or repoint the dependency at a git ref;
+- add `continue-on-error` to the `test` job, set `CLAUDIA_CORE_UNPINNED=1`, or skip
+  `tests/security/test_cross_repo_contract.py`;
+- merge to `main` with CI red.
+
+Nothing here can publish by accident. `publish.yml` triggers only on `release: [published]`
+and `workflow_dispatch` (TestPyPI only), and the `pypi` environment requires the owner's
+manual approval (`required reviewer = the owner; deployment tag rule v*`). A push, a merge,
+even a pushed tag, publishes nothing.
+
+**When ClaudIA needs a core change:** make it on core `main`; add an entry under
+`## [Unreleased]` in the core's CHANGELOG — that entry *is* the 2.1.0 release note, written
+while you still remember why; run the core's four gates **bare, unpiped, as four separate
+commands** (`ruff check .`, `ruff format --check .`, `mypy`, `pytest -m "not integration"`);
+commit and push. Do not tag. If you added, renamed or removed a module, re-run the strict
+editable install from Dev Setup step 3 or this project keeps resolving the old set.
+
+**Closing the window is the operator's step, in this order:** core `[Unreleased]` →
+`## [2.1.0] — <date>`, `pyproject.toml` version, four gates, tag, GitHub Release, approve the
+`pypi` environment, verify the install in a fresh venv, then move `core-ref.txt` here with a
+commit message saying what changed in the core and why the bump is safe.
+
 
 ## Pointers
 

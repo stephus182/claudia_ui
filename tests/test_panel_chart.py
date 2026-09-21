@@ -5,7 +5,7 @@ Two layers, both server-free:
     DataFrame (DatetimeIndex + lowercase columns, mirroring the real cache output).
     Returns a holoviews.Layout; assertions read its element data directly rather than
     poking Bokeh glyph renderers. Design rationale: local plan archive,
-    docs/plans/2026-08-03-holoviews-charting-layer-design.md (git-ignored, not in this
+    docs/plans/archive/pnl-dashboard/2026-08-03-holoviews-charting-layer-design.md (git-ignored, not in this
     repo — see CLAUDE.md Conventions).
   * build_chart_pane / _on_load — the Panel component and its Load handler, exercised
     by grabbing the live Button's on_click callback (conftest _get_click_callback) and

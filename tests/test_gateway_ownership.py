@@ -1,6 +1,6 @@
 """Repo-level guards: only the session owner may write to the gateway or the container.
 
-Invariant §3.1 of `docs/plans/2026-08-06-gateway-session-lifecycle-owner.md` — *one owner
+Invariant §3.1 of `docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md` — *one owner
 writes* — is not something a unit test of any single module can defend. It is a property
 of the **whole tree**: it is violated by a new call appearing anywhere, which is exactly
 how the original defect arrived. So it is asserted by scanning the source.

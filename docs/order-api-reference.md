@@ -67,7 +67,8 @@ Yes / No / `—` (`—` = IBKR did not report it; measured `None` on a resting E
 the IBKR request body** (below), which also accepts `MIDPRICE`, `TRAIL` and `TRAILLMT`:
 `order_flow.py` populates `price`/`auxPrice` only for `LMT`/`STP`/`STOP_LIMIT`, so widening
 the enum without widening both execute paths would send a trailing order with no price. See
-Known Gaps #6 in `docs/project-status.md`.
+Known Gaps #8 in `docs/project-status.md`, and
+§ Trailing and algorithmic order types below for the field semantics that gap needs.
 `tif` values: `DAY`, `GTC`, `IOC`, `OPG`.
 `quantity` is `"type": "integer"` — a fractional value is rejected at the API boundary rather
 than silently truncated by `int(qty)` in `order_flow.py`. Positivity is *not* schema-enforced
@@ -91,6 +92,8 @@ Bracket fields (`parentId`, `isSingleGroup`, verbatim rules): https://ibkrcampus
 | `quantity` | int | yes | whole shares/contracts only |
 | `price` | float | LMT / STOP_LIMIT | limit price |
 | `auxPrice` | float | STOP_LIMIT / TRAILLMT | stop price |
+| `trailingAmt` | float | TRAIL / TRAILLMT | trail offset; `0`–`100` when `trailingType` is `%` (scraped 2026-09-20) |
+| `trailingType` | str | TRAIL / TRAILLMT | `amt` (absolute) or a **literal `%`** character (scraped 2026-09-20) |
 | `acctId` | str | no | defaults to first account |
 | `ticker` | str | no | underlying symbol — valid IBKR field, not stripped |
 | `cOID` | str | no | customer order ID; max 64 chars; unique per 24h |
@@ -104,6 +107,41 @@ Bracket fields (`parentId`, `isSingleGroup`, verbatim rules): https://ibkrcampus
 Display-only fields use `_` prefix (`_companyName`, `_multiplier`) — stripped by `client.py`
 before the API call. `ticker` is **not** stripped (valid IBKR field).
 
+## Trailing and algorithmic order types — researched 2026-09-20, deliberately NOT built
+
+`order_type` stays `MKT` | `LMT` | `STP` | `STOP_LIMIT` (user decision, 2026-09-20). The
+research below is recorded so the future build starts from evidence rather than repeating it.
+
+Sources, scraped 2026-09-20 into `.firecrawl/ibkr/` (git-ignored):
+- https://www.interactivebrokers.com/docs/general/order-types/trailing-stop/cp-api-trailing-stop
+- https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md (TRAILLMT example body)
+- https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md
+
+**`price` does not mean the same thing on the two trailing types.** This is the whole hazard:
+
+| Type | `price` | `auxPrice` | also required |
+|---|---|---|---|
+| `TRAIL` | **stop price** | — | `trailingAmt` + `trailingType` |
+| `TRAILLMT` | **limit price** | **stop price** | `trailingAmt` + `trailingType` |
+
+TRAIL's `price` is documented as *"Stop Price"* on the CP API trailing-stop page. TRAILLMT's
+split is read off IBKR's own place-order example (`BUY`, `price: 185.50`, `auxPrice: 183`),
+which matches the `STOP_LIMIT` convention `order_flow.py` already uses. Swap the two and both
+proposal schemas still validate, and the order goes live at the wrong level — so whichever
+build takes this on, that asymmetry is the first thing its tests must pin.
+
+**The formal reference cannot settle it, so a live probe is required.** `submit-new-order.md`
+marks `price`, `auxPrice`, `trailingAmt` and `trailingType` **all `optional`**, and documents
+`orderType` as only *"IB order type identifier"* — with **no allowed-values list at all**
+(the enumeration above comes from the place-order example page, not from a schema). Per the
+house rule that a doc is a claim and not evidence, per-type requirements must be confirmed by
+`preview_order` (whatif) against a real contract before anything is sent.
+
+**`MIDPRICE` is an algorithmic order, not a plain type.** IBKR files it under IB Algorithms,
+not beside `LMT`/`STP`. It carries its own routing and field rules and it does nothing for the
+bracket work, so it is **excluded by decision (2026-09-20)** and belongs in a separate, clean
+project of its own — not bolted onto the trailing work.
+
 ## Instrument-specific paths
 
 `_execute_staged_order_core()` in `order_flow.py` resolves `conid` in this order: **(1)** the
@@ -115,7 +153,11 @@ routing depends on `sec_type`:
 - `manualIndicator` / `extOperator` omitted (equity orders; would cause 400 if included)
 
 **Futures (FUT):**
-- Conid resolved via `IBKRClient.get_futures()` → `/trsrv/futures`, front month picked by lowest `expirationDate`
+- Conid resolved via `IBKRClient.get_futures()` → `/trsrv/futures`, front month = the earliest
+  contract **still tradeable**, decided by `ltd` (gap #58). Not simply the lowest `expirationDate`:
+  IBKR keeps returning a contract after its last trade date, so that rule staged an expired one for
+  days after each roll — measured 2026-09-20, and IBKR then refuses it with `"Order is already
+  expired."` only *after* Touch ID and Gate 2
 - `/iserver/secdef/search` does **not** support FUT — do not use it for futures conid resolution
 - `manualIndicator: True` added automatically (CME Rule 536-B, mandatory since May 1, 2025). `extOperator` is
   **not** sent: IBKR rejects any non-empty value as undocumented field 8089 on this account class — proven by
@@ -147,7 +189,9 @@ routing depends on `sec_type`:
 ### The resolved contract is named on the approval text (2026-09-10, gap #37)
 
 A bare root in a futures proposal (`symbol: "ES"`, `sec_type: "FUT"`) keeps meaning the front
-month — the lowest `expirationDate` on `/trsrv/futures`, IB's own default — and the approval
+month — the earliest **still-tradeable** contract on `/trsrv/futures`, IB's own default (it was
+"the lowest `expirationDate`" until gap #58, 2026-09-20, which resolved an expired contract for
+days after each roll) — and the approval
 text now says which contract that is: `**Contract:** ESU6 · SEP26 · expires 2026-09-18`, from
 `claudia/contract_identity.py` (one cached `GET /iserver/contract/{conid}/info` per conid:
 `local_symbol`, `contract_month` → IB's `MMMYY` token, `maturity_date`, `company_name`). The
@@ -430,6 +474,53 @@ orders. Until the bracket path exists, the profit taker is either attached in TW
 by hand, or proposed through ClaudIA **only after** the parent's fill has been reported by
 IBKR (§ Automatic execution reports). This rule belongs in ClaudIA's safety block when the
 feature is built, so the model can never "help" by splitting a bracket into two proposals.
+
+### The whatif is BLIND to bracket children — measured live 2026-09-20
+
+**`POST /iserver/account/{acct}/orders/whatif` previews only the FIRST ticket of an `orders`
+array and silently discards the rest.** So a bracket preview returns the parent's figures
+while looking like a preview of the whole bracket.
+
+Measured through `client.get_bracket_preview` against a live gateway, ES Dec-26 (conid
+`515416632`), parent a valid `SELL 1 LMT 8126.00 GTC`. The child was given three separately
+disqualifying defects, one at a time:
+
+| Child | Response |
+|---|---|
+| valid `BUY 1 LMT 8101.00 GTC` (control) | `amount 406,300 USD`, `initial.change 28,766` |
+| price `8101.11` — **violates the 0.25 tick** | identical |
+| quantity **9999** | identical |
+| a **different instrument** (the expired Sep conid `649180671`) | identical |
+
+Byte-identical in all four. `406,300 = 8126 × 50` is the **parent's notional alone**, and the
+response is a single object with no per-ticket structure — unlike the place endpoint, which
+returns one entry per ticket. A non-tick price on the *parent* rejects the whole request
+(`"The price 8040.11 does not conform to the minimum price variation of 0.25"`), so the
+endpoint does validate — just not past ticket one.
+
+**Consequences, all load-bearing for the build:**
+
+1. **An `ACCEPTED` bracket whatif is not evidence the bracket is acceptable.** Whether IBKR
+   takes a one-child bracket, a mixed-TIF bracket, or a bracket as a unit cannot be measured
+   this way. Those answers must come from a real placement through the bracket path.
+2. **A bracket cost or margin preview drawn from the whatif would understate it**, showing one
+   leg's figures with an authoritative face. If a preview surface is ever built for brackets,
+   it must say which legs the figure covers, or not show one.
+3. The plan's Phase 0 design of reading a one-child case against a parent-alone control cannot
+   discriminate: the two are identical by construction, not by IBKR agreeing with us.
+
+The price band was *not* the obstacle — the parent-alone control was accepted at +5 % over
+market, so nothing above was a band refusal.
+
+Raw captures: `data/test-sessions/2026-09-20-captures/` (git-ignored — whatif responses carry
+account margin figures).
+
+**Also measured the same session, both relevant to any live futures probe:**
+- **ES minimum price variation is 0.25.** A price of `8040.11` is rejected outright with
+  `"does not conform to the minimum price variation"` — round to the tick before sending.
+- **`get_market_snapshot` needs a warm-up call.** The first returns only `conid`; prices
+  arrive on the second onward. Treating the first empty answer as "no price" reads a live
+  instrument as unquoted.
 
 ## Order Cancellation
 

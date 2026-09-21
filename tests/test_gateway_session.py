@@ -1,6 +1,6 @@
 """Tests for `claudia.gateway_session` — stages 1 and 2 of the lifecycle-owner plan.
 
-The invariants in §3 of `docs/plans/2026-08-06-gateway-session-lifecycle-owner.md` are
+The invariants in §3 of `docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md` are
 asserted here **over every phase**, not over a representative one. That choice is the
 lesson from the defect that started the plan: the broken code returned a correct-looking
 value for the case anyone would have tested, and was wrong for the two cases that

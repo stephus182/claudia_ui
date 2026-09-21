@@ -4149,7 +4149,7 @@ async def test_execution_note_reaches_the_model_once_on_the_next_turn():
 async def test_two_text_blocks_in_one_response_are_joined_by_a_paragraph_break():
     """The glue ("staging.Confirmed") was the cue the model copied when it narrated a tool
     cycle it never ran: with a break at the boundary the replay eval scored 32/32 clean,
-    without it 15/32 (docs/plans/2026-09-11-anti-fabrication-framework-design.md § Phase 0).
+    without it 15/32 (docs/plans/archive/anti-fabrication/2026-09-11-anti-fabrication-framework.md § Phase 0).
     """
     agent, sink = _make_agent_recording()
     agent._client.messages.stream = MagicMock(

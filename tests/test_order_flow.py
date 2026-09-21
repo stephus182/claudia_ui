@@ -29,6 +29,15 @@ from claudia.order_flow import (
     _resolve_account_id,
 )
 
+
+def _dated(days: int) -> int:
+    """A YYYYMMDD int `days` from today. Computed, never hardcoded: fixtures pinned to real
+    2026-09 expiries silently changed meaning the day those contracts expired (gap #58)."""
+    from datetime import UTC, datetime, timedelta
+
+    return int((datetime.now(tz=UTC).date() + timedelta(days=days)).strftime("%Y%m%d"))
+
+
 # ── _resolve_account_id ──────────────────────────────────────────────────────
 
 
@@ -641,8 +650,16 @@ def _make_ibkr_mock():
     # /trsrv/futures rows carry NO multiplier (measured 2026-09-04: keys are conid,
     # expirationDate, ltd, cut-offs, symbol, underlyingConid). Until that day this mock
     # invented one, and the multiplier path it "covered" had never fired live.
+    # The date is COMPUTED, not pinned. This fixture said 20260918, which was a live ES
+    # contract when written and an expired one from 2026-09-18 — after which every test
+    # sharing this mock staged a dead contract while passing (gap #58).
     client.get_futures.return_value = [
-        {"conid": 495512557, "expirationDate": 20260918, "contractDesc": "ES SEP 26"},
+        {
+            "conid": 495512557,
+            "expirationDate": _dated(60),
+            "ltd": _dated(60),
+            "contractDesc": "ES SEP 26",
+        },
     ]
     # /iserver/contract/{conid}/info is where the multiplier, currency and local symbol
     # live (measured on ES conid 649180671: '50', 'USD', 'ESU6', maturity 20260918).
@@ -1015,7 +1032,7 @@ async def test_execute_staged_order_fut_cme_536b_fields():
     """FUT order body includes manualIndicator=True but NOT extOperator — IBKR rejects
     extOperator with any non-empty value as undocumented field 8089 on this account
     class (proven via whatif isolation 2026-07-23; see
-    docs/plans/2026-07-23-futures-order-field-8089-bug.md)."""
+    docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md)."""
     ibkr_mod, client = _make_ibkr_mock()
     action = _make_action(
         {
@@ -1165,25 +1182,78 @@ async def test_execute_staged_order_fut_not_found():
 
 
 @pytest.mark.asyncio
+async def test_execute_staged_order_fut_skips_a_contract_past_its_last_trade_date():
+    """Gap #58, measured live 2026-09-20 two days after the Sep roll: /trsrv/futures still
+    returned ESU6 (ltd 20260918), and "lowest expirationDate" made an expired contract the
+    front month. IBKR then rejects the order with "Order is already expired." — but only
+    after Touch ID and Gate 2, so a human authenticates an order that can never work."""
+    ibkr_mod, client = _make_ibkr_mock()
+    expired, live = _dated(-2), _dated(90)
+    client.get_futures.return_value = [
+        {
+            "conid": 495512557,
+            "expirationDate": expired,
+            "ltd": expired,
+            "multiplier": "50",
+            "contractDesc": "ES SEP",
+        },
+        {
+            "conid": 700000,
+            "expirationDate": live,
+            "ltd": live,
+            "multiplier": "50",
+            "contractDesc": "ES DEC",
+        },
+    ]
+    action = _make_action(
+        {"symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "MKT", "sec_type": "FUT"}
+    )
+    await _run(action, ibkr_mod)
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert order_body.get("conid") == 700000, "an expired contract must never be staged"
+
+
+@pytest.mark.asyncio
+async def test_execute_staged_order_fut_prefers_ltd_over_expiration_date():
+    """They differ - ES Dec-26 reports expirationDate 20261218 and ltd 20261217 - and trading
+    stops at ltd, so that is the field that decides whether a contract can still be traded."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_futures.return_value = [
+        # Expiry still ahead, but trading has already stopped.
+        {"conid": 495512557, "expirationDate": _dated(1), "ltd": _dated(-1), "multiplier": "50"},
+        {"conid": 700000, "expirationDate": _dated(60), "ltd": _dated(60), "multiplier": "50"},
+    ]
+    action = _make_action(
+        {"symbol": "ES", "action": "BUY", "quantity": 1, "order_type": "MKT", "sec_type": "FUT"}
+    )
+    await _run(action, ibkr_mod)
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert order_body.get("conid") == 700000
+
+
+@pytest.mark.asyncio
 async def test_execute_staged_order_fut_front_month_selected():
-    """FUT: lowest expirationDate is selected as front month."""
+    """FUT: the earliest still-tradeable expirationDate is selected as front month."""
     ibkr_mod, client = _make_ibkr_mock()
     client.get_futures.return_value = [
         {
             "conid": 700000,
-            "expirationDate": 20261218,
+            "expirationDate": _dated(120),
+            "ltd": _dated(120),
             "multiplier": "50",
             "contractDesc": "ES DEC 26",
         },
         {
             "conid": 495512557,
-            "expirationDate": 20260918,
+            "expirationDate": _dated(30),
+            "ltd": _dated(30),
             "multiplier": "50",
             "contractDesc": "ES SEP 26",
         },
         {
             "conid": 800000,
-            "expirationDate": 20270318,
+            "expirationDate": _dated(210),
+            "ltd": _dated(210),
             "multiplier": "50",
             "contractDesc": "ES MAR 27",
         },
@@ -1298,7 +1368,7 @@ async def test_execute_staged_order_fop_with_conid_proceeds():
 # ── IBKR 200-with-rejection payloads (2026-07-23 live FUT test) ──────────────
 # IBKR returns order rejections as an HTTP 200 payload — no exception raised —
 # so the result must be classified, not assumed successful.
-# Shape copied verbatim from docs/plans/2026-07-23-futures-order-field-8089-bug.md.
+# Shape copied verbatim from docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md.
 
 _REJECTION_PAYLOAD = [
     {
@@ -1722,7 +1792,7 @@ async def test_execute_modify_order_stk_no_cme_fields():
 @pytest.mark.asyncio
 async def test_execute_modify_order_fut_cme_536b_fields():
     """FUT modify body includes manualIndicator=True but NOT extOperator — same
-    field-8089 rejection as the place path (docs/plans/2026-07-23-futures-order-field-8089-bug.md)."""
+    field-8089 rejection as the place path (docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md)."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action(
         {

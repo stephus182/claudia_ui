@@ -1202,7 +1202,7 @@ def _claims_completed_action(text: str) -> str | None:
     turns, every one an individually verified fabrication (2026-06-24 → 2026-08-12, nine
     sessions, both TV instances and the 2026-07-28 book failure among them); 22 turns
     matched textually and were cleared by their real tool calls; zero fires outside the
-    verified set.** See `docs/plans/2026-08-12-t7-fabrication-guardrail.md`.
+    verified set.** See `docs/plans/archive/anti-fabrication/2026-08-12-t7-fabrication-guardrail.md`.
 
     What it gives up for that, knowingly:
       - a turn where *some* tool ran and a *different* claimed action did not ("called
@@ -1539,7 +1539,7 @@ _LOCAL_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in _LOCAL_TOOLS)
 def _ibkr_unavailable() -> str | None:
     """A `tool_result` explaining why IBKR is off limits, or None when it is not.
 
-    Stage 5 of `docs/plans/2026-08-06-gateway-session-lifecycle-owner.md`. Suspension is
+    Stage 5 of `docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md`. Suspension is
     **total** by decision: while a login or a recovery is in progress, nothing touches the
     gateway — the pollers, the WebSocket, both ticklers, and the model's tools.
 

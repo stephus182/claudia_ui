@@ -11,7 +11,7 @@ released at close rather than at fill — produced a difference of **4.60 on one
 author already believed, and would have agreed with the bug.
 
 The three validation legs from
-`docs/plans/2026-08-06-gateway-session-lifecycle-owner.md`'s sibling P&L work are all
+`docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md`'s sibling P&L work are all
 asserted here against figures obtained independently of this code:
 
   * Flex, on settled days — -3,516.98 and 590.80

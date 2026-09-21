@@ -10,7 +10,7 @@ button and this CLI all share. One authority, so the three cannot drift.
 
 Until 2026-08-06 this file held the orchestration itself, and before that
 `start-claudia.sh` called `GatewayManager.startup()` with no pre-flight at all. Both are
-gone: see `docs/plans/2026-08-06-gateway-session-lifecycle-owner.md` for why owning the
+gone: see `docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md` for why owning the
 sequence in one place was the only fix that converged.
 """
 

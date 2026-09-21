@@ -12,11 +12,11 @@ ibkr_core_mcp.mcp_server._stream_loop_with_retry.
 
 Design: rather than staying continuously subscribed to IBKR's spl (P&L) topic
 (the previous, since-removed PnLStreamer design — see
-docs/plans/2026-07-06-live-pnl-streaming-design.md for why that
+docs/plans/archive/pnl-dashboard/2026-07-06-live-pnl-streaming-design.md for why that
 was judged overkill), this module stays subscribed only to str (trade
 executions) — a sparse, meaningful signal — and transiently subscribes to spl
 only long enough to capture one P&L tick after a trade happens. See
-docs/plans/2026-07-07-execution-triggered-pnl-design.md.
+docs/plans/archive/pnl-dashboard/2026-07-07-execution-triggered-pnl-design.md.
 
 A background "pump" task drains ws.listen() into an asyncio.Queue, and both
 the outer execution loop and the transient P&L capture read from that queue
@@ -229,7 +229,7 @@ def get_live_pnl_text(toolkit: ClaudeToolkit) -> str:
     user's last trade happened before ClaudIA started, or in an earlier
     session. get_account_ledger (/portfolio/{accountId}/ledger) has no such
     dependency: it returns correct realized/unrealized P&L on every call,
-    live-verified 2026-07-17 (docs/plans/2026-07-17-account-pnl-display-fixes.md).
+    live-verified 2026-07-17 (docs/plans/archive/pnl-dashboard/2026-07-17-account-pnl-display-fixes.md).
     """
     latest = toolkit._store.get_latest_pnl()
     if latest is not None:

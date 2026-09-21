@@ -37,6 +37,7 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from ibkr_core_mcp.order_confirm import change_value_text, price_text_safe
@@ -68,6 +69,38 @@ no button is drawn at all. It stays for the `cancel` path, whose price fields ar
 context describing a live order and are deliberately not required — and as the render-layer
 backstop for any future caller that does not go through the proposal handler.
 """
+
+
+def _today_key() -> int:
+    """Today as a YYYYMMDD int, in UTC.
+
+    A date field carries no timezone and `ltd`'s own is the exchange's, so exactness is not
+    achievable from it; comparing with `>=` keeps a contract through its last trade date,
+    which errs toward keeping rather than dropping.
+    """
+    return int(datetime.now(tz=UTC).date().strftime("%Y%m%d"))
+
+
+def _last_trade_key(row: Mapping[str, Any]) -> int:
+    """`ltd` when IBKR supplies one, else `expirationDate`, else 0 meaning "unknown".
+
+    They differ: ES Dec-26 reports `expirationDate` 20261218 and `ltd` 20261217 (measured
+    2026-09-20). Trading stops at `ltd`, so that is the field that decides tradeability.
+
+    **This duplicates `ibkr_core_mcp.claude_tools`'s rule by necessity, not by choice.** The
+    core owns the same logic for the tools path, but this repo's CI installs the core from
+    PyPI at the pinned release (`core-ref.txt`), where that helper does not yet exist — an
+    import would go red until the next core release. Consolidate to one definition when the
+    core is next released and the pin moves; until then the two must be changed together.
+    """
+    for key in ("ltd", "expirationDate"):
+        try:
+            value = int(row.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value:
+            return value
+    return 0
 
 
 def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> str:
@@ -854,7 +887,7 @@ def _is_ibkr_rejection(result: object) -> bool:
 
     IBKR returns order rejections as an HTTP 200 payload — no exception raised —
     proven live 2026-07-23 on a FUT order (see
-    docs/plans/2026-07-23-futures-order-field-8089-bug.md). The rejection entry carries
+    docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md). The rejection entry carries
     ``"action": "order_submit_issue"``, an ``"error"`` string, and
     ``order_id: "0"`` inside ``cqe.post_payload``. Historically, without this
     classification the callers labelled such a rejection "staged successfully" — that
@@ -1409,10 +1442,27 @@ async def _execute_staged_order_core(
                     "System",
                 )
                 return
+            # Front month = earliest contract STILL TRADEABLE, not simply the lowest expiry.
+            # IBKR keeps returning a contract after its last trade date (measured 2026-09-20,
+            # two days after the Sep roll: ESU6, ltd 20260918, still among 22 ES rows), so
+            # "lowest expirationDate" staged a dead contract — which IBKR rejects with
+            # "Order is already expired." only AFTER Touch ID and Gate 2, making a human
+            # authenticate an order that could never work. Gap #58.
+            tradeable = [
+                f for f in futures if _last_trade_key(f) == 0 or _last_trade_key(f) >= _today_key()
+            ]
+            if not tradeable:
+                latest = max((_last_trade_key(f) for f in futures), default=0)
+                await send_status(
+                    f"Every futures contract IBKR returned for {symbol} has passed its last trade "
+                    f"date (latest {latest or 'unknown'}). Order not placed.",
+                    "System",
+                )
+                return
             try:
-                contract = min(futures, key=lambda f: int(f.get("expirationDate") or 0))
+                contract = min(tradeable, key=lambda f: int(f.get("expirationDate") or 0))
             except (ValueError, TypeError):
-                contract = futures[0]
+                contract = tradeable[0]
             # conid is IBKR's mandatory contract identifier — always present on a successful
             # get_futures() lookup (the `if not futures` guard above already handles the
             # no-match case). Not user/LLM-supplied, so order-parameter-immutability doesn't
@@ -1476,7 +1526,7 @@ async def _execute_staged_order_core(
         #                                    field 8089 on this account class (the "Required*"
         #                                    evidently scopes to institutional/multi-operator
         #                                    setups). Proven via whatif isolation 2026-07-23:
-        #                                    docs/plans/2026-07-23-futures-order-field-8089-bug.md
+        #                                    docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md
         # Source (536-B): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
         # ----------------------------------------------------------------
         order_body: dict[str, Any] = {
@@ -1496,7 +1546,7 @@ async def _execute_staged_order_core(
             # rejects it with any non-empty value as undocumented field 8089 on
             # this account class — proven via whatif isolation 2026-07-23
             # (manualIndicator alone is accepted); see
-            # docs/plans/2026-07-23-futures-order-field-8089-bug.md
+            # docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md
             order_body["manualIndicator"] = True
             if multiplier is not None:
                 order_body["_multiplier"] = multiplier  # display only — stripped by client.py
@@ -1534,7 +1584,7 @@ async def _execute_staged_order_core(
 
         # IBKR returns rejections as HTTP 200 payloads — no exception — so the
         # result must be classified before claiming success (proven live 2026-07-23;
-        # see _is_ibkr_rejection and docs/plans/2026-07-23-futures-order-field-8089-bug.md).
+        # see _is_ibkr_rejection and docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md).
         if _is_ibkr_rejection(result):
             log.warning("IBKR rejected order for %s: %s", symbol, result)
             _record_rejection(
@@ -1957,7 +2007,7 @@ async def _execute_modify_order_core(
             # CME Rule 536-B — manualIndicator only, same as the place path above.
             # extOperator deliberately NOT sent (IBKR rejects it as undocumented
             # field 8089 on this account class — proven 2026-07-23; see
-            # docs/plans/2026-07-23-futures-order-field-8089-bug.md).
+            # docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md).
             order_body["manualIndicator"] = True
         if otype == "LMT" and limit_price is not None:
             order_body["price"] = float(limit_price)

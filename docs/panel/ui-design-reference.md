@@ -90,7 +90,7 @@ separate surface with a separate baseline.
 
 This was live-tested with Playwright against a running Panel 1.9.3 `ChatInterface` rather than
 assumed. It is reproduced here because the raw record lives only in the git-ignored
-`docs/plans/2026-07-22-panel-shadow-dom-live-test.md`.
+`docs/plans/archive/panel-ui/2026-07-22-panel-shadow-dom-live-test.md`.
 
 **Method:** a `ChatInterface` with one message containing inline-styled spans and a markdown
 table, served with `panel serve`, inspected by walking `element.getRootNode()` recursively and

@@ -27,7 +27,7 @@ whose `object` the tests assert against directly rather than poking Bokeh glyph
 renderers. Design rationale for the hvplot/HoloViews rewrite
 and the decisions cited by name in this module (D2, the 300px price-row height, the
 linked_axes/shared_axes distinction): local plan archive,
-docs/plans/2026-08-03-holoviews-charting-layer-design.md (git-ignored, not in this
+docs/plans/archive/pnl-dashboard/2026-08-03-holoviews-charting-layer-design.md (git-ignored, not in this
 repo — see CLAUDE.md Conventions).
 
 `_get_toolkit` is imported lazily inside `_on_load` to avoid a panel_app <->
