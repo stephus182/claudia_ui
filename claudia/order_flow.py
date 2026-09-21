@@ -893,8 +893,12 @@ def _is_ibkr_rejection(result: object) -> bool:
     classification the callers labelled such a rejection "staged successfully" — that
     wording is gone from every path, but the rejection still has to be named as one.
 
-    Accepts both response shapes: place_order_and_confirm() returns a list of
-    dicts; modify_order_and_confirm() and cancel_order() return a single dict.
+    Accepts both response shapes, and must: place_order_and_confirm() returns a list of
+    dicts, cancel_order() a single dict, and modify_order_and_confirm() a single dict only
+    since the core's 2026-09-21 fix — before it, and on the release pinned in
+    `core-ref.txt`, it returns whatever IBKR sent, which for that endpoint is an ARRAY
+    (measured live 2026-09-21). Nothing here may assume one shape: `entries` below
+    normalises, and that is why it can.
 
     Rejection markers (any one ⇒ rejected):
       - an entry with ``action == "order_submit_issue"``
@@ -1994,7 +1998,13 @@ async def _execute_modify_order_core(
         stop_price = proposal.get("stop_price")
 
         # Fresh order body — field spec mirrors place_order's (CLAUDE.md Order Staging Flow).
-        # modify_order() does no _-prefix stripping, so only genuine IBKR fields go in here.
+        # `_`-prefixed keys ARE display-only and ARE stripped by the core before the POST —
+        # `modify_order` does it with the same comprehension `place_order` uses, since
+        # 2026-09-10. This comment said the opposite ("modify_order() does no _-prefix
+        # stripping, so only genuine IBKR fields go in here") while the lines below added
+        # `_companyName`, `_multiplier`, `_currency`, `_changes` and `_current_description`;
+        # it would have steered a reader away from the Gate 2 facts this dialog needs.
+        # Corrected 2026-09-21 against `client.modify_order`.
         order_body: dict[str, Any] = {
             "conid": int(conid),
             "orderType": otype,
