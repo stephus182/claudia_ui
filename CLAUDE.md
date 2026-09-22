@@ -404,59 +404,47 @@ and `ExecutionListener` would silently retry-loop forever on `ModuleNotFoundErro
 ibkr_core_mcp-side by moving `websockets` out of `[server]` into base `dependencies`, since
 `IBKRWebSocket`/`AlertManager` are core public API, not server-only.)
 
-### Release batching — core changes accumulate into ONE release (window opened 2026-09-21)
+### Release batching — core changes accumulate into ONE release
 
-**The core is deliberately unreleased ahead of PyPI right now.** `main` in `../ibkr_core_mcp`
-is 21 commits past its `v2.0.1` tag (measured 2026-09-21), all pushed, none released on
-purpose. They ship as a single `2.1.0` once ClaudIA's current round of work settles — not
-incrementally, because small changes driven from this repository would otherwise cost a
-release each. This is Keep a Changelog's `[Unreleased]` section used for exactly what it is
-for — "Keep an `Unreleased` section at the top to track upcoming changes … At release time,
-you can move the `Unreleased` section changes into a new release version section"
+**The window that opened 2026-09-21 closed on 2026-09-22**: the 21 batched commits shipped as
+`2.1.0`, `core-ref.txt` moved to it the same day, and nothing here is blocked on an unreleased
+core. What follows is the practice, for the next time one opens — not a description of today.
+
+**The practice.** Core changes driven from this repository are accumulated on core `main` and
+released together, because releasing each one would cost a version number for a one-line fix.
+This is Keep a Changelog's `[Unreleased]` section used for exactly what it is for — "Keep an
+`Unreleased` section at the top to track upcoming changes … At release time, you can move the
+`Unreleased` section changes into a new release version section"
 (https://keepachangelog.com/en/1.1.0/) — and the core's CHANGELOG already declares that format.
 
-**Which core you are actually running.** The developer override (Dev Setup step 3) is in
-place, so this venv imports core `main`, not 2.0.1. `pip show ibkr-core-mcp` reports `2.0.1`,
-which is the *checkout's declared version*, not the code — do not read it as the answer. Ask
-`python -m claudia.install_check`, which reads PEP 610 provenance and prints
-`ibkr-core-mcp install origin: editable` (measured 2026-09-21); that is precisely the case it
-was built for. The supported-release assertion passes unmodified in this state
-(`pytest tests/security/test_cross_repo_contract.py` → 18 passed, 2026-09-21), so
-**`CLAUDIA_CORE_UNPINNED` is not needed and must not be set.**
+**Which core you are actually running** — ask, never assume. `pip show ibkr-core-mcp` reports
+the *checkout's declared version* when the developer override (Dev Setup step 3) is in place,
+which is not the same claim as which code is imported: the checkout and the release can
+declare the same version. `python -m claudia.install_check` reads PEP 610 provenance and
+prints `editable` / `index` / `directory` / `unknown`. **Run it from this repository's root**
+— from another repository's root it can resolve different metadata and answer `index` for an
+editable install (measured 2026-09-22, from `../ibkr_core_mcp`). Measured 2026-09-22 after the
+bump: `editable`, metadata `2.1.0`, and `tests/security/test_cross_repo_contract.py` green
+with **`CLAUDIA_CORE_UNPINNED` unset** — the override satisfies the supported-release
+assertion for as long as the checkout's declared version equals the pin, so do not set it.
 
-**The one API that will bite.** The blocking `test` lane installs the release named in
-`core-ref.txt` from PyPI while you develop against `main`. **Six** public names exist on main and
-not in 2.0.1, all of them the bracket seam (Known Gaps #36) —
-**`IBKRClient.get_bracket_preview`**, **`IBKRClient.place_bracket_and_confirm`**,
-**`order_confirm.confirm_bracket_dialog`**, and from the 2026-09-21 live session
-**`client.pair_bracket_response`**, **`client.BracketPairing`** and **`BracketPairing.ok`** —
-re-measured 2026-09-21 by walking every top-level function, class and public method in
-`ibkr_core_mcp/` at tag `v2.0.1` and at `main`: 317 public names against 323, **none removed**.
-`__all__` is unchanged: the `IBKRClient` methods ride on a class 2.0.1 already exported, and
-neither `confirm_bracket_dialog` nor the pairing pair is exported from
-`ibkr_core_mcp/__init__.py` — import them from `ibkr_core_mcp.client` / `.order_confirm`.
-`TOOL_DEFINITIONS` is unchanged at **44** entries — the bracket seam is reachable from the UI
-layer and from no tool the model can call — and no module was added (29 `.py` files at the tag,
-29 on main), so the strict editable install does **not** need re-running for any of them.
-**Corrected 2026-09-21: this sentence said 48**, which never matched the 44 stated in § Pointers
-below; both counts are now measured (`TOOL_DEFINITIONS` is a list literal — count it at each ref
-with AST, not by hand). The "unchanged" half was right. Everything else alters the *behaviour* of APIs
-2.0.1 already has — the front-month `ltd` rule and the `extOperator` removal from
-`preview_order` — so those shapes are safe to call, but the 2.0.1 lane will not carry the fixed
-behaviour. Code here that calls **any of these six** names **passes locally and fails the
-blocking lane, and that is the lane working correctly.** Keep such work on a branch, do not merge it, and report it as blocked on core
-2.1.0. Re-measure rather than incrementing this number: the command is in
-`docs/plans/2026-09-07-attached-profit-taker-bracket-plan.md` § Phase 1, and a count edited by
-hand is how the test-count claim drifted twice.
+**While a window is open, the blocking `test` lane installs the pinned release from PyPI while
+you develop against `main`, so a public name that exists only on `main` passes locally and
+fails that lane — and that is the lane working correctly.** Keep such work on a branch, do not
+merge it, and report it as blocked on the next core release. Measure the gap rather than
+trusting a list: walk every top-level function, class and public method under `ibkr_core_mcp/`
+at both refs (the command is in
+`docs/plans/2026-09-07-attached-profit-taker-bracket-plan.md` § Phase 1) and
+count `TOOL_DEFINITIONS` with AST at each ref — it is a list literal, and a count edited by
+hand is how that claim drifted twice. The 2026-09-21 measurement is now history: the six
+bracket-seam names it warned about are all in 2.1.0, so calling them no longer fails any lane.
+**The bracket build itself is still deferred** (Known Gaps #36) — the seam being importable is
+not the same as this repository expressing a bracket, and it still has zero call sites here.
 
-**While the window is open, do not:**
-
-- change `core-ref.txt` — it stays `2.0.1` until 2.1.0 is live on PyPI;
-- tag, release, or bump the version of `../ibkr_core_mcp`;
-- loosen `ibkr-core-mcp>=2.0.1,<3`, add `--pre`, or repoint the dependency at a git ref;
-- add `continue-on-error` to the `test` job, set `CLAUDIA_CORE_UNPINNED=1`, or skip
-  `tests/security/test_cross_repo_contract.py`;
-- merge to `main` with CI red.
+**While a window is open, do not:** change `core-ref.txt`; tag, release, or bump the version of
+`../ibkr_core_mcp`; loosen the `ibkr-core-mcp` range, add `--pre`, or repoint the dependency at
+a git ref; add `continue-on-error` to the `test` job, set `CLAUDIA_CORE_UNPINNED=1`, or skip
+`tests/security/test_cross_repo_contract.py`; merge to `main` with CI red.
 
 Nothing here can publish by accident. `publish.yml` triggers only on `release: [published]`
 and `workflow_dispatch` (TestPyPI only), and the `pypi` environment requires the owner's
@@ -464,16 +452,22 @@ manual approval (`required reviewer = the owner; deployment tag rule v*`). A pus
 even a pushed tag, publishes nothing.
 
 **When ClaudIA needs a core change:** make it on core `main`; add an entry under
-`## [Unreleased]` in the core's CHANGELOG — that entry *is* the 2.1.0 release note, written
+`## [Unreleased]` in the core's CHANGELOG — that entry *is* the next release note, written
 while you still remember why; run the core's four gates **bare, unpiped, as four separate
 commands** (`ruff check .`, `ruff format --check .`, `mypy`, `pytest -m "not integration"`);
 commit and push. Do not tag. If you added, renamed or removed a module, re-run the strict
 editable install from Dev Setup step 3 or this project keeps resolving the old set.
 
 **Closing the window is the operator's step, in this order:** core `[Unreleased]` →
-`## [2.1.0] — <date>`, `pyproject.toml` version, four gates, tag, GitHub Release, approve the
+`## [X.Y.Z] — <date>`, `pyproject.toml` version, four gates, tag, GitHub Release, approve the
 `pypi` environment, verify the install in a fresh venv, then move `core-ref.txt` here with a
-commit message saying what changed in the core and why the bump is safe.
+commit message saying what changed in the core and why the bump is safe. **Moving the pin is
+not only editing that file**: verify the published artifact against its tag (core-ref.txt
+records the method and the 2.1.0 result), re-run the strict editable install so the override's
+metadata declares the new version — otherwise the supported-release assertion fails against
+stale metadata — and re-read every tracked sentence that described the old release's
+behaviour. The 2.1.0 bump found one in `order_flow`, asserting that the pinned release
+returned an array where it now returns a dict.
 
 
 ## Pointers

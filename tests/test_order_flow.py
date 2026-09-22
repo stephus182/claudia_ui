@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from ibkr_core_mcp.exceptions import HumanAuthError
+from ibkr_core_mcp.exceptions import HumanAuthError, OrderValidationError
 
 from claudia import order_flow
 from claudia.order_flow import (
@@ -3487,6 +3487,13 @@ def test_cancel_proposal_contract_label_is_none_for_a_stock_and_never_raises():
         (HumanAuthError("Touch ID unavailable: no sensor"), "touch_id"),
         (HumanAuthError("anything else from Gate 1"), "touch_id"),  # every HumanAuthError is
         (RuntimeError("HTTP 403 Forbidden"), "rejected"),
+        (
+            OrderValidationError(
+                "A bracket child may never be larger than the position its parent "
+                "created: requested 5 against a parent filled 2. Nothing was sent to IBKR."
+            ),
+            "validation",
+        ),  # the library refused; no gate and no broker said no
         (RuntimeError("boom"), "other"),
     ],
     ids=str,
@@ -3503,6 +3510,83 @@ def test_refusal_stage_uses_the_same_patterns_as_the_user_facing_text(exc, stage
     assert sentence == _classify_execution_error(type(exc)(str(exc)))
     if stage == "other":
         assert sentence == "RuntimeError: boom"
+
+
+# ---------------------------------------------------------------------------
+# ibkr_core_mcp 2.1.0: the library itself can now refuse an order write
+# ---------------------------------------------------------------------------
+
+
+def test_a_core_order_refusal_reads_as_a_refusal_and_not_as_a_gate_failure():
+    """`OrderValidationError` is the library declining, and the operator must read it as that.
+
+    New in ibkr_core_mcp 2.1.0: `IBKRClient.modify_order` refuses a *released* bracket child
+    whose requested quantity exceeds the fill its parent actually created (rule H1) — IBKR
+    allowed that, and it leaves the account short if the child fills.
+
+    Two things make this a claudia_ui problem rather than a core one, and both are asserted
+    here. Without a row of its own the exception fell through `_FAILURE_PATTERNS` to
+    `f"{exc_type}: {error_msg}"` — accurate, and not a sentence to put in front of an
+    operator. And the refusal lands *after* Touch ID succeeds (the H1 check needs a read, and
+    SEC-02 forbids a network call before the gates), while the message this flow prints two
+    steps earlier promises "Gate 1 — Touch ID" then "Gate 2 — Confirmation dialog". A
+    refusal arriving between them, unexplained, reads as a gate that failed. The human
+    authenticated perfectly well; the library declined the order.
+    """
+    from claudia.order_flow import _classify_execution_error, _refusal_stage
+
+    exc = OrderValidationError(
+        "A bracket child may never be larger than the position its parent created: "
+        "requested 5 against a parent filled 2. Nothing was sent to IBKR."
+    )
+
+    sentence = _classify_execution_error(exc)
+
+    assert not sentence.startswith("OrderValidationError:"), "still the raw-exception fallback"
+    assert "requested 5 against a parent filled 2" in sentence, "the numbers must survive"
+    assert "Touch ID" in sentence, "must say the gates are not what refused"
+    assert _refusal_stage(exc) == "validation"
+
+
+def test_the_core_refusal_is_recognised_by_its_TYPE_not_by_its_message():
+    """The core chose this exception's NAME so a consuming app could classify on it.
+
+    `OrderValidationError`'s own docstring says raising `HumanAuthError` here would have been
+    type-correct and would have made *this* table report "Touch ID authentication failed".
+    So the name is the contract, and keying on the message wording instead would break the
+    day H1 gains a second rule — or misfire on the next unrelated `ValueError` carrying
+    similar prose, which the second half of this test pins.
+    """
+    from claudia.order_flow import _refusal_stage
+
+    reworded = OrderValidationError("some later H1 rule, worded entirely differently")
+    assert _refusal_stage(reworded) == "validation"
+
+    # It subclasses ValueError on purpose, so a plain ValueError must not be swept up.
+    impostor = ValueError(
+        "A bracket child may never be larger than the position its parent created."
+    )
+    assert _refusal_stage(impostor) == "other"
+
+
+def test_a_core_refusal_is_logged_as_a_refusal_rather_than_an_unexpected_failure(caplog):
+    """A named stage is also what keeps `_log_refusal` off `log.exception`.
+
+    An unclassified exception stages as "other", which that helper treats as a genuine
+    failure and logs with a traceback. Nothing was written here, so a traceback would send
+    the reader looking for a bug in a path that worked exactly as designed.
+    """
+    import logging
+
+    exc = OrderValidationError("requested 5 against a parent filled 2.")
+    with caplog.at_level(logging.INFO, logger="claudia.order_flow"):
+        order_flow._log_refusal(
+            exc, dispatched=False, action="Order modification", subject="order 1"
+        )
+
+    assert [r.levelno for r in caplog.records] == [logging.INFO]
+    assert caplog.records[0].exc_info is None
+    assert "refused at validation" in caplog.records[0].getMessage()
 
 
 @pytest.mark.asyncio

@@ -599,7 +599,30 @@ def _declined_reply_text(reply_log: list[dict[str, Any]]) -> str:
 # matters and is the classifier's original order — a dialog cancel is matched before the
 # Touch ID patterns so it is never misreported as a Touch ID failure, and a Touch ID timeout
 # stays a Touch ID failure (the `"touch" not in` guard on the dialog-timeout row).
+#
+# A sentence may carry `{detail}`, replaced with the exception's own message — see
+# `_classify_execution_error`. Every other row states the whole fact by itself; the library
+# refusal below cannot, because the numbers that make it actionable live in the message.
 _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
+    (
+        # FIRST, and by TYPE (2026-09-22, ibkr_core_mcp 2.1.0): `IBKRClient.modify_order`
+        # now refuses a released bracket child larger than the fill its parent created
+        # (rule H1) by raising `OrderValidationError`. The core named it that deliberately
+        # — its docstring says raising `HumanAuthError` would have been type-correct and
+        # would have made THIS table tell the operator "Touch ID authentication failed",
+        # which is a wrong explanation for an order write that no human refused.
+        #
+        # Matched on the type because the type is the contract the core offered; matched
+        # first because a type is stronger evidence than a substring, so no future wording
+        # of an H1 message can be claimed by a row below. Nothing has been written when
+        # this is raised — the refusal lands AFTER Gate 1 (the check needs a read, and no
+        # network call may precede the gates), which is why the sentence says so: this
+        # flow has already promised the operator a Touch ID step and a dialog.
+        lambda _m, t: "OrderValidation" in t,
+        "validation",
+        "Refused by ibkr_core_mcp's own order safety check — not a Touch ID or "
+        "confirmation-dialog failure. {detail}",
+    ),
     (
         lambda m, _t: "cancelled by user" in m.lower(),
         "gate2",
@@ -643,13 +666,17 @@ def _classify_execution_error(exc: Exception) -> str:
     exc_type = type(exc).__name__
     for matches, _stage, sentence in _FAILURE_PATTERNS:
         if matches(error_msg, exc_type):
-            return sentence
+            # `.replace`, never `.format`: it is a no-op on the rows that carry no
+            # placeholder, whereas `.format` would raise on the first sentence that ever
+            # contains a brace for its own sake.
+            return sentence.replace("{detail}", error_msg)
     return f"{exc_type}: {error_msg}"
 
 
 def _refusal_stage(exc: Exception) -> str:
     """Which gate refused, for the decision row a refusal writes (#50, 2026-09-11).
 
+    `validation` (ibkr_core_mcp refused the write itself — no human and no broker said no),
     `gate2` (DO NOT SEND / KEEP ORDER / LEAVE UNCHANGED), `reply` (a declined precaution),
     `timeout` (the dialog auto-cancelled), `touch_id` (denied, unavailable, or timed out at
     the sensor), `rejected` (IBKR 403), or `other`. Read off the same table as
@@ -894,11 +921,11 @@ def _is_ibkr_rejection(result: object) -> bool:
     wording is gone from every path, but the rejection still has to be named as one.
 
     Accepts both response shapes, and must: place_order_and_confirm() returns a list of
-    dicts, cancel_order() a single dict, and modify_order_and_confirm() a single dict only
-    since the core's 2026-09-21 fix — before it, and on the release pinned in
-    `core-ref.txt`, it returns whatever IBKR sent, which for that endpoint is an ARRAY
-    (measured live 2026-09-21). Nothing here may assume one shape: `entries` below
-    normalises, and that is why it can.
+    dicts, cancel_order() a single dict, and modify_order_and_confirm() a single dict —
+    since the core's 2026-09-21 fix, which is in the release pinned by `core-ref.txt` as of
+    2.1.0 (2026-09-22). Before that fix it returned whatever IBKR sent, which for that
+    endpoint is an ARRAY (measured live 2026-09-21). Nothing here may assume one shape:
+    `entries` below normalises, and that is why the pin could move without a code change.
 
     Rejection markers (any one ⇒ rejected):
       - an entry with ``action == "order_submit_issue"``

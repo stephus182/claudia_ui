@@ -31,24 +31,67 @@
 # therefore as immutable as the SHA was, and unlike the SHA it is the thing pip resolves.
 #
 # PROVENANCE of the release below, so the commit is still recoverable from this file even
-# though nothing installs it: 2.0.1 was built from tag v2.0.1 =
-# 4a70f8b17a71862a6d01c6e7c290a59beb40ba32, verified 2026-09-19 by unpacking the published
-# wheel and comparing it with `git show v2.0.1:<path>` — all 34 payload files byte-identical,
-# none missing. That is the check to repeat when the pin moves; a version whose artifact does
-# not match its tag is not the revision anyone reviewed.
+# though nothing installs it: 2.1.0 was built from tag v2.1.0 =
+# 41487a1229278d7592131beaec59399f2629e768, verified 2026-09-22 by downloading the published
+# wheel from PyPI and comparing every payload file with `git show v2.1.0:<path>` — all 34
+# byte-identical, none missing from the wheel, none in the wheel that is not at the tag. That
+# is the check to repeat when the pin moves; a version whose artifact does not match its tag
+# is not the revision anyone reviewed.
 #
-# WHAT CHANGED since the previous pin, d88169c (the core's v2.0.0 release commit, pinned here
-# 2026-09-17): `git diff --stat d88169c 4a70f8b -- ibkr_core_mcp/` is EMPTY. Nothing under the
-# package changed — 2.0.1 is packaging and repository furniture only (PEP 639 license
-# metadata, a MANIFEST.in that prunes an un-runnable partial test copy from the sdist, the
-# publish workflow, CONTRIBUTING/CODE_OF_CONDUCT, README and docs). The library this
-# repository imports is the same code the whole gate line was last run against, which is why
-# this bump carries no behavioural review: there is no behaviour in it.
+# WHAT CHANGED since the previous pin, 2.0.1 (pinned here 2026-09-19). The public surface is
+# ADDITIVE — measured by walking every top-level function, class and public method under
+# `ibkr_core_mcp/` at both tags: 317 public names at v2.0.1, 324 at v2.1.0, **none removed and
+# no argument signature changed**. The seven additions are the bracket seam
+# (`IBKRClient.get_bracket_preview`, `IBKRClient.place_bracket_and_confirm`,
+# `client.pair_bracket_response`, `client.BracketPairing`, `BracketPairing.ok`,
+# `order_confirm.confirm_bracket_dialog`) and `exceptions.OrderValidationError`.
+# `TOOL_DEFINITIONS` is unchanged at 44 entries, so nothing the model can call is new or gone.
+#
+# TWO changes reach this repository, and only the second needed code:
+#
+#   1. `IBKRClient.modify_order`'s RETURN TYPE widened, `dict[str, Any]` ->
+#      `list[dict[str, Any]] | dict[str, Any]` — the one annotation that moved, and the same
+#      class of change as the 2.0.0 dict-vs-Mapping bump. It does not reach us: claudia_ui
+#      calls `modify_order_and_confirm`, whose annotation and single-dict return are
+#      unchanged, and never `modify_order` (held by
+#      `test_claudia_calls_no_gated_method_it_has_not_pinned`). What DID change for us is
+#      that `modify_order_and_confirm` now resolves the reply chain to one dict on the
+#      supported release too — before 2.1.0 it returned IBKR's array for that endpoint. The
+#      `entries` normaliser in `order_flow` has always accepted both shapes, so this is a
+#      docstring correction here, not a behaviour change.
+#
+#   2. `IBKRClient.modify_order` can now REFUSE, raising the new `OrderValidationError` when
+#      a released bracket child would be modified to a quantity larger than the position its
+#      parent actually filled (rule H1). IBKR permitted that, and it leaves the account short
+#      if the child fills. The core deliberately did not name it `HumanAuthError`, because
+#      `order_flow._FAILURE_PATTERNS` classifies by exception type NAME and would have told
+#      the operator "Touch ID authentication failed" about an order no human refused. With no
+#      row of its own it fell through to `f"{exc_type}: {error_msg}"` and, worse, logged
+#      through `log.exception` as an unexplained failure. A row was added in the same commit
+#      as this bump. The refusal lands AFTER Gate 1 — the check needs a read and no network
+#      call may precede the gates — and this flow narrates "Gate 1 — Touch ID" and "Gate 2 —
+#      Confirmation dialog" two steps earlier, so the sentence says in words that neither
+#      gate is what declined. Nothing is written when it raises.
+#
+# WHY THE BUMP IS SAFE: nothing was removed, no signature moved, the one widened return type
+# is on a method this repository does not call, the bracket seam has zero call sites here, and
+# the single behaviour that does reach us is covered by tests added with the bump.
 #
 # To move the supported release: change the version here, verify the new artifact against its
 # tag as above, run the whole gate line locally against it, and say in the commit message what
 # changed in the core and why the bump is safe. The forward-compat lane has usually already
 # told you which assertion moves.
+#
+# 2026-09-19 — 2.0.1 was built from tag v2.0.1 =
+# 4a70f8b17a71862a6d01c6e7c290a59beb40ba32, verified that day by unpacking the published wheel
+# and comparing it with `git show v2.0.1:<path>` — all 34 payload files byte-identical, none
+# missing. What changed from the previous pin, d88169c (the core's v2.0.0 release commit):
+# `git diff --stat d88169c 4a70f8b -- ibkr_core_mcp/` was EMPTY. Nothing under the package
+# changed — 2.0.1 was packaging and repository furniture only (PEP 639 license metadata, a
+# MANIFEST.in that prunes an un-runnable partial test copy from the sdist, the publish
+# workflow, CONTRIBUTING/CODE_OF_CONDUCT, README and docs). The library this repository
+# imports was the same code the whole gate line had last been run against, which is why that
+# bump carried no behavioural review: there was no behaviour in it.
 #
 # 2026-09-17 — d88169c was the core's v2.0.0: the whole-package release-readiness audit (175
 # findings, none open) with its pre-tag security audit. What changed for this repository since
@@ -62,4 +105,4 @@
 # 2026-09-14 — fada6b2 was the core's OWASP MCP security recalibration plus the audit-history
 # commit after it, what the cross-repo contract, the outbound-sink inventory and the
 # capability-registry assertions were first measured against.
-2.0.1
+2.1.0
