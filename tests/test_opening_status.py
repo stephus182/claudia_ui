@@ -339,7 +339,7 @@ def test_the_line_reports_when_the_store_was_updated_not_the_newest_trade_date()
 
     imported = LastImport(
         at=datetime(2026, 8, 5, 12, 18, tzinfo=UTC),
-        filename="flex_U1675699_2026-08-05.xml",
+        filename="flex_U1234567_2026-08-05.xml",
         trade_count=105,
     )
     with (

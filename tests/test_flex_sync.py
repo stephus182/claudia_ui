@@ -240,7 +240,7 @@ from claudia.flex_sync import last_import, validate_dataset_daily  # noqa: E402
 _NOW = datetime(2026, 8, 5, 14, 30, tzinfo=UTC)
 
 
-def _import_log(path, when: datetime, filename: str = "flex_U1675699_2026-08-05.xml") -> None:
+def _import_log(path, when: datetime, filename: str = "flex_U1234567_2026-08-05.xml") -> None:
     """Write one `flex_import_log` row stamped at `when`, creating the table if needed."""
     conn = sqlite3.connect(path)
     conn.execute(
