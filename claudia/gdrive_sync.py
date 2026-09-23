@@ -258,10 +258,18 @@ class GDriveSync:
             log.warning("GDriveSync.download_db failed: %s — continuing with local DB", exc)
             return False
 
-    def upload_db(self, local_path: Path) -> None:
+    def upload_db(self, local_path: Path) -> bool:
         """Upload local_path as claudia.db to Drive (create or update in-place).
 
-        On error: logs warning — local copy is preserved, data not lost.
+        Returns True when the bytes reached Drive; False when there was nothing to
+        upload or the attempt failed. On error: logs warning and returns False — local
+        copy is preserved, data not lost, and the failure is never raised into a
+        cleanup path.
+
+        **The return value is the point (gap #5).** This used to return None and catch
+        everything internally, which made the caller's `except` unreachable — so a
+        session could render "claudia.db → Drive ✅" when nothing had been uploaded.
+        `download_db` has always returned bool; the asymmetry was the defect.
 
         files().update() patches an existing file's content without changing metadata or
         sharing settings. files().create() is only called when no file exists yet (first
@@ -273,7 +281,7 @@ class GDriveSync:
         """
         if not local_path.exists():
             log.warning("GDriveSync.upload_db: %s not found — nothing to upload", local_path)
-            return
+            return False
         snapshot: Path | None = None
         try:
             svc = self._get_service()
@@ -311,8 +319,10 @@ class GDriveSync:
                     metadata = {"name": _DB_FILENAME, "parents": [db_folder]}
                     svc.files().create(body=metadata, media_body=media, fields="id").execute()
             log.info("Uploaded claudia.db to Drive")
+            return True
         except Exception as exc:
             log.warning("GDriveSync.upload_db failed: %s — local copy preserved", exc)
+            return False
         finally:
             if snapshot is not None:
                 snapshot.unlink(missing_ok=True)

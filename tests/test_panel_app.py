@@ -845,6 +845,31 @@ async def test_run_session_cleanup_closes_reports_uploads(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_session_cleanup_reports_a_refused_upload(monkeypatch):
+    """gap #5: the real failure mode is `upload_db` RETURNING False, not raising.
+
+    `upload_db` catches everything internally, so the `except` beside it can never fire on
+    a genuine Drive failure — which is how a session could print "claudia.db → Drive ✅"
+    while nothing had been uploaded. The sibling test below drives the raise path, which
+    the real function does not take; this one drives the path it does.
+    """
+    from claudia.panel_app import _run_session_cleanup
+
+    mock_sync = MagicMock()
+    mock_sync.upload_db.return_value = False
+    monkeypatch.setattr("claudia.panel_app._gdrive_sync", mock_sync)
+    monkeypatch.setattr("claudia.panel_app._connectivity_checker", None)
+    store = MagicMock()
+    store.get_session.return_value = {}
+    store.count_messages.return_value = 5
+    with patch("claudia.panel_app.generate_session_report"):
+        status = await _run_session_cleanup("sid-1", store, MagicMock())
+
+    assert "✅" not in status, f"a refused upload must not render as success: {status!r}"
+    assert "Drive upload failed ⚠️" in status
+
+
+@pytest.mark.asyncio
 async def test_run_session_cleanup_drive_failure_is_nonfatal(monkeypatch):
     """A Drive upload failure at session end is reported in the status line, not raised."""
     from claudia.panel_app import _run_session_cleanup

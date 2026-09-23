@@ -903,12 +903,16 @@ async def _run_session_cleanup(
 
     drive_note = ""
     if _gdrive_sync is not None:
+        # gap #5: read the RESULT, do not infer success from "did not raise". `upload_db`
+        # handles its own failures and returns False, so the except below can only fire on
+        # something it did not anticipate — it stays so cleanup cannot die on a surprise,
+        # but it is no longer what reports an ordinary Drive outage.
         try:
-            await asyncio.to_thread(_gdrive_sync.upload_db, _DB_PATH)
-            drive_note = " · claudia.db → Drive ✅"
+            uploaded = await asyncio.to_thread(_gdrive_sync.upload_db, _DB_PATH)
         except Exception as exc:
-            log.warning("End-session Drive upload failed: %s", exc)
-            drive_note = " · Drive upload failed ⚠️"
+            log.warning("End-session Drive upload raised: %s", exc)
+            uploaded = False
+        drive_note = " · claudia.db → Drive ✅" if uploaded else " · Drive upload failed ⚠️"
 
     return f"{msg_count} messages saved{drive_note}"
 
@@ -1633,11 +1637,17 @@ def main() -> None:
         # Loop is stopped here — synchronous blocking calls are fine (V5).
         _finalize_open_sessions_at_shutdown()
         if _gdrive_sync is not None:
+            # Same defect as the end-session path (gap #5), second site: this logged
+            # "upload complete" whenever upload_db did not raise, which it never does.
             try:
-                _gdrive_sync.upload_db(_DB_PATH)
-                log.info("Final claudia.db upload complete")
+                uploaded = _gdrive_sync.upload_db(_DB_PATH)
             except Exception as exc:
-                log.warning("Final Drive upload failed: %s — local DB preserved", exc)
+                log.warning("Final Drive upload raised: %s — local DB preserved", exc)
+                uploaded = False
+            if uploaded:
+                log.info("Final claudia.db upload complete")
+            else:
+                log.warning("Final claudia.db upload did NOT complete — local DB preserved")
 
 
 if __name__ == "__main__":

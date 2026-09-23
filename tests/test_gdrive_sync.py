@@ -161,6 +161,51 @@ def test_upload_db_drive_error_does_not_raise(sync, tmp_path):
         sync.upload_db(db)  # must not raise
 
 
+# ── gap #5: upload_db must report its outcome, not swallow it ────────────────
+#
+# `download_db` has always returned bool. `upload_db` returned None and caught every
+# exception internally, so the caller's `except` clause was unreachable and a session
+# could render "claudia.db → Drive ✅" when nothing had been uploaded. These three pin
+# the reporting contract; the panel_app test pins that the caller actually reads it.
+
+
+def test_upload_db_returns_true_when_the_upload_succeeds(sync, tmp_path):
+    """A completed upload says so, so the caller can tell the user the truth."""
+    db = tmp_path / "claudia.db"
+    sqlite3.connect(str(db)).close()
+
+    svc = MagicMock()
+    with (
+        patch.object(sync, "_find_file", return_value=None),
+        patch.object(sync, "_get_service", return_value=svc),
+        patch.object(sync, "_resolve_db_folder", return_value="folder-id"),
+        patch("claudia.gdrive_sync.MediaFileUpload"),
+    ):
+        result = sync.upload_db(db)
+
+    assert result is True
+
+
+def test_upload_db_returns_false_when_local_file_missing(sync, tmp_path):
+    """Nothing to upload is not a successful upload."""
+    svc = MagicMock()
+    with patch.object(sync, "_get_service", return_value=svc):
+        result = sync.upload_db(tmp_path / "nonexistent.db")
+
+    assert result is False
+
+
+def test_upload_db_returns_false_on_drive_error(sync, tmp_path):
+    """A Drive failure is still not raised — but it must no longer look like success."""
+    db = tmp_path / "claudia.db"
+    sqlite3.connect(str(db)).close()
+
+    with patch.object(sync, "_get_service", side_effect=RuntimeError("auth failed")):
+        result = sync.upload_db(db)
+
+    assert result is False
+
+
 def test_upload_db_creates_file_when_not_on_drive(sync, tmp_path):
     """The upload targets the resolved database folder when creating the file."""
     db = tmp_path / "claudia.db"
