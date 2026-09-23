@@ -1925,3 +1925,76 @@ def test_parse_orders_keeps_a_mapping_that_is_not_a_dict():
     orders = dd.parse_orders([row])
 
     assert len(orders) == 1 and orders[0].order_id == "314390101"
+
+
+# -- bridged_series: the curve must read the same source as the table ---------
+#
+# Found on screen 2026-09-23. The P&L pane's table is bridged — Flex through
+# `coverage.through`, the live reconstruction after it — while the chart drew
+# `realised_series`, which is Flex alone. Flex is T+1 and never has today, so on a day
+# the account traded, the table and the curve beneath it reported different money.
+#
+# Verified live that day against IBKR's own `/iserver/account/trades`: Flex covered
+# through 2026-09-22 at 3,127.43 for the month; the reconstruction held 2026-09-23 at
+# +2,922.96; 3,127.43 + 2,922.96 = 6,050.39, which is exactly what the table showed
+# (FUT 6,071.70, STK -21.31). The chart showed 3,127.43.
+#
+# The cutoff rule here is `bridged_by_type`'s, deliberately identical: days up to the
+# cutoff come from Flex, days after it from the reconstruction, and NOTHING is taken from
+# both. That is what stops the curve double-counting the morning Flex catches up.
+
+
+def test_the_series_includes_a_day_flex_has_not_delivered(tmp_path):
+    """A day the account traded must appear on the curve before Flex settles it."""
+    rec = _bridge_rec(
+        realised={("20260806", "FUT"): 1841.04},
+        by_type={"20260806": {"FUT": 1841.04}},
+    )
+    pts = dd.bridged_series(
+        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
+    )
+    assert [p.day for p in pts][-1] == date(2026, 8, 6)
+    assert pts[-1].realised == pytest.approx(1841.04, abs=0.005)
+
+
+def test_a_day_flex_already_covers_is_never_double_counted_in_the_series(tmp_path):
+    """The curve's version of the trap `bridged_by_type` already guards."""
+    rec = _bridge_rec(
+        realised={("20260804", "FUT"): 590.80},
+        by_type={"20260804": {"FUT": 590.80}},
+    )
+    pts = dd.bridged_series(
+        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
+    )
+    aug4 = next(p for p in pts if p.day == date(2026, 8, 4))
+    # Flex alone for that day: 590.80 + -3249.70. The reconstruction must add nothing.
+    assert aug4.realised == pytest.approx(590.80 - 3249.70, abs=0.005)
+
+
+def test_the_series_total_equals_the_bridged_window_it_is_drawn_beside(tmp_path):
+    """The invariant that binds the curve to the table: same window, same money.
+
+    This is the assertion that would have caught the live defect. It is stated against
+    `bridged_by_type`, the table's own source, rather than against a hand-computed
+    number — so the two can never drift apart again without failing here.
+    """
+    conn = _breakdown_db(tmp_path)
+    rec = _bridge_rec(
+        realised={("20260806", "FUT"): 1841.04},
+        by_type={"20260806": {"FUT": 1841.04}},
+    )
+    start, end, cutoff = date(2026, 8, 3), date(2026, 8, 6), date(2026, 8, 4)
+    pts = dd.bridged_series(conn, start, end, rec, cutoff)
+    table = dd.bridged_by_type(conn, start, end, rec, cutoff)
+    assert sum(p.realised for p in pts) == pytest.approx(
+        sum(r.net for r in table.rows), abs=0.005
+    ), "the curve and the table beside it report different money for the same window"
+
+
+def test_without_a_reconstruction_the_series_is_flex_alone(tmp_path):
+    """No live data in hand is not a licence to invent any — it degrades to Flex."""
+    conn = _breakdown_db(tmp_path)
+    start, end = date(2026, 8, 3), date(2026, 8, 6)
+    assert dd.bridged_series(conn, start, end, None, date(2026, 8, 4)) == dd.realised_series(
+        conn, start, end
+    )

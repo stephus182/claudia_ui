@@ -2133,3 +2133,106 @@ def test_each_signed_column_is_styled_with_the_band_that_matches_its_format():
     assert not money & percent, "a column cannot take both bands"
     assert all("%" in c for c in percent), "a percent band applied to a money column"
     assert not any("%" in c for c in money), "a money band applied to a percent column"
+
+
+# ── The hover must not expose the chart's own plumbing ───────────────────────
+#
+# Found 2026-09-23 by rendering the real YTD chart and reading the Bokeh model, not by
+# the suite. The per-bar colouring added that morning passes a `_bar_color` column, and
+# hvplot promoted it to a hover tooltip — so hovering a bar offered the user
+# `_bar_color  #ef5350`. Asserted as a CLASS (no underscore-prefixed column may reach a
+# tooltip) rather than on that one name, so the next internal column cannot repeat it.
+
+
+def _hover_fields(layout):
+    """Every tooltip field name on every row of a rendered chart."""
+    import holoviews as hv
+    from bokeh.models import HoverTool
+
+    found: list[str] = []
+    for element in layout:
+        fig = hv.render(element, backend="bokeh")
+        for tool in fig.tools:
+            # `tooltips` is a union; only the list-of-pairs form carries field names.
+            if isinstance(tool, HoverTool) and isinstance(tool.tooltips, list):
+                found.extend(str(label) for label, _ in tool.tooltips)
+    return found
+
+
+def test_no_internal_column_reaches_a_hover_tooltip():
+    """A private column is an implementation detail; the user must never be shown one."""
+    pts = tuple(
+        dd.RealisedPoint(day=date(2026, 9, d), realised=r, cumulative=c)
+        for d, r, c in [(1, 500.0, 500.0), (2, -200.0, 300.0), (3, 900.0, 1200.0)]
+    )
+    leaked = [f for f in _hover_fields(pdash.build_realised_chart(pts, "t")) if f.startswith("_")]
+    assert not leaked, f"internal column(s) shown to the user in a tooltip: {leaked}"
+
+
+# ── The curve must represent the window in its own title ─────────────────────
+#
+# Found live 2026-09-23 from a screenshot: the P&L tab headed "Monthly (2026-09-01 →
+# 2026-09-23)" drew a red curve ending at -15,788.07 while the table beside it reported
+# the month at +3,127.43. Two figures on one screen disagreeing.
+#
+# Cause, and it is rendering only: the poller computes ONE YTD series and
+# `_selected_window` slices it by date. Slicing the days does not re-base the running
+# total, so `RealisedPoint.cumulative` stayed anchored to 1 January. Measured that day:
+# Weekly, Monthly and YTD all ended at -15,788.07 — every window drew the YTD endpoint,
+# so the curve's colour was always the year's sign.
+#
+# No P&L figure changes. `dashboard_data` is untouched; the chart stops reading a
+# year-anchored field for a month-long window. Verified against the live store: re-basing
+# is bit-exact identical over all 131 YTD points (max delta 0.0000000000), and each
+# window's re-based endpoint equals `realised_window.total` to the cent.
+
+
+def _points_from(realised, start_cumulative=0.0):
+    """Points carrying a YTD-anchored `cumulative`, as the poller's series really does."""
+    pts, run = [], start_cumulative
+    for i, r in enumerate(realised):
+        run += r
+        pts.append(dd.RealisedPoint(day=date(2026, 9, i + 1), realised=r, cumulative=run))
+    return tuple(pts)
+
+
+def _curve_values(layout):
+    """The cumulative values the chart actually plots."""
+    import holoviews as hv
+
+    overlay = next(iter(layout))
+    curve = next(sub for sub in overlay if isinstance(sub, hv.Curve))
+    return [float(v) for v in curve.dimension_values(1)]
+
+
+def test_the_curve_ends_at_this_window_s_own_total():
+    """The last point of the curve is what the window made — the table's figure."""
+    realised = [500.0, -200.0, 900.0]
+    # Sliced out of a year that was already 19,536.96 down when this window opened.
+    pts = _points_from(realised, start_cumulative=-19_536.96)
+    values = _curve_values(pdash.build_realised_chart(pts, "Monthly"))
+    assert values[-1] == pytest.approx(sum(realised)), (
+        f"curve ends at {values[-1]:,.2f} but the window realised {sum(realised):,.2f}"
+    )
+
+
+def test_a_sub_window_starts_from_its_own_first_day():
+    """A window opens at its first day's result, not at the year's running total."""
+    pts = _points_from([500.0, -200.0, 900.0], start_cumulative=-19_536.96)
+    values = _curve_values(pdash.build_realised_chart(pts, "Monthly"))
+    assert values[0] == pytest.approx(500.0), f"curve opens at {values[0]:,.2f}, not the day's 500"
+
+
+def test_a_profitable_month_inside_a_losing_year_draws_green():
+    """The exact defect seen on screen: a month up 3,127 drew red because the year was down."""
+    pts = _points_from([500.0, -200.0, 900.0], start_cumulative=-19_536.96)
+    _area, curve = _chart_colors(pdash.build_realised_chart(pts, "Monthly"))
+    assert curve == palette.UP_COLOR, "a winning window took the losing year's colour"
+
+
+def test_a_full_series_is_unchanged_by_rebasing():
+    """Back-compat: for YTD the window IS the series, so nothing may move."""
+    realised = [500.0, -200.0, 900.0, -1_400.0]
+    pts = _points_from(realised, start_cumulative=0.0)
+    values = _curve_values(pdash.build_realised_chart(pts, "YTD"))
+    assert values == pytest.approx([p.cumulative for p in pts])

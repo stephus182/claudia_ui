@@ -1702,9 +1702,76 @@ def build_flex_sections(
             name: bridged_by_type(conn, lo, hi, reconstruction, coverage.through)
             for name, (lo, hi) in breakdown_bounds.items()
         },
-        "series": realised_series(conn, *bounds["ytd"]),
+        # Bridged, not Flex-only: the curve must read the same source as the breakdown
+        # table it is drawn beneath. Flex is T+1 and never has today, so on a day the
+        # account traded, a Flex-only curve reports different money from the table above
+        # it — measured on screen 2026-09-23, the table at 6,050.39 and the curve at
+        # 3,127.43 for the same September window. Same cutoff, same reconstruction.
+        "series": bridged_series(conn, *bounds["ytd"], reconstruction, coverage.through),
         "coverage": coverage,
     }
+
+
+def bridged_series(
+    conn: sqlite3.Connection,
+    start: date,
+    end: date,
+    reconstruction: Any = None,
+    coverage_through: date | None = None,
+) -> tuple[RealisedPoint, ...]:
+    """`realised_series` for the window, extended with the days Flex has not delivered.
+
+    **This exists so the realised curve and the table above it read the same source**
+    (found on screen 2026-09-23). The P&L pane's breakdown is `bridged_by_type` — Flex
+    through `coverage_through`, the live reconstruction after it — while the chart drew
+    `realised_series`, which is Flex alone. Flex is T+1 and *never* has today, so on any
+    day the account traded, the table and the curve beneath it reported different money.
+
+    Measured live that day against IBKR's own `/iserver/account/trades`: Flex covered
+    through 2026-09-22 and put the month at **3,127.43**; the reconstruction held
+    2026-09-23 at **+2,922.96**; the table showed **6,050.39** (FUT 6,071.70, STK -21.31)
+    and the chart showed 3,127.43. The figures were never wrong — the curve was reading
+    the wrong one of two correct sources.
+
+    Args:
+        conn: Read-only store connection.
+        start: First day of the window, inclusive.
+        end: Last day of the window, inclusive.
+        reconstruction: A `live_realised.Reconstruction`, or None to return Flex alone.
+            None is not a licence to invent data — it degrades to exactly what Flex knows.
+        coverage_through: The newest Flex `trade_date_iso`. Days after it come from the
+            reconstruction; days up to it come from Flex. **Nothing is taken from both.**
+
+    Returns:
+        Daily `RealisedPoint`s with a running total, ordered by day.
+
+    The cutoff rule is `bridged_by_type`'s, deliberately character for character, because
+    the two are read side by side and a difference between them would surface as the table
+    and the chart disagreeing — which is the defect this function was written to end. Days
+    after the cutoff cannot appear in Flex by construction (the cutoff *is* Flex's newest
+    day), so the merge below adds rather than replaces for the same reason that one does:
+    if that assumption ever breaks, both surfaces break identically and visibly, instead of
+    one of them quietly disagreeing.
+    """
+    flex = realised_series(conn, start, end)
+    if reconstruction is None:
+        return flex
+
+    cutoff = coverage_through.strftime("%Y%m%d") if coverage_through else ""
+    lo, hi = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+    live_days = sorted({d for (d, _) in reconstruction.realised if lo <= d <= hi and d > cutoff})
+
+    daily: dict[date, float] = {p.day: p.realised for p in flex}
+    for compact in live_days:
+        day = date(int(compact[:4]), int(compact[4:6]), int(compact[6:8]))
+        daily[day] = daily.get(day, 0.0) + sum(reconstruction.by_type_for_day(compact).values())
+
+    out: list[RealisedPoint] = []
+    running = 0.0
+    for day in sorted(daily):
+        running += daily[day]
+        out.append(RealisedPoint(day, daily[day], running))
+    return tuple(out)
 
 
 # -- Win/loss breakdown by asset class ----------------------------------------

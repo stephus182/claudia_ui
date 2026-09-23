@@ -445,12 +445,30 @@ def realised_frame(points: tuple[RealisedPoint, ...]) -> pd.DataFrame:
     hvplot binds some arguments positionally, so relying on column order is how a chart
     silently plots the wrong series (the lesson `panel_chart.build_chart_object`
     records for `.ohlc()`).
+
+    **`cumulative` is re-based to these points, and that is the whole point of computing
+    it here rather than reading `RealisedPoint.cumulative`** (found on screen 2026-09-23).
+    The poller computes **one YTD series** and `_selected_window` slices it by date;
+    slicing the days does not re-base the running total, so the stored `cumulative` stays
+    anchored to 1 January. A pane headed *"Monthly (2026-09-01 → 2026-09-23)"* therefore
+    drew a red curve ending at **-15,788.07** while the table beside it reported the month
+    at **+3,127.43**. Measured the same day: Weekly, Monthly and YTD **all** ended on
+    -15,788.07 — every window drew the YTD endpoint, so the curve's colour was always the
+    year's sign, never the selected window's.
+
+    **No P&L figure changes, and none may.** `dashboard_data` is untouched;
+    `RealisedPoint.cumulative` still means what it always meant. This function stops
+    reading a year-anchored field to describe a month. Verified against the live store
+    before the change: `cumsum(realised)` reproduces the stored `cumulative` **bit-exactly**
+    over all 131 YTD points (max delta 0.0000000000), so the one window that was already
+    correct cannot move, and each window's re-based endpoint equals `realised_window.total`
+    — the table's own figure — to the cent.
     """
     return pd.DataFrame(
         {
             "day": pd.to_datetime([p.day for p in points]),
             "realised": [p.realised for p in points],
-            "cumulative": [p.cumulative for p in points],
+            "cumulative": pd.Series([p.realised for p in points], dtype="float64").cumsum(),
         }
     )
 
@@ -474,6 +492,25 @@ def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str) -> str
             f"points, so none is drawn._"
         )
     return ""
+
+
+def _money_hover(field: str, label: str) -> Any:
+    """A tooltip that reads like money on a daily series, built fresh for each figure.
+
+    Two reasons this is explicit rather than hvplot's default. The default promoted every
+    frame column to a tooltip, including the internal `_bar_color`, so hovering a bar
+    offered the reader a hex code. And it rendered the day as `%F %T` — a 00:00:00 on a
+    series whose points are dates — with the money as a bare float.
+
+    A new `HoverTool` per call, never a module-level constant: a Bokeh model belongs to one
+    Document, and sharing one across figures is how a pane silently fails to render.
+    """
+    from bokeh.models import HoverTool
+
+    return HoverTool(
+        tooltips=[("Day", "@day{%F}"), (label, f"@{field}{{+0,0.00}}")],
+        formatters={"@day": "datetime"},
+    )
 
 
 def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
@@ -507,13 +544,23 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     cumulative_color = pnl_color(float(df["cumulative"].iloc[-1]))
     cumulative = df.hvplot.area(
         x="day", y="cumulative", alpha=0.20, color=cumulative_color, hover=False
-    ) * df.hvplot.line(x="day", y="cumulative", color=cumulative_color, line_width=2)
+    ) * df.hvplot.line(
+        x="day", y="cumulative", color=cumulative_color, line_width=2, hover=False
+    ).opts(tools=[_money_hover("cumulative", "Cumulative")])
     # Per bar, by that day's own sign. Passing a COLUMN NAME maps it straight onto Bokeh's
     # `fill_color` field with `transform=Unspecified` — no colormap — so the hex values are
     # used literally (verified 2026-09-23 against the rendered glyph, not inferred from the
     # hvplot docs). `.assign` returns a copy, so the frame the rows came from is untouched.
+    #
+    # `hover=False` then an explicit tool, rather than hvplot's inferred one: given the
+    # frame, hvplot promoted `_bar_color` to a tooltip and offered the reader that
+    # column's raw hex value (measured 2026-09-23 off the rendered Bokeh model). Owning the
+    # tooltip fixes that at the root and lets the figures read as money rather than as
+    # bare floats with a meaningless 00:00:00 beside them.
     bars = df.assign(_bar_color=[pnl_color(float(v)) for v in df["realised"]])
-    daily = bars.hvplot.bar(x="day", y="realised", height=_BAR_ROW_HEIGHT, color="_bar_color")
+    daily = bars.hvplot.bar(
+        x="day", y="realised", height=_BAR_ROW_HEIGHT, color="_bar_color", hover=False
+    ).opts(tools=[_money_hover("realised", "Realised")])
     return (cumulative.opts(title=title, height=_CHART_HEIGHT) + daily.opts(title="")).cols(1)
 
 
