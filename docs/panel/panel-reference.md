@@ -538,7 +538,7 @@ hv.Store.lookup_options("bokeh", rects, "style").kwargs["color"].apply(rects)
                                                # per-row ['#26a69a', …, '#ef5350']
 ```
 
-Two traps this file hit, both worth knowing before writing such a test **[P]**:
+Four traps this file hit, all worth knowing before writing such a test **[P]**:
 
 - ⚠ **`hasattr` cannot distinguish an `Overlay` from a `Layout`.** HoloViews' dynamic
   attribute access answers `hasattr(overlay, "Overlay")` with **`True`** and returns an
@@ -547,6 +547,38 @@ Two traps this file hit, both worth knowing before writing such a test **[P]**:
   `KeyError: 'ubound'` / `KeyError: 'color'`, never something that names the real cause.
 - ⚠ **Bokeh's `Model.select()` returns a generator**, annotated `Iterable[Model]` — `len()`
   on it raises `TypeError: object of type 'generator' has no len()`. Wrap in `list(...)`.
+
+- ⚠ **`hv.Area` SUBCLASSES `hv.Curve`**, so `isinstance(element, hv.Curve)` selects the
+  filled **area** first when an overlay holds both (measured 2026-09-23 — it cost a green
+  test that was reading the wrong element). Use `type(element) is hv.Curve` when an overlay
+  contains an `Area * Curve`, which the realised-P&L chart does.
+- ⚠ **Step interpolation expands the data source, so it changes what a tooltip says.**
+  A three-point series renders as five points, the first of each pair holding the value the
+  day *opened* with — so a hover at that point reports the figure from *before* that day
+  traded. `panel_dashboard`'s cumulative row therefore carries no tooltip at all; its daily
+  bars, one point per day, carry it instead.
+
+### Stepped lines: what the libraries actually support
+
+Scraped 2026-09-23, because the realised-P&L curve had been drawing a **slope** across
+non-trading days — implying money moved on days no statement covers.
+
+| Claim | Source |
+|---|---|
+| `Curve` takes an `interpolation` plot option — *"whether to linearly interpolate the curve values or to draw discrete steps"* — one of `linear`, `steps-mid`, `steps-pre`, `steps-post` | https://holoviews.org/reference/elements/bokeh/Curve.html (HoloViews 1.23.2) |
+| hvPlot exposes the same as `.step(x, y, where=...)`, `where` one of `mid` / `pre` / `post`, **default `mid`** | https://hvplot.holoviz.org/reference/pandas/step.html (hvPlot 0.12.2) |
+
+Two things the docs do **not** say, both measured here the same day:
+
+- **The two are equivalent at the glyph.** `df.hvplot.step(where="post")` and
+  `df.hvplot.line(...).opts(interpolation="steps-post")` both render `[1000, 3000, 0]` as
+  `[1000, 1000, 3000, 3000, 0]`. Pick either; they are the same picture.
+- **`Area` accepts neither.** `area.opts(interpolation=...)` raises
+  `ValueError: Unexpected option 'interpolation' for Area type across all extensions`.
+  A linear fill beneath a stepped line cuts across every corner, so an `Area * Curve`
+  overlay must be built from **one pre-stepped frame** rather than by setting an option on
+  the line. `panel_dashboard._step_frame` is that expansion: x repeated and shifted forward,
+  y repeated and shifted back, which is `steps-post` by construction.
 
 Candle-geometry assertions need `pytest.approx`: at daily spacing the measured body is
 `16:47:59.999998`, one microsecond under an exact `Timedelta(hours=24) * 0.7`, because

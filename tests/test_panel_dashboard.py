@@ -2197,12 +2197,18 @@ def _points_from(realised, start_cumulative=0.0):
 
 
 def _curve_values(layout):
-    """The cumulative values the chart actually plots."""
+    """The cumulative values the chart actually plots, de-stepped.
+
+    `type(...) is hv.Curve` rather than isinstance: **hv.Area subclasses hv.Curve**, so an
+    isinstance check silently selects the filled area (measured 2026-09-23). The rendered
+    line holds each value across two points; the odd indices are the real observations.
+    """
     import holoviews as hv
 
     overlay = next(iter(layout))
-    curve = next(sub for sub in overlay if isinstance(sub, hv.Curve))
-    return [float(v) for v in curve.dimension_values(1)]
+    curve = next(sub for sub in overlay if type(sub) is hv.Curve)
+    drawn = [float(v) for v in curve.dimension_values("cumulative")]
+    return drawn[::2]
 
 
 def test_the_curve_ends_at_this_window_s_own_total():
@@ -2234,8 +2240,10 @@ def test_a_full_series_is_unchanged_by_rebasing():
     """Back-compat: for YTD the window IS the series, so nothing may move."""
     realised = [500.0, -200.0, 900.0, -1_400.0]
     pts = _points_from(realised, start_cumulative=0.0)
-    values = _curve_values(pdash.build_realised_chart(pts, "YTD"))
-    assert values == pytest.approx([p.cumulative for p in pts])
+    # Asserted on the frame, which is where re-basing happens — the rendered line is
+    # stepped, so its point count is a rendering concern, not this invariant's.
+    frame = pdash.realised_frame(pts)
+    assert list(frame["cumulative"]) == pytest.approx([p.cumulative for p in pts])
 
 
 # ── The daily row must be readable, not a strip under the curve ──────────────
@@ -2264,3 +2272,72 @@ def test_both_rows_cap_their_y_tick_count():
         assert isinstance(ticks, int) and ticks <= 6, (
             f"yticks={ticks!r} on {type(element).__name__}"
         )
+
+
+# ── The cumulative line must not invent observations between trading days ────
+#
+# `realised_series`' docstring already states the intent: "Only days that traded appear,
+# so the cumulative line steps between them. That is the honest shape: nothing was
+# realised in between, and interpolating a smooth slope across non-trading days would
+# imply observations no statement covers."
+#
+# The rendering did not do that. Seen live 2026-09-23: Sep 15 (+5,196 cumulative) to
+# Sep 21 (+3,149) was drawn as a gradual six-day decline. Nothing happened on Sep 16-20;
+# the whole loss was taken on the 21st.
+#
+# Stepping duplicates each point, which is why the cumulative row carries no tooltip: a
+# duplicate sitting at (Sep 08, 1000) would report Sep 8's cumulative as the value it had
+# BEFORE that day traded. The daily bars below already hover correctly, one point per day.
+
+
+def _rendered(element, column):
+    """The values Bokeh will actually draw for `column`."""
+    import holoviews as hv
+
+    fig = hv.render(element, backend="bokeh")
+    for r in fig.renderers:
+        src = getattr(r, "data_source", None)
+        if src is not None and column in src.data:
+            return [float(v) for v in src.data[column]]
+    return None
+
+
+def test_the_cumulative_line_holds_its_value_between_trading_days():
+    """A flat run then a drop — not a slope implying five days of bleeding."""
+    import holoviews as hv
+
+    pts = _points_from([1000.0, 2000.0, -3000.0])
+    # `type(...) is hv.Curve`, not isinstance: **hv.Area SUBCLASSES hv.Curve**, so an
+    # isinstance check silently selects the filled area instead (measured 2026-09-23).
+    curve = next(e for e in next(iter(pdash.build_realised_chart(pts, "t"))) if type(e) is hv.Curve)
+    drawn = [float(v) for v in curve.dimension_values("cumulative")]
+    assert drawn == pytest.approx([1000.0, 1000.0, 3000.0, 3000.0, 0.0]), (
+        f"drawn as {drawn} — a straight run between trading days invents observations"
+    )
+
+
+def test_the_filled_area_steps_with_the_line_it_sits_under():
+    """Area rejects `interpolation` outright, so a linear fill under a stepped line
+    would cut across every corner. Both are built from the same stepped frame."""
+    import holoviews as hv
+
+    pts = _points_from([1000.0, 2000.0, -3000.0])
+    overlay = next(iter(pdash.build_realised_chart(pts, "t")))
+    area = next(e for e in overlay if type(e) is hv.Area)
+    curve = next(e for e in overlay if type(e) is hv.Curve)
+    assert len(area.dimension_values(0)) == len(curve.dimension_values(0)), (
+        "the fill and the line are drawn at different resolutions"
+    )
+
+
+def test_the_cumulative_row_carries_no_tooltip():
+    """A stepped line's duplicated points cannot be allowed to report a day's value."""
+    import holoviews as hv
+    from bokeh.models import HoverTool
+
+    pts = _points_from([1000.0, 2000.0, -3000.0])
+    overlay = next(iter(pdash.build_realised_chart(pts, "t")))
+    fig = hv.render(overlay, backend="bokeh")
+    assert not [t for t in fig.tools if isinstance(t, HoverTool)], (
+        "the stepped cumulative row must not offer a per-day tooltip"
+    )

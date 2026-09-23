@@ -62,6 +62,7 @@ from typing import Any
 # Side-effect import: registers the bokeh renderer and installs the DataFrame `.hvplot`
 # accessor. Same load-bearing import as claudia/panel_chart.py — see that module's note.
 import hvplot.pandas  # noqa: F401
+import numpy as np
 import pandas as pd
 import panel as pn
 from bokeh.models.widgets.tables import NumberFormatter
@@ -505,6 +506,39 @@ def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str) -> str
     return ""
 
 
+def _step_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """`df` expanded so a line drawn through it HOLDS each value until the next day.
+
+    **Why the expansion rather than an option.** HoloViews documents `interpolation` on
+    `Curve` — *"whether to linearly interpolate the curve values or to draw discrete
+    steps"*, one of `linear` / `steps-mid` / `steps-pre` / `steps-post`
+    (https://holoviews.org/reference/elements/bokeh/Curve.html, scraped 2026-09-23) — and
+    hvPlot exposes the same through `.step(where=...)`
+    (https://hvplot.holoviz.org/reference/pandas/step.html, hvPlot 0.12.2, same date).
+    Measured that day, the two are equivalent: both render `[1000, 3000, 0]` as
+    `[1000, 1000, 3000, 3000, 0]`.
+    **`Area` accepts neither** — it raises `ValueError: Unexpected option 'interpolation'
+    for Area type`. A linear fill beneath a stepped line cuts across every corner, so the
+    fill and the line are built from one pre-stepped frame instead.
+
+    **Why the cumulative row then carries no tooltip.** The expansion puts two points on
+    each day. The first holds the value the day *opened* with, so a tooltip there reports
+    e.g. Sep 8's cumulative as the figure it had before Sep 8 traded. The daily bars below
+    already hover correctly — one point per day — and the curve's final value is the total
+    printed in the table directly above the chart, so nothing is lost by staying silent
+    here rather than being ambiguous.
+
+    `steps-post` shape: x repeated and shifted forward, y repeated and shifted back, which
+    is what makes the value persist rightward until the next observation replaces it.
+    """
+    return pd.DataFrame(
+        {
+            "day": np.repeat(df["day"].to_numpy(), 2)[1:],
+            "cumulative": np.repeat(df["cumulative"].to_numpy(), 2)[:-1],
+        }
+    )
+
+
 def _money_hover(field: str, label: str) -> Any:
     """A tooltip that reads like money on a daily series, built fresh for each figure.
 
@@ -553,11 +587,12 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     # ENDS — "did this period finish up or down", which is the question that row answers.
     # Colour it per-segment only if someone asks for the zero crossing to be visible.
     cumulative_color = pnl_color(float(df["cumulative"].iloc[-1]))
-    cumulative = df.hvplot.area(
+    # Stepped, not sloped, and BOTH rows built from the same stepped frame. Neither
+    # carries a tooltip — see `_step_frame`.
+    step = _step_frame(df)
+    cumulative = step.hvplot.area(
         x="day", y="cumulative", alpha=0.20, color=cumulative_color, hover=False
-    ) * df.hvplot.line(
-        x="day", y="cumulative", color=cumulative_color, line_width=2, hover=False
-    ).opts(tools=[_money_hover("cumulative", "Cumulative")])
+    ) * step.hvplot.line(x="day", y="cumulative", color=cumulative_color, line_width=2, hover=False)
     # Per bar, by that day's own sign. Passing a COLUMN NAME maps it straight onto Bokeh's
     # `fill_color` field with `transform=Unspecified` — no colormap — so the hex values are
     # used literally (verified 2026-09-23 against the rendered glyph, not inferred from the
