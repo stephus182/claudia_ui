@@ -690,6 +690,14 @@ async def launch_tradingview(emit: Callable[[str], None] | None = None) -> bool:
 # ── TradingViewBridge ─────────────────────────────────────────────────────────
 
 
+# Ceiling on the MCP handshake — `stdio_client.__aenter__`, `initialize()` and
+# `list_tools()` together (gap #11). Unbounded before 2026-09-23, so a wedged sidecar could
+# stall session init indefinitely. Never observed live; bounded before it is. 15 s is
+# generous: a healthy sidecar completes in well under a second, and the cost of being wrong
+# is one session without TradingView tools, which `_get_tv_bridge` already degrades to.
+_HANDSHAKE_TIMEOUT_S = 15.0
+
+
 class TradingViewBridge:
     """Manages the tradingview-mcp sidecar and exposes its tools to ClaudIA.
 
@@ -763,42 +771,99 @@ class TradingViewBridge:
         log.info("tradingview-mcp sidecar: %s (commit %s)", bin_path, sidecar_commit)
 
         try:
-            self._cm = stdio_client(server_params)
-            read, write = await self._cm.__aenter__()
-            self._session = ClientSession(read, write)
-            await self._session.__aenter__()
-            await self._session.initialize()
-
-            # Discover available tools from sidecar — descriptions and schemas come from here,
-            # not from the ClaudIA codebase. This is the only documentation ClaudIA receives
-            # about what each tool does.
-            response = await self._session.list_tools()
-            self._tools = [
-                {
-                    "name": t.name,
-                    "description": t.description or "",
-                    "input_schema": t.inputSchema
-                    or {"type": "object", "properties": {}, "required": []},
-                }
-                for t in response.tools
-            ]
-            self._curated_tools = [t for t in self._tools if t["name"] in _CURATED_TOOLS]
-            sidecar_names = {t["name"] for t in self._tools}
-            if missing_curated := _CURATED_TOOLS - sidecar_names:
-                log.warning(
-                    "tradingview-mcp: curated tools not found in sidecar (sidecar may have renamed them) — %s",
-                    ", ".join(sorted(missing_curated)),
-                )
-            log.info(
-                "tradingview-mcp connected: %d total tools, %d curated",
-                len(self._tools),
-                len(self._curated_tools),
-            )
-
+            # Bounded as one unit (gap #11): connect, initialize and list_tools are all
+            # round-trips to the same subprocess, and any of the three can be the one that
+            # never answers. Timing only the last would leave the first two unbounded.
+            await asyncio.wait_for(self._handshake(server_params), timeout=_HANDSHAKE_TIMEOUT_S)
         except Exception as exc:
-            log.warning("tradingview-mcp sidecar failed to start: %s", exc)
+            if isinstance(exc, TimeoutError):
+                log.warning(
+                    "tradingview-mcp sidecar did not complete its handshake within %.0fs — "
+                    "continuing without TradingView tools",
+                    _HANDSHAKE_TIMEOUT_S,
+                )
+            else:
+                log.warning("tradingview-mcp sidecar failed to start: %s", exc)
             self._tools = []
+            self._curated_tools = []
+            # A timeout cancels `_handshake` wherever it stood, which can leave the stdio
+            # context manager entered and the Node process alive. Nothing else would ever
+            # exit it — `start()` re-raises and the caller keeps `_tv_bridge` None — so the
+            # subprocess would be orphaned for the life of the server.
+            await self._release_sidecar()
             raise
+
+    async def _handshake(self, server_params: StdioServerParameters) -> None:
+        """Connect to the sidecar and learn its tools. Called only under a timeout.
+
+        Split out of `start()` so `asyncio.wait_for` can bound the whole exchange rather
+        than one leg of it. Assigns `_cm` and `_session` as it goes precisely so that a
+        cancellation part-way through still leaves `_release_sidecar` something to
+        close.
+        """
+        self._cm = stdio_client(server_params)
+        read, write = await self._cm.__aenter__()
+        self._session = ClientSession(read, write)
+        await self._session.__aenter__()
+        await self._session.initialize()
+
+        # Discover available tools from sidecar — descriptions and schemas come from here,
+        # not from the ClaudIA codebase. This is the only documentation ClaudIA receives
+        # about what each tool does.
+        response = await self._session.list_tools()
+        self._tools = [
+            {
+                "name": t.name,
+                "description": t.description or "",
+                "input_schema": t.inputSchema
+                or {"type": "object", "properties": {}, "required": []},
+            }
+            for t in response.tools
+        ]
+        self._curated_tools = [t for t in self._tools if t["name"] in _CURATED_TOOLS]
+        sidecar_names = {t["name"] for t in self._tools}
+        if missing_curated := _CURATED_TOOLS - sidecar_names:
+            log.warning(
+                "tradingview-mcp: curated tools not found in sidecar (sidecar may have renamed them) — %s",
+                ", ".join(sorted(missing_curated)),
+            )
+        log.info(
+            "tradingview-mcp connected: %d total tools, %d curated",
+            len(self._tools),
+            len(self._curated_tools),
+        )
+
+    async def _release_sidecar(self) -> None:
+        """Close whatever is open and forget it. Shared by `stop()` and a failed `start()`.
+
+        **Every step is independently guarded, and that is the fix, not a nicety (gap #20).**
+        The previous `stop()` wrapped both exits in ONE `try`, so a raising
+        `_session.__aexit__` — the anyio cancel-scope error this gap is about — skipped
+        `_cm.__aexit__` entirely and the Node subprocess was never signalled. It also left
+        `_cm` set, so the next `start()` assigned over the reference and nothing could ever
+        close the first sidecar again. Guarding each exit and clearing both handles makes
+        the orphan impossible rather than unlikely.
+
+        Never raises: teardown runs on paths that are already failing.
+        """
+        # Written out rather than looped over the two attribute names on purpose: the loop
+        # form needed `setattr`, and `tests/security/test_human_click_execution_boundary.py`
+        # forbids `setattr` anywhere in the shipped package — `setattr(btn, "clicks", 1)`
+        # fires a button handler and is invisible to every other probe there. The rule is
+        # deliberately blunt; this is the cheaper side of obeying it.
+        try:
+            if self._session is not None:
+                await self._session.__aexit__(None, None, None)
+        except Exception:
+            log.debug("tradingview-mcp: session teardown raised during cleanup", exc_info=True)
+        self._session = None
+
+        try:
+            if self._cm is not None:
+                await self._cm.__aexit__(None, None, None)
+        except Exception:
+            log.debug("tradingview-mcp: stdio teardown raised during cleanup", exc_info=True)
+        self._cm = None
 
     def get_tools(self) -> list[dict[str, Any]]:
         """Return the curated subset of tools for the Anthropic tools= list."""
@@ -838,14 +903,12 @@ class TradingViewBridge:
             return f"TradingView tool '{name}' failed."
 
     async def stop(self) -> None:
-        """Tear down the MCP stdio session. Errors are silently discarded — stop must not raise."""
-        try:
-            if self._session:
-                await self._session.__aexit__(None, None, None)
-            if self._cm:
-                await self._cm.__aexit__(None, None, None)
-        except Exception:
-            log.debug("TradingView sidecar teardown raised", exc_info=True)
-        self._session = None
+        """Tear down the MCP stdio session. Never raises, and is safe to call twice.
+
+        Delegates to `_release_sidecar`, which closes the session and the stdio context
+        manager under separate guards and clears both handles — see its docstring for why
+        the single shared `try` this replaced could orphan the subprocess (gap #20).
+        """
+        await self._release_sidecar()
         self._tools = []
         self._curated_tools = []

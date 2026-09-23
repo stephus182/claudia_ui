@@ -1,7 +1,9 @@
 """Unit tests for claudia/tradingview.py — binary discovery, env, tool filtering, CDP."""
 
+import asyncio
 import json
 import re
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -860,3 +862,96 @@ async def test_quit_treats_a_hung_osascript_as_not_quit_and_falls_back(monkeypat
     ):
         assert await tv_module._quit_tradingview() is True
     assert [c.args[0][0] for c in run_mock.call_args_list] == ["osascript", "pkill"]
+
+
+# ── gap #11: the sidecar handshake must be bounded ───────────────────────────
+#
+# `start()` awaited `__aenter__`, `initialize()` and `list_tools()` with no timeout, so a
+# wedged sidecar could stall session init indefinitely. Never observed live; bounded before
+# it is. A timeout must also TEAR DOWN whatever was already entered — leaving a half-entered
+# stdio_client behind is gap #20's orphaned subprocess by another route.
+
+
+class _HangingSession:
+    """A ClientSession stand-in whose handshake never completes."""
+
+    def __init__(self, *_a, **_kw):
+        """Accept whatever ClientSession is constructed with."""
+        self.exited = False
+
+    async def __aenter__(self):
+        """Enter cleanly; the hang comes later, at initialize()."""
+        return self
+
+    async def __aexit__(self, *_a):
+        """Record that teardown reached us."""
+        self.exited = True
+        return False
+
+    async def initialize(self):
+        """Never return — this is the wedged sidecar."""
+        await asyncio.sleep(3600)
+
+
+@pytest.mark.asyncio
+async def test_start_gives_up_on_a_wedged_sidecar_handshake(tmp_path, monkeypatch):
+    """A sidecar that never answers must not stall session init forever."""
+    fake = tmp_path / "index.js"
+    fake.write_text("// sidecar")
+    monkeypatch.setattr(tv_module, "_TV_MCP_BIN", str(fake))
+    monkeypatch.setattr(tv_module, "_HANDSHAKE_TIMEOUT_S", 0.05)
+
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
+    cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(tv_module, "stdio_client", lambda *_a, **_kw: cm)
+    monkeypatch.setattr(tv_module, "ClientSession", _HangingSession)
+
+    bridge = TradingViewBridge()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(bridge.start(), timeout=5)
+
+    assert bridge.get_tools() == []
+    cm.__aexit__.assert_awaited(), "a timed-out handshake must not orphan the subprocess"
+
+
+# ── gap #20 (orphan half): stop() must forget the context manager ────────────
+#
+# stop() cleared _session, _tools and _curated_tools but NOT _cm. A relaunch then called
+# start(), which assigns a fresh stdio_client over the old reference — so if the teardown
+# had raised (the anyio cancel-scope error this gap is also about), the first sidecar was
+# left running with nothing holding it. Clearing _cm makes that impossible rather than
+# unlikely.
+
+
+@pytest.mark.asyncio
+async def test_stop_clears_the_context_manager_so_a_relaunch_cannot_orphan():
+    """After stop() there is no retained sidecar handle for start() to overwrite."""
+    bridge = TradingViewBridge()
+    session, cm = MagicMock(), MagicMock()
+    session.__aexit__ = AsyncMock(return_value=False)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    # cast to Any so mypy does not narrow these attributes to the mocks just assigned —
+    # it would then read `is None` as always-false and call the asserts unreachable.
+    bridge._session, bridge._cm = cast(Any, session), cast(Any, cm)
+
+    await bridge.stop()
+
+    assert bridge._session is None
+    assert bridge._cm is None, "a retained _cm is exactly how the first sidecar is orphaned"
+
+
+@pytest.mark.asyncio
+async def test_stop_is_idempotent_and_survives_a_raising_teardown():
+    """A teardown that raises must still clear state, and a second stop must be a no-op."""
+    bridge = TradingViewBridge()
+    session, cm = MagicMock(), MagicMock()
+    session.__aexit__ = AsyncMock(side_effect=RuntimeError("anyio cancel scope"))
+    cm.__aexit__ = AsyncMock(side_effect=RuntimeError("anyio cancel scope"))
+    bridge._session, bridge._cm = cast(Any, session), cast(Any, cm)
+
+    await bridge.stop()  # must not raise
+    assert bridge._session is None
+    assert bridge._cm is None, "a failed teardown must still drop both handles"
+
+    await bridge.stop()  # must not raise a second time
