@@ -2218,7 +2218,9 @@ def _curve_values(layout):
 
     overlay = next(iter(layout))
     curve = next(sub for sub in overlay if type(sub) is hv.Curve)
-    drawn = [float(v) for v in curve.dimension_values("cumulative")]
+    # `line`, not `cumulative`: the row is split into an above-zero and a below-zero half
+    # and each carries a NaN-masked `line` column plus a clipped `fill` one.
+    drawn = [float(v) for v in curve.dimension_values("line")]
     return drawn[::2]
 
 
@@ -2321,7 +2323,7 @@ def test_the_cumulative_line_holds_its_value_between_trading_days():
     # `type(...) is hv.Curve`, not isinstance: **hv.Area SUBCLASSES hv.Curve**, so an
     # isinstance check silently selects the filled area instead (measured 2026-09-23).
     curve = next(e for e in next(iter(pdash.build_realised_chart(pts, "t"))) if type(e) is hv.Curve)
-    drawn = [float(v) for v in curve.dimension_values("cumulative")]
+    drawn = [float(v) for v in curve.dimension_values("line")]
     # Six values for three days: each is held until the next, and the last is held for its
     # own day too — see `_step_frame` on why the trailing point exists.
     assert drawn == pytest.approx([1000.0, 1000.0, 3000.0, 3000.0, 0.0, 0.0]), (
@@ -2499,3 +2501,29 @@ def test_a_wholly_winning_window_shows_no_red():
     """The mirror: a window that never went under draws only green."""
     pts = _points_from([500.0, 200.0, 900.0])
     assert _cumulative_colours(pdash.build_realised_chart(pts, "t")) == {palette.UP_COLOR}
+
+
+def test_the_filled_area_contains_no_nan():
+    """A `Patch` is ONE closed polygon, so a NaN inside it tears the fill open.
+
+    Seen live 2026-09-23: the monthly pane showed a hole between Sep 8 and Sep 13 where
+    the cumulative sat at +1,929 the whole time, plus stray diagonals that were the torn
+    polygon's edges. The frames were correct; only the fill's rendering was not.
+
+    The line may and must carry NaN — that is how it breaks at the crossing instead of
+    being drawn flat along zero. The area instead CLIPS: filling 0..max(y, 0) covers
+    exactly the above-zero region and needs no gap at all.
+    """
+    import holoviews as hv
+
+    pts = _points_from([-2000.0, 3000.0, -4000.0, 5000.0])
+    for element in next(iter(pdash.build_realised_chart(pts, "t"))):
+        if type(element) is not hv.Area:
+            continue
+        fig = hv.render(element, backend="bokeh")
+        for r in fig.renderers:
+            src = getattr(r, "data_source", None)
+            if src is None or "y" not in src.data:
+                continue
+            ys = [float(v) for v in src.data["y"]]
+            assert not any(v != v for v in ys), "NaN inside the fill polygon tears it open"

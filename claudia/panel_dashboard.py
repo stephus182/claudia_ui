@@ -517,11 +517,22 @@ def _split_at_zero(step: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     exactly, with **no interpolation and no invented date**. On a sloped line the crossing
     falls between two trading days and the x has to be guessed.
 
-    Each half is the full series with the other half blanked to NaN. That is what makes the
-    two layers register against one x-axis and break cleanly at the crossing, rather than
-    being drawn as two misaligned series. A half that is entirely NaN — a window that never
-    went under, or never came back — draws nothing, so a wholly-winning window carries no
-    red element at all rather than an empty one.
+    **Two columns, because the line and the fill need opposite treatments** — found live
+    2026-09-23, when the monthly pane showed a hole between Sep 8 and Sep 13 where the
+    cumulative had sat at +1,929 the whole time, with stray diagonals either side of it.
+    The frames were right; only the fill's rendering was not.
+
+    * `line` is NaN outside its half. A `Line` glyph honours NaN by **breaking**, which is
+      what stops the curve being drawn flat along zero while it is on the other side.
+    * `fill` is **clipped**, never NaN. An `Area` renders as a `Patch` — *one closed
+      polygon* — so a NaN inside it does not open a gap, it **tears the polygon**, and the
+      torn edges were the diagonals. Filling `0 .. max(y, 0)` covers exactly the above-zero
+      region and needs no gap at all.
+
+    Both share one `day` column, so the halves register against one x-axis and meet exactly
+    at the crossing rather than being drawn as two misaligned series. A half whose `line`
+    is entirely NaN — a window that never went under, or never came back — draws nothing,
+    so a wholly-winning window carries no empty red element.
     """
     x = step["day"].to_numpy()
     y = step["cumulative"].to_numpy()
@@ -535,8 +546,20 @@ def _split_at_zero(step: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         ys.append(float(y[i]))
     values = np.array(ys)
     return (
-        pd.DataFrame({"day": xs, "cumulative": np.where(values >= 0, values, np.nan)}),
-        pd.DataFrame({"day": xs, "cumulative": np.where(values <= 0, values, np.nan)}),
+        pd.DataFrame(
+            {
+                "day": xs,
+                "fill": np.maximum(values, 0.0),
+                "line": np.where(values >= 0, values, np.nan),
+            }
+        ),
+        pd.DataFrame(
+            {
+                "day": xs,
+                "fill": np.minimum(values, 0.0),
+                "line": np.where(values <= 0, values, np.nan),
+            }
+        ),
     )
 
 
@@ -681,12 +704,12 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     step = _step_frame(df)
     cumulative = _break_even()
     for frame, colour in zip(_split_at_zero(step), (UP_COLOR, DOWN_COLOR), strict=True):
-        if not frame["cumulative"].notna().any():
+        if not frame["line"].notna().any():
             continue  # never went that side of zero — draw nothing, not an empty layer
         cumulative = (
             cumulative
-            * frame.hvplot.area(x="day", y="cumulative", alpha=0.20, color=colour, hover=False)
-            * frame.hvplot.line(x="day", y="cumulative", color=colour, line_width=2, hover=False)
+            * frame.hvplot.area(x="day", y="fill", alpha=0.20, color=colour, hover=False)
+            * frame.hvplot.line(x="day", y="line", color=colour, line_width=2, hover=False)
         )
     # Per bar, by that day's own sign. Passing a COLUMN NAME maps it straight onto Bokeh's
     # `fill_color` field with `transform=Unspecified` — no colormap — so the hex values are
@@ -714,8 +737,15 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
             yticks=_Y_TICK_COUNT,
             yformatter=_money_axis(),
             xlabel="",
+            ylabel="Cumulative",
         )
-        + daily.opts(title="", yticks=_Y_TICK_COUNT, yformatter=_money_axis(), xlabel="")
+        + daily.opts(
+            title="",
+            yticks=_Y_TICK_COUNT,
+            yformatter=_money_axis(),
+            xlabel="",
+            ylabel="Realised",
+        )
     ).cols(1)
 
 
