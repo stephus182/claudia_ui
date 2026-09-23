@@ -850,3 +850,40 @@ def test_get_refused_order_actions_returns_the_click_rows_without_a_message_id(s
     rows = store.get_refused_order_actions("s1")
     assert [r["decision_type"] for r in rows] == ["trade_refused"]
     assert rows[0]["metadata"]["stage"] == "gate2"
+
+
+# ── gap #30: the live session must not be retrievable as "past" history ───────
+#
+# Found 2026-08-13 (N3): the top hit for a recall probe was the user's own question from
+# seconds earlier. Harmless for a user message; the structural concern is an ASSISTANT
+# message from the same session coming back as independent corroborating history, which is
+# a self-confirmation path aimed straight at the anti-fabrication work (gap #3, L4/L5),
+# where the premise is that a claim needs evidence from OUTSIDE the turn that made it.
+#
+# Excluded rather than labelled, deliberately: labelling would ask the model to police
+# itself on the one path that exists because it cannot.
+
+
+def test_search_messages_excludes_the_named_session(store):
+    """A hit from the excluded session is not returned, however well it matches."""
+    store.create_session("old-session")
+    store.create_session("live-session")
+    store.add_message("old-session", "assistant", "the NVDA position was closed in June")
+    store.add_message("live-session", "assistant", "the NVDA position was closed in June")
+
+    hits = store.search_messages("NVDA position", exclude_session_id="live-session")
+
+    assert hits, "the genuine historical hit must survive"
+    assert {h["session_id"] for h in hits} == {"old-session"}
+
+
+def test_search_messages_without_exclusion_is_unchanged(store):
+    """Back-compat: omitting the argument still searches every session."""
+    store.create_session("s1")
+    store.create_session("s2")
+    store.add_message("s1", "user", "NVDA position sizing")
+    store.add_message("s2", "user", "NVDA position sizing")
+
+    hits = store.search_messages("NVDA position")
+
+    assert {h["session_id"] for h in hits} == {"s1", "s2"}

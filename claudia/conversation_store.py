@@ -502,7 +502,11 @@ class ConversationStore:
             return row[0] if row else 0
 
     def search_messages(
-        self, query: str, max_results: int = 10, max_tokens: int = 2000
+        self,
+        query: str,
+        max_results: int = 10,
+        max_tokens: int = 2000,
+        exclude_session_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """FTS5 full-text search across all conversation history.
 
@@ -524,6 +528,18 @@ class ConversationStore:
         the replay path exactly; the row stays in the database for the audit trail, the
         session report and the chat the user already saw.
 
+        **`exclude_session_id` keeps the live session out of its own recall** (gap #30,
+        found 2026-08-13 as N3). The top hit for a recall probe was the user's own question
+        from seconds earlier. That is harmless for a user message; the concern is an
+        *assistant* message from the same session being returned as independent
+        corroborating history — a self-confirmation path sitting directly against the
+        anti-fabrication work (gap #3, L4/L5), whose premise is that a claim needs evidence
+        from outside the turn that made it. Excluded rather than labelled on purpose:
+        labelling asks the model to police itself on the one path built because it cannot.
+
+        The exclusion is applied in `WHERE`, not after `LIMIT`, so filtering never silently
+        shortens the result set.
+
         max_tokens is a rough budget: results are trimmed when the cumulative
         character count exceeds max_tokens * 4 (i.e. ~4 chars per token, not
         exact token counting).
@@ -532,15 +548,21 @@ class ConversationStore:
         if not expression:
             return []
         with self._conn() as conn:
+            # `IS NOT` rather than `!=` so ONE static query serves both cases and no SQL
+            # is ever built by string formatting. `messages.session_id` is `TEXT NOT NULL`,
+            # so with the parameter bound to NULL the clause reads `<non-null> IS NOT NULL`
+            # — true for every row, excluding nothing. With a session id bound it excludes
+            # exactly that session. SQLite's IS/IS NOT are the NULL-safe forms of =/<>.
             rows = conn.execute(
                 """SELECT m.*, highlight(messages_fts, 0, '[', ']') AS snippet
                    FROM messages_fts
                    JOIN messages m ON m.id = messages_fts.rowid
                    LEFT JOIN message_withdrawals w ON w.message_id = m.id
                    WHERE messages_fts MATCH ? AND w.message_id IS NULL
+                     AND m.session_id IS NOT ?
                    ORDER BY rank
                    LIMIT ?""",
-                (expression, max_results),
+                (expression, exclude_session_id, max_results),
             ).fetchall()
             results = [dict(r) for r in rows]
         # Rough token budget guard

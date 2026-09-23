@@ -1482,7 +1482,9 @@ _LOCAL_TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_past_conversations",
         "description": (
-            "Full-text search across all past conversation history (all sessions). "
+            "Full-text search across PAST conversation history. The current session is "
+            "excluded: nothing said in this conversation can be returned here, so a hit "
+            "is always independent of the turn asking for it. "
             "Use when the user asks what was discussed, analyzed, or considered in previous sessions. "
             "Returns relevant message excerpts with session context."
         ),
@@ -3135,7 +3137,13 @@ class ClaudIAAgent:
             # that it never raises — the store escaping one used to take down the entire
             # turn, and a search is the least important thing in a session to fail hard on.
             try:
-                results = self._store.search_messages(query, max_results=5)
+                # gap #30: never let this session be retrieved as its own "past"
+                # history. An assistant message from this turn coming back as
+                # independent corroboration is the self-confirmation path L4/L5 exist
+                # to close.
+                results = self._store.search_messages(
+                    query, max_results=5, exclude_session_id=self._session_id
+                )
             except Exception as exc:
                 log.warning("Past-conversation search failed for %r: %s", query, exc)
                 return (

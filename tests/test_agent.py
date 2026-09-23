@@ -3610,6 +3610,25 @@ def test_a_failing_search_returns_an_honest_string_instead_of_raising():
     assert "not evidence" in result.lower()
 
 
+def test_recall_excludes_the_live_session(monkeypatch):
+    """gap #30: the turn now being generated must not be retrievable as its own history.
+
+    The danger is not the user's own question coming back — it is an ASSISTANT message
+    from this session returning as independent corroborating history, which is exactly the
+    self-confirmation the anti-fabrication layers (gap #3, L4/L5) exist to prevent.
+    """
+    agent = _make_agent()
+    agent._store.search_messages.return_value = []
+
+    agent._handle_local_tool("search_past_conversations", {"query": "NVDA"})
+
+    kwargs = agent._store.search_messages.call_args.kwargs
+    assert kwargs.get("exclude_session_id") == agent._session_id, (
+        "recall must exclude the live session, got "
+        f"{kwargs.get('exclude_session_id')!r} vs {agent._session_id!r}"
+    )
+
+
 def test_an_empty_result_is_reported_as_no_match_not_as_a_failure():
     """Nothing found and search-broke are different claims and must read differently."""
     agent = _make_agent()
