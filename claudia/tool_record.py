@@ -60,7 +60,7 @@ async def record_and_execute(
     store: ConversationStore | None,
     session_id: str | None,
     origin: str,
-) -> tuple[str, Any]:
+) -> tuple[str, None]:
     """Run a tool off the agent loop and persist a `tool` row for it. Transparent to callers.
 
     `toolkit.execute` is synchronous, so it runs on a worker thread — every existing
@@ -72,6 +72,14 @@ async def record_and_execute(
     kept intact: a failing sink must not cost the record. A store that raises is logged and
     swallowed — the caller still gets its result, because bookkeeping must never cost the
     action it is describing.
+
+    **What is stored is the result TEXT, matching the other two paths.** `execute` returns
+    `(text, None)` — its second element is documented as always None, a removed plotly
+    dependency — and `agent.py`'s tool loop and `panel_pinescript`'s button both persist the
+    bare string. Recording the pair whole would put a JSON array in `tool_result_json` where
+    every other `tool` row holds a JSON string, and that column is precisely what the
+    forensic rule of `reference-proving-a-tool-call-never-happened` reads. The caller still
+    receives the pair untouched; only the record is normalised.
 
     **A raising tool is recorded and then re-raised.** An attempted call is a fact, and
     recording only the successes would hide the more interesting half. Callers keep the
@@ -103,5 +111,6 @@ async def record_and_execute(
     except Exception as exc:
         _record(f"{type(exc).__name__}: {exc}")
         raise
-    _record(result)
+    text, _payload = result
+    _record(text)
     return result
