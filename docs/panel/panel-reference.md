@@ -538,7 +538,7 @@ hv.Store.lookup_options("bokeh", rects, "style").kwargs["color"].apply(rects)
                                                # per-row ['#26a69a', …, '#ef5350']
 ```
 
-Four traps this file hit, all worth knowing before writing such a test **[P]**:
+Six traps this file hit, all worth knowing before writing such a test **[P]**:
 
 - ⚠ **`hasattr` cannot distinguish an `Overlay` from a `Layout`.** HoloViews' dynamic
   attribute access answers `hasattr(overlay, "Overlay")` with **`True`** and returns an
@@ -552,6 +552,16 @@ Four traps this file hit, all worth knowing before writing such a test **[P]**:
   filled **area** first when an overlay holds both (measured 2026-09-23 — it cost a green
   test that was reading the wrong element). Use `type(element) is hv.Curve` when an overlay
   contains an `Area * Curve`, which the realised-P&L chart does.
+- ⚠ **An `HLine`'s `Span` is in `figure.renderers`, not `figure.center`** (Bokeh 3.9.2,
+  measured 2026-09-23). A helper that looks only in `center` reports "no zero line" on a
+  chart that has one. `figure.select({"type": Span})` searches the whole model and survives
+  Bokeh filing it somewhere else again.
+- ⚠ **`from bokeh.models import Span` fails mypy** — *"Module 'bokeh.models' has no
+  attribute 'Span'; maybe 'HSpan' or 'VSpan'?"* — while working fine at runtime, because
+  the re-export is untyped. The class really lives at
+  `bokeh.models.annotations.geometry.Span`; import it from `bokeh.models.annotations`.
+  Do **not** switch to `HSpan` to satisfy the checker: `HLine` renders a `Span`, so a
+  selector looking for `HSpan` finds nothing.
 - ⚠ **Step interpolation expands the data source, so it changes what a tooltip says.**
   A three-point series renders as five points, the first of each pair holding the value the
   day *opened* with — so a hover at that point reports the figure from *before* that day

@@ -2007,9 +2007,20 @@ def test_orders_frame_has_a_name_column_after_symbol_and_uses_the_local_symbol()
 
 
 def _chart_colors(layout):
-    """(area_color, curve_color) from the cumulative overlay of a realised chart."""
+    """(area_color, curve_color) from the cumulative overlay of a realised chart.
+
+    Selected by exact type, not by position: the overlay also carries the break-even
+    `HLine`, whose neutral colour is not a verdict on the window. `type(...) is` rather
+    than isinstance because **hv.Area subclasses hv.Curve**.
+    """
+    import holoviews as hv
+
     overlay = next(iter(layout))
-    return tuple(sub.opts.get("style").kwargs.get("color") for sub in overlay)
+    wanted = {hv.Area: None, hv.Curve: None}
+    for sub in overlay:
+        if type(sub) in wanted and wanted[type(sub)] is None:
+            wanted[type(sub)] = sub.opts.get("style").kwargs.get("color")
+    return wanted[hv.Area], wanted[hv.Curve]
 
 
 def _bar_colors(layout):
@@ -2341,3 +2352,51 @@ def test_the_cumulative_row_carries_no_tooltip():
     assert not [t for t in fig.tools if isinstance(t, HoverTool)], (
         "the stepped cumulative row must not offer a per-day tooltip"
     )
+
+
+# ── Break-even needs a line, not just a tick ─────────────────────────────────
+#
+# Measured off the rendered Bokeh model 2026-09-23: neither row carried a `Span`. On the
+# monthly window the curve crossed zero around Sep 5 and nothing on the plot marked where
+# that was — the reader had to trace across to the axis. Break-even is the one reference a
+# P&L chart cannot do without, and it matters on both rows: the cumulative crosses it, and
+# it is the sign boundary the daily bars are coloured by.
+
+
+def _zero_spans(element):
+    """Horizontal `Span`s at y=0 on a rendered element.
+
+    `fig.select` rather than `fig.center`: in Bokeh 3.9.2 an `HLine`'s `Span` is filed
+    under `fig.renderers`, not `fig.center` (measured 2026-09-23). `select` searches the
+    whole model, so this survives Bokeh moving it again.
+    """
+    import holoviews as hv
+
+    # `bokeh.models.annotations`, not `bokeh.models`: the re-export is untyped, so mypy
+    # rejects `from bokeh.models import Span` while runtime accepts it. The class really
+    # lives at `bokeh.models.annotations.geometry.Span` (measured, Bokeh 3.9.2).
+    from bokeh.models.annotations import Span
+
+    fig = hv.render(element, backend="bokeh")
+    return [s for s in fig.select({"type": Span}) if s.dimension == "width" and s.location == 0]
+
+
+def test_both_rows_mark_break_even():
+    """Zero is where profit becomes loss; it must be visible on the plot itself."""
+    pts = _points_from([1000.0, -2000.0, 900.0])
+    for element in pdash.build_realised_chart(pts, "t"):
+        assert _zero_spans(element), f"no break-even line on the {type(element).__name__} row"
+
+
+def test_the_break_even_line_does_not_compete_with_the_data():
+    """A reference line, not a series: thin, dashed, and the palette's neutral.
+
+    `FLAT_COLOR` specifically — break-even is neither profit nor loss, so the colour the
+    palette already uses for "inside the dead band" is the one that means it. Using green
+    or red here would assert a direction that zero does not have.
+    """
+    pts = _points_from([1000.0, -2000.0, 900.0])
+    span = _zero_spans(next(iter(pdash.build_realised_chart(pts, "t"))))[0]
+    assert span.line_width <= 1.5, f"line_width={span.line_width} reads as a data series"
+    assert span.line_dash, "a solid rule competes with the curve"
+    assert span.line_color == palette.FLAT_COLOR, f"line_color={span.line_color}"

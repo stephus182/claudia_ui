@@ -59,6 +59,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import holoviews as hv
+
 # Side-effect import: registers the bokeh renderer and installs the DataFrame `.hvplot`
 # accessor. Same load-bearing import as claudia/panel_chart.py — see that module's note.
 import hvplot.pandas  # noqa: F401
@@ -506,6 +508,25 @@ def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str) -> str
     return ""
 
 
+def _break_even() -> Any:
+    """The zero rule, on whichever row it is overlaid.
+
+    Break-even is the one reference a P&L chart cannot do without, and until 2026-09-23
+    neither row had it: the rendered Bokeh model carried no `Span` at all, so on a window
+    whose curve crossed zero the reader had to trace across to the axis to find where.
+
+    **`FLAT_COLOR`, not green or red.** Zero is neither profit nor loss, and the palette
+    already holds the colour that means exactly that — the one the KPI tiles use inside
+    the dead band. Dashed and one pixel, so it reads as a reference and not as a series.
+
+    Built fresh per call: an `HLine` renders to a Bokeh `Span`, and a Bokeh model belongs
+    to one Document, so a module-level constant would be shared across figures. (In Bokeh
+    3.9.2 that `Span` is filed under `figure.renderers`, not `figure.center` — measured,
+    and the reason the test helper uses `figure.select`.)
+    """
+    return hv.HLine(0).opts(color=FLAT_COLOR, line_width=1, line_dash="dashed")
+
+
 def _step_frame(df: pd.DataFrame) -> pd.DataFrame:
     """`df` expanded so a line drawn through it HOLDS each value until the next day.
 
@@ -590,9 +611,13 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     # Stepped, not sloped, and BOTH rows built from the same stepped frame. Neither
     # carries a tooltip — see `_step_frame`.
     step = _step_frame(df)
-    cumulative = step.hvplot.area(
-        x="day", y="cumulative", alpha=0.20, color=cumulative_color, hover=False
-    ) * step.hvplot.line(x="day", y="cumulative", color=cumulative_color, line_width=2, hover=False)
+    cumulative = (
+        step.hvplot.area(x="day", y="cumulative", alpha=0.20, color=cumulative_color, hover=False)
+        * step.hvplot.line(
+            x="day", y="cumulative", color=cumulative_color, line_width=2, hover=False
+        )
+        * _break_even()
+    )
     # Per bar, by that day's own sign. Passing a COLUMN NAME maps it straight onto Bokeh's
     # `fill_color` field with `transform=Unspecified` — no colormap — so the hex values are
     # used literally (verified 2026-09-23 against the rendered glyph, not inferred from the
@@ -604,9 +629,12 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     # tooltip fixes that at the root and lets the figures read as money rather than as
     # bare floats with a meaningless 00:00:00 beside them.
     bars = df.assign(_bar_color=[pnl_color(float(v)) for v in df["realised"]])
-    daily = bars.hvplot.bar(
-        x="day", y="realised", height=_BAR_ROW_HEIGHT, color="_bar_color", hover=False
-    ).opts(tools=[_money_hover("realised", "Realised")])
+    daily = (
+        bars.hvplot.bar(
+            x="day", y="realised", height=_BAR_ROW_HEIGHT, color="_bar_color", hover=False
+        ).opts(tools=[_money_hover("realised", "Realised")])
+        * _break_even()
+    )
     return (
         cumulative.opts(title=title, height=_CHART_HEIGHT, yticks=_Y_TICK_COUNT)
         + daily.opts(title="", yticks=_Y_TICK_COUNT)
