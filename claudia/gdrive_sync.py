@@ -32,7 +32,31 @@ _DB_FILENAME = "claudia.db"
 
 
 class GDriveSync:
-    """Sync claudia.db (and optionally context/principles) to Google Drive."""
+    """Sync claudia.db (and optionally context/principles) to Google Drive.
+
+    ⚠️ **THIS CLASS IS NOT THREAD-SAFE, AND THE `_lock` BELOW DOES NOT MAKE IT SO**
+    (Known Gaps #61). `_get_service()` caches one `googleapiclient` service, which binds a
+    single `AuthorizedHttp`/`httplib2.Http` — and therefore **one TLS connection** — reused
+    by every `.execute()` in this module. `httplib2.Http` is not thread-safe. `_lock` guards
+    only the *construction* of `self._service`; it is released before the caller makes any
+    API call, so two threads holding the same `svc` will read the same socket concurrently.
+
+    **This is not theoretical.** On 2026-09-23 it aborted the process: `SIGABRT` from
+    `___BUG_IN_CLIENT_OF_LIBMALLOC_POINTER_BEING_FREED_WAS_NOT_ALLOCATED` inside
+    OpenSSL's `tls_release_read_buffer`, with four threads in `SSL_read` at once. A native
+    abort takes the dashboard, the execution listener and the IBKR keepalive with it, and
+    leaves nothing in ClaudIA's own log — the application cannot log its own `abort()`.
+
+    **The two principals that collide** are a session init (`panel_app._read_context_docs`,
+    `download_db`) and `status.ConnectivityChecker.check_gdrive` → `ping()`, which runs on
+    its own process-level poll and holds no lock at all. `panel_app._init_lock` serialises
+    session inits *against each other* and cannot help, by construction.
+
+    **Until #61 is fixed, adding a caller is adding a hazard.** A new `.execute()` call site
+    reached from any thread other than an existing one widens the race. The fix under
+    consideration is a per-thread service/`Http`, which would make this docstring obsolete —
+    which is the point of preferring it.
+    """
 
     def __init__(self, config: Config) -> None:
         """Initialise sync state. Call download_db() / upload_db() to trigger actual I/O.
