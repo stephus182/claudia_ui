@@ -2419,3 +2419,41 @@ def test_the_final_step_is_as_wide_as_every_other():
     assert days[-1] > days[-2], (
         f"the final step spans {days[-2].date()} -> {days[-1].date()} — no width"
     )
+
+
+# ── Axis polish: money reads as money, and the axis is not labelled twice ────
+#
+# Measured off the rendered Bokeh model 2026-09-23: both rows carried a
+# `BasicTickFormatter` with `format=None`, so a window totalling 6,050.39 showed an axis
+# reading "6000" — while every other figure in this app goes through `fmt_signed` with an
+# ISO code. And both rows carried the x-axis label "day" beneath date ticks that already
+# say so, costing two lines of vertical space the bars could use.
+
+
+def _y_formatters(layout):
+    """The y-axis tick formatter on each row of a rendered chart."""
+    import holoviews as hv
+
+    return [hv.render(e, backend="bokeh").yaxis[0].formatter for e in layout]
+
+
+def test_money_axes_are_formatted_as_money():
+    """`6,000` not `6000` — the thousands separator is what makes a P&L figure scannable."""
+    from bokeh.models.formatters import NumeralTickFormatter
+
+    pts = _points_from([1000.0, -2000.0, 900.0])
+    for fmt in _y_formatters(pdash.build_realised_chart(pts, "t")):
+        assert isinstance(fmt, NumeralTickFormatter), f"{type(fmt).__name__} leaves raw numbers"
+        assert "," in fmt.format, f"format={fmt.format!r} has no thousands separator"
+
+
+def test_the_x_axis_is_not_labelled_day_under_both_rows():
+    """The ticks are dates; the word adds nothing and is printed twice."""
+    import holoviews as hv
+
+    pts = _points_from([1000.0, -2000.0, 900.0])
+    labels = [
+        hv.render(e, backend="bokeh").xaxis[0].axis_label
+        for e in pdash.build_realised_chart(pts, "t")
+    ]
+    assert not any(labels), f"x-axis labelled {labels}"

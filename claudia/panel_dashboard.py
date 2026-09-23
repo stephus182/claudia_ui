@@ -508,6 +508,26 @@ def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str) -> str
     return ""
 
 
+def _money_axis() -> Any:
+    """A y-axis tick formatter that reads as money, built fresh for each row.
+
+    Until 2026-09-23 both rows used Bokeh's `BasicTickFormatter` default, so a window
+    totalling 6,050.39 showed an axis reading `6000` while every other figure in this app
+    goes through `fmt_signed` with an ISO code.
+
+    `0,0` — thousands separator, no decimals. Ticks are a scale, not a statement of the
+    figure: the cents belong in the table above the chart and in the bars' tooltip, both of
+    which carry them. The currency is not repeated per tick either; the chart title already
+    names it once, which is where a unit belongs.
+
+    A new formatter per call, never a module-level constant: it is a Bokeh model and a
+    Bokeh model belongs to one Document.
+    """
+    from bokeh.models.formatters import NumeralTickFormatter
+
+    return NumeralTickFormatter(format="0,0")
+
+
 def _break_even() -> Any:
     """The zero rule, on whichever row it is overlaid.
 
@@ -646,9 +666,17 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
         ).opts(tools=[_money_hover("realised", "Realised")])
         * _break_even()
     )
+    # `xlabel=""` on both rows: the ticks are dates, so the word "day" said nothing and was
+    # printed under each row, costing two lines of the vertical space the bars now use.
     return (
-        cumulative.opts(title=title, height=_CHART_HEIGHT, yticks=_Y_TICK_COUNT)
-        + daily.opts(title="", yticks=_Y_TICK_COUNT)
+        cumulative.opts(
+            title=title,
+            height=_CHART_HEIGHT,
+            yticks=_Y_TICK_COUNT,
+            yformatter=_money_axis(),
+            xlabel="",
+        )
+        + daily.opts(title="", yticks=_Y_TICK_COUNT, yformatter=_money_axis(), xlabel="")
     ).cols(1)
 
 
