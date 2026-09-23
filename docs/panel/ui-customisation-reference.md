@@ -362,7 +362,7 @@ Cost: **S** = one parameter or line, **M** = one function plus a test, **L** = i
 | Ctrl-Enter to send | S | `enter_sends=False` on the `ChatAreaInput` | multi-line drafts without accidental sends |
 | Dark skin on the tables | S | `Tabulator(theme="midnight")` when the resolved theme is dark | thread the theme into `build_dashboard(...)`; only if the light skin is unreadable on dark |
 | KPI tile sizes | S | `font_size="19pt"`, `title_size="10pt"` in `panel_dashboard.py` `Number(...)` | |
-| One palette for chart + dashboard | M | `#26a69a` / `#ef5350` are duplicated in `panel_chart.py` and `panel_dashboard.py`; move to one module | prerequisite for theme-matched candles |
+| ~~One palette for chart + dashboard~~ **DONE 2026-09-23** | M | `claudia/palette.py` now holds `UP_COLOR` / `DOWN_COLOR` / `FLAT_COLOR` and the `pnl_color()` rule; `panel_chart` and `panel_dashboard` import them, and `tests/test_palette.py` fails if either hex is redeclared elsewhere | the prerequisite for theme-matched candles is met; the candles themselves are not done |
 | Chat vs dashboard width | M | the `pn.Row` at the root has no ratio; `width`/`sizing_mode` per column | `ui-design-reference.md` §8.6 — needs a live look, not a number on paper |
 | Page title | S | `pn.serve(title=...)` — already `"ClaudIA"` | favicon needs a template (§3.6) |
 | A design system (Bootstrap / Material) | S to set, M to re-smoke | `pn.extension(design="material")` | changes every widget's look at once; `Button(color=)` names are design-level, verify |

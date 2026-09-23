@@ -361,13 +361,20 @@ Self-contained and **decoupled from the conversation** — driven by its own Loa
   `794d7c0`; that hash is not a commit in this repository). `bar_width=0.7`
   (`_BODY_WIDTH_FRACTION`, [`:74`](../../claudia/panel_chart.py#L74)) is the only width knob
   this module passes; the volume row uses `hv.Bars`' own default instead.
-- **Colors**: `_UP_COLOR = "#26a69a"`, `_DOWN_COLOR = "#ef5350"`
-  ([`:62-63`](../../claudia/panel_chart.py#L62-L63)) are passed to `.ohlc()` as
-  `pos_color`/`neg_color` and only reach the candle **bodies** (`Rectangles`) — the wicks
-  (`Segments`) render at hvplot's own default black regardless (verified 2026-08-03 by
-  inspecting the rendered glyphs' style). There is no wick-color constant in this module; the
-  old `_WICK_COLOR = "#666"` was deleted along with the hand-built recipe, not renamed. These
-  two are still the only hardcoded hex colors anywhere in `claudia/` (grepped 2026-08-03).
+- **Colors**: `UP_COLOR` / `DOWN_COLOR`, imported from
+  [`claudia/palette.py`](../../claudia/palette.py) since 2026-09-23 (they were
+  `_UP_COLOR` / `_DOWN_COLOR`, declared in this module, until then). They are passed to
+  `.ohlc()` as `pos_color`/`neg_color` and only reach the candle **bodies** (`Rectangles`) —
+  the wicks (`Segments`) render at hvplot's own default black regardless (verified
+  2026-08-03 by inspecting the rendered glyphs' style). There is no wick-color constant in
+  this module; the old `_WICK_COLOR = "#666"` was deleted along with the hand-built recipe,
+  not renamed.
+  ⚠ **The sentence that used to end this bullet — "these two are still the only hardcoded
+  hex colors anywhere in `claudia/` (grepped 2026-08-03)" — was false when written**:
+  `panel_dashboard.py` declared its own copies of both, plus `#8a8a8a`. That is precisely
+  what let a green candle and a green number agree only by coincidence. Re-grepped
+  2026-09-23 and now true by construction: every hex lives in `palette.py`, and
+  `tests/test_palette.py` walks the package and fails if one is declared anywhere else.
 - ⚠ **`.ohlc()` binds the OHLC columns by POSITION, not by name.** `converter.py` does
   `o, h, l, c = [col for col in data.columns if col != x][:4]` when `y is None`. Measured
   2026-08-03: move `volume` ahead of `open` in the frame and it silently charts

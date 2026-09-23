@@ -40,8 +40,12 @@ Every visual parameter in the entire application:
 - two hardcoded sizes — `height=360` on the chart figure, `width=400` on the echoed screenshot
   image
 - Button `color=` semantic names: `success`, `danger`, `light`, `primary`, `warning`
-- three hex constants in [`panel_chart.py:40-42`](../../claudia/panel_chart.py#L40-L42) —
-  `#26a69a` / `#ef5350` / `#666`
+- ~~three hex constants in `panel_chart.py:40-42` — `#26a69a` / `#ef5350` / `#666`~~
+  **Moved 2026-09-23:** the two that survive are declared once in
+  [`palette.py`](../../claudia/palette.py), alongside `#8a8a8a` for flat. Grepped the same
+  day: `claudia/` holds **no hardcoded hex colour outside that module**, and
+  `tests/test_palette.py` fails if one reappears. `#666` was deleted with the hand-built
+  candle recipe, not renamed
 
 Also: `claudia/assets/claudia-logo.png` (1.4 MB since 2026-09-02, when the user's new logo replaced
 the 1.1 MB original) exists but is **referenced by no code**, and there is no `static_dirs=` to
@@ -329,8 +333,11 @@ Stated as questions, not decisions:
 
 1. **Dot labelling** — which dot is which is not discoverable from the UI (§1).
 2. **P&L is colorless** on a trading surface (§1, §4).
-3. **Chart and chat share no palette.** `#26a69a`/`#ef5350` are orphan constants; nothing else
-   in the app knows those colors exist.
+3. ~~**Chart and chat share no palette.** `#26a69a`/`#ef5350` are orphan constants; nothing
+   else in the app knows those colors exist.~~ **Closed 2026-09-23:** `claudia/palette.py`
+   is the single declaration, imported by `panel_chart` and `panel_dashboard`, and a
+   structural test keeps it that way. Note what this did *not* close — the palette is one
+   module, not a *token set*; §8.4 below is still open.
 4. ~~**No dark theme**, on a tool used against dark charting software.~~ **Closed 2026-09-02:**
    `CLAUDIA_THEME` default + `?theme=` per-tab override (`ui-customisation-reference.md` §2.1).
 5. **No page chrome** — no header, no branding, no place to put controls that are not
@@ -382,6 +389,11 @@ before it becomes load-bearing.
 Set the eight `--design-*` variables once via `pn.extension(global_css=[':root { … }'])` — the
 modern, non-deprecated path (§3.1, §3.4) — and derive the chart's up/down colors from the same
 palette instead of leaving them as constants.
+**Half-done 2026-09-23:** the constants are no longer scattered — `claudia/palette.py` holds
+one declaration that chart and dashboard both import. What remains is the *token* half: that
+module is plain Python, unconnected to `--design-*`, and deliberately so for now. Green-means-
+profit is semantics rather than a theme knob, so a palette that reads differently in dark mode
+would be a separate, deliberate decision rather than a free consequence of tokenising.
 **Cost:** moderate. **Open question:** Panel exposes **color tokens only** — fonts and spacing
 still need `stylesheets=` rules, so a "token system" here is partial by construction. Accept
 that or build a thin layer above it?
