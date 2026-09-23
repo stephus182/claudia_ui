@@ -2085,3 +2085,51 @@ def test_a_sub_cent_figure_stays_neutral_rather_than_red():
     assert palette.pnl_color(0.0) == palette.FLAT_COLOR
     assert palette.pnl_color(-5.0) == palette.DOWN_COLOR
     assert palette.pnl_color(5.0) == palette.UP_COLOR
+
+
+# ── The dead band is half the smallest DISPLAYED unit, per column ─────────────
+#
+# Found by reviewing 2026-09-23's own diff, not by the suite. `_sign_style` began
+# deferring to `pnl_color`, whose half-cent band is derived from money's two decimals.
+# The percentage columns hold FRACTIONS (`_as_fraction`: 2.39% is stored 0.0239) and
+# render through `"+0,0.00%"`, so the same numeric band is 100x too wide there: every
+# move smaller than ±0.5% was painted flat while the cell displayed it plainly.
+
+
+@pytest.mark.parametrize("pct", [0.49, -0.49, 0.10, -0.10, 0.01, -0.01])
+def test_a_visible_percentage_move_is_never_painted_flat(pct):
+    """If the cell shows a move, the colour must show its direction.
+
+    Parametrised over the band that was wrong: `0.01` is the smallest the format can
+    render, `0.49` the largest that the money band swallowed.
+    """
+    stored = pdash._as_fraction(pct)
+    expected = palette.UP_COLOR if pct > 0 else palette.DOWN_COLOR
+    assert pdash._percent_sign_style(stored) == f"color: {expected}", (
+        f"{pct:+.2f}% displays as a real move but was coloured flat"
+    )
+
+
+@pytest.mark.parametrize("pct", [0.004, -0.004, 0.0])
+def test_a_percentage_that_displays_as_zero_stays_flat(pct):
+    """The rule is unchanged, only its scale: what renders `+0.00%` is not a loss."""
+    assert pdash._percent_sign_style(pdash._as_fraction(pct)) == f"color: {palette.FLAT_COLOR}"
+
+
+def test_money_cells_keep_the_half_cent_band():
+    """The money columns are untouched — a cell displaying `-0.00` is still neutral."""
+    assert pdash._sign_style(-0.004) == f"color: {palette.FLAT_COLOR}"
+    assert pdash._sign_style(-0.006) == f"color: {palette.DOWN_COLOR}"
+
+
+def test_each_signed_column_is_styled_with_the_band_that_matches_its_format():
+    """Structural: the split is what keeps the two bands from being confused again.
+
+    Asserted over the column lists rather than over one column, so adding a signed
+    column without deciding which band it takes fails here.
+    """
+    money = set(pdash._MONEY_SIGNED_COLUMNS)
+    percent = set(pdash._PERCENT_SIGNED_COLUMNS)
+    assert not money & percent, "a column cannot take both bands"
+    assert all("%" in c for c in percent), "a percent band applied to a money column"
+    assert not any("%" in c for c in money), "a money band applied to a percent column"

@@ -551,7 +551,11 @@ _POSITION_COLUMNS = [
 # "Basis Δ" is deliberately **not** here. Its sign says which way IBKR's basis leans, not
 # whether anything is good or bad, and the green/red map on this surface means profit and
 # loss. Colouring it would assert a judgement the number does not carry.
-_SIGNED_COLUMNS = ["Unrealised", "% Unrealised", "Change", "% Change"]
+# Signed columns are split by the format they RENDER through, because the neutral band is
+# half the smallest unit a cell can display and the two formats differ by a factor of 100.
+# Keeping one list cost a real defect on 2026-09-23 — see `_percent_sign_style`.
+_MONEY_SIGNED_COLUMNS = ["Unrealised", "Change"]
+_PERCENT_SIGNED_COLUMNS = ["% Unrealised", "% Change"]
 
 # Per-column pixel widths. Needed because the table carries fourteen columns in a pane
 # that is about half the window: left to size themselves, `Name` alone took the room the
@@ -1020,16 +1024,42 @@ def reconciliation_line(rec: Reconciliation) -> str:
     )
 
 
+# Half of 0.01%, the smallest move `_PERCENT_FORMAT` can render. The percentage columns
+# hold FRACTIONS (`_as_fraction`: 2.39% is stored as 0.0239), so money's half-cent band is
+# a hundred times too wide for them.
+_PERCENT_FLAT_BAND = 0.00005
+
+
 def _sign_style(value: Any) -> str:
-    """Green/red/neutral CSS for one signed cell; nothing at all for a non-number.
+    """Green/red/neutral CSS for one signed MONEY cell; nothing at all for a non-number.
 
     Defers to `pnl_color` so the tiles, the tables and the chart cannot disagree. This
     carried its own strict-sign rule until 2026-09-23, which differed from the tiles inside
     the half-cent band: a cell displaying `-0.00` was painted red.
+
+    **Money only** — use `_percent_sign_style` for the fraction-valued columns.
     """
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return ""
     return f"color: {pnl_color(float(value))}"
+
+
+def _percent_sign_style(value: Any) -> str:
+    """The same rule at the percentage columns' own precision.
+
+    **Why this is not `_sign_style` (found reviewing 2026-09-23's diff, not by the suite).**
+    That function began deferring to `pnl_color`, whose default band is half a cent because
+    money shows two decimals. These columns store a fraction and render it through
+    `"+0,0.00%"`, so the identical numeric band spanned ±0.5 **percent**: a position up
+    0.49% displayed `+0.49%` and was painted neutral grey. On a quiet day that is most of
+    the column.
+
+    The rule itself never changed — a cell that displays as zero is not a loss — only the
+    scale it is measured at.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return ""
+    return f"color: {pnl_color(float(value), flat_band=_PERCENT_FLAT_BAND)}"
 
 
 # ── Round-trip stats ──────────────────────────────────────────────────────────
@@ -1276,7 +1306,8 @@ class DashboardView:
         # which cannot be the case here since the constructor above was given a frame.
         styler = self._positions.style
         assert styler is not None  # noqa: S101 - narrowing for mypy, not a runtime guarantee
-        styler.map(_sign_style, subset=_SIGNED_COLUMNS)
+        styler.map(_sign_style, subset=_MONEY_SIGNED_COLUMNS)
+        styler.map(_percent_sign_style, subset=_PERCENT_SIGNED_COLUMNS)
         self._positions_status = safe_markdown("_Positions: waiting for the first poll…_")
         self._reconciliation = safe_markdown("")
         self._basis_note = safe_markdown("")

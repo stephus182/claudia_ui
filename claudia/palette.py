@@ -29,14 +29,23 @@ FLAT_COLOR = "#8a8a8a"
 PNL_FLAT_BAND = 0.005
 """Half a cent of dead band around zero, inside which a money figure reads as flat.
 
-Money renders to two decimals, so anything inside this band **displays as `0.00`** and
-painting it a loss would contradict the number printed beside it. `panel_dashboard` also
-expresses this band as `Number.colors` thresholds for the KPI tiles; both come from here so
-the two forms cannot disagree.
+**The rule is half the smallest unit the cell can DISPLAY**, and this value is that rule
+applied to money: two decimals, so the smallest visible unit is `0.01` and half of it is
+`0.005`. Anything inside the band **displays as `0.00`**, and painting it a loss would
+contradict the number printed beside it. `panel_dashboard` also expresses this band as
+`Number.colors` thresholds for the KPI tiles; both come from here so the two forms cannot
+disagree.
+
+**A band is only ever right for one display format.** `panel_dashboard`'s percentage
+columns hold fractions and render through `"+0,0.00%"`, so their smallest visible unit is
+`0.0001` and their band is `0.00005` — a hundredth of this one. That is why `pnl_color`
+takes `flat_band` rather than closing over this value: passing money's band to a fraction
+painted every move under ±0.5% flat, which is the defect this parameter exists to stop
+recurring.
 """
 
 
-def pnl_color(value: float) -> str:
+def pnl_color(value: float, *, flat_band: float = PNL_FLAT_BAND) -> str:
     """The colour a signed money figure is drawn in — green up, red down, grey flat.
 
     **One rule for every P&L surface**: the KPI tiles, the positions and orders tables, and
@@ -49,10 +58,12 @@ def pnl_color(value: float) -> str:
     rule that differed from the tiles inside the dead band, so a cell displaying `-0.00` was
     painted red while the tile beside it showed neutral.
 
-    The band is **exclusive**: exactly at `PNL_FLAT_BAND` is still flat.
+    `flat_band` defaults to money's half-cent and must be overridden for any surface that
+    renders to a different precision — see `PNL_FLAT_BAND`. The band is **exclusive**:
+    exactly at `flat_band` is still flat.
     """
-    if value > PNL_FLAT_BAND:
+    if value > flat_band:
         return UP_COLOR
-    if value < -PNL_FLAT_BAND:
+    if value < -flat_band:
         return DOWN_COLOR
     return FLAT_COLOR
