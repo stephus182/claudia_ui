@@ -106,7 +106,18 @@ _PNL_COLORS = [
 
 _TILE_WIDTH = 165
 _CHART_HEIGHT = 260
-_BAR_ROW_HEIGHT = 130
+# Near-parity with the cumulative row, not the half-height strip it was until 2026-09-23
+# (user, looking at the live pane: "~same height to be more readable"). The daily row
+# carries the per-day detail the cumulative row deliberately hides, so squeezing it made
+# the chart's own subject the hardest part to read: a -21.31 day and a +2,922.96 day
+# shared 130px. The cumulative keeps a slight edge because it is the headline figure.
+_BAR_ROW_HEIGHT = 230
+
+# Major y ticks per row. Bokeh's default chose seven labels for the old 130px strip, which
+# is what "too dense" was. A cap rather than explicit tick values: the windows span three
+# orders of magnitude (a week of scratches to a year of futures), so fixed positions would
+# be wrong for most of them while a cap reads well at any range.
+_Y_TICK_COUNT = 5
 
 # Which asset categories roll up into the "equities & options" side of the futures split.
 # FUT is everything else. Named here rather than inline so the two call sites cannot drift.
@@ -561,7 +572,10 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     daily = bars.hvplot.bar(
         x="day", y="realised", height=_BAR_ROW_HEIGHT, color="_bar_color", hover=False
     ).opts(tools=[_money_hover("realised", "Realised")])
-    return (cumulative.opts(title=title, height=_CHART_HEIGHT) + daily.opts(title="")).cols(1)
+    return (
+        cumulative.opts(title=title, height=_CHART_HEIGHT, yticks=_Y_TICK_COUNT)
+        + daily.opts(title="", yticks=_Y_TICK_COUNT)
+    ).cols(1)
 
 
 # ── Positions table ───────────────────────────────────────────────────────────

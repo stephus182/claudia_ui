@@ -2236,3 +2236,31 @@ def test_a_full_series_is_unchanged_by_rebasing():
     pts = _points_from(realised, start_cumulative=0.0)
     values = _curve_values(pdash.build_realised_chart(pts, "YTD"))
     assert values == pytest.approx([p.cumulative for p in pts])
+
+
+# ── The daily row must be readable, not a strip under the curve ──────────────
+#
+# User, 2026-09-23, looking at the live pane: "I like the second bar graph to have the
+# ~same height to be more readable and scale less busy (seems too dense and not very
+# readable)." It was drawn at exactly half the cumulative row's height with the default
+# tick density, so a -21.31 day and a +2,922.96 day shared a 130px axis carrying seven
+# labels.
+
+
+def test_the_daily_row_gets_comparable_height_to_the_cumulative_row():
+    """The bars carry the per-day detail; a strip cannot show it."""
+    assert pdash._BAR_ROW_HEIGHT >= 0.8 * pdash._CHART_HEIGHT, (
+        f"daily row {pdash._BAR_ROW_HEIGHT}px against cumulative {pdash._CHART_HEIGHT}px "
+        "— too short to read"
+    )
+
+
+def test_both_rows_cap_their_y_tick_count():
+    """A bounded tick count is what stops the axis crowding as the range grows."""
+    pts = _points_from([500.0, -200.0, 900.0, -1_400.0, 2_922.96])
+    layout = pdash.build_realised_chart(pts, "t")
+    for element in layout:
+        ticks = element.opts.get("plot").kwargs.get("yticks")
+        assert isinstance(ticks, int) and ticks <= 6, (
+            f"yticks={ticks!r} on {type(element).__name__}"
+        )
