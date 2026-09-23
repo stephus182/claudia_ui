@@ -354,12 +354,13 @@ def test_build_chart_object_colors_up_and_down_bodies():
     """Up and down candles get their own colours."""
     import holoviews as hv
 
-    from claudia.panel_chart import _DOWN_COLOR, _UP_COLOR, build_chart_object
+    from claudia.palette import DOWN_COLOR, UP_COLOR
+    from claudia.panel_chart import build_chart_object
 
     obj = build_chart_object(_sample_df(), "T")
     rects = _rects(obj)
     color = hv.Store.lookup_options("bokeh", rects, "style").kwargs["color"]
-    assert list(color.apply(rects)) == [_UP_COLOR, _UP_COLOR, _DOWN_COLOR, _DOWN_COLOR]
+    assert list(color.apply(rects)) == [UP_COLOR, UP_COLOR, DOWN_COLOR, DOWN_COLOR]
 
 
 def test_build_chart_object_carries_the_title():

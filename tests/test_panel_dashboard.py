@@ -24,6 +24,7 @@ import panel as pn
 import pytest
 
 import claudia.panel_dashboard as pdash
+from claudia import palette
 
 # Tabulator needs its extension loaded before the widget can render. Importing the module
 # under test does not do it — panel_app owns the single pn.extension call — so the suite
@@ -580,9 +581,9 @@ def test_pnl_colors_are_neutral_at_exactly_zero():
     tile = pdash.build_dashboard()._tiles["unrealised"]
     assert tile.colors is not None
     thresholds = dict(tile.colors)
-    assert thresholds[-0.005] == pdash._DOWN_COLOR
-    assert thresholds[0.005] == pdash._FLAT_COLOR
-    assert thresholds[float("inf")] == pdash._UP_COLOR
+    assert thresholds[-0.005] == palette.DOWN_COLOR
+    assert thresholds[0.005] == palette.FLAT_COLOR
+    assert thresholds[float("inf")] == palette.UP_COLOR
 
 
 def test_numeric_columns_are_formatted_and_right_aligned(view):
@@ -1150,15 +1151,15 @@ def test_pnl_colouring_is_bound_to_the_unrealised_column(view):
     """`.style.map` gives the P&L cells their red/green without any CSS."""
     view._positions.style._compute()
     ctx = view._positions.style.ctx
-    assert any(("color", pdash._DOWN_COLOR) in styles for styles in ctx.values())
+    assert any(("color", palette.DOWN_COLOR) in styles for styles in ctx.values())
 
 
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        (5.0, f"color: {pdash._UP_COLOR}"),
-        (-5.0, f"color: {pdash._DOWN_COLOR}"),
-        (0.0, f"color: {pdash._FLAT_COLOR}"),
+        (5.0, f"color: {palette.UP_COLOR}"),
+        (-5.0, f"color: {palette.DOWN_COLOR}"),
+        (0.0, f"color: {palette.FLAT_COLOR}"),
         ("text", ""),
         (True, ""),
     ],
@@ -2039,16 +2040,16 @@ def test_a_losing_window_draws_the_cumulative_curve_red():
     """A month that lost money must not render in the up colour."""
     pts = tuple(dd.RealisedPoint(date(2026, 8, d), -100.0, -100.0 * (d - 2)) for d in (3, 4, 5, 6))
     area, curve = _chart_colors(pdash.build_realised_chart(pts, "losing"))
-    assert area == pdash._DOWN_COLOR, f"area drew {area}"
-    assert curve == pdash._DOWN_COLOR, f"curve drew {curve}"
+    assert area == palette.DOWN_COLOR, f"area drew {area}"
+    assert curve == palette.DOWN_COLOR, f"curve drew {curve}"
 
 
 def test_a_winning_window_draws_the_cumulative_curve_green():
     """The up case must keep the up colour."""
     pts = tuple(dd.RealisedPoint(date(2026, 8, d), 100.0, 100.0 * (d - 2)) for d in (3, 4, 5, 6))
     area, curve = _chart_colors(pdash.build_realised_chart(pts, "winning"))
-    assert area == pdash._UP_COLOR
-    assert curve == pdash._UP_COLOR
+    assert area == palette.UP_COLOR
+    assert curve == palette.UP_COLOR
 
 
 def test_daily_bars_are_coloured_one_by_one_by_their_own_sign():
@@ -2059,28 +2060,28 @@ def test_daily_bars_are_coloured_one_by_one_by_their_own_sign():
     )
     colors = _bar_colors(pdash.build_realised_chart(pts, "mixed"))
     assert colors == [
-        pdash._UP_COLOR,
-        pdash._DOWN_COLOR,
-        pdash._FLAT_COLOR,
-        pdash._UP_COLOR,
+        palette.UP_COLOR,
+        palette.DOWN_COLOR,
+        palette.FLAT_COLOR,
+        palette.UP_COLOR,
     ], colors
 
 
 def test_an_all_losing_week_paints_every_bar_red():
     """The common real case: every day down. Uniform bars collapse to a scalar fill."""
     pts = tuple(dd.RealisedPoint(date(2026, 8, d), -100.0, -100.0 * (d - 2)) for d in (3, 4, 5))
-    assert _bar_colors(pdash.build_realised_chart(pts, "all down")) == [pdash._DOWN_COLOR] * 3
+    assert _bar_colors(pdash.build_realised_chart(pts, "all down")) == [palette.DOWN_COLOR] * 3
 
 
 def test_an_all_winning_week_paints_every_bar_green():
     """And its mirror, so the scalar path is pinned in both directions."""
     pts = tuple(dd.RealisedPoint(date(2026, 8, d), 100.0, 100.0 * (d - 2)) for d in (3, 4, 5))
-    assert _bar_colors(pdash.build_realised_chart(pts, "all up")) == [pdash._UP_COLOR] * 3
+    assert _bar_colors(pdash.build_realised_chart(pts, "all up")) == [palette.UP_COLOR] * 3
 
 
 def test_a_sub_cent_figure_stays_neutral_rather_than_red():
     """Money renders to 2dp: a value displaying as 0.00 must not be painted a loss."""
-    assert pdash._pnl_color(-0.003) == pdash._FLAT_COLOR
-    assert pdash._pnl_color(0.0) == pdash._FLAT_COLOR
-    assert pdash._pnl_color(-5.0) == pdash._DOWN_COLOR
-    assert pdash._pnl_color(5.0) == pdash._UP_COLOR
+    assert palette.pnl_color(-0.003) == palette.FLAT_COLOR
+    assert palette.pnl_color(0.0) == palette.FLAT_COLOR
+    assert palette.pnl_color(-5.0) == palette.DOWN_COLOR
+    assert palette.pnl_color(5.0) == palette.UP_COLOR

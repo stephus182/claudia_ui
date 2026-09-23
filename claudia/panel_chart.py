@@ -52,12 +52,11 @@ import pandas as pd
 import panel as pn
 from ibkr_core_mcp import indicators
 
+from claudia.palette import DOWN_COLOR, UP_COLOR
 from claudia.panel_markdown import safe_markdown
 
 log = logging.getLogger(__name__)
 
-_UP_COLOR = "#26a69a"  # teal — close >= open
-_DOWN_COLOR = "#ef5350"  # red — close < open
 
 # Passed to hvplot.ohlc()'s bar_width= for the candle bodies only (build_chart_object) --
 # the volume bars are a separate .hvplot.bar() call that takes no bar_width and uses
@@ -162,8 +161,8 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
         # name-based guarantee.
         y=["open", "high", "low", "close"],
         bar_width=_BODY_WIDTH_FRACTION,
-        pos_color=_UP_COLOR,
-        neg_color=_DOWN_COLOR,
+        pos_color=UP_COLOR,
+        neg_color=DOWN_COLOR,
     )
     # .rename is load-bearing, not cosmetic: hvplot labels a Series curve from
     # Series.name, and indicators.sma returns a Series named 'close' despite a docstring
