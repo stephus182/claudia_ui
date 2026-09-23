@@ -365,7 +365,7 @@ async def test_inject_persists_a_tool_row_on_success():
     )
     await _get_click_callback(_first_row(chat)[1])(None)
 
-    from claudia.panel_pinescript import UI_BUTTON_ORIGIN
+    from claudia.tool_record import UI_BUTTON_ORIGIN
 
     store.add_message.assert_called_once_with(
         "s-1",
@@ -444,7 +444,7 @@ async def test_inject_row_is_stamped_as_a_button_click():
     byte-identical to a model call — and the forensic rule "a tool row between a user
     row and an assistant row is the model's evidence" would then be false, letting a
     future audit clear a genuine fabrication with a user's click."""
-    from claudia.panel_pinescript import UI_BUTTON_ORIGIN
+    from claudia.tool_record import UI_BUTTON_ORIGIN
 
     chat = _make_chat()
     bridge = MagicMock()

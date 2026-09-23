@@ -37,21 +37,9 @@ if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
     from claudia.tradingview import TradingViewBridge
 
+from claudia.tool_record import UI_BUTTON_ORIGIN
+
 log = logging.getLogger(__name__)
-
-
-UI_BUTTON_ORIGIN = "ui_button"
-"""`content` stamp marking a `tool` row the USER produced by clicking, not the model.
-
-A model-initiated call writes `content=""` (agent.py's tool loop), so this one field
-separates the two origins in the store. It is not decoration: the forensic rule of
-`reference-proving-a-tool-call-never-happened` — *a `tool` row between a user row and an
-assistant row is the model's evidence* — becomes false the moment a click can write one,
-and a click can land mid-turn because the Pine buttons stay live while a turn is in
-flight. Without the stamp a future corpus audit would credit a user's click to the model
-and clear a genuine fabrication in that very turn. Read by the audit, never by the model:
-the called-tool ledger is names-only, so this never reaches the prompt.
-"""
 
 
 def _pine_inject_succeeded(result: str) -> bool:

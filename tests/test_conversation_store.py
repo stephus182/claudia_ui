@@ -887,3 +887,37 @@ def test_search_messages_without_exclusion_is_unchanged(store):
     hits = store.search_messages("NVDA position")
 
     assert {h["session_id"] for h in hits} == {"s1", "s2"}
+
+
+# ── recall returns CONVERSATION, not tool plumbing ───────────────────────────
+#
+# `search_messages` never filtered by role, so a `tool` row was FTS-indexed on its
+# `content` column. Model-initiated rows write `content=""` and so index nothing, but an
+# out-of-loop row carries an ORIGIN STAMP there — `ui_button` today, and gap #21's startup
+# seam adds `startup`, which is an ordinary English word. A recall search would then hand
+# the model its own plumbing as "past conversation", and search hits reach the model as a
+# tool result, which the safety block names a guaranteed source.
+
+
+def test_recall_does_not_return_tool_rows(store):
+    """A tool row's origin stamp is for the audit, never for the model's recall."""
+    store.create_session("s1")
+    store.add_message("s1", "tool", content="startup", tool_name="sync_flex_trades", tool_input={})
+    store.add_message("s1", "tool", content="ui_button", tool_name="pine_set_source")
+    store.add_message("s1", "assistant", content="we discussed the startup routine")
+
+    for term in ("startup", "ui_button", "button"):
+        hits = store.search_messages(term)
+        assert all(h["role"] != "tool" for h in hits), f"{term!r} returned a tool row: {hits}"
+
+
+def test_recall_still_returns_the_conversation_around_those_rows(store):
+    """The filter must remove plumbing without removing what was actually said."""
+    store.create_session("s1")
+    store.add_message("s1", "tool", content="startup", tool_name="sync_flex_trades")
+    store.add_message("s1", "assistant", content="we discussed the startup routine")
+
+    hits = store.search_messages("startup")
+
+    assert [h["role"] for h in hits] == ["assistant"]
+    assert "startup routine" in hits[0]["content"]

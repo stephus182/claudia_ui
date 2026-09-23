@@ -537,7 +537,15 @@ class ConversationStore:
         from outside the turn that made it. Excluded rather than labelled on purpose:
         labelling asks the model to police itself on the one path built because it cannot.
 
-        The exclusion is applied in `WHERE`, not after `LIMIT`, so filtering never silently
+        **Only `user` and `assistant` rows are searched.** A `tool` row is plumbing, not
+        conversation, and its `content` column carries an origin stamp for out-of-loop calls
+        — `ui_button`, and `startup` from the gap #21 seam. `startup` is an ordinary English
+        word, so without this filter a recall search would hand the model its own plumbing
+        as "past conversation", and a search hit reaches the model as a `tool_result`, which
+        the safety block names a guaranteed source. Model-initiated rows write `content=""`
+        and so indexed nothing, which is why this went unnoticed.
+
+        Both filters are applied in `WHERE`, not after `LIMIT`, so filtering never silently
         shortens the result set.
 
         max_tokens is a rough budget: results are trimmed when the cumulative
@@ -560,6 +568,7 @@ class ConversationStore:
                    LEFT JOIN message_withdrawals w ON w.message_id = m.id
                    WHERE messages_fts MATCH ? AND w.message_id IS NULL
                      AND m.session_id IS NOT ?
+                     AND m.role IN ('user', 'assistant')
                    ORDER BY rank
                    LIMIT ?""",
                 (expression, exclude_session_id, max_results),

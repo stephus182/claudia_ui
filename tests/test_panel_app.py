@@ -1254,6 +1254,61 @@ async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
 
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
+async def test_the_startup_flex_sync_leaves_a_tool_row(monkeypatch):
+    """gap #21: a real tool ran, so the store must be able to show that it ran.
+
+    Nothing about the Flex decision, wording, gating or API usage changes — the row is
+    purely additive. It is stamped `startup` so an audit can tell a background task apart
+    from the model's own call and from a user's click.
+    """
+    from claudia.panel_app import _maybe_background_flex_sync
+    from claudia.tool_record import STARTUP_ORIGIN
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    store = MagicMock()
+    with patch(
+        "claudia.panel_app.dataset_fingerprint",
+        side_effect=[(1101, 1101, "2026-08-03"), (1110, 1110, "2026-08-04")],
+    ):
+        await _maybe_background_flex_sync(
+            MagicMock(), toolkit, ibkr_offline=False, store=store, session_id="s1"
+        )
+        await _drain_flex_sync()
+
+    # the tool itself still ran exactly as before
+    toolkit.execute.assert_called_once_with("sync_flex_trades", {})
+    rows = [c for c in store.add_message.call_args_list if c.args[1:2] == ("tool",)]
+    assert rows, "the startup sync left no record that it ran"
+    kwargs = rows[0].kwargs
+    assert kwargs["content"] == STARTUP_ORIGIN
+    assert kwargs["tool_name"] == "sync_flex_trades"
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_a_failing_startup_sync_still_records_both_calls(monkeypatch):
+    """The fallback coverage read is a real tool call too, and the failure is the record."""
+    from claudia.panel_app import _maybe_background_flex_sync
+    from claudia.tool_record import STARTUP_ORIGIN
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit.execute.side_effect = [RuntimeError("Flex 1025"), ("coverage report", None)]
+    store = MagicMock()
+    await _maybe_background_flex_sync(
+        MagicMock(), toolkit, ibkr_offline=False, store=store, session_id="s1"
+    )
+    await _drain_flex_sync()
+
+    named = [
+        c.kwargs["tool_name"]
+        for c in store.add_message.call_args_list
+        if c.args[1:2] == ("tool",) and c.kwargs.get("content") == STARTUP_ORIGIN
+    ]
+    assert named == ["sync_flex_trades", "check_flex_coverage"], named
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
 async def test_flex_sync_failure_sends_coverage_fallback():
     """A failed sync still reports what data is present, rather than only that something broke."""
     from claudia.panel_app import _maybe_background_flex_sync

@@ -82,6 +82,7 @@ from claudia.panel_theme import (
 )
 from claudia.session_reporter import generate_session_report
 from claudia.status import ConnectivityChecker, ServiceStatus
+from claudia.tool_record import STARTUP_ORIGIN, record_and_execute
 from claudia.tradingview import (
     _TV_CDP_WAIT_S,
     TradingViewBridge,
@@ -711,7 +712,12 @@ def _build_action_bar(
 
 
 async def _maybe_background_flex_sync(
-    syslog: SystemLog, toolkit: ClaudeToolkit, ibkr_offline: bool
+    syslog: SystemLog,
+    toolkit: ClaudeToolkit,
+    ibkr_offline: bool,
+    *,
+    store: ConversationStore | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Startup Flex sync decision + background sync (parity with the removed app.py).
 
@@ -783,7 +789,14 @@ async def _maybe_background_flex_sync(
         """
         try:
             before = await asyncio.to_thread(dataset_fingerprint, cfg.sqlite_path)
-            result, _ = await asyncio.to_thread(toolkit.execute, "sync_flex_trades", {})
+            result, _ = await record_and_execute(
+                toolkit,
+                "sync_flex_trades",
+                {},
+                store=store,
+                session_id=session_id,
+                origin=STARTUP_ORIGIN,
+            )
             syslog.say(f"✅ {result}")
             after = await asyncio.to_thread(dataset_fingerprint, cfg.sqlite_path)
             # Back up the updated store.db to Drive account_data/.
@@ -817,7 +830,14 @@ async def _maybe_background_flex_sync(
             log.warning("Background Flex sync failed: %s", exc)
             # Sync failed — still run integrity check so data status is known
             try:
-                cov_result, _ = await asyncio.to_thread(toolkit.execute, "check_flex_coverage", {})
+                cov_result, _ = await record_and_execute(
+                    toolkit,
+                    "check_flex_coverage",
+                    {},
+                    store=store,
+                    session_id=session_id,
+                    origin=STARTUP_ORIGIN,
+                )
                 syslog.say(
                     f"⚠ Sync failed: {exc}. Run `sync_flex_trades` manually.\n\n{cov_result}",
                     "warning",
@@ -1369,7 +1389,9 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 if ibkr_offline
                 else "**ClaudIA is ready** — connected to IBKR."
             )
-            await _maybe_background_flex_sync(syslog, toolkit, ibkr_offline)
+            await _maybe_background_flex_sync(
+                syslog, toolkit, ibkr_offline, store=store, session_id=session_id
+            )
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
             _session["error"] = str(exc)
