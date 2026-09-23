@@ -1998,3 +1998,57 @@ def test_without_a_reconstruction_the_series_is_flex_alone(tmp_path):
     assert dd.bridged_series(conn, start, end, None, date(2026, 8, 4)) == dd.realised_series(
         conn, start, end
     )
+
+
+# -- weekly_series: one resolution per view -----------------------------------
+#
+# The YTD pane drew 131 daily bars in a few hundred pixels — hairlines, unreadable
+# (screenshot 2026-09-23). Aggregating only the bars was rejected by the operator, and
+# rightly: "the logic answer is to be consistent, so in yearly view, data points are
+# weekly on both sides, line and histogram." Two rows at different resolutions on one
+# shared x-axis would be harder to read than either.
+#
+# Buckets open on the ISO week's Monday so a week is a week regardless of which day
+# traded, and the running total is rebuilt over the buckets — so a week's point is the
+# cumulative through the END of that week, exactly as a day's point is through the end of
+# that day.
+
+
+def test_weekly_buckets_sum_the_days_inside_them():
+    """Nothing is created or lost by regrouping — only the granularity changes."""
+    pts = tuple(
+        dd.RealisedPoint(day=d, realised=r, cumulative=0.0)
+        for d, r in [
+            (date(2026, 9, 1), 100.0),  # Tue, week of Aug 31
+            (date(2026, 9, 3), -40.0),  # Thu, same week
+            (date(2026, 9, 8), 250.0),  # Tue, week of Sep 7
+        ]
+    )
+    weekly = dd.weekly_series(pts)
+    assert [p.day for p in weekly] == [date(2026, 8, 31), date(2026, 9, 7)]
+    assert [p.realised for p in weekly] == pytest.approx([60.0, 250.0])
+
+
+def test_the_weekly_total_equals_the_daily_total():
+    """The invariant that lets a view change resolution without changing the money."""
+    pts = tuple(
+        dd.RealisedPoint(day=date(2026, 9, d), realised=float(r), cumulative=0.0)
+        for d, r in [(1, 100), (3, -40), (8, 250), (21, -900), (23, 2922)]
+    )
+    weekly = dd.weekly_series(pts)
+    assert sum(p.realised for p in weekly) == pytest.approx(sum(p.realised for p in pts))
+    assert weekly[-1].cumulative == pytest.approx(sum(p.realised for p in pts))
+
+
+def test_the_running_total_is_rebuilt_over_the_buckets():
+    """A week's point is the cumulative through the END of that week."""
+    pts = tuple(
+        dd.RealisedPoint(day=date(2026, 9, d), realised=float(r), cumulative=0.0)
+        for d, r in [(1, 100), (3, -40), (8, 250)]
+    )
+    assert [p.cumulative for p in dd.weekly_series(pts)] == pytest.approx([60.0, 310.0])
+
+
+def test_an_empty_series_stays_empty():
+    """No buckets to invent."""
+    assert dd.weekly_series(()) == ()

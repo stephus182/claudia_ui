@@ -442,8 +442,19 @@ def test_every_money_string_carries_an_iso_code_and_no_bare_dollar(view):
         assert "$" not in tile.format
 
 
-def test_a_mixed_currency_window_is_labelled_mixed_not_usd(view):
-    """The YTD fixture spans EUR and USD; its total must not be stamped USD."""
+def test_a_mixed_currency_window_is_labelled_mixed_not_usd():
+    """The YTD fixture spans EUR and USD; its total must not be stamped USD.
+
+    Given a series spanning several ISO weeks: the YTD view regroups to weekly points, and
+    the shared fixture's four August days all fall inside ONE week — which correctly draws
+    no chart, leaving the title this test is about with nothing to assert against.
+    """
+    spread = tuple(
+        dd.RealisedPoint(date(2026, 7, d), 100.0, 100.0 * i)
+        for i, d in enumerate((6, 13, 20), start=1)
+    )
+    view = pdash.build_dashboard()
+    view.refresh(_snapshot(series=spread), now=_NOW)
     view._window.value = "YTD"
     assert "mixed" in view._pnl_stats.object
     # The chart's title is the assertion that matters; an earlier `... or True` line here
@@ -2527,3 +2538,74 @@ def test_the_filled_area_contains_no_nan():
                 continue
             ys = [float(v) for v in src.data["y"]]
             assert not any(v != v for v in ys), "NaN inside the fill polygon tears it open"
+
+
+def test_the_trailing_step_matches_the_series_own_spacing():
+    """A weekly point holds for a week, not for a day.
+
+    `_step_frame` appends one trailing point so the final value gets the same width as
+    every other. At daily resolution that is a day; on the YTD view, whose points are
+    weekly, a one-day tail would draw the year's closing figure as a sliver. Taken from
+    the series' own **minimum** spacing — the same idiom hvplot uses to size bars.
+    """
+    from datetime import date as _date
+
+    weekly = tuple(
+        dd.RealisedPoint(day=_date(2026, 9, d), realised=100.0, cumulative=100.0 * i)
+        for i, d in enumerate((7, 14, 21), start=1)
+    )
+    step = pdash._step_frame(pdash.realised_frame(weekly))
+    days = list(step["day"])
+    assert (days[-1] - days[-2]).days == 7, (
+        f"trailing step is {(days[-1] - days[-2]).days}d on a weekly series"
+    )
+
+
+def test_the_ytd_view_shows_weekly_points_on_both_rows():
+    """One resolution per view: the line and the histogram must agree.
+
+    User, 2026-09-23: "the logic answer is to be consistent, so in yearly view, data
+    points are weekly on both sides, line and histogram."
+    """
+    import holoviews as hv
+
+    # Eight consecutive trading days spanning three ISO weeks, so daily and weekly
+    # resolutions are unmistakably different. Built here rather than taken from the shared
+    # fixture, whose series is too short to draw a YTD chart at all — a skipped test would
+    # have asserted nothing.
+    # July dates: the fixture's YTD window runs 2026-01-01 to _TODAY (2026-08-06), and
+    # `_selected_window` filters to it, so points outside draw nothing at all.
+    daily = tuple(
+        dd.RealisedPoint(date(2026, 7, d), 100.0, 100.0 * i)
+        for i, d in enumerate((6, 7, 8, 13, 14, 15, 20, 21), start=1)
+    )
+    view = pdash.build_dashboard()
+    view.refresh(_snapshot(series=daily), now=_NOW)
+    view._window.value = "YTD"
+    obj = view._pnl_chart.object
+    assert obj is not None, "the YTD chart did not render"
+
+    for element in obj:
+        fig = hv.render(element, backend="bokeh")
+        for r in fig.renderers:
+            src = getattr(r, "data_source", None)
+            if src is None or "day" not in src.data:
+                continue
+            days = sorted({pd.Timestamp(v).date() for v in src.data["day"]})
+            # Every point but the trailing one opens a week; the tail is a bucket past it.
+            assert all(d.weekday() == 0 for d in days[:-1]), (
+                f"YTD points are not weekly: {days[:6]}"
+            )
+            assert len(days) <= 4, f"YTD still drawing daily points: {len(days)}"
+
+
+def test_the_single_point_note_names_the_right_unit():
+    """A YTD window holding one week must not report "one trading day".
+
+    Exposed by the weekly regrouping on 2026-09-23: the note was written when every view
+    was daily. A year-to-date pane in early January legitimately holds one bucket, and
+    calling that bucket a day would misstate how much trading it covers.
+    """
+    one = (dd.RealisedPoint(date(2026, 1, 5), 250.0, 250.0),)
+    assert "trading day" in pdash.realised_chart_note(one, "USD")
+    assert "trading week" in pdash.realised_chart_note(one, "USD", unit="week")

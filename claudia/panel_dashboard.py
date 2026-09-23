@@ -81,6 +81,7 @@ from claudia.dashboard_data import (
     position_display_name,
     realised_ledger_label,
     reconcile,
+    weekly_series,
 )
 from claudia.dashboard_poller import STALE_AFTER
 from claudia.palette import (
@@ -487,7 +488,7 @@ def realised_frame(points: tuple[RealisedPoint, ...]) -> pd.DataFrame:
     )
 
 
-def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str) -> str:
+def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str, unit: str = "day") -> str:
     """Why the chart is absent, when it is. Empty string when a chart was drawn.
 
     A window can legitimately hold fewer than two trading days — a Monday-start week
@@ -500,8 +501,12 @@ def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str) -> str
         return "_No realised P&L in this window._"
     if len(points) == 1:
         only = points[0]
+        # `unit` because the YTD view regroups to weeks: a year-to-date pane in early
+        # January legitimately holds one bucket, and calling that bucket a day would
+        # misstate how much trading it covers.
+        opened = "beginning" if unit == "week" else ""
         return (
-            f"_Only one trading day in this window — **{only.day.isoformat()}: "
+            f"_Only one trading {unit} in this window — **{opened}{only.day.isoformat()}: "
             f"{fmt_signed(only.realised, currency)}**. A curve needs at least two "
             f"points, so none is drawn._"
         )
@@ -638,9 +643,14 @@ def _step_frame(df: pd.DataFrame) -> pd.DataFrame:
     """
     days = df["day"].to_numpy()
     values = df["cumulative"].to_numpy()
+    # The tail is one BUCKET wide, taken from the series' own minimum spacing rather than
+    # hardcoded to a day: the YTD view's points are weekly, and a one-day tail would draw
+    # the year's closing figure as a sliver. Minimum, not last, because trading days are
+    # unevenly spaced — the same idiom hvplot uses to size bars.
+    bucket = np.min(np.diff(days)) if len(days) > 1 else np.timedelta64(1, "D")
     return pd.DataFrame(
         {
-            "day": np.append(np.repeat(days, 2)[1:], days[-1] + np.timedelta64(1, "D")),
+            "day": np.append(np.repeat(days, 2)[1:], days[-1] + bucket),
             "cumulative": np.append(np.repeat(values, 2)[:-1], values[-1]),
         }
     )
@@ -1913,7 +1923,9 @@ class DashboardView:
                 + (f", {ccy})" if ccy else ")")
             )
             self._pnl_chart.object = build_realised_chart(points, title)
-            self._pnl_chart_note.object = realised_chart_note(points, ccy)
+            self._pnl_chart_note.object = realised_chart_note(
+                points, ccy, unit="week" if _WINDOW_KEYS.get(label) == "ytd" else "day"
+            )
             self._pnl_stats.object = stats_markdown(
                 window, stats, f"{label} — settled by IBKR statement", currency=ccy
             )
@@ -1939,6 +1951,13 @@ class DashboardView:
         if window is None:
             return None, (), None
         points = tuple(p for p in snapshot.series if window.start <= p.day <= window.end)
+        if key == "ytd":
+            # One resolution per view. A year of daily bars is 131 hairlines in a few
+            # hundred pixels (seen 2026-09-23); aggregating only the bars would leave the
+            # two rows at different resolutions on one shared x-axis, which reads worse
+            # than either. `weekly_series` regroups without changing the money — its total
+            # equals the daily total, which is the invariant that makes this safe.
+            points = weekly_series(points)
         return window, points, snapshot.stats.get(key or "")
 
     def _on_window_change(self, _event: Any) -> None:

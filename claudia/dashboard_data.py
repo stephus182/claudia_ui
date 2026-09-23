@@ -1712,6 +1712,40 @@ def build_flex_sections(
     }
 
 
+def weekly_series(points: tuple[RealisedPoint, ...]) -> tuple[RealisedPoint, ...]:
+    """`points` regrouped into ISO weeks, with the running total rebuilt over the buckets.
+
+    **Why a view would want this.** The YTD pane drew 131 daily bars in a few hundred
+    pixels — hairlines, unreadable (seen 2026-09-23). Aggregating only the bars was
+    considered and rejected: two rows at different resolutions sharing one x-axis is harder
+    to read than either, so a view that regroups regroups **both** its rows.
+
+    Buckets open on the week's **Monday**, so a week is a week regardless of which days
+    inside it traded, and a week with no trading simply does not appear — the same rule the
+    daily series already follows for days, and the reason the stepped line remains honest
+    at either resolution.
+
+    The running total is rebuilt over the buckets rather than sampled from the daily one,
+    so a week's point is the cumulative through the **end** of that week — exactly as a
+    day's point is the cumulative through the end of that day.
+
+    **Nothing is created or lost.** The sum over the buckets equals the sum over the days,
+    which is what lets a view change resolution without changing the money it reports; the
+    test asserting that is the one to keep if any of these are ever trimmed.
+    """
+    totals: dict[date, float] = {}
+    for p in points:
+        monday = p.day - timedelta(days=p.day.weekday())
+        totals[monday] = totals.get(monday, 0.0) + p.realised
+
+    out: list[RealisedPoint] = []
+    running = 0.0
+    for monday in sorted(totals):
+        running += totals[monday]
+        out.append(RealisedPoint(monday, totals[monday], running))
+    return tuple(out)
+
+
 def bridged_series(
     conn: sqlite3.Connection,
     start: date,
