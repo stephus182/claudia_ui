@@ -2609,3 +2609,34 @@ def test_the_single_point_note_names_the_right_unit():
     one = (dd.RealisedPoint(date(2026, 1, 5), 250.0, 250.0),)
     assert "trading day" in pdash.realised_chart_note(one, "USD")
     assert "trading week" in pdash.realised_chart_note(one, "USD", unit="week")
+
+
+def test_the_step_frame_survives_hvplot_unreordered():
+    """hvPlot must not re-sort a stepped frame — the duplicates ARE the verticals.
+
+    Found 2026-09-23 from a screenshot: the monthly curve still drew diagonals after the
+    step, split and clip fixes were all in, and the frames handed to hvPlot were correct
+    every time. `hvPlot.area`/`.line` default to `sort_date=True`, which sorts by the
+    datetime x; a stepped series has TWO rows per day, and the tie order between them is
+    arbitrary under that sort. Reordering them turns a vertical segment into a diagonal.
+
+    Asserted against the frame that was passed in, so the guard holds for any window rather
+    than for one shape. It only bit at length, which is why the short probes all passed —
+    hence a realistic series here.
+    """
+    pts = _points_from([-621.46, 654.38, -904.48, 290.10, 2510.62, 3266.04, -2046.46])
+    step = pdash._step_frame(pdash.realised_frame(pts))
+    above, _below = pdash._split_at_zero(step)
+
+    import holoviews as hv
+
+    for element in next(iter(pdash.build_realised_chart(pts, "t"))):
+        if (
+            type(element) is not hv.Area
+            or element.opts.get("style").kwargs.get("color") != palette.UP_COLOR
+        ):
+            continue
+        drawn = [round(float(v), 2) for v in element.dframe()["fill"]]
+        assert drawn == [round(float(v), 2) for v in above["fill"]], (
+            "hvplot reordered the stepped frame — verticals become diagonals"
+        )

@@ -538,7 +538,7 @@ hv.Store.lookup_options("bokeh", rects, "style").kwargs["color"].apply(rects)
                                                # per-row ['#26a69a', …, '#ef5350']
 ```
 
-Six traps this file hit, all worth knowing before writing such a test **[P]**:
+Seven traps this file hit, all worth knowing before writing such a test **[P]**:
 
 - ⚠ **`hasattr` cannot distinguish an `Overlay` from a `Layout`.** HoloViews' dynamic
   attribute access answers `hasattr(overlay, "Overlay")` with **`True`** and returns an
@@ -552,6 +552,15 @@ Six traps this file hit, all worth knowing before writing such a test **[P]**:
   filled **area** first when an overlay holds both (measured 2026-09-23 — it cost a green
   test that was reading the wrong element). Use `type(element) is hv.Curve` when an overlay
   contains an `Area * Curve`, which the realised-P&L chart does.
+- ⚠ **hvPlot RE-SORTS your rows: `sort_date=True` is the default.** `.line()` / `.area()`
+  sort by the datetime x, and where two rows share an x — which every stepped series has,
+  because the duplicate pair *is* the vertical segment — the tie order between them is
+  arbitrary. Reordering them turns a vertical into a **diagonal**. Measured 2026-09-23 on a
+  23-row frame: row 10 came back as `1,929` where `0` was passed. **It only bites at
+  length**: three short probes of the same shape all round-tripped unchanged, so a small
+  repro will tell you the bug does not exist. Pass `sort_date=False` whenever row order
+  carries meaning, and assert the element's own `dframe()` against the frame you handed it
+  — the element is where the damage is visible, before any rendering.
 - ⚠ **An `HLine`'s `Span` is in `figure.renderers`, not `figure.center`** (Bokeh 3.9.2,
   measured 2026-09-23). A helper that looks only in `center` reports "no zero line" on a
   chart that has one. `figure.select({"type": Span})` searches the whole model and survives
@@ -583,6 +592,11 @@ Two things the docs do **not** say, both measured here the same day:
 - **The two are equivalent at the glyph.** `df.hvplot.step(where="post")` and
   `df.hvplot.line(...).opts(interpolation="steps-post")` both render `[1000, 3000, 0]` as
   `[1000, 1000, 3000, 3000, 0]`. Pick either; they are the same picture.
+- **A stepped `Area` must not carry NaN.** An `Area` renders as a Bokeh `Patch` — *one
+  closed polygon*. A NaN in a `Line` breaks it cleanly, which is what lets a split series
+  stop at a crossing; a NaN in a `Patch` does not open a gap, it **tears the polygon**, and
+  the torn edges draw as stray diagonals. Clip the values instead (`0 .. max(y, 0)`), which
+  covers the same region and needs no gap.
 - **`Area` accepts neither.** `area.opts(interpolation=...)` raises
   `ValueError: Unexpected option 'interpolation' for Area type across all extensions`.
   A linear fill beneath a stepped line cuts across every corner, so an `Area * Curve`

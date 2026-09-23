@@ -706,6 +706,13 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     # Stepped, not sloped, and both halves built from the same stepped frame. Neither
     # carries a tooltip — see `_step_frame`.
     #
+    # ⚠ `sort_date=False` is LOAD-BEARING, not tidiness. hvPlot defaults it to True and
+    # sorts by the datetime x; a stepped series carries TWO rows per day and the tie order
+    # between them is arbitrary under that sort. Reordering them turns a vertical segment
+    # into a diagonal — which is exactly what the pane kept showing after the step, split
+    # and clip fixes were all correct, because the frames handed to hvPlot were right every
+    # time and the element's own data came back scrambled (measured 2026-09-23).
+    #
     # Coloured by WHERE THE CURVE IS, not by where the window ends. Until 2026-09-23 the
     # row took one colour from its final value, so a week that sat at -2,050 for two days
     # and closed at +855 drew the underwater stretch green, and a month that opened -871
@@ -718,8 +725,17 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
             continue  # never went that side of zero — draw nothing, not an empty layer
         cumulative = (
             cumulative
-            * frame.hvplot.area(x="day", y="fill", alpha=0.20, color=colour, hover=False)
-            * frame.hvplot.line(x="day", y="line", color=colour, line_width=2, hover=False)
+            * frame.hvplot.area(
+                x="day", y="fill", alpha=0.20, color=colour, hover=False, sort_date=False
+            )
+            * frame.hvplot.line(
+                x="day",
+                y="line",
+                color=colour,
+                line_width=2,
+                hover=False,
+                sort_date=False,
+            )
         )
     # Per bar, by that day's own sign. Passing a COLUMN NAME maps it straight onto Bokeh's
     # `fill_color` field with `transform=Unspecified` — no colormap — so the hex values are
