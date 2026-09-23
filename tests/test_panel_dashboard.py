@@ -2322,7 +2322,9 @@ def test_the_cumulative_line_holds_its_value_between_trading_days():
     # isinstance check silently selects the filled area instead (measured 2026-09-23).
     curve = next(e for e in next(iter(pdash.build_realised_chart(pts, "t"))) if type(e) is hv.Curve)
     drawn = [float(v) for v in curve.dimension_values("cumulative")]
-    assert drawn == pytest.approx([1000.0, 1000.0, 3000.0, 3000.0, 0.0]), (
+    # Six values for three days: each is held until the next, and the last is held for its
+    # own day too — see `_step_frame` on why the trailing point exists.
+    assert drawn == pytest.approx([1000.0, 1000.0, 3000.0, 3000.0, 0.0, 0.0]), (
         f"drawn as {drawn} — a straight run between trading days invents observations"
     )
 
@@ -2400,3 +2402,20 @@ def test_the_break_even_line_does_not_compete_with_the_data():
     assert span.line_width <= 1.5, f"line_width={span.line_width} reads as a data series"
     assert span.line_dash, "a solid rule competes with the curve"
     assert span.line_color == palette.FLAT_COLOR, f"line_color={span.line_color}"
+
+
+def test_the_final_step_is_as_wide_as_every_other():
+    """The window's total must not be a hairline at the right edge.
+
+    Seen in a screenshot 2026-09-23, immediately after the step fix shipped. `steps-post`
+    holds each value until the NEXT observation, so with N points only N-1 of them get any
+    width — and the one left out is the last, which is the window total the table above the
+    chart is reporting. Every other day occupies its own span; the final day must too.
+    """
+    pts = _points_from([1000.0, 2000.0, -3000.0])
+    step = pdash._step_frame(pdash.realised_frame(pts))
+    days, values = list(step["day"]), list(step["cumulative"])
+    assert values[-1] == pytest.approx(0.0), "the last value must still be the window total"
+    assert days[-1] > days[-2], (
+        f"the final step spans {days[-2].date()} -> {days[-1].date()} — no width"
+    )

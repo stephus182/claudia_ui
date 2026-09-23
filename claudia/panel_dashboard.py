@@ -551,11 +551,22 @@ def _step_frame(df: pd.DataFrame) -> pd.DataFrame:
 
     `steps-post` shape: x repeated and shifted forward, y repeated and shifted back, which
     is what makes the value persist rightward until the next observation replaces it.
+
+    **The trailing day is not decoration.** `steps-post` holds each value until the *next*
+    observation, so with N points only N-1 get any width — and the one left out is the
+    last, which is the window total the table above the chart is reporting. Seen in a
+    screenshot the day the step shape shipped: the total was a zero-width hairline against
+    the right edge while every other day occupied its own span. One extra point carrying
+    the same value gives the final day the same treatment as the rest. A day rather than
+    some other interval because that is what the series is measured in, and the claim it
+    makes — "this total stood for the day it was struck" — is one the statement supports.
     """
+    days = df["day"].to_numpy()
+    values = df["cumulative"].to_numpy()
     return pd.DataFrame(
         {
-            "day": np.repeat(df["day"].to_numpy(), 2)[1:],
-            "cumulative": np.repeat(df["cumulative"].to_numpy(), 2)[:-1],
+            "day": np.append(np.repeat(days, 2)[1:], days[-1] + np.timedelta64(1, "D")),
+            "cumulative": np.append(np.repeat(values, 2)[:-1], values[-1]),
         }
     )
 
