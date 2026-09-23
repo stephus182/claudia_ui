@@ -3593,3 +3593,104 @@ async def test_send_opening_status_omits_an_empty_briefing_without_a_trailing_bl
     assert len(status) == 1
     assert status[0] == "_trade status line_\n\n_TradingView: connected._"
     assert not status[0].endswith("\n\n")
+
+
+# ── Gap #6: an absent staleness verdict is not a claim that data is current ───
+#
+# `get_trade_date_coverage` returns EARLY when the trades table holds no dated rows, and
+# that short form omits `stale` altogether. Measured 2026-09-23 against a brand-new
+# `SQLiteStore`, which is the literal dict below. `_flex_toolkit` above always sets a
+# `stale` key, so the existing double could not produce this shape at all — the test
+# fixture was weaker than the dependency, and the defect lived in the space between them.
+
+_EMPTY_STORE_COVERAGE: dict[str, Any] = {
+    "oldest": None,
+    "newest": None,
+    "total_trades": 0,
+    "gaps": [],
+}
+
+
+def _flex_toolkit_empty_store(attempts: list[dict[str, Any]] | None = None) -> MagicMock:
+    """A toolkit over a store whose trades table has never been written to."""
+    toolkit = _flex_toolkit(stale=False, attempts=attempts)
+    toolkit._store.get_trade_date_coverage.return_value = dict(_EMPTY_STORE_COVERAGE)
+    return toolkit
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_an_empty_trades_table_triggers_the_first_ever_sync(caplog):
+    """A store with no trades needs a sync more than any other, not less.
+
+    The branch read `not cov.get("stale")`, so an ABSENT verdict was indistinguishable
+    from `False`: the first-ever sync was skipped and the log announced
+    "data current (newest: None)".
+    """
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit_empty_store()
+    # Pinned rather than left to the real fingerprint of the fixture's "/tmp/store.db" —
+    # that path not existing would be a filesystem accident standing in for behaviour.
+    with (
+        caplog.at_level(logging.INFO),
+        patch(
+            "claudia.panel_app.dataset_fingerprint",
+            side_effect=[(0, 0, None), (12, 12, "2026-09-22")],
+        ),
+    ):
+        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+        await _drain_flex_sync()
+
+    toolkit.execute.assert_called_once_with("sync_flex_trades", {})
+    assert not any("data current" in r.message for r in caplog.records), (
+        "an empty dataset was described as current"
+    )
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_an_empty_dataset_still_respects_the_four_hour_suppression():
+    """An empty store is a stronger reason to sync — not a licence to hammer Flex.
+
+    The suppression window exists because the Flex API is rate-limited and a restart
+    loop would otherwise retry on every session start.
+    """
+    from datetime import UTC, datetime
+
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit_empty_store(attempts=[{"ts": datetime.now(UTC).isoformat()}])
+    await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+    toolkit.execute.assert_not_called()
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_the_suppression_note_says_there_is_no_data_rather_than_naming_none(caplog):
+    """A log saying `newest: None` reads as a bug; `no settled rows yet` is the state."""
+    from datetime import UTC, datetime
+
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit_empty_store(attempts=[{"ts": datetime.now(UTC).isoformat()}])
+    with caplog.at_level(logging.INFO):
+        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+
+    skips = [r.message for r in caplog.records if "Flex sync skipped" in r.message]
+    assert skips, "a suppressed attempt must still say so"
+    assert "newest: None" not in skips[0], skips[0]
+    assert "no settled rows yet" in skips[0], skips[0]
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_a_positive_current_verdict_still_skips(caplog):
+    """Back-compat guard: an explicit `stale=False` keeps its existing behaviour."""
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit(stale=False)
+    with caplog.at_level(logging.INFO):
+        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+    toolkit.execute.assert_not_called()
+    assert any("data current" in r.message for r in caplog.records)

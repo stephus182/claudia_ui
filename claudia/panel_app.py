@@ -748,20 +748,37 @@ async def _maybe_background_flex_sync(
     skip_reason = ""
     try:
         cov = await asyncio.to_thread(toolkit._store.get_trade_date_coverage)
-        if not cov.get("stale"):
+        # **Only an explicit `False` is a claim that the data is current (gap #6).**
+        # `get_trade_date_coverage` returns EARLY when the trades table holds no dated
+        # rows, and that short form — measured 2026-09-23 against a brand-new store as
+        # `{"oldest": None, "newest": None, "total_trades": 0, "gaps": []}` — omits
+        # `stale` altogether. The test was `not cov.get("stale")`, which cannot tell an
+        # absent verdict from a negative one, so the first-ever sync was skipped and the
+        # log announced `data current (newest: None, last trading day: None)`. An empty
+        # dataset is the one state that most needs a pull.
+        #
+        # The core gained a `⚠ FLEX DATASET EMPTY` marker for this in 2.1.0, but it is in
+        # `check_flex_coverage`'s formatted output and this decision reads the raw dict,
+        # so it could never reach here. Fixed on this side rather than by re-routing the
+        # decision through the tool: the decision must stay a cheap local SQLite read.
+        if cov.get("stale") is False:
             skip_reason = (
                 f"data current (newest: {cov['newest']}, "
                 f"last trading day: {cov.get('last_trading_day')})"
             )
         else:
+            # Stale, or no verdict at all. An empty dataset is a *stronger* reason to
+            # sync but not a licence to bypass the 4 h window — Flex is rate-limited and
+            # a restart loop would otherwise retry on every session start.
+            have_no_data = "stale" not in cov
             last_attempts = await asyncio.to_thread(toolkit._store.get_log, n=1, event="flex_sync")
             if last_attempts:
                 last_ts = datetime.fromisoformat(last_attempts[0]["ts"]).replace(tzinfo=UTC)
                 hours_since = (datetime.now(UTC) - last_ts).total_seconds() / 3600
                 if hours_since < 4:
-                    skip_reason = (
-                        f"already attempted {hours_since:.1f}h ago (newest: {cov['newest']})"
-                    )
+                    # "newest: None" reads as a bug in the log; say what is actually so.
+                    have = "no settled rows yet" if have_no_data else f"newest: {cov['newest']}"
+                    skip_reason = f"already attempted {hours_since:.1f}h ago ({have})"
                 else:
                     should_sync = True
             else:
