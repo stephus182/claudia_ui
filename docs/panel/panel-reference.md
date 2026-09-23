@@ -474,18 +474,38 @@ See `ui-design-reference.md` §7 for why the color choice matters.
 
 ## 10. Testing Panel without a browser
 
-123 tests across five files, none of which starts a server or a browser (re-counted
-2026-08-03 via `pytest --collect-only`, per file — counts drift with every change to these
-files, so re-count rather than trust this table).
+**None of these starts a server or a browser.** The table below is a map of file to what it
+covers — which is durable — and it deliberately carries **no test counts**, which are not.
 
-| File | Tests | Covers |
-|---|---|---|
-| `tests/test_panel_app.py` | 60 | Factory/callback wiring, Drive-DB-before-store ordering, init failure paths, doc versioning, opening status, watchdog alert delivery, singleton lifecycle, cleanup + destroy hook, the reconnect coroutines, Flex sync, System-log routing (incl. the source-scan guard), left-column composition, screenshot upload |
-| `tests/test_panel_system_log.py`, `tests/test_panel_action_bar.py` | 5 + 11 | The two 2026-09-03 modules headless: card state and count, toast levels, colour mapping, disable-first, error re-enable, busy-guard on repaint |
-| `tests/test_panel_pinescript.py` | 18 | Block-extraction edge cases, per-block closure correctness, `js_on_click` args, inject success/failure classification |
-| `tests/test_panel_chart.py` | 28 | Pane composition, `_on_load` cache/fetch/error/spinner paths and failure messaging, `build_chart_object` HoloViews assembly (wicks/bodies/SMA/volume, width scaling, column-order independence, 1-row refusal) |
-| `tests/test_panel_sink.py` | 10 | Message routing, pine detection, `ChatStep` streaming + failure, proposal delegation |
-| `tests/test_panel_order_flow.py` | 7 | Each proposal type: buttons rendered, confirm calls the right core, dismiss disables without executing |
+To count, run the command; never trust a number written here:
+
+```bash
+for f in tests/test_panel*.py tests/test_palette.py; do
+  echo "$f $(pytest "$f" --collect-only -q | tail -1)"
+done
+```
+
+Measured that way on 2026-09-23: **418 across these ten files.** ⚠ The sentence this
+replaced read *"123 tests across five files"* while the table under it listed **seven**
+files summing to **139** — it contradicted itself on the day it was written (2026-08-03),
+it omitted `test_panel_dashboard.py` entirely (today the largest of them at 170), and by
+2026-09-23 every individual figure had rotted too. It even carried its own disclaimer,
+*"re-count rather than trust this table"*, which is an admission that the numbers were
+not worth their place. A count written into prose is a fact with an expiry date and no
+way to notice it has passed; the command has neither problem. This is Known Gaps #43.
+
+| File | Covers |
+|---|---|
+| `tests/test_panel_app.py` | Factory/callback wiring, Drive-DB-before-store ordering, init failure paths, doc versioning, opening status, watchdog alert delivery, singleton lifecycle, cleanup + destroy hook, the reconnect coroutines, Flex sync, System-log routing (incl. the source-scan guard), left-column composition, screenshot upload |
+| `tests/test_panel_dashboard.py` | The largest of these, in three groups. **Safety regression guards:** every `Tabulator` stays `disabled=True` with no click/edit handler bound, asserted over all of them rather than over a fixed one (Hard Rule 1). **Honesty guards:** stale data reads as stale, the ledger figure and the Flex-derived windows stay labelled apart, a window's realised total and its round-trip counts come from the same window, every money figure carries an ISO code and never a bare `$`. **Rendering:** KPI tiles, the four tabs, the realised chart's per-bar colouring, the reconciliation line |
+| `tests/test_panel_system_log.py` | Card state and count, toast levels, colour mapping (2026-09-03 module, headless) |
+| `tests/test_panel_action_bar.py` | Button colour mapping, disable-first, error re-enable, busy-guard on repaint (2026-09-03 module, headless) |
+| `tests/test_panel_pinescript.py` | Block-extraction edge cases, per-block closure correctness, `js_on_click` args, inject success/failure classification |
+| `tests/test_panel_chart.py` | Pane composition, `_on_load` cache/fetch/error/spinner paths and failure messaging, `build_chart_object` HoloViews assembly (wicks/bodies/SMA/volume, width scaling, column-order independence, 1-row refusal) |
+| `tests/test_panel_theme.py` | Phase 1 of the UI customisation track: session theme resolution (`CLAUDIA_THEME` plus the `?theme=` per-tab override), the user display name, ClaudIA's avatar |
+| `tests/test_panel_sink.py` | Message routing, pine detection, `ChatStep` streaming + failure, proposal delegation |
+| `tests/test_panel_order_flow.py` | Each proposal type: buttons rendered, confirm calls the right core, dismiss disables without executing |
+| `tests/test_palette.py` | The shared market palette, and the structural rule that keeps it single-source: walks every module under `claudia/` and fails if a palette hex is declared outside `palette.py` |
 
 **The idiom that makes this possible** —
 [`tests/conftest.py`](../../tests/conftest.py):
