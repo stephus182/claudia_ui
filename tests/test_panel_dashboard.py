@@ -1992,3 +1992,95 @@ def test_orders_frame_has_a_name_column_after_symbol_and_uses_the_local_symbol()
     assert list(frame.columns)[:3] == ["Order", "Symbol", "Name"]
     assert list(frame["Symbol"]) == ["ESU6", "AAPL"]
     assert list(frame["Name"]) == ["E-mini S&P 500 · Sep18'26", "APPLE INC"]
+
+
+# ── gap #59: the realised chart must colour by sign ──────────────────────────
+#
+# Measured 2026-09-23 before the fix: a window whose cumulative ran -100 -> -400 rendered
+# Area and Curve in #26a69a (the UP colour) and every daily bar in #8a8a8a. A losing month
+# drew green and a +2,000 day looked identical to a -2,000 day. Classic convention, per the
+# user 2026-09-23: positive green, negative red, on both rows.
+#
+# The cumulative curve is ONE line, so it takes one colour: the sign of where the window
+# ENDS. The bars are coloured per bar.
+
+
+def _chart_colors(layout):
+    """(area_color, curve_color) from the cumulative overlay of a realised chart."""
+    overlay = next(iter(layout))
+    return tuple(sub.opts.get("style").kwargs.get("color") for sub in overlay)
+
+
+def _bar_colors(layout):
+    """Per-bar fill colours as Bokeh will actually render them.
+
+    **Two shapes, both correct** (measured 2026-09-23). When the bars do not all share a
+    colour, HoloViews maps a per-row `color` column onto `fill_color`. When they DO all
+    share one — a straight losing week, which is the common real case — it collapses to a
+    literal scalar and emits no column at all. A helper that only understood the first
+    shape passed the mixed test while leaving the uniform one unverified.
+    """
+    import holoviews as hv
+
+    fig = hv.render(list(layout)[1], backend="bokeh")
+    for r in fig.renderers:
+        glyph = getattr(r, "glyph", None)
+        src = getattr(r, "data_source", None)
+        if glyph is None or src is None or not hasattr(glyph, "fill_color"):
+            continue
+        if "color" in src.data:
+            return list(src.data["color"])
+        if isinstance(glyph.fill_color, str):
+            return [glyph.fill_color] * len(src.data["realised"])
+    raise AssertionError("no bar fill colour reached the Bokeh glyph")
+
+
+def test_a_losing_window_draws_the_cumulative_curve_red():
+    """A month that lost money must not render in the up colour."""
+    pts = tuple(dd.RealisedPoint(date(2026, 8, d), -100.0, -100.0 * (d - 2)) for d in (3, 4, 5, 6))
+    area, curve = _chart_colors(pdash.build_realised_chart(pts, "losing"))
+    assert area == pdash._DOWN_COLOR, f"area drew {area}"
+    assert curve == pdash._DOWN_COLOR, f"curve drew {curve}"
+
+
+def test_a_winning_window_draws_the_cumulative_curve_green():
+    """The up case must keep the up colour."""
+    pts = tuple(dd.RealisedPoint(date(2026, 8, d), 100.0, 100.0 * (d - 2)) for d in (3, 4, 5, 6))
+    area, curve = _chart_colors(pdash.build_realised_chart(pts, "winning"))
+    assert area == pdash._UP_COLOR
+    assert curve == pdash._UP_COLOR
+
+
+def test_daily_bars_are_coloured_one_by_one_by_their_own_sign():
+    """A profitable day and a losing day must not look identical."""
+    vals = [250.0, -400.0, 0.0, 175.0]
+    pts = tuple(
+        dd.RealisedPoint(date(2026, 8, 3 + i), v, sum(vals[: i + 1])) for i, v in enumerate(vals)
+    )
+    colors = _bar_colors(pdash.build_realised_chart(pts, "mixed"))
+    assert colors == [
+        pdash._UP_COLOR,
+        pdash._DOWN_COLOR,
+        pdash._FLAT_COLOR,
+        pdash._UP_COLOR,
+    ], colors
+
+
+def test_an_all_losing_week_paints_every_bar_red():
+    """The common real case: every day down. Uniform bars collapse to a scalar fill."""
+    pts = tuple(dd.RealisedPoint(date(2026, 8, d), -100.0, -100.0 * (d - 2)) for d in (3, 4, 5))
+    assert _bar_colors(pdash.build_realised_chart(pts, "all down")) == [pdash._DOWN_COLOR] * 3
+
+
+def test_an_all_winning_week_paints_every_bar_green():
+    """And its mirror, so the scalar path is pinned in both directions."""
+    pts = tuple(dd.RealisedPoint(date(2026, 8, d), 100.0, 100.0 * (d - 2)) for d in (3, 4, 5))
+    assert _bar_colors(pdash.build_realised_chart(pts, "all up")) == [pdash._UP_COLOR] * 3
+
+
+def test_a_sub_cent_figure_stays_neutral_rather_than_red():
+    """Money renders to 2dp: a value displaying as 0.00 must not be painted a loss."""
+    assert pdash._pnl_color(-0.003) == pdash._FLAT_COLOR
+    assert pdash._pnl_color(0.0) == pdash._FLAT_COLOR
+    assert pdash._pnl_color(-5.0) == pdash._DOWN_COLOR
+    assert pdash._pnl_color(5.0) == pdash._UP_COLOR

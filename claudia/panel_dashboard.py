@@ -97,6 +97,33 @@ _FLAT_COLOR = "#8a8a8a"
 # otherwise paint an exactly-zero figure as a loss.
 _PNL_COLORS = [(-0.005, _DOWN_COLOR), (0.005, _FLAT_COLOR), (float("inf"), _UP_COLOR)]
 
+# The same half-cent dead band as a predicate. `Number.colors` wants thresholds; everything
+# else wants to ask "what colour is this figure?", and the answer must not differ between
+# the two. Money renders to two decimals, so anything inside the band displays as 0.00 and
+# painting it a loss would contradict the number printed beside it.
+_PNL_FLAT_BAND = 0.005
+
+
+def _pnl_color(value: float) -> str:
+    """The colour a signed money figure is drawn in — green up, red down, grey flat.
+
+    **One definition for every P&L surface (gap #59).** Until 2026-09-23 the realised chart
+    used none of it: `build_realised_chart` passed `_UP_COLOR` to the cumulative line *and*
+    its area unconditionally, so a window that lost money drew in the up colour, and it
+    passed `_FLAT_COLOR` to every daily bar, so a +2,000 day and a -2,000 day were
+    indistinguishable. Both were figures misreporting their own sign on the account screen.
+
+    The table styler shares this now too, so a red number in a cell and a red bar in the
+    chart mean the same thing — which was the point of `_UP_COLOR`/`_DOWN_COLOR` being
+    shared with `panel_chart`'s candles in the first place.
+    """
+    if value > _PNL_FLAT_BAND:
+        return _UP_COLOR
+    if value < -_PNL_FLAT_BAND:
+        return _DOWN_COLOR
+    return _FLAT_COLOR
+
+
 _TILE_WIDTH = 165
 _CHART_HEIGHT = 260
 _BAR_ROW_HEIGHT = 130
@@ -494,10 +521,19 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     if len(points) < 2:
         return None
     df = realised_frame(points)
+    # A Curve carries ONE colour, so the cumulative row is coloured by where the window
+    # ENDS — "did this period finish up or down", which is the question that row answers.
+    # Colour it per-segment only if someone asks for the zero crossing to be visible.
+    cumulative_color = _pnl_color(float(df["cumulative"].iloc[-1]))
     cumulative = df.hvplot.area(
-        x="day", y="cumulative", alpha=0.20, color=_UP_COLOR, hover=False
-    ) * df.hvplot.line(x="day", y="cumulative", color=_UP_COLOR, line_width=2)
-    daily = df.hvplot.bar(x="day", y="realised", height=_BAR_ROW_HEIGHT, color=_FLAT_COLOR)
+        x="day", y="cumulative", alpha=0.20, color=cumulative_color, hover=False
+    ) * df.hvplot.line(x="day", y="cumulative", color=cumulative_color, line_width=2)
+    # Per bar, by that day's own sign. Passing a COLUMN NAME maps it straight onto Bokeh's
+    # `fill_color` field with `transform=Unspecified` — no colormap — so the hex values are
+    # used literally (verified 2026-09-23 against the rendered glyph, not inferred from the
+    # hvplot docs). `.assign` returns a copy, so the frame the rows came from is untouched.
+    bars = df.assign(_bar_color=[_pnl_color(float(v)) for v in df["realised"]])
+    daily = bars.hvplot.bar(x="day", y="realised", height=_BAR_ROW_HEIGHT, color="_bar_color")
     return (cumulative.opts(title=title, height=_CHART_HEIGHT) + daily.opts(title="")).cols(1)
 
 
@@ -1005,14 +1041,15 @@ def reconciliation_line(rec: Reconciliation) -> str:
 
 
 def _sign_style(value: Any) -> str:
-    """Green/red/neutral CSS for one signed cell; nothing at all for a non-number."""
+    """Green/red/neutral CSS for one signed cell; nothing at all for a non-number.
+
+    Defers to `_pnl_color` so the tiles, the tables and the chart cannot disagree. This
+    carried its own strict-sign rule until 2026-09-23, which differed from the tiles inside
+    the half-cent band: a cell displaying `-0.00` was painted red.
+    """
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return ""
-    if value > 0:
-        return f"color: {_UP_COLOR}"
-    if value < 0:
-        return f"color: {_DOWN_COLOR}"
-    return f"color: {_FLAT_COLOR}"
+    return f"color: {_pnl_color(float(value))}"
 
 
 # ── Round-trip stats ──────────────────────────────────────────────────────────
