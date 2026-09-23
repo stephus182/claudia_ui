@@ -2457,3 +2457,45 @@ def test_the_x_axis_is_not_labelled_day_under_both_rows():
         for e in pdash.build_realised_chart(pts, "t")
     ]
     assert not any(labels), f"x-axis labelled {labels}"
+
+
+# ── Above zero is green, below zero is red — on the same curve ───────────────
+#
+# User, 2026-09-23, on the live Weekly pane: "the negative part is still green, pls check."
+# The window sat at -2,050 for two days and only ended at +855, so colouring the curve by
+# where the window ENDS painted the underwater stretch green. This is the zero-crossing
+# question raised and deferred that morning ("we will review more in detail afterwards");
+# the step shape shipped since is what makes it cheap — a stepped line only ever crosses
+# zero on a VERTICAL segment, so the crossing needs no interpolation, just a point at y=0.
+
+
+def _cumulative_colours(layout):
+    """Every colour used by the cumulative row's areas and lines."""
+    import holoviews as hv
+
+    return {
+        sub.opts.get("style").kwargs.get("color")
+        for sub in next(iter(layout))
+        if type(sub) in (hv.Area, hv.Curve)
+    }
+
+
+def test_a_window_that_ends_up_after_being_under_water_shows_both():
+    """The Weekly case: two days at -2,050, ending +855. Both facts must be visible."""
+    pts = _points_from([-2046.46, -21.31, 2922.96])
+    assert _cumulative_colours(pdash.build_realised_chart(pts, "Weekly")) == {
+        palette.UP_COLOR,
+        palette.DOWN_COLOR,
+    }
+
+
+def test_a_wholly_losing_window_shows_no_green():
+    """No spurious element: a window that never went positive draws only red."""
+    pts = _points_from([-500.0, -200.0, -900.0])
+    assert _cumulative_colours(pdash.build_realised_chart(pts, "t")) == {palette.DOWN_COLOR}
+
+
+def test_a_wholly_winning_window_shows_no_red():
+    """The mirror: a window that never went under draws only green."""
+    pts = _points_from([500.0, 200.0, 900.0])
+    assert _cumulative_colours(pdash.build_realised_chart(pts, "t")) == {palette.UP_COLOR}

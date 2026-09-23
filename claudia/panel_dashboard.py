@@ -508,6 +508,38 @@ def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str) -> str
     return ""
 
 
+def _split_at_zero(step: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`step` as two frames — the part at or above zero, and the part at or below it.
+
+    **Why this is cheap, and only became cheap once the line was stepped.** A stepped line
+    is horizontal runs joined by vertical jumps, so it can only cross zero *on a vertical
+    jump*, where both endpoints share an x. The crossing is therefore `(that x, 0)`
+    exactly, with **no interpolation and no invented date**. On a sloped line the crossing
+    falls between two trading days and the x has to be guessed.
+
+    Each half is the full series with the other half blanked to NaN. That is what makes the
+    two layers register against one x-axis and break cleanly at the crossing, rather than
+    being drawn as two misaligned series. A half that is entirely NaN — a window that never
+    went under, or never came back — draws nothing, so a wholly-winning window carries no
+    red element at all rather than an empty one.
+    """
+    x = step["day"].to_numpy()
+    y = step["cumulative"].to_numpy()
+    xs: list[Any] = [x[0]]
+    ys: list[float] = [float(y[0])]
+    for i in range(1, len(y)):
+        if (y[i - 1] > 0 > y[i]) or (y[i - 1] < 0 < y[i]):
+            xs.append(x[i])
+            ys.append(0.0)
+        xs.append(x[i])
+        ys.append(float(y[i]))
+    values = np.array(ys)
+    return (
+        pd.DataFrame({"day": xs, "cumulative": np.where(values >= 0, values, np.nan)}),
+        pd.DataFrame({"day": xs, "cumulative": np.where(values <= 0, values, np.nan)}),
+    )
+
+
 def _money_axis() -> Any:
     """A y-axis tick formatter that reads as money, built fresh for each row.
 
@@ -638,17 +670,24 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     # A Curve carries ONE colour, so the cumulative row is coloured by where the window
     # ENDS — "did this period finish up or down", which is the question that row answers.
     # Colour it per-segment only if someone asks for the zero crossing to be visible.
-    cumulative_color = pnl_color(float(df["cumulative"].iloc[-1]))
-    # Stepped, not sloped, and BOTH rows built from the same stepped frame. Neither
+    # Stepped, not sloped, and both halves built from the same stepped frame. Neither
     # carries a tooltip — see `_step_frame`.
+    #
+    # Coloured by WHERE THE CURVE IS, not by where the window ends. Until 2026-09-23 the
+    # row took one colour from its final value, so a week that sat at -2,050 for two days
+    # and closed at +855 drew the underwater stretch green, and a month that opened -871
+    # drew its first week green. Above zero is a profit and below zero is a loss whatever
+    # the window later did. On a stepped line the crossing is exact — see `_split_at_zero`.
     step = _step_frame(df)
-    cumulative = (
-        step.hvplot.area(x="day", y="cumulative", alpha=0.20, color=cumulative_color, hover=False)
-        * step.hvplot.line(
-            x="day", y="cumulative", color=cumulative_color, line_width=2, hover=False
+    cumulative = _break_even()
+    for frame, colour in zip(_split_at_zero(step), (UP_COLOR, DOWN_COLOR), strict=True):
+        if not frame["cumulative"].notna().any():
+            continue  # never went that side of zero — draw nothing, not an empty layer
+        cumulative = (
+            cumulative
+            * frame.hvplot.area(x="day", y="cumulative", alpha=0.20, color=colour, hover=False)
+            * frame.hvplot.line(x="day", y="cumulative", color=colour, line_width=2, hover=False)
         )
-        * _break_even()
-    )
     # Per bar, by that day's own sign. Passing a COLUMN NAME maps it straight onto Bokeh's
     # `fill_color` field with `transform=Unspecified` — no colormap — so the hex values are
     # used literally (verified 2026-09-23 against the rendered glyph, not inferred from the
