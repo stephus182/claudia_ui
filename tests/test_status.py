@@ -11,6 +11,7 @@ opinion of its own. That is what makes the dot and the dashboard incapable of di
 which they demonstrably could before (plan F8).
 """
 
+import logging
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -215,6 +216,55 @@ async def test_send_alert_notifies_all_subscribers_with_formatted_message(checke
 
     assert received_a == received_b
     assert "disconnected" in received_a[0].lower()
+
+
+# ── gap #22: a benign closing-session race must not emit a 40-line traceback ──
+#
+# The destroy hook unsubscribes 15–32 s after the browser disconnects. An alert landing
+# inside that window pushes to a dead Bokeh document and raises AttributeError on the
+# internal `_change_callbacks`. That is expected and already handled; the defect was
+# reporting it at WARNING with `exc_info=True`, which buries real faults.
+#
+# The predicate fails TOWARDS NOISE on purpose: anything it does not recognise keeps the
+# traceback, so a Bokeh rename degrades to the old loud behaviour, never to silence.
+
+
+@pytest.mark.asyncio
+async def test_send_alert_logs_a_dead_document_quietly(checker, caplog):
+    """The known closing-session race is DEBUG and carries no traceback."""
+
+    async def _dead_document(msg: str) -> None:
+        """Fail the way a torn-down Bokeh document fails."""
+        raise AttributeError(
+            "'DocumentCallbackManager' object has no attribute '_change_callbacks'"
+        )
+
+    checker.subscribe(_dead_document)
+    with caplog.at_level(logging.DEBUG, logger="claudia.status"):
+        await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
+
+    recs = [r for r in caplog.records if "subscriber" in r.getMessage().lower()]
+    assert recs, "the race must still be recorded, just quietly"
+    assert all(r.levelno == logging.DEBUG for r in recs), [r.levelname for r in recs]
+    assert all(r.exc_info is None for r in recs), "no traceback for an expected race"
+
+
+@pytest.mark.asyncio
+async def test_send_alert_keeps_the_traceback_for_an_unexpected_failure(checker, caplog):
+    """Anything the predicate does not recognise stays loud, with its traceback."""
+
+    async def _real_fault(msg: str) -> None:
+        """Fail in a way the predicate must not recognise."""
+        raise RuntimeError("something genuinely went wrong")
+
+    checker.subscribe(_real_fault)
+    with caplog.at_level(logging.DEBUG, logger="claudia.status"):
+        await checker._send_alert("ibkr", ServiceStatus.UNKNOWN, ServiceStatus.ERROR)
+
+    recs = [r for r in caplog.records if "subscriber" in r.getMessage().lower()]
+    assert recs
+    assert any(r.levelno >= logging.WARNING for r in recs), [r.levelname for r in recs]
+    assert any(r.exc_info is not None for r in recs), "a real fault keeps its traceback"
 
 
 @pytest.mark.asyncio

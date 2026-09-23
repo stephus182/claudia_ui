@@ -58,6 +58,25 @@ _RECONNECT_MESSAGES = {
 }
 
 
+# Bokeh's internal attribute on a torn-down document. `_on_session_destroyed` unsubscribes
+# 15–32 s after the browser disconnects (measured live 2026-07-28), so an alert landing
+# inside that window pushes to a dead document and raises this. It is expected and already
+# handled; only the reporting was wrong (gap #22).
+_DEAD_DOCUMENT_MARKER = "_change_callbacks"
+
+
+def _is_dead_document(exc: BaseException) -> bool:
+    """Whether `exc` is the known closing-session race rather than a real subscriber fault.
+
+    **Deliberately narrow, and it fails towards NOISE.** It matches one exception type and
+    one Bokeh-internal attribute name. If Bokeh renames that attribute the predicate stops
+    matching and the traceback comes back — the pre-2026-09-23 behaviour, which is loud but
+    correct. The opposite bias would let an unrecognised fault be swallowed at DEBUG, and a
+    silenced unknown error is far worse than a noisy known one.
+    """
+    return isinstance(exc, AttributeError) and _DEAD_DOCUMENT_MARKER in str(exc)
+
+
 class ConnectivityChecker:
     """Background poller that monitors IBKR gateway, GDrive, and TradingView every 60s.
 
@@ -287,6 +306,11 @@ class ConnectivityChecker:
             try:
                 await subscriber(msg)
             except Exception as exc:
-                log.warning(
-                    "Could not push connectivity alert to a subscriber: %s", exc, exc_info=True
-                )
+                if _is_dead_document(exc):
+                    # gap #22: expected, already handled, and previously ~40 lines of
+                    # traceback at WARNING for every one — which buried real faults.
+                    log.debug("Connectivity alert dropped: subscriber's document is gone (%s)", exc)
+                else:
+                    log.warning(
+                        "Could not push connectivity alert to a subscriber: %s", exc, exc_info=True
+                    )
