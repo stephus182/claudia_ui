@@ -69,7 +69,9 @@ the IBKR request body** (below), which also accepts `MIDPRICE`, `TRAIL` and `TRA
 the enum without widening both execute paths would send a trailing order with no price. See
 Known Gaps #8 in `docs/project-status.md`, and
 § Trailing and algorithmic order types below for the field semantics that gap needs.
-`tif` values: `DAY`, `GTC`, `IOC`, `OPG`.
+`tif` values: `DAY`, `GTC`, `IOC`, `OPG` — what ClaudIA can propose. IBKR accepts more for some
+contracts (`GTD`; the stock overnight TIFs `OVT`/`OND`), and a TIF valid for one instrument is not
+valid for every other: see § Time in force, extended hours and auction orders.
 `quantity` is `"type": "integer"` — a fractional value is rejected at the API boundary rather
 than silently truncated by `int(qty)` in `order_flow.py`. Positivity is *not* schema-enforced
 (`exclusiveMinimum` is a 400); `_proposal_defect()` carries it.
@@ -88,7 +90,7 @@ Bracket fields (`parentId`, `isSingleGroup`, verbatim rules): https://ibkrcampus
 | `conid` | int | yes* | *or `conidex`; SMART-routes when set. `order_flow.py` resolves it from `symbol` per instrument (below) unless the proposal's own `conid` field overrides resolution |
 | `orderType` | str | yes | `LMT` \| `MKT` \| `STP` \| `STOP_LIMIT` \| `MIDPRICE` \| `TRAIL` \| `TRAILLMT` |
 | `side` | str | yes | `"BUY"` \| `"SELL"` |
-| `tif` | str | yes | `DAY` \| `GTC` \| `OPG` \| `IOC` \| `PAX` (crypto) |
+| `tif` | str | yes | IBKR's place-order enum: `DAY` \| `IOC` \| `GTC` \| `OPG`. Contract rules also return `GTD`, and for US stocks `OVT` / `OND` (overnight) — see § Time in force |
 | `quantity` | int | yes | whole shares/contracts only |
 | `price` | float | LMT / STOP_LIMIT | limit price |
 | `auxPrice` | float | STOP_LIMIT / TRAILLMT | stop price |
@@ -141,6 +143,97 @@ house rule that a doc is a claim and not evidence, per-type requirements must be
 not beside `LMT`/`STP`. It carries its own routing and field rules and it does nothing for the
 bracket work, so it is **excluded by decision (2026-09-20)** and belongs in a separate, clean
 project of its own — not bolted onto the trailing work.
+
+## Time in force, extended hours and auction orders — researched 2026-09-24
+
+Researched for gap #70, on the operator's direction (*"CLOSE is a real argument … MOC / LOC …
+this is about DAY vs GTC … a subset for STK as Day+"*). **Stocks and futures are kept apart on
+purpose** (operator rule): the API field is shared, its meaning is not. Full evidence, verbatim
+quotes and the read-only captures: `docs/plans/2026-09-24-tif-and-close-orders-research.md`
+(local) and `.firecrawl/order-tif/SOURCES.md` (local). Crypto is out of scope and not covered.
+
+### The shared API surface
+
+| Surface | Field | What it says |
+|---|---|---|
+| Place / modify body | `tif` | IBKR's enum: `DAY`, `IOC`, `GTC`, `OPG` ([submit-new-order](https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md)). The enum is **not** the whole story: `/iserver/contract/rules` returns more per contract |
+| `/iserver/contract/rules` (POST, read-only: *"Returns trading related rules for a specific contract and side"*) | `tifTypes`, `orderTypes` | The TIFs and order types **this contract** accepts — the authority for what may be proposed ([search-contract-rules](https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/search-contract-rules.md)) |
+| `/iserver/account/order/status/{id}` | `tif` | *"Returns the time in force of the order."* — reported `DAY` for a DAY stock order, measured |
+| `/iserver/account/orders` (live orders) | `timeInForce` | *"Returns the time in force (tif) of the order."* — but reports **`CLOSE`** for a DAY stock order (gap #70). `CLOSE` is in no enum and defined nowhere; IBKR's own example response carries it (on an FX order). **Do not map it to `DAY`**: that would be an undocumented rule presented as fact. **The dashboard's Orders tab no longer reads this field (gap #70, fixed 2026-09-24):** each order's TIF comes from order status's `tif`, read once per order and again only when `orderDesc` changes, and shows `—` until known (`dashboard_data.TifCache`). The core's `get_live_orders` tool still shows the model the raw value (core register F8) |
+| same | `orderDesc` | IBKR's own text for the order, e.g. `Buy 1 F Limit 5.10, Day` |
+
+### Part A — stocks (STK)
+
+**Time in force.** Measured `tifTypes` for F (conid 9599491), both sides, 2026-09-24:
+`DAY`, `GTC`, `IOC`, `OPG`, `GTD`, **`OVT`**, **`OND`** — the last two limit-only.
+
+- **`DAY` + `outsideRTH: true`** is IBKR's form of what other brokers call "Day+": the order may
+  also work in pre-market and after-hours. "Day+" is not IBKR vocabulary. Outside-RTH is *"Not
+  available for IOC, OPG (MOO and LOO), FOK, MOC or LOC orders"*
+  ([TWS order ticket](https://www.ibkrguides.com/traderworkstation/classic-order-ticket.htm)).
+- **Overnight (`OVT`, `OND`)** — documented on the Web API's
+  [overnight order submission](https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/overnight-order-submission.md)
+  page and absent from the place-order enum. Overnight session 8:00 pm – 3:50 am ET. `OVT` works
+  only overnight; `OND` (Overnight + Day) continues into the next day — **IBKR's own pages disagree
+  on when it ends** ("4pm the next day" in a lesson, "through 8:00 PM the next day" on the overnight
+  page); unresolved. *"GTC orders are not supported"* for overnight. **ClaudIA cannot send either.**
+- **`timeInForce: "CLOSE"`** on the live-orders endpoint is a DAY order (3 of 3 DAY stock orders on
+  2026-09-24, filled and cancelled alike; GTC orders read `GTC`). It is **not** a close-auction
+  order: those are order types (below).
+
+**Auction orders.** Close orders are **order types**; open orders are a **TIF**:
+
+| Order | Web API body | ClaudIA today |
+|---|---|---|
+| Market-on-close (MOC) | `orderType: "MOC"`, `tif: "DAY"` | not expressible |
+| Limit-on-close (LOC) | `orderType: "LOC"` + `price` | not expressible |
+| Market-on-open (MOO) | `orderType: "MKT"`, `tif: "OPG"` | expressible (`order_type: MKT`, `tif: OPG`); the operator does not use market orders (a trading rule in `principles.md`, not a code check) |
+| Limit-on-open (LOO) | `orderType: "LMT"` + `price`, `tif: "OPG"` | expressible |
+
+Sources: IBKR order-types pages for [MOC](https://ibkrcampus.com/docs/general/order-types/market-orders/market-on-close.md),
+[LOC](https://ibkrcampus.com/docs/general/order-types/basic-orders/limit-orders/limit-on-close.md),
+[MOO](https://ibkrcampus.com/docs/general/order-types/market-orders/market-on-open.md),
+[LOO](https://ibkrcampus.com/docs/general/order-types/basic-orders/limit-orders/limit-on-open.md).
+`MOC`/`LOC` are missing from the OpenAPI `orderType` enum but documented there and present in F's
+live `orderTypes` (`marketonclose`, `limitonclose`). **Whether the gateway accepts them on place is
+unmeasured** (a `whatif` would settle it without a write). IBKR: *"Smart routed Market on close
+orders are designed to be routed to, and execute on the Primary Listing Exchange of the product."*
+
+**Closing-auction cut-offs, by primary listing venue (ET):**
+
+- **NYSE** (F): MOC/LOC entry, modify and cancel until **3:50 pm**; after it, only offsetting
+  interest and no cancels ([NYSE auctions](https://www.nyse.com/trade/auctions), fact sheet).
+- **Nasdaq**: from 3:50 pm MOC/LOC may not be cancelled or modified; MOC entry stops **3:55 pm**;
+  LOC entry until **3:58 pm** ([Closing Cross FAQ](https://www.nasdaqtrader.com/content/productsservices/Trading/ClosingCrossfaq.pdf)).
+- **NYSE Arca** (GLD): *"3:59 p.m. Closing Freeze Period Begins; only offsetting MOC/LOC order
+  accepted. Requests to cancel MOC/LOC orders will be rejected"*; opening: MOO/LOO cancels rejected
+  from 9:29 am, new MOO/LOO from 9:29:55 am ([NYSE auctions](https://www.nyse.com/trade/auctions)).
+- **Cboe BZX** (IGV): MOC cut-off **3:55 pm**; new LOC cut-off **3:59 pm**; LOC cannot be cancelled
+  or modified after 3:55 ([Cboe auction times](https://www.cboe.com/document/tech-spec/content/technical-specifications/cboe-titanium-u.s.-equities-auction-process/openingclosing-auction/opening-and-closing-auction-times)).
+
+**Primary listing venues, measured** (`/trsrv/stocks` `exchange` = *"Primary exchange for the
+given contract"*, 2026-09-24): **GLD → ARCA**, **IGV → BATS (Cboe BZX)** — IGV is *not* an Arca
+ETF — and F → NYSE.
+
+### Part B — futures (FUT)
+
+**Time in force.** Measured `tifTypes` for ES Dec-26 (conid 515416632), both sides, 2026-09-24:
+`DAY`, `GTC`, `IOC`, `GTD` — **no `OPG`, no `OVT`/`OND`**. ClaudIA's proposal enum includes `OPG`,
+so an `OPG` proposal on ES is schema-valid today and would be refused only by IBKR.
+
+- **What the live-orders endpoint reports for a DAY future is unmeasured**: every futures order
+  seen on 2026-09-24 was GTC (reported `GTC`). The stock `CLOSE` finding must not be assumed to
+  carry over; one DAY future at a safe price settles it.
+- **Outside RTH on US futures** decides when a stop can trigger — § Stop orders on US futures.
+
+**Close equivalents.** ES has **no closing auction**: its daily settlement is a VWAP between
+14:59:30 and 15:00:00 CT ([CME ES](https://cmegroupclientsite.atlassian.net/wiki/display/EPICSANDBOX/E-Mini+Standard+and+Poors+500+Futures)).
+ES's measured `orderTypes` include **no MOC/LOC**, although IBKR's order-type pages list FUT as
+eligible — support is per contract, read from `/iserver/contract/rules`, never assumed. CME's
+trade-at-settlement (TAS) does **not** cover equity index futures; their "at the close" instrument
+is **TMAC** (e.g. ESX), priced off the 4:00 pm ET fixing ([TAS](https://www.cmegroup.com/trading/trading-at-settlement.html),
+[TMAC](https://www.cmegroup.com/markets/equities/tmac-on-equity-index-futures.html)). ClaudIA
+supports none of these.
 
 ## Instrument-specific paths
 

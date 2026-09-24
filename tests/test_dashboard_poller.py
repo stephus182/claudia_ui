@@ -146,6 +146,9 @@ class FakeClient:
         self.trade_calls = 0
         self.contract_info_calls = 0
         self.contract_info_fails = False
+        self.status_calls: list[str] = []
+        self.status_fails = False
+        self.status_tifs: dict[str, str] = {"314390101": "GTC"}
         self.trades = trades
         self._positions = [_POSITION] if positions is None else positions
         self._accounts = (
@@ -182,6 +185,19 @@ class FakeClient:
         """
         self.order_calls += 1
         return [_ORDER]
+
+    def get_order_status(self, order_id):
+        """`/iserver/account/order/status` as strict as the real one (gap #70, 2026-09-24).
+
+        Answers only the ids it knows, with IBKR's `tif` key, counts calls, and fails when
+        told to. Without this method the TIF resolver would meet an AttributeError that the
+        poller swallows, and every test would silently exercise only the failure path — the
+        same weaker-double trap `get_live_orders` and `get_trades` each fell into here.
+        """
+        self.status_calls.append(str(order_id))
+        if self.status_fails:
+            raise ConnectionError("HTTP 503")
+        return {"order_id": str(order_id), "tif": self.status_tifs[str(order_id)]}
 
     def get_trades(self):
         """Return the canned executions, or raise if configured to.
@@ -651,6 +667,47 @@ async def test_a_successful_poll_populates_the_order_book(db):
     assert snap.orders is not None, "None means the book was never established"
     assert [o.order_id for o in snap.orders] == ["314390101"]
     assert snap.orders[0].is_claudia_staged is True
+
+
+class _DayStockOrder(FakeClient):
+    """The row IBKR served for a DAY stock order on 2026-09-24: `timeInForce` "CLOSE"."""
+
+    def get_live_orders(self):
+        """One working DAY order whose row misreports its TIF, as measured."""
+        self.order_calls += 1
+        return [dict(_ORDER, timeInForce="CLOSE", orderDesc="Buy 1 AAPL Limit 100.00, Day")]
+
+
+async def test_the_order_book_takes_each_tif_from_order_status(db):
+    """Gap #70: the book shows order status's `tif`, never the row's `timeInForce`."""
+    client = _DayStockOrder()
+    client.status_tifs = {"314390101": "DAY"}
+    p = _poller(db, client)
+    await p._poll_once()
+    assert p.snapshot().orders[0].tif == "DAY"
+    assert client.status_calls == ["314390101"]
+
+
+async def test_the_tif_is_read_once_across_polls(db):
+    """The cache lives on the poller, so a resting order costs one status read, not one per poll."""
+    client = _DayStockOrder()
+    client.status_tifs = {"314390101": "DAY"}
+    p = _poller(db, client)
+    for _ in range(3):
+        await p._poll_once()
+    assert p.snapshot().orders[0].tif == "DAY"
+    assert client.status_calls == ["314390101"]
+
+
+async def test_a_failed_tif_read_leaves_the_book_up_with_the_tif_unknown(db):
+    """A status failure costs the TIF, not the order book, and never shows the raw CLOSE."""
+    client = _DayStockOrder()
+    client.status_fails = True
+    p = _poller(db, client)
+    await p._poll_once()
+    snap = p.snapshot()
+    assert snap.orders is not None and snap.orders[0].order_id == "314390101"
+    assert snap.orders[0].tif == ""
 
 
 async def test_a_stale_republish_carries_the_order_book_forward(db):

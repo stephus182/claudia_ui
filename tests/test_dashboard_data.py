@@ -2052,3 +2052,131 @@ def test_the_running_total_is_rebuilt_over_the_buckets():
 def test_an_empty_series_stays_empty():
     """No buckets to invent."""
     assert dd.weekly_series(()) == ()
+
+
+# ── Time in force from order status, never from the live-orders row (gap #70, 2026-09-24) ──
+#
+# Measured 2026-09-24 on order 177522083 (BUY 1 F LMT, sent DAY), same minute:
+# `/iserver/account/orders` `timeInForce` = "CLOSE" (undocumented, in no enum) while its own
+# `orderDesc` says ", Day" and `/iserver/account/order/status` `tif` = "DAY" (documented:
+# "Returns the time in force of the order"). The Orders tab showed CLOSE. The TIF must come
+# from the documented field; an unknown renders as blank, never as the raw row value.
+
+_F_DAY_ROW = {
+    "orderId": 177522083,
+    "ticker": "F",
+    "side": "BUY",
+    "totalSize": 1,
+    "remainingQuantity": 1,
+    "price": "5.10",
+    "orderType": "Limit",
+    "timeInForce": "CLOSE",
+    "orderDesc": "Buy 1 F Limit 5.10, Day",
+    "status": "Submitted",
+    "order_ref": "CLAUDIA-1790262226913",
+}
+
+
+class _StatusSource:
+    """`/iserver/account/order/status` stand-in, as strict as the real one: it answers only
+    the ids it knows, returns IBKR's `tif` key, counts calls, and can be told to fail."""
+
+    def __init__(self, tifs: dict[str, Any], fail: bool = False) -> None:
+        """`tifs` maps order id -> the `tif` value IBKR reports (None = key absent)."""
+        self.tifs = tifs
+        self.fail = fail
+        self.calls: list[str] = []
+
+    def get_order_status(self, order_id: str) -> dict[str, Any]:
+        """Return a status payload for `order_id`, or raise when configured to fail."""
+        self.calls.append(order_id)
+        if self.fail:
+            raise ConnectionError("HTTP 503")
+        tif = self.tifs[order_id]
+        return {"order_id": order_id, "order_status": "Submitted"} | (
+            {} if tif is None else {"tif": tif}
+        )
+
+
+def test_parse_orders_never_takes_the_tif_from_the_live_orders_row():
+    """The row's `timeInForce` is not the TIF (it read CLOSE for a DAY order): parse leaves
+    the TIF unknown and keeps IBKR's own description for the resolver."""
+    order = dd.parse_orders([_F_DAY_ROW])[0]
+    assert order.tif == ""
+    assert order.description == "Buy 1 F Limit 5.10, Day"
+
+
+def test_the_tif_comes_from_order_status():
+    """The measured case: row says CLOSE, order status says DAY, the tab shows DAY."""
+    source = _StatusSource({"177522083": "DAY"})
+    orders = dd.TifCache().resolve(dd.parse_orders([_F_DAY_ROW]), source, now=0.0)
+    assert orders[0].tif == "DAY"
+    assert source.calls == ["177522083"]
+
+
+def test_a_known_order_is_not_read_again_while_its_description_is_unchanged():
+    """One status read per order, not one per 15 s poll: order/status has 503'd under load."""
+    cache, source = dd.TifCache(), _StatusSource({"177522083": "DAY"})
+    for t in (0.0, 15.0, 30.0, 45.0):
+        orders = cache.resolve(dd.parse_orders([_F_DAY_ROW]), source, now=t)
+    assert orders[0].tif == "DAY"
+    assert source.calls == ["177522083"]
+
+
+def test_a_changed_description_reads_the_tif_again():
+    """A modify — from ClaudIA, TWS or mobile — changes IBKR's description; the TIF may have
+    changed with it, so the cached value is not trusted across it."""
+    cache, source = dd.TifCache(), _StatusSource({"177522083": "DAY"})
+    cache.resolve(dd.parse_orders([_F_DAY_ROW]), source, now=0.0)
+    source.tifs["177522083"] = "GTC"
+    modified = dict(_F_DAY_ROW, orderDesc="Buy 1 F Limit 5.10, GTC")
+    orders = cache.resolve(dd.parse_orders([modified]), source, now=15.0)
+    assert orders[0].tif == "GTC"
+    assert source.calls == ["177522083", "177522083"]
+
+
+def test_a_failed_status_read_shows_unknown_and_retries_no_more_than_once_a_minute():
+    """A failed read is unknown — blank, never the raw CLOSE — and is not hammered."""
+    cache, source = dd.TifCache(), _StatusSource({}, fail=True)
+    rows = dd.parse_orders([_F_DAY_ROW])
+    assert cache.resolve(rows, source, now=0.0)[0].tif == ""
+    assert cache.resolve(rows, source, now=30.0)[0].tif == ""
+    assert source.calls == ["177522083"], "retried inside the minute"
+
+    source.fail, source.tifs = False, {"177522083": "DAY"}
+    assert cache.resolve(rows, source, now=dd.TIF_RETRY_SECONDS)[0].tif == "DAY"
+    assert source.calls == ["177522083", "177522083"]
+
+
+def test_a_status_without_a_tif_is_unknown_and_is_retried_like_a_failure():
+    """IBKR answered but named no TIF: unknown, and not cached as if it were an answer."""
+    cache, source = dd.TifCache(), _StatusSource({"177522083": None})
+    rows = dd.parse_orders([_F_DAY_ROW])
+    assert cache.resolve(rows, source, now=0.0)[0].tif == ""
+    source.tifs["177522083"] = "DAY"
+    assert cache.resolve(rows, source, now=dd.TIF_RETRY_SECONDS)[0].tif == "DAY"
+
+
+@pytest.mark.parametrize("raw", ["CLOSE", "GTC", "DAY", "", None, "whatever"])
+def test_the_live_orders_row_value_never_reaches_the_tif(raw):
+    """Whatever the row's `timeInForce` says, the TIF is order status's value or unknown."""
+    row = dict(_F_DAY_ROW, timeInForce=raw)
+    assert (
+        dd.TifCache()
+        .resolve(dd.parse_orders([row]), _StatusSource({"177522083": "DAY"}), now=0.0)[0]
+        .tif
+        == "DAY"
+    )
+    assert (
+        dd.TifCache().resolve(dd.parse_orders([row]), _StatusSource({}, fail=True), now=0.0)[0].tif
+        == ""
+    )
+
+
+def test_orders_that_left_the_book_are_dropped_from_the_cache():
+    """The cache holds only what is on the book, so it cannot grow for a whole session."""
+    cache, source = dd.TifCache(), _StatusSource({"177522083": "DAY", "9": "GTC"})
+    other = dict(_F_DAY_ROW, orderId=9, orderDesc="Buy 1 AAPL Limit 150.00, GTC")
+    cache.resolve(dd.parse_orders([_F_DAY_ROW, other]), source, now=0.0)
+    cache.resolve(dd.parse_orders([other]), source, now=15.0)
+    assert cache.cached_order_ids() == {"9"}

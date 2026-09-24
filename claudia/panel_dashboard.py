@@ -1066,7 +1066,9 @@ def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
             "Limit": o.price,
             "Stop": o.stop_price,
             "Type": o.order_type,
-            "TIF": o.tif,
+            # Blank = order status has not given a TIF yet (gap #70): a dash, like any
+            # other unknown on this table, never a value.
+            "TIF": o.tif or "—",
             "Outside RTH": _yes_no_or_dash(o.outside_rth),
             "Status": o.status,
             "Origin": "ClaudIA" if o.is_claudia_staged else "external",

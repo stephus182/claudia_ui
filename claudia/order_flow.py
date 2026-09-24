@@ -1573,7 +1573,9 @@ async def _execute_staged_order_core(
         # conid          int      yes*       *or conidex; SMART-routes when set
         # orderType      str      yes        LMT | MKT | STP | STOP_LIMIT | MIDPRICE | TRAIL | TRAILLMT
         # side           str      yes        "BUY" | "SELL"
-        # tif            str      yes        DAY | GTC | OPG | IOC | PAX(crypto)
+        # tif            str      yes        DAY | GTC | OPG | IOC (proposal enum); per-contract
+        #                                     set in /iserver/contract/rules — docs/order-api-reference.md
+        #                                     § Time in force
         # quantity       float*   yes*       *docs say float; example uses int; whole shares only
         # price          float    LMT/STOP_LIMIT  limit price
         # auxPrice       float    STOP_LIMIT/TRAILLMT  stop price
@@ -1595,7 +1597,7 @@ async def _execute_staged_order_core(
             "conid": conid,  # int
             "orderType": otype,  # str
             "side": action_str,  # str: BUY | SELL
-            "tif": tif,  # str: DAY | GTC | OPG | IOC
+            "tif": tif,  # str: the proposal enum, DAY | GTC | OPG | IOC
             "quantity": int(qty),  # int (docs say float, example uses int)
             "ticker": symbol,  # str — display + valid IBKR field
             "acctId": "",  # filled below after account lookup

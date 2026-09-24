@@ -186,6 +186,14 @@ class OrderSource(Protocol):
         ...
 
 
+class OrderStatusSource(Protocol):
+    """Whatever can answer `/iserver/account/order/status/{id}` — `TifCache`'s only read."""
+
+    def get_order_status(self, order_id: str) -> Mapping[str, Any]:
+        """One order's status, as IBKR reports it."""
+        ...
+
+
 # IBKR returns positions 30 to a page and gives no total count, so "is there more?" is
 # "did this page come back full?". The cap exists so a malformed response that keeps
 # returning full pages cannot spin forever; 40 pages is 1,200 positions.
@@ -1292,6 +1300,9 @@ class LiveOrder:
     sec_type: str = ""
     company_name: str = ""
     description1: str = ""
+    # IBKR's own text for the order (`orderDesc`, e.g. "Buy 1 F Limit 5.10, Day"). Kept as
+    # the change signal for the TIF cache: a modify from anywhere rewrites it.
+    description: str = ""
 
     @property
     def is_claudia_staged(self) -> bool:
@@ -1349,7 +1360,10 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                 filled=max(0.0, total - remaining),
                 price=_as_float(row["price"]) if row.get("price") not in (None, "") else None,
                 order_type=str(row.get("orderType") or row.get("origOrderType") or "").strip(),
-                tif=str(row.get("timeInForce") or row.get("tif") or "").strip(),
+                # NOT `timeInForce`: it read "CLOSE" for a DAY stock order on 2026-09-24,
+                # a value in no enum (gap #70). The TIF is filled in by `TifCache` from the
+                # order-status endpoint's documented `tif`; until then it is unknown.
+                tif="",
                 status=str(row.get("status") or row.get("order_status") or "").strip(),
                 origin=str(row.get("order_ref") or row.get("orderRef") or "").strip(),
                 outside_rth=(
@@ -1362,6 +1376,7 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                 sec_type=str(row.get("secType") or row.get("sec_type") or "").strip().upper(),
                 company_name=str(row.get("companyName") or "").strip(),
                 description1=str(row.get("description1") or "").strip(),
+                description=str(row.get("orderDesc") or "").strip(),
             )
         )
     return tuple(out)
@@ -1541,6 +1556,89 @@ def display_symbol(
         if identity is not None:
             return identity.local_symbol
     return symbol
+
+
+TIF_RETRY_SECONDS = 60.0
+"""How long a failed or empty TIF read waits before it is tried again.
+
+`/iserver/account/order/status` returned 503 mid-session under load on 2026-09-21, and IBKR's
+rate limits are per endpoint, so a failure is not retried on every 15 s poll."""
+
+
+class TifCache:
+    """Each working order's time in force, read from order status once and kept.
+
+    **Why not the live-orders row (gap #70).** `/iserver/account/orders` reported
+    `timeInForce: "CLOSE"` for a DAY stock order on 2026-09-24 (3 of 3 DAY orders; GTC orders
+    read `GTC`), while the same order's `orderDesc` read ", Day" and
+    `/iserver/account/order/status` `tif` read `DAY`. `CLOSE` is in no IBKR enum and defined
+    nowhere, so it is neither shown nor translated: mapping it to DAY would be an undocumented
+    rule presented as fact. Order status's `tif` is documented — *"Returns the time in force of
+    the order"* (https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md)
+    — and it is the only source used, for every instrument, so the fix does not depend on how
+    the row reports futures (unmeasured on 2026-09-24: every futures order seen was GTC).
+
+    **Cost.** One status read per order, repeated only when IBKR's own description of the
+    order (`orderDesc`) changes — a modify from ClaudIA, TWS or mobile rewrites it, and the TIF
+    may have changed with it. A read that fails or names no TIF leaves the TIF unknown (blank;
+    the tab shows `—`) and is retried after `TIF_RETRY_SECONDS`, not on every poll.
+
+    Owned by the poller (one per process), called from its worker thread; not thread-safe
+    beyond that single caller.
+    """
+
+    def __init__(self) -> None:
+        """Empty: nothing known, nothing failed."""
+        self._known: dict[str, tuple[str, str]] = {}  # order id -> (description, tif)
+        self._failed: dict[str, tuple[str, float]] = {}  # order id -> (description, when)
+
+    def cached_order_ids(self) -> set[str]:
+        """The order ids with a cached answer or a pending retry — for tests and debugging."""
+        return set(self._known) | set(self._failed)
+
+    def resolve(
+        self, orders: Sequence[LiveOrder], source: OrderStatusSource, now: float
+    ) -> tuple[LiveOrder, ...]:
+        """`orders` with each TIF from order status (or blank when unknown).
+
+        Args:
+            orders: Parsed working orders; their `tif` is ignored.
+            source: The order-status reader (the IBKR client).
+            now: A monotonic timestamp in seconds, for the retry spacing.
+        """
+        on_book = {o.order_id for o in orders}
+        for cache in (self._known, self._failed):
+            for gone in set(cache) - on_book:
+                del cache[gone]
+        return tuple(replace(o, tif=self._tif(o, source, now)) for o in orders)
+
+    def _tif(self, order: LiveOrder, source: OrderStatusSource, now: float) -> str:
+        """The cached TIF, a fresh read, or "" while a failed read waits out its retry."""
+        known = self._known.get(order.order_id)
+        if known is not None and known[0] == order.description:
+            return known[1]
+        failed = self._failed.get(order.order_id)
+        if (
+            failed is not None
+            and failed[0] == order.description
+            and now - failed[1] < TIF_RETRY_SECONDS
+        ):
+            return ""
+        try:
+            status = source.get_order_status(order.order_id)
+            tif = (
+                str(status.get("tif") or "").strip().upper() if isinstance(status, Mapping) else ""
+            )
+        except Exception as exc:
+            log.warning("Order %s: TIF read from order status failed: %s", order.order_id, exc)
+            tif = ""
+        if tif:
+            self._known[order.order_id] = (order.description, tif)
+            self._failed.pop(order.order_id, None)
+        else:
+            self._known.pop(order.order_id, None)
+            self._failed[order.order_id] = (order.description, now)
+        return tif
 
 
 def fetch_orders(client: OrderSource) -> tuple[LiveOrder, ...] | None:

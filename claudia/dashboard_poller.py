@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from datetime import UTC, date, datetime
@@ -68,9 +69,11 @@ from claudia.dashboard_data import (
     LedgerSource,
     LiveOrder,
     OrderSource,
+    OrderStatusSource,
     Position,
     PositionSource,
     QuoteSource,
+    TifCache,
     build_flex_sections,
     connect,
     economic_entries,
@@ -92,6 +95,7 @@ class DashboardClient(
     PositionSource,
     QuoteSource,
     OrderSource,
+    OrderStatusSource,
     TradeSource,
     ContractInfoSource,
     Protocol,
@@ -173,6 +177,8 @@ class DashboardPoller:
         # session" advice for the trades endpoint.
         self._fill_cache: Any = None
         self._fill_cache_key: tuple[Any, Any] = (object(), None)
+        # Each working order's TIF, read from order status once (gap #70) — see `TifCache`.
+        self._tif_cache = TifCache()
         self._task: asyncio.Task[None] | None = None
 
     # ── Public, synchronous ─────────────────────────────────────────────────
@@ -292,6 +298,12 @@ class DashboardPoller:
         # take a perfectly good ledger down with it, so `fetch_orders` returns None and
         # the view says "not established" instead of drawing an empty book.
         orders = await asyncio.to_thread(fetch_orders, self._client)
+        if orders is not None:
+            # The TIF comes from order status, never from the live-orders row, which read
+            # "CLOSE" for a DAY stock order (gap #70). A failed read costs the TIF only.
+            orders = await asyncio.to_thread(
+                self._tif_cache.resolve, orders, self._client, time.monotonic()
+            )
         identities = await asyncio.to_thread(self._read_identities, positions, orders)
         self._snapshot = DashboardSnapshot(
             as_of=datetime.now(UTC),

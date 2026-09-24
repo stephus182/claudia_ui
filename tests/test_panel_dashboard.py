@@ -1341,6 +1341,14 @@ def _order(**kw):
     return LiveOrder(**base)
 
 
+@pytest.mark.parametrize(("tif", "shown"), [("DAY", "DAY"), ("GTC", "GTC"), ("", "—")])
+def test_the_tif_column_shows_a_dash_for_an_unknown_tif(tif, shown):
+    """Gap #70: an unknown TIF (order status unread or failed) is a dash, never a blank cell
+    that could read as "no TIF", and never the live-orders row's raw value."""
+    frame = pdash.orders_frame(_snapshot(orders=(_order(tif=tif),)))
+    assert frame["TIF"].tolist() == [shown]
+
+
 def test_orders_frame_keeps_its_columns_when_the_book_is_empty():
     """A zero-column Tabulator renders as a blank rectangle — that reads as a broken
     widget, not as an empty book (same reason positions_frame does this)."""
