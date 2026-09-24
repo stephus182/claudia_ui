@@ -513,3 +513,89 @@ async def test_run_checks_reports_a_configured_but_failing_drive_as_error(checke
     with _ibkr_up(checker_with_token):
         await checker_with_token._run_checks()
     assert checker_with_token.get_status()["gdrive"] == ServiceStatus.ERROR
+
+
+# ── gap #26: an unread session is not a disconnected one ──
+#
+# These use a REAL `GatewaySession`, not the MagicMock fixture above. A MagicMock's
+# `.phase` is itself a MagicMock, so it can never be UNREAD: a mock-based test of this
+# defect could not have failed, which is `feedback-mocks-weaker-than-dependencies`.
+
+
+def _real_checker(tmp_path):
+    """A checker over a never-read `GatewaySession`, with Drive and TV unconfigured so
+    that IBKR is the only service able to produce an alert."""
+    from claudia.gateway_session import GatewaySession
+
+    session = GatewaySession()
+    checker = ConnectivityChecker(
+        gateway_url="https://localhost:5055/v1/api",
+        gdrive_token_file=tmp_path / "token.json",
+        session=session,
+    )
+    return checker, session
+
+
+@pytest.mark.asyncio
+async def test_an_unread_session_raises_no_disconnect_alert(tmp_path):
+    """The checker's first poll lands before the owner's first read. Measured live twice
+    (2026-08-13, 2026-09-15): that told the user to log in to Client Portal against a
+    healthy gateway, one to two seconds before the owner logged `down -> live`."""
+    checker, _ = _real_checker(tmp_path)
+    received: list[str] = []
+
+    async def _subscriber(msg: str) -> None:
+        """Record the alert text this subscriber received."""
+        received.append(msg)
+
+    checker.subscribe(_subscriber)
+    await checker._run_checks()
+
+    assert received == []
+    assert checker.get_status()["ibkr"] == ServiceStatus.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_a_first_read_of_live_after_unread_is_silent(tmp_path):
+    """UNKNOWN -> OK is the existing startup silence; the fix must land on it."""
+    from claudia.gateway_preflight import GatewayState
+    from claudia.gateway_session import observe
+
+    checker, session = _real_checker(tmp_path)
+    received: list[str] = []
+
+    async def _subscriber(msg: str) -> None:
+        """Record the alert text this subscriber received."""
+        received.append(msg)
+
+    checker.subscribe(_subscriber)
+    await checker._run_checks()
+    session.publish(observe(GatewayState(reachable=True, authenticated=True, connected=True), True))
+    await checker._run_checks()
+
+    assert received == []
+    assert checker.get_status()["ibkr"] == ServiceStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_a_first_read_of_down_after_unread_still_alerts(tmp_path):
+    """The guard must be exactly as wide as 'not read yet'. A gateway that was READ and
+    found down is a real outage, and silencing it would be the opposite defect."""
+    from claudia.gateway_preflight import GatewayState
+    from claudia.gateway_session import observe
+
+    checker, session = _real_checker(tmp_path)
+    received: list[str] = []
+
+    async def _subscriber(msg: str) -> None:
+        """Record the alert text this subscriber received."""
+        received.append(msg)
+
+    checker.subscribe(_subscriber)
+    await checker._run_checks()
+    session.publish(observe(GatewayState(reachable=False, detail="ConnectionError"), False))
+    await checker._run_checks()
+
+    assert len(received) == 1
+    assert "disconnected" in received[0]
+    assert checker.get_status()["ibkr"] == ServiceStatus.ERROR

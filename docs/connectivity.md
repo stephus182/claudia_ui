@@ -20,7 +20,7 @@ started). Gray never sends a disconnect alert.
 
 ### ⚠ IBKR lives in its own document now
 
-The IBKR brokerage session — its eight phases, the suspend protocol, the login runbook, the
+The IBKR brokerage session — its nine phases, the suspend protocol, the login runbook, the
 borrowed-session and IB Key failures, and the container image trap — **moved to
 `docs/ibkr-gateway.md` on 2026-08-06.** It is not duplicated here.
 
@@ -46,6 +46,14 @@ the owner's cached state. `/portfolio/*` and `/iserver/*` are separate subsystem
 been observed diverging, so a red dot does **not** mean account data is unavailable —
 `docs/ibkr-gateway.md` § "The IBKR light is about the brokerage session" has the measured
 three-state table.
+
+**At startup the IBKR light is neutral, not red, until the owner's first read** (gap #26,
+2026-09-23). The checker's first poll lands a second or two before `GatewaySession`'s first
+read; the owner's initial phase is `UNREAD`, which the checker maps to `UNKNOWN`, and
+UNKNOWN→OK is silent. Until then the initial phase was `DOWN`, so every startup printed
+*"IBKR Gateway disconnected — check the Client Portal and log in"* against a healthy gateway
+(measured live 2026-08-13 and 2026-09-15). A gateway that *is* read and found down still
+alerts; the neutral state lasts at most one poll interval.
 
 ---
 

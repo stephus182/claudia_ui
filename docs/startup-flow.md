@@ -135,7 +135,7 @@ across Panel sessions. It polls every 60 seconds (`POLL_INTERVAL` in `claudia/st
 
 | Service | Check method | Condition for OK |
 |---|---|---|
-| IBKR | GET `/tickle` | `authenticated=true AND connected=true` in `iserver.authStatus` |
+| IBKR | `GatewaySession`'s cached phase (no HTTP of its own since 2026-08-06) | phase `LIVE` — authenticated, connected **and** confirmed against `/portfolio/accounts` |
 | GDrive | `GDriveSync.ping()` or token file exists | Live API round-trip succeeds |
 | TradingView | TCP connect to port 9222 | Connection accepted within 1s |
 
@@ -143,6 +143,9 @@ across Panel sessions. It polls every 60 seconds (`POLL_INTERVAL` in `claudia/st
 - Any service: UNKNOWN/OK → ERROR = disconnected message
 - Any service: ERROR → OK = reconnected message
 - UNKNOWN → OK at startup = silent (expected)
+- IBKR stays UNKNOWN (neutral) while `GatewaySession` is still `UNREAD`, so the checker's first
+  poll — which lands before the owner's first read — raises no alert (gap #26, 2026-09-23;
+  it used to be `DOWN` and printed a false "log in" instruction on every startup)
 
 **IBKR: competing session detection**
 If `authStatus.competing=true` appears in the `/tickle` response, a warning is

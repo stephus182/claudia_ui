@@ -17,6 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from claudia.gateway_session import SessionPhase
 from claudia.tradingview import _TV_DEBUG_PORT
 
 if TYPE_CHECKING:
@@ -34,7 +35,8 @@ class ServiceStatus(StrEnum):
 
     Three states, and the distinction matters for alerting:
 
-    - `UNKNOWN`: **not configured** — e.g. no Drive credentials on disk. Renders as a grey
+    - `UNKNOWN`: **not configured** — e.g. no Drive credentials on disk — or, for IBKR,
+      **not read yet** (the session owner is still `UNREAD`, gap #26). Renders as a grey
       dot and is deliberately *not* an error; a UNKNOWN→OK transition at startup raises no
       alert.
     - `OK`: reachable and, for IBKR, authenticated.
@@ -258,13 +260,27 @@ class ConnectivityChecker:
         alert is awaited, so a second run can never observe the stale state and alert
         twice (a lock was added and removed on 2026-09-04 when a mutation test showed it
         guarded nothing).
+
+        **An unread session is `UNKNOWN`, not `ERROR` (gap #26).** This poll's first run
+        lands before the owner's first read, and mapping "not live" straight to `ERROR`
+        told the user to log in to Client Portal against a healthy gateway on every
+        startup. The phase is read *before* `check_ibkr`, and that order is what makes the
+        pair race-free: `UNREAD` is never re-entered, so once it has been seen to be gone,
+        whatever `is_live()` then says came from a real reading.
         """
+        ibkr_read = self._session.phase is not SessionPhase.UNREAD
         ibkr_ok = await asyncio.to_thread(self.check_ibkr)
         gdrive_configured = await asyncio.to_thread(self.gdrive_configured)
         gdrive_ok = gdrive_configured and await asyncio.to_thread(self.check_gdrive)
         tv_ok = await asyncio.to_thread(self.check_tradingview)
         new = {
-            "ibkr": ServiceStatus.OK if ibkr_ok else ServiceStatus.ERROR,
+            "ibkr": (
+                ServiceStatus.OK
+                if ibkr_ok
+                else ServiceStatus.ERROR
+                if ibkr_read
+                else ServiceStatus.UNKNOWN
+            ),
             # Not configured → UNKNOWN (neutral), not ERROR (red) — for Drive and TV alike
             "gdrive": (
                 ServiceStatus.OK

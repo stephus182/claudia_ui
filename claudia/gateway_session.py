@@ -61,6 +61,7 @@ running during recovery is enough to defeat it.
 
 | Phase | Meaning | Who may talk to the gateway |
 |---|---|---|
+| `UNREAD` | no reading yet — the initial state, left on the first read and never re-entered | not suspended, so any actor may try; no figure is vouched for (`is_live` is false) |
 | `DOWN` | container not running, or the Java process is not answering | nobody |
 | `FREE` | reachable, holds no session — the only state a login may start from | owner reads |
 | `AUTHENTICATING` | login page open, user at 2FA | **owner reads only** |
@@ -136,7 +137,7 @@ log = logging.getLogger(__name__)
 
 
 class SessionPhase(StrEnum):
-    """The eight states a gateway session can be in.
+    """The nine states a gateway session can be in.
 
     A `StrEnum` so a phase renders readably in a log line and compares to a literal in a
     test without `.value` ceremony, matching how `ServiceStatus` is used in
@@ -146,7 +147,17 @@ class SessionPhase(StrEnum):
     `AUTHENTICATING` and `RECOVERING` describe an operation the owner is performing and
     cannot be read off the wire, because the gateway looks identical during a login it is
     waiting on and a login nobody has started.
+
+    One is neither: `UNREAD`, the holder's initial state, meaning *no reading exists yet*.
+    It is a one-way door — nothing can publish it, because `classify` never returns it and
+    `declare` refuses it — so a consumer that sees any other phase knows it came from
+    evidence. It exists for gap #26: the initial state used to be `DOWN`, a claim about the
+    gateway made with no evidence at all (`feedback-unknown-is-not-a-negative-claim`), and
+    `ConnectivityChecker`'s first poll, which lands before the first read, turned it into
+    *"IBKR Gateway disconnected — check the Client Portal and log in"* on every startup.
     """
+
+    UNREAD = "unread"
 
     DOWN = "down"
     FREE = "free"
@@ -294,6 +305,7 @@ def classify(state: GatewayState, data_ok: bool) -> SessionPhase:
 # Human-readable reasons, one per observed phase. Held here rather than built at the call
 # site so the wording cannot drift between the status dot, the chat and the CLI.
 _PHASE_DETAIL = {
+    SessionPhase.UNREAD: "The session has not been read yet.",
     SessionPhase.DOWN: "The gateway process is not answering.",
     SessionPhase.FREE: "No session — a login now should succeed.",
     SessionPhase.LIVE: "Authenticated and confirmed against a data endpoint.",
@@ -335,7 +347,8 @@ def declare(phase: SessionPhase, now: datetime | None = None) -> SessionState:
     """
     if phase not in _SUSPENDED_PHASES:
         raise ValueError(
-            f"{phase} is an observed phase and must come from `observe()`. Only "
+            f"{phase} cannot be declared: an observed phase must come from `observe()`, "
+            f"and `unread` is only ever the initial state. Only "
             f"{sorted(p.value for p in _SUSPENDED_PHASES)} may be declared."
         )
     return SessionState(phase=phase, as_of=now or datetime.now(UTC), detail=describe(phase))
@@ -357,9 +370,9 @@ class GatewaySession:
 
     _state: SessionState = field(
         default_factory=lambda: SessionState(
-            phase=SessionPhase.DOWN,
+            phase=SessionPhase.UNREAD,
             as_of=datetime.now(UTC),
-            detail="The session has not been read yet.",
+            detail=describe(SessionPhase.UNREAD),
         )
     )
     _subscribers: list[Callable[[SessionState], None]] = field(default_factory=list)

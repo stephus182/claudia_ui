@@ -7,7 +7,7 @@ connectivity live in `docs/connectivity.md`; this file was split out of it on 20
 ## Why this is a document of its own
 
 The other two services answer one question — *is it up?* The IBKR gateway is a state machine
-with eight phases, a suspend protocol spanning four runtimes, a single brokerage session
+with nine phases, a suspend protocol spanning four runtimes, a single brokerage session
 shared with TWS and IBKR Mobile, and a login that can fail in ways no retry fixes. Those are
 different kinds of fact and they drift at different rates: of the fourteen stale claims found
 in `connectivity.md` on 2026-08-06, **every one was an IBKR claim.**
@@ -257,6 +257,10 @@ The two pings serve different purposes:
 - `IBKRClient.ping()` — pre-tool guard, runs on demand, handles startup quirk
 
 ### Reconnection process
+
+**At startup there is no alert and the light is neutral** until the first read — the owner
+starts in `UNREAD`, never `DOWN` (gap #26, 2026-09-23). A disconnect alert therefore always
+means the gateway was actually read and found unusable.
 
 **Automatic (session timeout):**
 1. Status light turns red; in-chat alert: *"⚠️ IBKR Gateway disconnected"*

@@ -208,11 +208,29 @@ def test_observe_keeps_the_evidence_the_phase_came_from():
 # ── The holder ───────────────────────────────────────────────────────────────
 
 
-def test_starts_down_and_says_it_has_not_read_yet():
-    """ "Not read yet" and "the gateway is down" must not look identical to a consumer."""
+def test_starts_unread_not_down():
+    """ "Not read yet" and "the gateway is down" must not look identical to a consumer.
+
+    Gap #26. This test used to assert `DOWN` here, pinning the defect it names: the honest
+    reading sat in `detail` while the phase — the only thing `ConnectivityChecker` looks at
+    — claimed an outage. Every startup therefore told the user to log in to Client Portal
+    against a healthy gateway (observed live 2026-08-13 and 2026-09-15), the action that
+    escalates into the IB Key challenge.
+    """
     session = GatewaySession()
-    assert session.phase is SessionPhase.DOWN
+    assert session.phase is SessionPhase.UNREAD
     assert "not been read" in session.state().detail
+
+
+def test_classify_never_returns_unread():
+    """UNREAD is the absence of a reading, so no reading can produce it.
+
+    That is what makes it a one-way door: once the first poll publishes, the session can
+    never return to UNREAD, and a consumer that saw any other phase can trust it is real.
+    """
+    readings = [_down(), _free(), _authenticated(), _borrowed(), _contested()]
+    produced = {classify(r, ok) for r in readings for ok in (True, False)}
+    assert SessionPhase.UNREAD not in produced
 
 
 def test_subscribers_fire_only_on_a_phase_change():
