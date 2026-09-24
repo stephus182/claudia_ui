@@ -8,6 +8,7 @@ import asyncio
 import json
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -3266,7 +3267,81 @@ async def test_execute_cancel_order_falls_back_to_the_proposal_when_the_status_r
         "orderType": "STP",
         "tif": "GTC",
         "price": 7900.0,
+        # Gap #64: a cancel proposal carries no sec_type or conid, so with the status read
+        # failed nothing can tell a future from a stock. The dialog must not multiply.
+        "_multiplier_unknown": True,
     }
+
+
+def _rendered_cancel_dialog(order_id: str, details: dict[str, Any]) -> dict[str, str]:
+    """The rows the REAL Gate 2 cancel dialog would show for `details`, window suppressed.
+
+    Goes through the released core's public `confirm_cancel_dialog`, and intercepts only
+    the call that opens the window, so the rows asserted are exactly the rows the human
+    reads. Gap #64's lesson: the old test asserted the body with `==` and never looked at
+    the rendered dialog, so it pinned a 50x-short notional as correct.
+    """
+    from ibkr_core_mcp import order_confirm
+
+    with patch.object(order_confirm, "_show_confirm_dialog") as show:
+        order_confirm.confirm_cancel_dialog(order_id, "U12345", details)
+    rows: dict[str, str] = show.call_args.kwargs["details"]
+    return rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("proposal", "product"),
+    [
+        (_ES_CANCEL, "7,900"),  # ES: 7,900 points x 1 printed as money, ~50x short
+        (None, "100"),  # the default AAPL LMT 100.00 x 1: a stock cannot be told apart
+    ],
+)
+async def test_a_failed_status_read_never_prints_a_total_the_dialog_cannot_back(proposal, product):
+    """Gap #64: with the order-status read failed, the cancel dialog multiplies nothing.
+
+    Rendered live 2026-09-23 for an ES stop: `Total (est.): 7,900.00` for one contract worth
+    about 395,000 USD. The fallback body is built from the proposal alone, which carries
+    none of the signals the dialog uses to recognise a future, and nothing in a cancel
+    proposal can supply one — the symbol cannot (`ES` is also Eversource's stock ticker).
+    So the fallback says it does not know, for every instrument, rather than guessing which.
+    """
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.get_order_status.side_effect = RuntimeError("HTTP 503")
+    await _run_cancel(_make_cancel_action(proposal), ibkr_mod)
+    details = client.cancel_order.call_args.kwargs["order_details"]
+
+    rows = _rendered_cancel_dialog("975324733", details)
+
+    assert product not in rows["Total (est.)"], rows
+    assert rows["Total (est.)"].startswith("— (contract multiplier unknown"), rows
+    assert rows["Quantity"].endswith("(multiplier unknown)"), rows
+    assert "Currently at IBKR" not in rows  # nothing claims to be IBKR's own record
+
+
+@pytest.mark.asyncio
+async def test_a_successful_status_read_still_prints_the_real_notional():
+    """The fix is confined to the fallback: with the status read working, a future's
+    notional is price x quantity x multiplier from IBKR's own contract facts."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.get_contract_info.return_value = _ES_INFO
+    client.get_order_status.return_value = {
+        "symbol": "ES",
+        "side": "B",
+        "size": 1,
+        "order_type": "STP",
+        "stop_price": 7900.0,
+        "tif": "GTC",
+        "conid": 649180671,
+        "sec_type": "FUT",
+    }
+    await _run_cancel(_make_cancel_action(_ES_CANCEL), ibkr_mod)
+    details = client.cancel_order.call_args.kwargs["order_details"]
+    assert "_multiplier_unknown" not in details
+
+    rows = _rendered_cancel_dialog("975324733", details)
+
+    assert rows["Total (est.)"].startswith("395,000.00"), rows
 
 
 @pytest.mark.asyncio

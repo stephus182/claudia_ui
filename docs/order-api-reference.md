@@ -610,6 +610,16 @@ outside-RTH, the futures label/multiplier/currency, and `Currently at IBKR` from
 cancel is never blocked by a read. The order id appears once; nulls and the reason blob are gone
 (before: screenshot 2026-09-10 10:38, gaps #27(b–e); the reworked dialog read live at 16:02).
 
+**On that failed-read path the dialog prints no total (gap #64, 2026-09-24).** A cancel proposal
+carries no `sec_type` and no `conid`, so with the status read failed nothing can tell a future
+from a stock, and the dialog used to print price × quantity as money: `Total (est.): 7,900.00` for
+one ES contract worth ~395,000 USD. The symbol cannot decide it (`ES` is also Eversource's stock
+ticker). The fallback body now carries `_multiplier_unknown: True` for **every** instrument, so the
+dialog reads `Quantity: 1 (multiplier unknown)` and `Total (est.): — (contract multiplier unknown;
+not price × quantity)`; with the read working, the real notional is unchanged. Tested on the
+**rendered** rows through the core's own `confirm_cancel_dialog` — the earlier test asserted the
+body with `==` and so pinned the 50× error as correct.
+
 **Gate 2 shows full order detail on cancel (fixed 2026-07-10):** `confirm_cancel_dialog(order_id,
 account_id, order=None)` in `ibkr_core_mcp/order_confirm.py` takes an optional `order` param —
 when provided, the dialog displays the same symbol/side/qty/order type/price/TIF detail the place

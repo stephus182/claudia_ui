@@ -435,12 +435,22 @@ def _cancel_display_details(ibkr: Any, proposal: dict[str, Any]) -> dict[str, An
                 ibkr, details, int(conid), str(status.get("sec_type", ""))
             )
         return details
+    # The read failed, so everything below comes from the proposal — and a cancel proposal
+    # carries no `sec_type` and no `conid` (`propose_cancel`'s schema), so nothing here can
+    # tell a future from a stock. Without a future signal the dialog printed price x quantity
+    # as money: `Total (est.): 7,900.00` for one ES contract worth ~395,000 USD (gap #64,
+    # rendered 2026-09-23). The symbol cannot decide it either — `ES` is also Eversource's
+    # stock ticker (gap #65). So the fallback declares the multiplier unknown for EVERY
+    # instrument, and the dialog prints "contract multiplier unknown" instead of a number:
+    # on this path we genuinely do not know, and a figure we cannot back must not appear on
+    # the last screen before a cancel (operator rule: make the bad state impossible).
     details = {
         "ticker": proposal.get("symbol", "?"),
         "side": proposal.get("action", "?"),
         "quantity": proposal.get("quantity", "?"),
         "orderType": proposal.get("order_type", "?"),
         "tif": proposal.get("tif", "?"),
+        "_multiplier_unknown": True,
     }
     proposal_type = proposal.get("order_type")
     if proposal_type == "STOP_LIMIT":
