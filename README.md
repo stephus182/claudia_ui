@@ -150,7 +150,7 @@ how a button gets pressed without a person. See
 ```
 ClaudIA calls propose_order (strict-schema tool — records, executes nothing)
     ↓ agent.py hands the validated input → MessageSink.send_order_proposal()
-    ↓ panel_order_flow.render_order_proposal() → button: "Stage this order"
+    ↓ panel_order_flow.render_order_proposal() → button: "STAGE ORDER"
     ↓ User clicks → order_flow._execute_staged_order_core()
     ↓ Gate 1 — Touch ID (macOS LocalAuthentication)
     ↓ Gate 2 — AppKit dialog: green=BUY / red=SELL, 60s auto-cancel, Enter disabled

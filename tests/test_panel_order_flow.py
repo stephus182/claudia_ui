@@ -46,21 +46,209 @@ def _make_ibkr_mock():
     return mod, client
 
 
+# ─── The order buttons: naming, colour and behaviour (gap #67) ───────────────────────────
+#
+# Agreed with the operator one button at a time on 2026-09-24 (memory
+# `feedback-order-button-naming-and-colour`): UPPERCASE, no articles; blue (`primary`) =
+# validate, red (`danger`) = throw away or remove, neutral (`default`) = leave in place;
+# never "CANCEL" on a button that does not cancel an order. The expected values below are
+# written out literally ON PURPOSE — they are the spec, so they must not be read from the
+# module under test.
+#
+# Every behavioural test finds its button BY LABEL and clicks it. The earlier tests found
+# buttons by position and checked labels and clicks separately, so nothing held "the button
+# that reads X" to "the action it performs", and two of the three dismiss buttons were never
+# clicked at all: wired to an order core, they would have left the suite green.
+
+_PLACE = {
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 10,
+    "conid": 265598,
+    "order_type": "MKT",
+    "limit_price": None,
+    "stop_price": None,
+}
+_CANCEL = {"order_id": "555", "symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"}
+_MODIFY = {
+    "order_id": "555",
+    "conid": 265598,
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LMT",
+    "limit_price": 105.0,
+    "changes": [{"field": "limit_price", "previous_value": 100.0}],
+}
+
+# Every client method that writes an order. A click reaches exactly one of them or none.
+_WRITES = (
+    "place_order",
+    "place_order_and_confirm",
+    "modify_order",
+    "modify_order_and_confirm",
+    "cancel_order",
+    "reply_order",
+)
+
+# (card, label) -> the one write that label's click must reach; None = no IBKR write at all.
+_EFFECT = {
+    ("place", "STAGE ORDER"): "place_order_and_confirm",
+    ("place", "DISCARD"): None,
+    ("cancel", "CANCEL ORDER"): "cancel_order",
+    ("cancel", "KEEP ORDER"): None,
+    ("modify", "MODIFY ORDER"): "modify_order_and_confirm",
+    ("modify", "DISCARD"): None,
+}
+
+# (card, dismiss label) -> the exact chat line the dismissal posts.
+_DISMISS_MESSAGE = {
+    ("place", "DISCARD"): "Order proposal discarded — nothing was sent to IBKR.",
+    ("cancel", "KEEP ORDER"): "Proposal dismissed — order left unchanged at IBKR.",
+    ("modify", "DISCARD"): "Modify proposal discarded — order left unchanged at IBKR.",
+}
+
+
+async def _render(kind: str, chat):
+    """Render one card of `kind` and return (summary pane, button row)."""
+    if kind == "place":
+        await render_order_proposal(chat, dict(_PLACE), session_id="s1", store=None)
+    elif kind == "cancel":
+        with patch("claudia.panel_order_flow.cancel_proposal_contract_label", return_value=None):
+            await render_cancel_proposal(chat, dict(_CANCEL), session_id="s1", store=None)
+    else:
+        await render_modify_proposal(chat, dict(_MODIFY), session_id="s1", store=None)
+    column = chat.send.call_args.args[0]
+    return column[0], column[1]
+
+
+def _by_label(row, label):
+    """The one button in `row` whose label is `label` — never found by position."""
+    hits = [b for b in row if b.label == label]
+    assert len(hits) == 1, f"expected one {label!r} button, found {[b.label for b in row]}"
+    return hits[0]
+
+
+def _writes_reached(client) -> list[str]:
+    """The order-writing client methods a click actually called, in `_WRITES` order."""
+    return [w for w in _WRITES if getattr(client, w).called]
+
+
 @pytest.mark.asyncio
-async def test_render_order_proposal_sends_message_with_two_buttons():
-    """An order proposal renders one message carrying a stage and a cancel button."""
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("place", [("STAGE ORDER", "primary"), ("DISCARD", "danger")]),
+        ("cancel", [("CANCEL ORDER", "danger"), ("KEEP ORDER", "default")]),
+        ("modify", [("MODIFY ORDER", "primary"), ("DISCARD", "danger")]),
+    ],
+)
+async def test_each_card_shows_exactly_the_agreed_buttons_and_colours(kind, expected):
+    """Labels, colours and their order on each card, as agreed on 2026-09-24."""
     chat = _make_chat()
-    proposal = {"symbol": "AAPL", "action": "BUY", "quantity": 10, "order_type": "MKT"}
-    await render_order_proposal(chat, proposal, session_id="s1", store=None)
+    _, row = await _render(kind, chat)
+    assert [(b.label, b.color) for b in row] == expected
+
+
+@pytest.mark.asyncio
+async def test_the_place_card_is_sent_as_one_order_proposal_message():
+    """The place card is one message, attributed to the proposal author, with two buttons."""
+    chat = _make_chat()
+    await render_order_proposal(chat, dict(_PLACE), session_id="s1", store=None)
     chat.send.assert_called_once()
-    args, kwargs = chat.send.call_args
-    assert kwargs["user"] == "ClaudIA — Order Proposal"
-    # sent content is a pn.Column containing a pn.Row of 2 buttons — inspect structurally
-    column = args[0]
-    button_row = column[1]
-    assert len(button_row) == 2
-    assert button_row[0].name == "Stage this order"
-    assert button_row[1].name == "Cancel"
+    assert chat.send.call_args.kwargs["user"] == "ClaudIA — Order Proposal"
+    assert len(chat.send.call_args.args[0][1]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kind", "label"), list(_EFFECT))
+async def test_each_button_does_what_its_label_says(kind, label):
+    """Click the button FOUND BY ITS LABEL; it reaches exactly its own write, or none."""
+    write = _EFFECT[(kind, label)]
+    chat = _make_chat()
+    ibkr_mod, client = _make_ibkr_mock()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        _, row = await _render(kind, chat)
+        clients_built = ibkr_mod.IBKRClient.call_count
+        await _get_click_callback(_by_label(row, label))(None)
+
+    assert _writes_reached(client) == ([write] if write else [])
+    if write is None:
+        # Not merely "no write": a dismissal must not even build a client.
+        assert ibkr_mod.IBKRClient.call_count == clients_built
+        assert chat.send.call_args.args[0] == _DISMISS_MESSAGE[(kind, label)]
+    assert all(b.disabled for b in row), "every button on a card is one-shot"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "dismiss", "confirm"),
+    [
+        ("place", "DISCARD", "STAGE ORDER"),
+        ("cancel", "KEEP ORDER", "CANCEL ORDER"),
+        ("modify", "DISCARD", "MODIFY ORDER"),
+    ],
+)
+async def test_after_a_dismiss_the_confirm_button_dispatches_nothing(kind, dismiss, confirm):
+    """Dismiss, then click the confirm button anyway: no write reaches IBKR.
+
+    The one-shot was only ever tested as "confirm twice". This is the other order, and the
+    one a human can produce: a disabled button still has its handler on the server.
+    """
+    chat = _make_chat()
+    ibkr_mod, client = _make_ibkr_mock()
+    with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+        _, row = await _render(kind, chat)
+        await _get_click_callback(_by_label(row, dismiss))(None)
+        await _get_click_callback(_by_label(row, confirm))(None)
+
+    assert _writes_reached(client) == []
+
+
+@pytest.mark.asyncio
+async def test_order_buttons_obey_the_naming_and_colour_rules_as_a_class():
+    """The rules over EVERY order button, derived from what each click actually does.
+
+    Not a list of today's labels: a new card, or a label or handler moved between buttons,
+    is judged by its behaviour. One label has one colour; blue exactly on the buttons that
+    reach a place or modify write; red on the one that reaches a cancel, and "CANCEL" on no
+    other button; UPPERCASE throughout.
+    """
+    seen: dict[str, set[str]] = {}
+    for kind in ("place", "cancel", "modify"):
+        _, row = await _render(kind, _make_chat())
+        for button in row:
+            chat = _make_chat()
+            ibkr_mod, client = _make_ibkr_mock()
+            with patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}):
+                _, fresh = await _render(kind, chat)
+                await _get_click_callback(_by_label(fresh, button.label))(None)
+            reached = _writes_reached(client)
+            validates = any(w.startswith(("place", "modify")) for w in reached)
+            cancels = "cancel_order" in reached
+
+            assert button.label == button.label.upper(), button.label
+            assert (button.color == "primary") == validates, (button.label, button.color)
+            if cancels:
+                assert button.color == "danger", button.label
+            assert ("CANCEL" in button.label) == cancels, button.label
+            seen.setdefault(button.label, set()).add(button.color)
+
+    assert all(len(colours) == 1 for colours in seen.values()), seen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "confirm"),
+    [("place", "STAGE ORDER"), ("cancel", "CANCEL ORDER"), ("modify", "MODIFY ORDER")],
+)
+async def test_the_card_text_names_the_button_that_exists(kind, confirm):
+    """The instruction on each card names its real confirm button, and no retired label."""
+    summary, row = await _render(kind, _make_chat())
+    assert _by_label(row, confirm)  # the button exists
+    assert f"'{confirm}'" in summary.object
+    for retired in ("Stage this order", "Cancel this order", "Modify this order"):
+        assert retired not in summary.object
 
 
 @pytest.mark.asyncio
@@ -178,25 +366,6 @@ async def test_render_order_proposal_cancel_click_disables_without_executing():
 
 
 @pytest.mark.asyncio
-async def test_render_cancel_proposal_sends_message_with_two_buttons():
-    """A cancel proposal renders one message carrying a cancel and a keep button."""
-    chat = _make_chat()
-    proposal = {
-        "order_id": "555",
-        "symbol": "AAPL",
-        "action": "BUY",
-        "quantity": 1,
-        "order_type": "MKT",
-    }
-    with patch("claudia.panel_order_flow.cancel_proposal_contract_label", return_value=None):
-        await render_cancel_proposal(chat, proposal, session_id="s1", store=None)
-    column = chat.send.call_args.args[0]
-    button_row = column[1]
-    assert button_row[0].name == "Cancel this order"
-    assert button_row[1].name == "Keep order"
-
-
-@pytest.mark.asyncio
 async def test_render_cancel_proposal_confirm_click_calls_cancel_core():
     """Confirming routes to the cancel core, not to any other path."""
     chat = _make_chat()
@@ -220,27 +389,6 @@ async def test_render_cancel_proposal_confirm_click_calls_cancel_core():
     assert args == ("U12345", "555")
     # The core hands the dialog IBKR-shaped detail (gap #40), never the proposal dict.
     assert kwargs["order_details"]["side"] == "BUY" and "order_id" not in kwargs["order_details"]
-
-
-@pytest.mark.asyncio
-async def test_render_modify_proposal_sends_message_with_two_buttons():
-    """A modify proposal renders one message carrying a modify and a discard button."""
-    chat = _make_chat()
-    proposal = {
-        "order_id": "555",
-        "conid": 265598,
-        "symbol": "AAPL",
-        "action": "BUY",
-        "quantity": 1,
-        "order_type": "LMT",
-        "limit_price": 105.0,
-        "changes": [{"field": "limit_price", "previous_value": 100.0}],
-    }
-    await render_modify_proposal(chat, proposal, session_id="s1", store=None)
-    column = chat.send.call_args.args[0]
-    button_row = column[1]
-    assert button_row[0].name == "Modify this order"
-    assert button_row[1].name == "Discard"
 
 
 @pytest.mark.asyncio

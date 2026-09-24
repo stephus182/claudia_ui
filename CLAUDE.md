@@ -299,8 +299,13 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
    proposal and returns a `tool_result`. There is no text format for a proposal.
 2. `agent.py` hands the recorded `tool_use.input` to the `MessageSink`
    (`send_order_proposal`); `PanelMessageSink` routes it to
-   `panel_order_flow.render_order_proposal()` → a Panel message with a
-   **"Stage this order"** button.
+   `panel_order_flow.render_order_proposal()` → a Panel message with a blue
+   **`STAGE ORDER`** button beside a red **`DISCARD`**. Every order-card label and colour is
+   defined once (labels in `order_flow`, colours in `panel_order_flow._ORDER_BUTTON_COLORS`),
+   agreed with the operator 2026-09-24 (gap #67): blue validates, red throws away or removes,
+   neutral leaves in place, "CANCEL" only on the button that cancels a live order. Tests find
+   each button **by its label** and click it, because the real risk is a label on the wrong
+   handler.
 3. Click → `panel_order_flow`'s handler → `order_flow._execute_staged_order_core()` →
    **Gate 1** (Touch ID — **once per order write**, as IBKR Mobile and TWS ask once per
    placement, modification or cancellation; IBKR's precaution replies validate through their

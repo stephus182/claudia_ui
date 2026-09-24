@@ -18,6 +18,11 @@ import panel as pn
 from param.parameterized import Event
 
 from claudia.order_flow import (
+    CANCEL_ORDER_LABEL,
+    DISCARD_LABEL,
+    KEEP_ORDER_LABEL,
+    MODIFY_ORDER_LABEL,
+    STAGE_ORDER_LABEL,
     SendStatus,
     _execute_cancel_order_core,
     _execute_modify_order_core,
@@ -34,6 +39,42 @@ if TYPE_CHECKING:
     from claudia.conversation_store import ConversationStore
 
 log = logging.getLogger(__name__)
+
+
+_ORDER_BUTTON_COLORS: dict[str, str] = {
+    STAGE_ORDER_LABEL: "primary",
+    MODIFY_ORDER_LABEL: "primary",
+    CANCEL_ORDER_LABEL: "danger",
+    DISCARD_LABEL: "danger",
+    KEEP_ORDER_LABEL: "default",
+}
+"""The one colour of each order-card button, keyed by its label (gap #67).
+
+Agreed with the operator on 2026-09-24, one button at a time: **blue (`primary`) validates**
+(the two buttons that lead to a new or changed order), **red (`danger`) throws away or
+removes** (cancelling a live order, discarding a proposal), **neutral (`default`) leaves in
+place**. Keyed by label so one word can never carry two colours: the operator caught exactly
+that when `DISCARD` was red on one card and neutral on the other.
+
+Why not green for the confirm buttons, as before: green is a *side* colour on this path (the
+Gate 2 banner is green for BUY, red for SELL), so a green button on a SELL card said "buy" at
+a glance. Why `CANCEL ORDER` stays red although the user asked for it (Apple drops the
+destructive style for a deliberately chosen action): a model chose *which* order, and trading
+tools colour cancel/flatten red. Why `default` and not `light` for neutral: `.bk-btn-light`
+has a transparent border in Bokeh's CSS, so it reads as text (`docs/panel/ui-design-reference.md`
+§6, rejected 2026-09-04). Panel's `primary` is `#0d6efd`, close to Apple's accessible system
+blue (R30 G110 B244; `.firecrawl/apple-buttons/color.md`).
+"""
+
+
+def _order_button(label: str) -> pn.widgets.Button:
+    """Build an order-card button: its label, and the colour that label always carries.
+
+    Every button on the three cards is built here, never with an inline `color=`, so the
+    table above is the only place a colour is chosen. A label missing from the table raises
+    `KeyError` at render rather than falling back to a default colour.
+    """
+    return pn.widgets.Button(label=label, color=_ORDER_BUTTON_COLORS[label])
 
 
 def _snapshot(proposal: dict[str, Any]) -> dict[str, Any]:
@@ -125,8 +166,8 @@ async def render_order_proposal(
     contract_label = await asyncio.to_thread(proposal_contract_label, proposal)
     summary_pane = safe_markdown(_format_order_summary(proposal, contract_label=contract_label))
     acted = _OneShot()
-    stage_btn = pn.widgets.Button(label="Stage this order", color="success")
-    cancel_btn = pn.widgets.Button(label="Cancel", color="light")
+    stage_btn = _order_button(STAGE_ORDER_LABEL)
+    discard_btn = _order_button(DISCARD_LABEL)
     send_status = _make_send_status(chat)
 
     async def _on_stage(event: Event) -> None:
@@ -148,32 +189,34 @@ async def render_order_proposal(
         if not acted.claim():
             return
         stage_btn.disabled = True
-        cancel_btn.disabled = True
+        discard_btn.disabled = True
         try:
             await _execute_staged_order_core(proposal, send_status, session_id, store)
         except Exception:
             log.exception("Order staging failed (session %s)", session_id)
             raise
 
-    async def _on_cancel(event: Event) -> None:
+    async def _on_discard(event: Event) -> None:
         """Dismiss the proposal without contacting IBKR. Disables both buttons first."""
         if not acted.claim():
             return
         stage_btn.disabled = True
-        cancel_btn.disabled = True
+        discard_btn.disabled = True
         try:
-            chat.send("Order proposal cancelled.", user="ClaudIA", respond=False)
-        except Exception:
-            log.exception(
-                "Failed to send order-proposal cancellation notice (session %s)", session_id
+            chat.send(
+                "Order proposal discarded — nothing was sent to IBKR.",
+                user="ClaudIA",
+                respond=False,
             )
+        except Exception:
+            log.exception("Failed to send order-proposal discard notice (session %s)", session_id)
             raise
 
     stage_btn.on_click(_on_stage)
-    cancel_btn.on_click(_on_cancel)
+    discard_btn.on_click(_on_discard)
 
     chat.send(
-        pn.Column(summary_pane, pn.Row(stage_btn, cancel_btn)),
+        pn.Column(summary_pane, pn.Row(stage_btn, discard_btn)),
         user="ClaudIA — Order Proposal",
         respond=False,
     )
@@ -198,8 +241,8 @@ async def render_cancel_proposal(
     contract_label = await asyncio.to_thread(cancel_proposal_contract_label, proposal)
     summary_pane = safe_markdown(_format_cancel_summary(proposal, contract_label=contract_label))
     acted = _OneShot()
-    cancel_btn = pn.widgets.Button(label="Cancel this order", color="danger")
-    keep_btn = pn.widgets.Button(label="Keep order", color="light")
+    cancel_btn = _order_button(CANCEL_ORDER_LABEL)
+    keep_btn = _order_button(KEEP_ORDER_LABEL)
     send_status = _make_send_status(chat)
 
     async def _on_cancel_click(event: Event) -> None:
@@ -222,7 +265,7 @@ async def render_cancel_proposal(
         keep_btn.disabled = True
         try:
             chat.send(
-                "Cancel proposal dismissed — order left unchanged.", user="ClaudIA", respond=False
+                "Proposal dismissed — order left unchanged at IBKR.", user="ClaudIA", respond=False
             )
         except Exception:
             log.exception(
@@ -265,8 +308,8 @@ async def render_modify_proposal(
     contract_label = await asyncio.to_thread(proposal_contract_label, proposal)
     summary_pane = safe_markdown(_format_modify_summary(proposal, contract_label=contract_label))
     acted = _OneShot()
-    modify_btn = pn.widgets.Button(label="Modify this order", color="success")
-    discard_btn = pn.widgets.Button(label="Discard", color="light")
+    modify_btn = _order_button(MODIFY_ORDER_LABEL)
+    discard_btn = _order_button(DISCARD_LABEL)
     send_status = _make_send_status(chat)
 
     async def _on_modify_click(event: Event) -> None:
@@ -289,7 +332,9 @@ async def render_modify_proposal(
         discard_btn.disabled = True
         try:
             chat.send(
-                "Modify proposal discarded — order left unchanged.", user="ClaudIA", respond=False
+                "Modify proposal discarded — order left unchanged at IBKR.",
+                user="ClaudIA",
+                respond=False,
             )
         except Exception:
             log.exception("Failed to send modify-proposal discard notice (session %s)", session_id)

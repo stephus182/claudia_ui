@@ -55,6 +55,27 @@ progress and results. Injected by the caller (panel_order_flow) so the cores sta
 framework-agnostic: they never import or know about any specific UI toolkit."""
 
 
+# ─── Order-card button labels (gap #67) ──────────────────────────────────────────────────
+# Defined ONCE, here, because two places need them: `panel_order_flow` puts them on the
+# buttons, and the summaries below name the confirm button in their instruction line. Spelled
+# twice, they drifted: the card said "Clicking 'Stage this order'" and nothing held it to the
+# button. Agreed with the operator one button at a time on 2026-09-24 (memory
+# `feedback-order-button-naming-and-colour`):
+#   * UPPERCASE, no articles — the Gate 2 dialogs already are, so one action has one
+#     spelling from chat to dialog (`CANCEL ORDER`, `KEEP ORDER`, `MODIFY ORDER`).
+#   * A chat button STAGES; only Gate 2's button sends. No chat label says "send".
+#   * "CANCEL" appears only on the button that cancels a live order. A button that throws
+#     away a proposal is `DISCARD`; one that leaves the order in place is `KEEP ORDER`.
+#     Apple's HIG says to title an alert's dismiss button "Cancel"; that is deliberately not
+#     followed, because on an order path "cancel" is an order verb (the #27 / #67 class).
+# Colours are a Panel concern and live beside the buttons, in `panel_order_flow`.
+STAGE_ORDER_LABEL = "STAGE ORDER"
+CANCEL_ORDER_LABEL = "CANCEL ORDER"
+MODIFY_ORDER_LABEL = "MODIFY ORDER"
+DISCARD_LABEL = "DISCARD"
+KEEP_ORDER_LABEL = "KEEP ORDER"
+
+
 _MISSING_PRICE = "⚠️ NO %s PRICE GIVEN"
 """Shown when a priced order type arrives without the price it needs.
 
@@ -530,7 +551,7 @@ def _format_order_summary(proposal: dict[str, Any], contract_label: str | None =
     if reason:
         lines.append(f"*Reason:* {reason}")
     lines.append(
-        "⚠️ **Clicking 'Stage this order' will initiate IBKR confirmation "
+        f"⚠️ **Clicking '{STAGE_ORDER_LABEL}' will initiate IBKR confirmation "
         "(Touch ID + visual confirmation dialog). You can still cancel at that step.**"
     )
     # Blank line between entries, not a bare newline: Markdown renders a single newline
@@ -1748,7 +1769,7 @@ def _format_cancel_summary(proposal: dict[str, Any], contract_label: str | None 
     if reason:
         lines.append(f"*Reason:* {reason}")
     lines.append(
-        "⚠️ **Clicking 'Cancel this order' will initiate IBKR confirmation "
+        f"⚠️ **Clicking '{CANCEL_ORDER_LABEL}' will initiate IBKR confirmation "
         "(Touch ID + visual confirmation dialog). You can still keep the order at that step.**"
     )
     return "\n\n".join(lines)
@@ -1955,7 +1976,7 @@ def _format_modify_summary(proposal: dict[str, Any], contract_label: str | None 
     if reason:
         lines.append(f"*Reason:* {reason}")
     lines.append(
-        "⚠️ **Clicking 'Modify this order' will initiate IBKR confirmation "
+        f"⚠️ **Clicking '{MODIFY_ORDER_LABEL}' will initiate IBKR confirmation "
         "(Touch ID + visual confirmation dialog). You can still discard at that step.**"
     )
     return "\n\n".join(lines)

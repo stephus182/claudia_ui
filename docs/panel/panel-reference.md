@@ -504,7 +504,7 @@ way to notice it has passed; the command has neither problem. This is Known Gaps
 | `tests/test_panel_chart.py` | Pane composition, `_on_load` cache/fetch/error/spinner paths and failure messaging, `build_chart_object` HoloViews assembly (wicks/bodies/volume, no indicator overlay, width scaling, column-order independence, 1-row refusal) |
 | `tests/test_panel_theme.py` | Phase 1 of the UI customisation track: session theme resolution (`CLAUDIA_THEME` plus the `?theme=` per-tab override), the user display name, ClaudIA's avatar |
 | `tests/test_panel_sink.py` | Message routing, pine detection, `ChatStep` streaming + failure, proposal delegation |
-| `tests/test_panel_order_flow.py` | Each proposal type: buttons rendered, confirm calls the right core, dismiss disables without executing |
+| `tests/test_panel_order_flow.py` | Each proposal type, with every button **found by its label and clicked**: the agreed labels and colours; each click reaches exactly its own IBKR write or none (a dismissal does not even build a client); dismiss-then-confirm dispatches nothing; the naming/colour rules checked as a class, derived from what each click does; the card text names the button that exists. Mutation-checked 2026-09-24: swapped handlers, a retired label, a changed colour and a skipped one-shot each turn it red |
 | `tests/test_palette.py` | The shared market palette, and the structural rule that keeps it single-source: walks every module under `claudia/` and fails if a palette hex is declared outside `palette.py` |
 
 **The idiom that makes this possible** —

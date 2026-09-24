@@ -557,7 +557,7 @@ together — so the loop's accumulate-don't-replace behaviour remains unproven l
 ## Order Cancellation
 
 Mirrors the placement flow exactly: ClaudIA calls `propose_cancel` →
-`panel_order_flow.render_cancel_proposal()` shows a "Cancel this order" / "Keep order" button pair →
+`panel_order_flow.render_cancel_proposal()` shows a `CANCEL ORDER` (red) / `KEEP ORDER` (neutral) button pair →
 `_execute_cancel_order_core()` calls `IBKRClient.cancel_order(account_id, order_id)` behind the same
 Gate 1 (Touch ID) + Gate 2 (AppKit dialog) pair used by placement — the gates fire inside
 `cancel_order()` itself, not in `claudia_ui`. No reply chain to resolve (a single `DELETE` call).
