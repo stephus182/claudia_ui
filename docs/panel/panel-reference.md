@@ -348,9 +348,9 @@ Self-contained and **decoupled from the conversation** — driven by its own Loa
 
 - **HoloViews/hvplot, not hand-built Bokeh glyphs** (superseded 2026-08-03 — see
   `data-surfaces-reference.md` D1). `build_chart_object`
-  ([`panel_chart.py:92-175`](../../claudia/panel_chart.py#L92-L175)) makes three separate
+  ([`panel_chart.py:92-175`](../../claudia/panel_chart.py#L92-L175)) makes two separate
   hvplot calls — `df.hvplot.ohlc(...)` for the price row (wick `Segments` + body
-  `Rectangles`), `sma.hvplot.line(...)` for the 20-period SMA `Curve` overlaid on top of it,
+  `Rectangles`; the 20-period SMA `Curve` once overlaid on it was removed 2026-09-23)
   and `df["volume"].hvplot.bar(...)` for the volume row below — combined into one
   `holoviews.Layout` via `(price + volume).cols(1)` and rendered by `pn.pane.HoloViews`
   (not `pn.pane.Bokeh`).
@@ -501,7 +501,7 @@ way to notice it has passed; the command has neither problem. This is Known Gaps
 | `tests/test_panel_system_log.py` | Card state and count, toast levels, colour mapping (2026-09-03 module, headless) |
 | `tests/test_panel_action_bar.py` | Button colour mapping, disable-first, error re-enable, busy-guard on repaint (2026-09-03 module, headless) |
 | `tests/test_panel_pinescript.py` | Block-extraction edge cases, per-block closure correctness, `js_on_click` args, inject success/failure classification |
-| `tests/test_panel_chart.py` | Pane composition, `_on_load` cache/fetch/error/spinner paths and failure messaging, `build_chart_object` HoloViews assembly (wicks/bodies/SMA/volume, width scaling, column-order independence, 1-row refusal) |
+| `tests/test_panel_chart.py` | Pane composition, `_on_load` cache/fetch/error/spinner paths and failure messaging, `build_chart_object` HoloViews assembly (wicks/bodies/volume, no indicator overlay, width scaling, column-order independence, 1-row refusal) |
 | `tests/test_panel_theme.py` | Phase 1 of the UI customisation track: session theme resolution (`CLAUDIA_THEME` plus the `?theme=` per-tab override), the user display name, ClaudIA's avatar |
 | `tests/test_panel_sink.py` | Message routing, pine detection, `ChatStep` streaming + failure, proposal delegation |
 | `tests/test_panel_order_flow.py` | Each proposal type: buttons rendered, confirm calls the right core, dismiss disables without executing |
@@ -533,7 +533,7 @@ renderers:
 ```python
 [type(e).__name__ for e in pane.object]        # ['Overlay', 'Bars']
 _price(obj).Rectangles.I.data                  # candle count, lbound/ubound per body
-_price(obj).Curve.Sma_20.vdims[0].name         # 'sma_20'
+sorted(type(e).__name__ for e in _price(obj))  # ['Rectangles', 'Segments'] — no overlay
 hv.Store.lookup_options("bokeh", rects, "style").kwargs["color"].apply(rects)
                                                # per-row ['#26a69a', …, '#ef5350']
 ```

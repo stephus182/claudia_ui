@@ -485,7 +485,9 @@ the agent to function.
    which today shows it as an IBKR-authored chat message + toast (`docs/order-api-reference.md`
    § Automatic execution reports). A tape would be one more subscriber.
 4. **Indicator overlays on the candlestick** — **volume subplot, MA (SMA) overlay, and zoom sync
-   between the two rows shipped 2026-08-03** (`panel_chart.py`, via the HoloViews/hvplot engine —
+   between the two rows shipped 2026-08-03** (the SMA overlay was **removed 2026-09-23**: hard-coded at
+   20 periods with no setting, and not a period the operator's own rules use; indicators return only
+   once their setup is documented and chosen) (`panel_chart.py`, via the HoloViews/hvplot engine —
    §1.1 D1 — not the "pure Bokeh, no new dependency" originally planned here). Hover tooltips come
    along by default from hvplot's own tool set (verified 2026-08-03: `HoverTool` is on the
    rendered figure's toolbar with no code in this module asking for it). **Crosshair is the one

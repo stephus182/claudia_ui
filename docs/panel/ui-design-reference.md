@@ -469,7 +469,7 @@ Carried forward from
 §5 — chart features **not** built, several of which are design decisions rather than
 engineering ones:
 
-**Shipped 2026-08-03, no longer deferred:** volume subplot · MA (SMA) overlay · zoom
+**Shipped 2026-08-03, no longer deferred:** volume subplot · MA (SMA) overlay (removed 2026-09-23) · zoom
 synchronization between the price and volume rows (`panel_chart.py`, via the HoloViews/hvplot
 engine — `data-surfaces-reference.md` §1.1 D1). Hover tooltips also came along by default from
 hvplot's own tool set, unrequested.

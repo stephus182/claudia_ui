@@ -16,11 +16,10 @@ docs/panel/2026-07-24-candlestick-chart-pane-research.md):
   populates the parquet cache, returning only a human-readable SUMMARY string
   (claude_tools.py:1142) — the raw bars are read back from the cache.
 
-`build_chart_object` (this module) builds the chart with `hvplot` from three separate
+`build_chart_object` (this module) builds the chart with `hvplot` from two separate
 calls — `.hvplot.ohlc()` for the price row (wick Segments + body Rectangles; measured
 2026-08-03: `type(df.hvplot.ohlc(...))` is an `Overlay` of exactly those two elements,
-nothing else), `sma.hvplot.line()` for the SMA Curve overlaid on top of it, and
-`.hvplot.bar()` for the volume row below — into a single `holoviews.Layout`. The
+nothing else) and `.hvplot.bar()` for the volume row below — into a single `holoviews.Layout`. The
 `import hvplot.pandas` below is load-bearing (see the comment at the import site for
 why); `build_chart_pane` renders the resulting Layout through `pn.pane.HoloViews`,
 whose `object` the tests assert against directly rather than poking Bokeh glyph
@@ -50,7 +49,6 @@ from typing import Any
 import hvplot.pandas  # noqa: F401
 import pandas as pd
 import panel as pn
-from ibkr_core_mcp import indicators
 
 from claudia.palette import DOWN_COLOR, UP_COLOR
 from claudia.panel_markdown import safe_markdown
@@ -66,10 +64,6 @@ log = logging.getLogger(__name__)
 # bar size (1d/1h/30m). hvplot derives this from the data directly; no caller in this
 # module computes a width itself.
 _BODY_WIDTH_FRACTION = 0.7
-
-# Overlay period for the moving average. Values come from ibkr_core_mcp.indicators --
-# this repo renders, that repo computes (decision D2).
-_SMA_PERIOD = 20
 
 # Volume subplot height in px. The price row above has no explicit height set here, so it
 # renders at holoviews' own ElementPlot default of 300px (measured 2026-08-03 via
@@ -114,8 +108,10 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     """Build the HoloViews chart object from an OHLCV DataFrame.
 
     Returns an `hv.Layout` of two stacked figures (`.cols(1)`): a price `hv.Overlay`
-    of Segments (wicks) + Rectangles (bodies) + Curve (the SMA overlay) on top, and a
-    volume `hv.Bars` subplot below. The Segments/Rectangles shape measured 2026-08-03
+    of Segments (wicks) + Rectangles (bodies) on top, and a volume `hv.Bars` subplot
+    below. **No indicator is drawn** (operator, 2026-09-23): a 20-period SMA used to be
+    overlaid on every chart with no setting behind it; indicators return only once their
+    setup is documented and chosen. The Segments/Rectangles shape measured 2026-08-03
     via `type(df.hvplot.ohlc(...))`. The `Any` return isn't caused by
     holoviews: `df: pd.DataFrame` is already `Any` here, because pandas itself sits on
     mypy's ignore_missing_imports list (pyproject.toml) — `reveal_type(df)` is `Any`
@@ -164,15 +160,7 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
         pos_color=UP_COLOR,
         neg_color=DOWN_COLOR,
     )
-    # .rename is load-bearing, not cosmetic: hvplot labels a Series curve from
-    # Series.name, and indicators.sma returns a Series named 'close' despite a docstring
-    # promising 'sma_{period}' (verified 2026-08-03: `indicators.sma(df, 20).name ==
-    # "close"` — its body is `df["close"].rolling(period).mean()`, which never renames).
-    # Without it the overlay is labelled 'close' and collides with the price series.
-    # Renaming here rather than upstream keeps the label a presentation concern (D2) and
-    # avoids an API change for that function's other callers.
-    sma = indicators.sma(df, _SMA_PERIOD).rename(f"sma_{_SMA_PERIOD}")
-    price = (candles * sma.hvplot.line(color="orange")).opts(title=title)
+    price = candles.opts(title=title)
     # .hvplot.bar keeps a continuous datetime axis (NOT a categorical FactorRange) -- a
     # categorical one would break x-range sharing with the price row regardless of which
     # knob is named for it (verified 2026-08-03: pairing a datetime element with a

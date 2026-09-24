@@ -480,58 +480,21 @@ def _long_df(n: int = 40) -> pd.DataFrame:
     )
 
 
-def test_build_chart_object_overlays_the_sma():
-    """The moving average is overlaid on the price figure."""
-    from ibkr_core_mcp import indicators
+def test_the_price_figure_carries_candles_and_nothing_else():
+    """No indicator is drawn on the price figure (operator, 2026-09-23).
 
-    from claudia.panel_chart import _SMA_PERIOD, build_chart_object
-
-    df = _long_df()
-    curve = _price(build_chart_object(df, "T")).Curve.Sma_20
-    assert curve.vdims[0].name == "sma_20"
-    sma = indicators.sma(df, _SMA_PERIOD)
-    xs = list(curve.dimension_values(curve.kdims[0].name))
-    ys = list(curve.dimension_values("sma_20"))
-    valid = [(x, y) for x, y in zip(xs, ys, strict=True) if y == y]  # drop NaNs
-    # Value parity with the source of truth, not a reimplementation of it.
-    assert [y for _, y in valid] == pytest.approx(sma.dropna().tolist())
-    # Alignment, not just values: rolling(20).mean() and rolling(20, center=True).mean()
-    # give the SAME dropna'd value sequence for ANY input -- a centered window's average
-    # is the same set of numbers as a trailing window's, just labelled at a different x
-    # position (verified 2026-08-03 on this fixture and on random data: max abs diff
-    # 0.0 either way). So the value check above cannot by itself catch a trailing-vs-
-    # centered mixup; pin the x-position too, against indicators.sma's own index.
-    got_x = pd.DatetimeIndex([x for x, _ in valid])
-    assert got_x.equals(pd.DatetimeIndex(sma.dropna().index))
-
-
-def test_sma_overlay_is_renamed_not_left_as_close():
-    # indicators.sma's docstring claims it returns a Series named 'sma_{period}', but its
-    # body is df["close"].rolling(period).mean(), so the name is actually 'close'.
-    # hvplot labels a Series curve from Series.name, so without the rename the moving
-    # average renders labelled 'close' and collides with the price series. This test pins
-    # our rename; it deliberately also pins the upstream reality so that if indicators.sma
-    # is ever fixed to match its docstring, this fails loudly rather than silently.
-    """The overlay is labelled as the SMA, not left carrying the close column's name."""
-    from ibkr_core_mcp import indicators
-
+    A 20-period SMA used to be overlaid on every chart, hard-coded as `_SMA_PERIOD = 20` with
+    no setting behind it. The pane is for studying historical candles; an overlay nobody chose
+    is noise, and indicators come back only once their setup is understood and chosen. The
+    price overlay must hold exactly the two elements `.hvplot.ohlc()` builds: wicks
+    (Segments) and bodies (Rectangles).
+    """
+    from claudia import panel_chart
     from claudia.panel_chart import build_chart_object
 
-    assert indicators.sma(_long_df(), 20).name == "close"
-    assert _price(build_chart_object(_long_df(), "T")).Curve.Sma_20.vdims[0].name == "sma_20"
-
-
-def test_build_chart_object_tolerates_frame_shorter_than_sma_period():
-    # A 4-row frame makes sma(20) all-NaN. That composes and renders without a crash, so
-    # there is no guard for it -- just an empty overlay.
-    """A frame shorter than the SMA window still renders, without the overlay."""
-    from claudia.panel_chart import build_chart_object
-
-    values = list(
-        _price(build_chart_object(_sample_df(), "T")).Curve.Sma_20.dimension_values("sma_20")
-    )
-    assert len(values) == 4
-    assert all(v != v for v in values)  # every value NaN
+    price = _price(build_chart_object(_long_df(), "T"))
+    assert sorted(type(e).__name__ for e in price) == ["Rectangles", "Segments"]
+    assert not hasattr(panel_chart, "_SMA_PERIOD")
 
 
 def test_build_chart_object_adds_a_volume_subplot():
