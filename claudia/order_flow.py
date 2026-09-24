@@ -103,10 +103,22 @@ def _today_key() -> int:
 
 
 def _last_trade_key(row: Mapping[str, Any]) -> int:
-    """`ltd` when IBKR supplies one, else `expirationDate`, else 0 meaning "unknown".
+    """The EARLIER of `ltd` and `expirationDate` (whichever are present), else 0 = "unknown".
 
-    They differ: ES Dec-26 reports `expirationDate` 20261218 and `ltd` 20261217 (measured
-    2026-09-20). Trading stops at `ltd`, so that is the field that decides tradeability.
+    Neither field alone is the last trade date for every contract (gap #71). IBKR documents
+    `ltd` as "Last trade date of the future contract", and for ES it is the earlier field
+    (Dec-26: `expirationDate` 20261218, `ltd` 20261217 — CME terminates at 9:30 a.m. on the
+    18th, so the 17th is the last full session; #58 kept `ltd` for exactly that). **For NYMEX
+    energy it is not:** measured 2026-09-24, CLV6 `expirationDate` 20260922, `ltd` 20261001 —
+    `ltd` is the first day of the contract month, and trading stopped on the expiration date
+    (CME CL: "Trading terminates 3 business day before the 25th calendar day of the month prior
+    to the contract month" = 2026-09-22). NG has the same shape; DX reports them equal. Trusting
+    `ltd` kept the expired October CL as the front month for ~9 days a month; ClaudIA's model
+    caught it from the stale `C94.59` quote before any code did. The earlier date is right for
+    every root this account trades (ES, CL, NG, DX, all measured that day) and, by
+    construction, can never keep a contract past either date. Sources: IBKR
+    https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/security-future-by-symbol.md ,
+    CME https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.contractSpecs.html
 
     **This duplicates `ibkr_core_mcp.claude_tools`'s rule by necessity, not by choice.** The
     core owns the same logic for the tools path, but this repo's CI installs the core from
@@ -114,14 +126,15 @@ def _last_trade_key(row: Mapping[str, Any]) -> int:
     import would go red until the next core release. Consolidate to one definition when the
     core is next released and the pin moves; until then the two must be changed together.
     """
+    dates = []
     for key in ("ltd", "expirationDate"):
         try:
             value = int(row.get(key) or 0)
         except (TypeError, ValueError):
             value = 0
         if value:
-            return value
-    return 0
+            dates.append(value)
+    return min(dates, default=0)
 
 
 def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> str:

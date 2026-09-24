@@ -247,7 +247,13 @@ routing depends on `sec_type`:
 
 **Futures (FUT):**
 - Conid resolved via `IBKRClient.get_futures()` → `/trsrv/futures`, front month = the earliest
-  contract **still tradeable**, decided by `ltd` (gap #58). Not simply the lowest `expirationDate`:
+  contract **still tradeable**, decided by the **earlier of `ltd` and `expirationDate`** (gap #58,
+  corrected 2026-09-24 by gap #71: for CL and NG, IBKR's `ltd` is the first day of the contract
+  month, after trading stopped — CLV6 `expirationDate` 20260922 = CME's termination date, `ltd`
+  20261001; for ES `ltd` is the earlier one, 20261217 vs 20261218; DX reports them equal. Sources:
+  [IBKR `/trsrv/futures`](https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/security-future-by-symbol.md),
+  [CME CL specs](https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.contractSpecs.html)).
+  Not simply the lowest `expirationDate`:
   IBKR keeps returning a contract after its last trade date, so that rule staged an expired one for
   days after each roll — measured 2026-09-20, and IBKR then refuses it with `"Order is already
   expired."` only *after* Touch ID and Gate 2

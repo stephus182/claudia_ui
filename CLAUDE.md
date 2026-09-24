@@ -357,9 +357,14 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   no currency, and an undocumented result order, so `contracts[0]` for IGV is the *Mexican*
   listing — the defect ibkr_core_mcp had already removed from every read path. FUT is the
   one exception, resolved by front month via `get_futures` — the earliest contract **still
-  tradeable**, decided by `ltd` (gap #58, 2026-09-20). "Lowest `expirationDate`" was the rule
-  until then and was not safe: IBKR keeps returning a contract after its last trade date, so a
-  bare root resolved to an expired one for days after each roll.
+  tradeable**, decided by the **earlier of `ltd` and `expirationDate`** (gap #58, 2026-09-20;
+  corrected by gap #71, 2026-09-24). "Lowest `expirationDate`" was the rule until #58 and was
+  not safe: IBKR keeps returning a contract after its last trade date, so a bare root resolved to
+  an expired one for days after each roll. #58's `ltd` was generalised from ES, where it is the
+  earlier date; **for NYMEX energy (CL, NG) IBKR's `ltd` is the first day of the contract month,
+  after trading has stopped** (CLV6: `expirationDate` 20260922, `ltd` 20261001), so a bare `CL`
+  resolved to the expired contract for ~9 days a month. The core carries the same rule (register
+  F16) until its next release.
   This costs nothing: the model gets its conid from `get_market_snapshot`/`preview_order`,
   which route through the authoritative resolver, and **every real placement proposal since
   2026-07-10 already carried one** (measured over the full order history 2026-08-05). Do not

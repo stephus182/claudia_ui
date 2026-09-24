@@ -1233,6 +1233,47 @@ async def test_execute_staged_order_fut_prefers_ltd_over_expiration_date():
 
 
 @pytest.mark.asyncio
+async def test_execute_staged_order_fut_skips_a_cl_shaped_contract_whose_ltd_is_after_its_expiry():
+    """Gap #71, found live 2026-09-24: for NYMEX energy IBKR's `ltd` is NOT the last trade date.
+
+    Raw `/trsrv/futures` that day: CLV6 `expirationDate` 20260922, `ltd` 20261001 — `ltd` is
+    the first day of the contract month, while trading stopped on the expiration date (CME:
+    "Trading terminates 3 business day before the 25th calendar day of the month prior to the
+    contract month" = 2026-09-22). NG has the same shape. Trusting `ltd` kept the expired
+    October contract as the front month for ~9 days. Dates are relative to today, the shape
+    is the measured one: expiry two days ago, `ltd` a week ahead.
+    """
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_futures.return_value = [
+        {"conid": 304037496, "expirationDate": _dated(-2), "ltd": _dated(7), "multiplier": "1000"},
+        {"conid": 304037511, "expirationDate": _dated(26), "ltd": _dated(38), "multiplier": "1000"},
+    ]
+    action = _make_action(
+        {"symbol": "CL", "action": "BUY", "quantity": 1, "order_type": "MKT", "sec_type": "FUT"}
+    )
+    await _run(action, ibkr_mod)
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert order_body.get("conid") == 304037511, "an expired CL contract must never be staged"
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ({"expirationDate": 20261218, "ltd": 20261217}, 20261217),  # ES: ltd earlier
+        ({"expirationDate": 20260922, "ltd": 20261001}, 20260922),  # CL / NG: ltd later
+        ({"expirationDate": 20261214, "ltd": 20261214}, 20261214),  # DX: equal
+        ({"expirationDate": 20261218}, 20261218),  # ltd absent
+        ({"ltd": 20261217}, 20261217),  # expirationDate absent
+        ({"expirationDate": "", "ltd": None}, 0),  # neither: unknown
+    ],
+)
+def test_last_trade_key_is_the_earlier_of_ltd_and_expiration(row, expected):
+    """The shapes IBKR returned for every root this account trades (2026-09-24): the earlier
+    of the two dates is right for all of them, and cannot pick a contract past either."""
+    assert order_flow._last_trade_key(row) == expected
+
+
+@pytest.mark.asyncio
 async def test_execute_staged_order_fut_front_month_selected():
     """FUT: the earliest still-tradeable expirationDate is selected as front month."""
     ibkr_mod, client = _make_ibkr_mock()
