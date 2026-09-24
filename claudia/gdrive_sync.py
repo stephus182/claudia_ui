@@ -20,8 +20,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httplib2
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from googleapiclient.http import HttpRequest, MediaFileUpload, MediaIoBaseDownload
 from ibkr_core_mcp.config import Config
 from ibkr_core_mcp.gdrive_auth import load_or_refresh_credentials
 
@@ -34,28 +36,23 @@ _DB_FILENAME = "claudia.db"
 class GDriveSync:
     """Sync claudia.db (and optionally context/principles) to Google Drive.
 
-    ⚠️ **THIS CLASS IS NOT THREAD-SAFE, AND THE `_lock` BELOW DOES NOT MAKE IT SO**
-    (Known Gaps #61). `_get_service()` caches one `googleapiclient` service, which binds a
-    single `AuthorizedHttp`/`httplib2.Http` — and therefore **one TLS connection** — reused
-    by every `.execute()` in this module. `httplib2.Http` is not thread-safe. `_lock` guards
-    only the *construction* of `self._service`; it is released before the caller makes any
-    API call, so two threads holding the same `svc` will read the same socket concurrently.
+    **Thread-safe by construction since gap #61 (2026-09-24), the way Google documents.**
+    httplib2 is not thread-safe, and Google's answer is that "each thread that you are
+    making requests from must have its own instance of `httplib2.Http()`"
+    (https://googleapis.github.io/google-api-python-client/docs/thread_safety.html).
+    `_get_service()` builds the service with that page's `requestBuilder`, so every request
+    runs on its own `AuthorizedHttp` over a fresh `httplib2.Http` (a media transfer's chunks
+    reuse their own request's, in sequence on one thread). No caller needs to know about a lock, and a new call site adds no
+    hazard. The cost is one TLS handshake per request, negligible at this module's rate
+    (a status ping every 60 s, a few calls per session start and stop).
 
-    **This is not theoretical.** On 2026-09-23 it aborted the process: `SIGABRT` from
-    `___BUG_IN_CLIENT_OF_LIBMALLOC_POINTER_BEING_FREED_WAS_NOT_ALLOCATED` inside
-    OpenSSL's `tls_release_read_buffer`, with four threads in `SSL_read` at once. A native
-    abort takes the dashboard, the execution listener and the IBKR keepalive with it, and
-    leaves nothing in ClaudIA's own log — the application cannot log its own `abort()`.
+    Before the fix the cached service bound ONE connection shared by every `.execute()`,
+    and on 2026-09-23 two threads reading it at once aborted the process (`SIGABRT`, a
+    double free in OpenSSL's TLS read buffer). Keep to the vendor pattern above: do not
+    replace it with a lock, and do not build a service with `credentials=` alone.
 
-    **The two principals that collide** are a session init (`panel_app._read_context_docs`,
-    `download_db`) and `status.ConnectivityChecker.check_gdrive` → `ping()`, which runs on
-    its own process-level poll and holds no lock at all. `panel_app._init_lock` serialises
-    session inits *against each other* and cannot help, by construction.
-
-    **Until #61 is fixed, adding a caller is adding a hazard.** A new `.execute()` call site
-    reached from any thread other than an existing one widens the race. The fix under
-    consideration is a per-thread service/`Http`, which would make this docstring obsolete —
-    which is the point of preferring it.
+    `_lock` guards the construction of `self._service`, and `upload_db` holds it across
+    find + create/update so two closing sessions cannot create two `claudia.db` files.
     """
 
     def __init__(self, config: Config) -> None:
@@ -90,7 +87,19 @@ class GDriveSync:
                     f"GDrive token file not found or invalid: {self._config.gdrive_token_file}. "
                     "Authenticate via GDriveCache (ibkr_core_mcp) first."
                 )
-            self._service = build("drive", "v3", credentials=creds)
+
+            # Google's documented pattern, verbatim in shape: a `requestBuilder` that gives
+            # every request its own `AuthorizedHttp` over a fresh `httplib2.Http`, because
+            # httplib2 is not thread-safe (gap #61). Media transfers are covered too:
+            # `MediaIoBaseDownload` and resumable `next_chunk` use the request's own `.http`.
+            # Source: https://googleapis.github.io/google-api-python-client/docs/thread_safety.html
+            def build_request(http: Any, *args: Any, **kwargs: Any) -> HttpRequest:
+                """Return an HttpRequest on its own new AuthorizedHttp; `http` is unused."""
+                new_http = AuthorizedHttp(creds, http=httplib2.Http())
+                return HttpRequest(new_http, *args, **kwargs)
+
+            authorized_http = AuthorizedHttp(creds, http=httplib2.Http())
+            self._service = build("drive", "v3", requestBuilder=build_request, http=authorized_http)
             return self._service
 
     def _resolve_db_folder(self) -> str:

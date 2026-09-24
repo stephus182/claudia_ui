@@ -219,6 +219,8 @@ disallow_untyped_calls = false
 # actual venv — mcp, ibkr_core_mcp, panel, and bokeh all ship py.typed, so
 # ignore_missing_imports is not needed for them):
 #   googleapiclient — no py.typed (verified 2026-07-21).
+#   httplib2, google_auth_httplib2 — no py.typed (verified 2026-09-24). Imported by
+#                     claudia/gdrive_sync.py for Google's per-request Http pattern (gap #61).
 #   pandas          — ships no py.typed and pandas-stubs is not installed (verified
 #                     2026-07-24, Task 10.1). claudia/panel_chart.py types the cache
 #                     DataFrame it charts; the fixture DataFrames in tests do too.
@@ -264,7 +266,7 @@ disallow_untyped_calls = false
 
 [[tool.mypy.overrides]]
 module = [
-    "googleapiclient.*", "pandas", "pandas.*", "jsonschema", "jsonschema.*",
+    "googleapiclient.*", "httplib2", "google_auth_httplib2", "pandas", "pandas.*", "jsonschema", "jsonschema.*",
     "holoviews", "holoviews.*", "hvplot", "hvplot.*",
 ]
 ignore_missing_imports = true

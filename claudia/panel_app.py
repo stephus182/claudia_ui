@@ -295,28 +295,13 @@ def _write_version_snapshot(version: str, context_text: str, principles_text: st
 async def _read_context_docs() -> tuple[str | None, str | None]:
     """Read context.md/principles.md via Drive (read_text falls back to the local
     file when Drive is unreachable or the file is absent) — parity with the removed app.py.
-    MUST be called while holding _init_lock: googleapiclient binds a single
-    AuthorizedHttp/httplib2.Http to the built Drive service, shared by every
-    .execute(), and httplib2.Http is not thread-safe — concurrent session inits
-    would run read_text on that one connection from two worker threads.
-    Serializing the per-session reads costs ~nothing for a single-user app.
 
-    ⚠️ **THAT MITIGATION IS INCOMPLETE, AND THIS DOCSTRING USED TO IMPLY OTHERWISE**
-    (Known Gaps #61, observed 2026-09-23). `_init_lock` excludes *other session inits* and
-    nothing else. `status.ConnectivityChecker.check_gdrive` → `GDriveSync.ping()` reaches
-    the same service on the same process-level poll while holding **no** lock, so it can
-    land inside this function's two reads however carefully they are serialised.
-
-    It also predicted the wrong worst case. The old wording expected "interleaved socket
-    reads that still parse, handing a session the wrong document content silently". What
-    actually happened was a **`SIGABRT`** — a double free in OpenSSL's TLS read buffer
-    killed the whole process 20 s after launch, with four threads in `SSL_read`.
-
-    **Trigger, supplied by the operator and confirmed in code:** reloading the page during
-    init. A reload is a new session, `ConnectivityChecker._poll_loop` runs its first check
-    *immediately* on start rather than after POLL_INTERVAL, and `stop()` is never called —
-    so a live poll and a fresh init's reads overlap. That is also the repro for testing any
-    fix. See `GDriveSync`'s class docstring for the full mechanism."""
+    Safe from any thread since gap #61 (2026-09-24): every Drive request gets its own
+    `httplib2.Http`, Google's documented answer to httplib2 not being thread-safe (see
+    `GDriveSync._get_service`). It still runs under `_init_lock` because that lock orders the
+    session init as a whole (Drive download before the first store open), not to protect
+    the connection. Before #61, it was the only protection, it covered session inits
+    only, and a status poll landing inside these reads aborted the process on 2026-09-23."""
     if _gdrive_sync is None:
         return None, None
     drive_context = await asyncio.to_thread(
@@ -1283,7 +1268,6 @@ def _build_chat_app() -> pn.chat.ChatInterface:
                 toolkit = _get_toolkit()
                 store = _get_store()
 
-                # Drive reads must stay under the lock — see _read_context_docs.
                 drive_context, drive_principles = await _read_context_docs()
 
             loader = ContextLoader(

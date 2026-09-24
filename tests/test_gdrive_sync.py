@@ -400,6 +400,31 @@ def test_get_service_writes_back_refreshed_token(sync, tmp_path):
     assert token_file.read_text() == '{"refreshed": true}'
 
 
+def test_every_request_gets_its_own_http(sync):
+    """Two requests from the one cached service never share an `httplib2.Http` (gap #61).
+
+    Google's documented rule: "each thread that you are making requests from must have its
+    own instance of `httplib2.Http()`"
+    (https://googleapis.github.io/google-api-python-client/docs/thread_safety.html). A
+    shared one is what aborted the process on 2026-09-23. Uses the real `build()` (static
+    discovery, offline) and a real credential, so this is Google's request path, not a mock.
+    """
+    import httplib2
+    from google.oauth2.credentials import Credentials
+
+    creds = Credentials(token="test-token")
+    with patch("claudia.gdrive_sync.load_or_refresh_credentials", return_value=creds):
+        svc = sync._get_service()
+
+    first = svc.files().list(pageSize=1, fields="files(id)")
+    second = svc.files().list(pageSize=1, fields="files(id)")
+
+    assert isinstance(first.http.http, httplib2.Http)
+    assert first.http is not second.http
+    assert first.http.http is not second.http.http
+    assert first.http.credentials is creds
+
+
 # ── G1: upload_db must upload a WAL-consistent snapshot ──────────────────────
 
 

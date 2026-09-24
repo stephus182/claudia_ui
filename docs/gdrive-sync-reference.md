@@ -75,6 +75,35 @@ All Drive operations are non-fatal. On any failure (no token, network error, tam
 | `read_text` for context/principles | Log warning; fall back to local `docs/` files |
 | `ping()` (connectivity poll) | Returns `False`; status light turns red; no exception raised |
 
-**Threading note:** `upload_db` uses `threading.RLock` (reentrant) because `_find_file`
+**Thread safety (gap #61, 2026-09-24): one `httplib2.Http` per request, Google's documented
+pattern.** httplib2 is not thread-safe, and the client library's own guidance is that "each
+thread that you are making requests from must have its own instance of `httplib2.Http()`"
+([Thread Safety](https://googleapis.github.io/google-api-python-client/docs/thread_safety.html),
+scraped 2026-09-24, page last changed 2021-10-21). `GDriveSync._get_service()` builds the
+service exactly as that page shows: `build(..., requestBuilder=build_request,
+http=authorized_http)`, where `build_request` wraps each request in a new `AuthorizedHttp`
+over a fresh `httplib2.Http()`. Chunked downloads and resumable uploads reuse their own
+request's `.http` (verified in the installed google-api-python-client 2.198.0), so they are
+covered without any change at their call sites. Callers need no lock, and a new call site adds
+no hazard. `tests/test_gdrive_sync.py::test_every_request_gets_its_own_http` pins it against
+the real `build()`.
+
+Why it matters: until that change the service bound one connection shared by every
+`.execute()`. On 2026-09-23 the status checker's Drive ping and another Drive read, most likely
+a second browser session's init (another Chrome tab was open), ran on it at the same instant.
+The result was a `SIGABRT`: a double free inside OpenSSL killed the whole process. A lock would
+only have protected the callers that remembered to take it, which is how `_init_lock` failed.
+Do not replace the vendor pattern with a lock.
+
+Reproduced on demand on 2026-09-24 against real Drive, with 8 threads sharing one `GDriveSync`:
+
+- **Old code:** 2 of 3 runs crashed in OpenSSL (SIGSEGV; a double free), and the run that
+  survived failed 90 of 120 calls.
+- **With the pattern:** 3 of 3 runs completed, 360 of 360 calls succeeded, and there were no crashes.
+
+The core's `GDriveCache` (`ibkr_core_mcp/cache.py`) still builds with `credentials=` and shares
+one connection. It is logged for the next core release (register F17).
+
+**Upload lock:** `upload_db` uses `threading.RLock` (reentrant) because `_find_file`
 calls `_get_service()`, which also acquires the same lock. A plain `Lock` would deadlock
 when `upload_db` is called while a session is active.
