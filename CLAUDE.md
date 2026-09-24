@@ -364,7 +364,11 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   earlier date; **for NYMEX energy (CL, NG) IBKR's `ltd` is the first day of the contract month,
   after trading has stopped** (CLV6: `expirationDate` 20260922, `ltd` 20261001), so a bare `CL`
   resolved to the expired contract for ~9 days a month. The core carries the same rule (register
-  F16) until its next release.
+  F16) until its next release. **HARD RULE (gap #71, operator 2026-09-24): an expired future is
+  never staged** — the model usually supplies the conid from that core resolver, so the order
+  path refuses any FUT whose `/iserver/contract/{conid}/info` `maturity_date` is today or
+  earlier, or unreadable (fail-closed), **before Gate 1**, from the contract read it already
+  makes (`ContractNotTradeableError`, stage `contract_not_tradeable`). FOP is not covered.
   This costs nothing: the model gets its conid from `get_market_snapshot`/`preview_order`,
   which route through the authoritative resolver, and **every real placement proposal since
   2026-07-10 already carried one** (measured over the full order history 2026-08-05). Do not

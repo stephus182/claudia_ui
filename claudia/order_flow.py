@@ -185,7 +185,7 @@ def _price_suffix(order_type: str, limit: float | None, stop: float | None) -> s
     return f" @ {' / '.join(parts)}" if parts else ""
 
 
-def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | None, str]:
+def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | None, str, int]:
     """(multiplier, currency, label) for a futures contract, from `/iserver/contract/{conid}/info`.
 
     Measured 2026-09-04 on ES conid 649180671: `multiplier` `'50'`, `currency` `'USD'`,
@@ -197,12 +197,15 @@ def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | 
     The label, e.g. `ESU6 · expires 2026-09-18`, is what the dialog shows as the
     symbol line — the contract month, which neither the proposal text nor the dialog
     showed before 2026-09-04.
+
+    The fourth value is `maturity_date` as a YYYYMMDD int, 0 when absent or unparseable — the
+    date the expired-contract rule reads (gap #71), taken from this same read.
     """
     try:
         info = ibkr.get_contract_info(conid) or {}
     except Exception as exc:
         log.warning("Contract info unavailable for conid %s: %s", conid, exc)
-        return None, None, ""
+        return None, None, "", 0
     try:
         multiplier: float | None = float(info["multiplier"])
     except (KeyError, TypeError, ValueError):
@@ -216,12 +219,13 @@ def _futures_contract_facts(ibkr: Any, conid: int) -> tuple[float | None, str | 
     if isinstance(local_symbol, str) and local_symbol.strip():
         parts.append(local_symbol.strip())
     maturity = str(info.get("maturity_date") or "")
-    if len(maturity) == 8 and maturity.isdigit():
+    maturity_key = int(maturity) if len(maturity) == 8 and maturity.isdigit() else 0
+    if maturity_key:
         parts.append(f"expires {maturity[:4]}-{maturity[4:6]}-{maturity[6:]}")
     # The multiplier is contract SIZE, not identity: it used to ride here as `· x50`, so the
     # Symbol line read as if the size were part of the name (gap #45, user 2026-09-10). It
     # now goes to the dialog's Quantity row (`1 (×50 per contract)`) through `_multiplier`.
-    return multiplier, currency, " · ".join(parts)
+    return multiplier, currency, " · ".join(parts), maturity_key
 
 
 def proposal_contract_label(proposal: dict[str, Any]) -> str | None:
@@ -327,7 +331,7 @@ def _current_order_description(ibkr: Any, order_id: str) -> str | None:
 def _apply_futures_display_facts(ibkr: Any, order: dict[str, Any], conid: int) -> None:
     """Attach the futures label, multiplier and currency as display-only keys (gap #34 on the
     place path since 2026-09-04; modify and cancel since 2026-09-10)."""
-    multiplier, currency, contract_label = _futures_contract_facts(ibkr, conid)
+    multiplier, currency, contract_label, _maturity = _futures_contract_facts(ibkr, conid)
     if contract_label:
         order["_companyName"] = contract_label
     if multiplier is not None:
@@ -647,7 +651,42 @@ def _declined_reply_text(reply_log: list[dict[str, Any]]) -> str:
 # A sentence may carry `{detail}`, replaced with the exception's own message — see
 # `_classify_execution_error`. Every other row states the whole fact by itself; the library
 # refusal below cannot, because the numbers that make it actionable live in the message.
+class ContractNotTradeableError(Exception):
+    """A futures order refused before Gate 1: its contract is at or past its expiration, or
+    no expiration could be read (gap #71 — HARD rule, operator 2026-09-24).
+
+    Found live: the model proposed from the core's resolver, which returned CLV6 two days
+    after it stopped trading; only the model's own judgement kept it off the order path.
+    The date is `/iserver/contract/{conid}/info` `maturity_date` — read on every futures
+    order anyway — and the rule refuses on the expiry day itself (`today >= maturity`): CL's
+    last day is final-delivery trading, and ES stops at 9:30 a.m. that morning. No date →
+    refused: tradeability that cannot be confirmed is not assumed (fail-closed).
+    """
+
+    def __init__(self, conid: int, label: str, maturity: int) -> None:
+        """Say which contract and why, in the words the operator will read."""
+        name = label or f"conid {conid}"
+        if maturity:
+            text = str(maturity)
+            date = f"{text[:4]}-{text[4:6]}-{text[6:]}"
+            if date not in name:  # IBKR's label usually carries it already
+                name = f"{name} (expires {date})"
+            why = "an expiring or expired contract is never staged. Name the next contract month"
+        else:
+            why = (
+                "its expiration date could not be read from IBKR, so it cannot be confirmed "
+                "tradeable. Retry once IBKR answers"
+            )
+        super().__init__(f"Futures contract {name}: {why}.")
+
+
 _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
+    (
+        # Matched by TYPE, first: raised by ClaudIA itself before Gate 1 (gap #71).
+        lambda _m, t: "ContractNotTradeable" in t,
+        "contract_not_tradeable",
+        "{detail}",
+    ),
     (
         # FIRST, and by TYPE (2026-09-22, ibkr_core_mcp 2.1.0): `IBKRClient.modify_order`
         # now refuses a released bracket child larger than the fill its parent created
@@ -1557,7 +1596,11 @@ async def _execute_staged_order_core(
             # a price into a notional on the Gate 2 screen, and the label carries the
             # contract month the proposal text cannot show. Live 2026-09-04 (conid path):
             # the dialog printed 7,735.00 for one ES contract worth 386,750 USD.
-            multiplier, currency, contract_label = _futures_contract_facts(ibkr, conid)
+            multiplier, currency, contract_label, maturity = _futures_contract_facts(ibkr, conid)
+            if sec_type == "FUT" and (not maturity or _today_key() >= maturity):
+                # HARD RULE (gap #71, operator 2026-09-24): an expired future is never staged.
+                # Before Gate 1, from the read above — no extra call. See the exception.
+                raise ContractNotTradeableError(conid, contract_label, maturity)
             if contract_label:
                 company_name = contract_label
         else:

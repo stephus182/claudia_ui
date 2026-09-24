@@ -253,6 +253,12 @@ routing depends on `sec_type`:
   20261001; for ES `ltd` is the earlier one, 20261217 vs 20261218; DX reports them equal. Sources:
   [IBKR `/trsrv/futures`](https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/security-future-by-symbol.md),
   [CME CL specs](https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.contractSpecs.html)).
+  **Hard rule on top (gap #71 part 2):** whatever conid a FUT proposal carries — the model's
+  usually comes from the core's resolver, which still has the old rule — the order is refused
+  before Gate 1 when the contract info's `maturity_date` is today or earlier, or cannot be read
+  (fail-closed). The date comes from the contract read every futures order already makes; the
+  refusal leaves a `trade_refused` row with stage `contract_not_tradeable`. Verified read-only
+  against live IBKR data 2026-09-24: CLV6 refused, CLX6 and ESZ6 pass.
   Not simply the lowest `expirationDate`:
   IBKR keeps returning a contract after its last trade date, so that rule staged an expired one for
   days after each roll — measured 2026-09-20, and IBKR then refuses it with `"Order is already

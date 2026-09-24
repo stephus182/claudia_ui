@@ -664,11 +664,16 @@ def _make_ibkr_mock():
     ]
     # /iserver/contract/{conid}/info is where the multiplier, currency and local symbol
     # live (measured on ES conid 649180671: '50', 'USD', 'ESU6', maturity 20260918).
+    # `maturity_date` is COMPUTED, like the futures dates above: it read "20260918" — a real
+    # ES expiry, pinned — until 2026-09-24, and the expired-contract guard (gap #71) then
+    # refused every conid-supplied futures test in this file for a reason none of them
+    # tests. `symbol` is the root IBKR returns (measured: `CL` for CLV6, `ES` for ESZ6).
     client.get_contract_info.return_value = {
+        "symbol": "ES",
         "multiplier": "50",
         "currency": "USD",
-        "local_symbol": "ESU6",
-        "maturity_date": "20260918",
+        "local_symbol": "ESZ6",
+        "maturity_date": str(_dated(60)),
         "instrument_type": "FUT",
     }
     client.get_accounts.return_value = [{"accountId": "U12345"}]
@@ -1071,9 +1076,9 @@ async def test_execute_staged_order_fut_multiplier_currency_and_label_from_contr
     _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("_multiplier") == 50.0
     assert order_body.get("_currency") == "USD"
-    assert (
-        "ESU6" in order_body.get("_companyName", "") and "2026-09-18" in order_body["_companyName"]
-    )
+    maturity = str(_dated(60))  # the fixture's computed date, never a pinned market date
+    expires = f"{maturity[:4]}-{maturity[4:6]}-{maturity[6:]}"
+    assert "ESZ6" in order_body.get("_companyName", "") and expires in order_body["_companyName"]
     assert "_multiplier_unknown" not in order_body
 
 
@@ -1103,9 +1108,14 @@ async def test_execute_staged_order_fut_with_conid_still_fetches_the_multiplier(
 
 
 @pytest.mark.asyncio
-async def test_execute_staged_order_fut_unknown_multiplier_is_flagged_not_guessed():
+async def test_execute_staged_order_fop_unknown_multiplier_is_flagged_not_guessed():
     """Contract info unavailable → no _multiplier AND an explicit unknown flag, so Gate 2
-    cannot fall back to price x qty and show a 50x-short notional as if it were real."""
+    cannot fall back to price x qty and show a 50x-short notional as if it were real.
+
+    On FOP since 2026-09-24: for a FUT the same failed read now refuses the order outright
+    (gap #71, fail-closed — `test_a_failed_contract_info_read_refuses_a_future`), so the
+    unknown-multiplier path is reachable on a futures option, which that rule does not cover.
+    """
     ibkr_mod, client = _make_ibkr_mock()
     client.get_contract_info.side_effect = RuntimeError("503")
     action = _make_action(
@@ -1114,7 +1124,8 @@ async def test_execute_staged_order_fut_unknown_multiplier_is_flagged_not_guesse
             "action": "BUY",
             "quantity": 1,
             "order_type": "MKT",
-            "sec_type": "FUT",
+            "sec_type": "FOP",
+            "conid": 700123,
         }
     )
     await _run(action, ibkr_mod)
@@ -1155,12 +1166,17 @@ def test_futures_contract_facts_parses_ibkr_strings_and_survives_junk():
         "maturity_date": "20260918",
     }
     # No `· x50` on the label since 2026-09-11 (gap #45): size sits on the Quantity row.
-    assert _futures_contract_facts(client, 1) == (50.0, "USD", "ESU6 · expires 2026-09-18")
+    assert _futures_contract_facts(client, 1) == (
+        50.0,
+        "USD",
+        "ESU6 · expires 2026-09-18",
+        20260918,
+    )
     client.get_contract_info.return_value = {"multiplier": "fifty", "maturity_date": "soon"}
-    mult, ccy, label = _futures_contract_facts(client, 1)
-    assert mult is None and ccy is None and label == ""
+    mult, ccy, label, maturity = _futures_contract_facts(client, 1)
+    assert mult is None and ccy is None and label == "" and maturity == 0
     client.get_contract_info.side_effect = RuntimeError("down")
-    assert _futures_contract_facts(client, 1) == (None, None, "")
+    assert _futures_contract_facts(client, 1) == (None, None, "", 0)
 
 
 @pytest.mark.asyncio
@@ -1254,6 +1270,108 @@ async def test_execute_staged_order_fut_skips_a_cl_shaped_contract_whose_ltd_is_
     await _run(action, ibkr_mod)
     _, order_body = client.place_order_and_confirm.call_args.args
     assert order_body.get("conid") == 304037511, "an expired CL contract must never be staged"
+
+
+# ── Hard rule: an expired futures contract is never staged (gap #71 part 2) ──────────
+#
+# Operator, 2026-09-24: "if contract is expired it cannot be traded, and we should have a
+# HARD rule against it" — "simple and ROBUST", using what we already have. Every futures
+# order already reads `/iserver/contract/{conid}/info` before Gate 1 (multiplier, label);
+# its `maturity_date` is the contract's expiration (measured: CLV6 20260922, ESZ6 20261218).
+# Today >= that date, or no date at all, refuses the order before Touch ID. No extra call.
+
+
+def _cl_conid_proposal(conid: int = 304037496) -> Any:
+    """A CL proposal carrying a conid, as the model builds it from the snapshot."""
+    return _make_action(
+        {
+            "symbol": "CL",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 85.0,
+            "tif": "DAY",
+            "sec_type": "FUT",
+            "conid": conid,
+        }
+    )
+
+
+def _cl_info(client, maturity: Any) -> None:
+    """Contract info as IBKR returns it for CL, with the given `maturity_date`."""
+    client.get_contract_info.return_value = {
+        "symbol": "CL",
+        "local_symbol": "CLV6",
+        "maturity_date": maturity,
+        "multiplier": "1000",
+        "currency": "USD",
+    }
+
+
+async def _refused_before_gate1(action, ibkr_mod, client) -> dict[str, Any]:
+    """Run the place core; assert nothing reached Gate 1; return the refusal row's kwargs."""
+    store = MagicMock()
+    recorded = await _run(action, ibkr_mod, store=store, session_id="s1")
+    client.place_order_and_confirm.assert_not_called()  # Gate 1 lives inside this call
+    assert any("Order not placed" in c for c in _sent_contents(recorded))
+    kwargs: dict[str, Any] = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_refused"
+    assert kwargs["metadata"]["stage"] == "contract_not_tradeable"
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_conid_supplied_expired_future_is_refused_before_touch_id():
+    """The case of 2026-09-24: the model's conid is CLV6, expired two days ago."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _cl_info(client, str(_dated(-2)))
+    kwargs = await _refused_before_gate1(_cl_conid_proposal(), ibkr_mod, client)
+    expired = str(_dated(-2))
+    assert f"{expired[:4]}-{expired[4:6]}-{expired[6:]}" in kwargs["summary_text"]
+
+
+@pytest.mark.asyncio
+async def test_a_future_on_its_expiry_day_is_refused():
+    """Today == maturity is refused too: CL's last day is final-delivery trading, and ES stops
+    at 9:30 a.m. that morning. Conservative by one day, deliberately."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _cl_info(client, str(_dated(0)))
+    await _refused_before_gate1(_cl_conid_proposal(), ibkr_mod, client)
+
+
+@pytest.mark.asyncio
+async def test_a_conid_supplied_live_future_is_staged():
+    """The same path with CLX6's conid, expiring in a month, goes through to the gates."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _cl_info(client, str(_dated(26)))
+    await _run(_cl_conid_proposal(304037511), ibkr_mod)
+    _, body = client.place_order_and_confirm.call_args.args
+    assert body["conid"] == 304037511
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("maturity", [None, "", "soon"])
+async def test_a_future_without_a_readable_maturity_is_refused_fail_closed(maturity):
+    """No date: tradeability cannot be confirmed, so nothing is staged (fail-closed)."""
+    ibkr_mod, client = _make_ibkr_mock()
+    _cl_info(client, maturity)
+    await _refused_before_gate1(_cl_conid_proposal(), ibkr_mod, client)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_contract_info_read_refuses_a_future():
+    """The read itself failing is the same case: no date, no order."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_contract_info.side_effect = ConnectionError("HTTP 503")
+    await _refused_before_gate1(_cl_conid_proposal(), ibkr_mod, client)
+
+
+@pytest.mark.asyncio
+async def test_a_stock_proposal_is_not_touched_by_the_expiry_rule():
+    """The rule is FUT-only: a stock order is staged as before."""
+    ibkr_mod, client = _make_ibkr_mock()
+    await _run(_make_action(), ibkr_mod)
+    client.place_order_and_confirm.assert_called_once()
 
 
 @pytest.mark.parametrize(
