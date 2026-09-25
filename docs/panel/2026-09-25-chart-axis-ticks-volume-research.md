@@ -122,7 +122,7 @@ both rows.
 Order and method as the 2026-09-23 addendum set them: **#76 first, rendered and looked at,
 then #75** (`feedback-a-fix-can-introduce-its-own-defect`).
 
-**#76 — continuity.** Build a plotting frame from the cached one: `bar` = 0…n−1, `date` = the
+**#76 — continuity — BUILT 2026-09-25 as described here** (`panel_chart._plot_frame`, `_date_ticks`, `build_chart_object`; the hover's text date lives on the wick renderer the tool is bound to, measured while building: the body Quad's source holds geometry only). Build a plotting frame from the cached one: `bar` = 0…n−1, `date` = the
 old index, OHLCV columns unchanged; keep the `DatetimeIndex` frame for `_infer_bar_label`
 (the title's "bars actually returned" check reads the index spacing). Price row:
 `hvplot.ohlc(x="bar", y=[...], hover_cols=["date"], xticks=[(i, label), ...])`. Volume row on

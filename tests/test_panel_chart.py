@@ -14,6 +14,7 @@ Two layers, both server-free:
 """
 
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import panel as pn
@@ -298,10 +299,11 @@ def _rects(obj):
     return _price(obj).Rectangles.I
 
 
-def _body_width_ms_of(obj) -> float:
-    """The candle body width, in milliseconds, taken from the built figure."""
+def _body_width_bars_of(obj) -> float:
+    """The candle body width, in bars, taken from the built figure (gap #76: the x axis is
+    the bar sequence, so a width is a fraction of one bar, not a span of milliseconds)."""
     d = _rects(obj).data
-    return float((d["ubound"].iloc[0] - d["lbound"].iloc[0]) / pd.Timedelta(milliseconds=1))
+    return float(d["ubound"].iloc[0] - d["lbound"].iloc[0])
 
 
 def test_build_chart_object_has_wicks_and_bodies():
@@ -316,38 +318,39 @@ def test_build_chart_object_has_wicks_and_bodies():
     assert len(_price(obj).Segments.I.data) == 4  # one wick per bar
 
 
-def test_build_chart_object_body_width_is_070_of_bar_spacing():
+def test_build_chart_object_body_width_is_070_of_one_bar():
     # hvplot derives the width from the data's own bar spacing (np.min(np.diff(x)) *
-    # bar_width, see build_chart_object's docstring), so 0.7 x 24h for the daily
-    # fixture. NOT exactly equal to Timedelta(hours=24)*0.7 -- float rounding puts it
-    # fractionally under -- hence approx.
-    """Body width is 70% of bar spacing, which is what stops candles touching."""
+    # bar_width, see build_chart_object's docstring). Until gap #76 (2026-09-25) x was the
+    # datetime index, so this read 0.7 x 24h on the daily fixture; on the bar-sequence axis
+    # the spacing is a constant one bar, so the width is a constant 0.7 bar.
+    """Body width is 70% of one bar, which is what stops candles touching."""
     from claudia.panel_chart import build_chart_object
 
     layout = build_chart_object(_sample_df(), "T")
-    expected = _ms(pd.Timedelta(hours=24)) * 0.7
-    assert _body_width_ms_of(layout) == pytest.approx(expected)
+    assert _body_width_bars_of(layout) == pytest.approx(0.7)
 
 
-def test_build_chart_object_body_width_tracks_intraday_spacing():
+def test_build_chart_object_body_width_is_the_same_at_every_bar_size():
     # The smear regression (a51b454, not 794d7c0 -- see build_chart_object's docstring)
-    # restated for the new engine: 30m candles must be strictly narrower than 1h, which
-    # must be strictly narrower than daily.
-    """Intraday bars size their bodies off intraday spacing, not a daily assumption."""
+    # restated for the bar-sequence axis (gap #76): 30m, 1h and daily candles are all one
+    # bar apart on that axis, so their bodies are all 0.7 bar wide — none can smear into
+    # its neighbour, whatever the clock spacing. (Until 2026-09-25 this asserted strictly
+    # narrower bodies for finer bars, which was the datetime axis's own arithmetic.)
+    """Body width is 0.7 bar at every bar size, so no size can smear."""
     from claudia.panel_chart import build_chart_object
 
     def width(freq):
-        """The candle body width from the built figure, in milliseconds."""
+        """The candle body width from the built figure, in bars."""
         idx = pd.date_range("2024-01-01 09:30", periods=6, freq=freq)
         df = pd.DataFrame(
             {"open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 100.0},
             index=idx,
         )
-        return _body_width_ms_of(build_chart_object(df, "T"))
+        return _body_width_bars_of(build_chart_object(df, "T"))
 
-    assert width("30min") == pytest.approx(_ms(pd.Timedelta(minutes=30)) * 0.7)
-    assert width("1h") == pytest.approx(_ms(pd.Timedelta(hours=1)) * 0.7)
-    assert width("30min") < width("1h") < width("1D")
+    assert width("30min") == pytest.approx(0.7)
+    assert width("1h") == pytest.approx(0.7)
+    assert width("1D") == pytest.approx(0.7)
 
 
 def test_build_chart_object_colors_up_and_down_bodies():
@@ -407,25 +410,19 @@ def test_build_chart_object_is_column_order_independent():
     canon_color = hv.Store.lookup_options("bokeh", canon_rects, "style").kwargs["color"]
     reord_color = hv.Store.lookup_options("bokeh", reord_rects, "style").kwargs["color"]
     assert list(reord_color.apply(reord_rects)) == list(canon_color.apply(canon_rects))
-    # _body_width_ms_of takes the Overlay (it re-derives Rectangles.I via _price/_rects
+    # _body_width_bars_of takes the Overlay (it re-derives Rectangles.I via _price/_rects
     # internally), not an already-extracted Rectangles element -- passing canon_rects/
     # reord_rects here would raise (Rectangles has no further .Rectangles to descend into).
-    assert _body_width_ms_of(reord_obj) == pytest.approx(_body_width_ms_of(canon_obj))
+    assert _body_width_bars_of(reord_obj) == pytest.approx(_body_width_bars_of(canon_obj))
 
 
-def test_build_chart_object_body_width_uses_min_not_median_spacing():
+def test_build_chart_object_body_width_ignores_an_irregular_clock_gap():
     # hvplot's own width formula is `np.min(np.diff(x)) * bar_width` (converter.py,
-    # verified 2026-08-03) -- MIN, not the MEDIAN the old, now-deleted `_body_width_ms`
-    # helper used (Task 7). On a weekend-gap fixture (Thu, Fri, Mon, Tue -- one 72h
-    # outlier gap among three) min and median agree at 24h, so that shape of fixture
-    # does not exercise the difference -- confirmed 2026-08-03 by running
-    # build_chart_object directly on that fixture before `_body_width_ms` was deleted:
-    # hvplot's width came out at exactly 24h * 0.7, matching what the old median-based
-    # helper asserted. A trailing half-day bar is the case that DOES diverge: it makes
-    # the min gap 12h while the median gap stays 24h. Assert what hvplot ACTUALLY does
-    # (min-based) here, not parity with the deleted helper -- they are genuinely
-    # different statistics and are not expected to agree on this fixture.
-    """Minimum spacing sets the width, so a single tight gap cannot make bodies overlap."""
+    # verified 2026-08-03). On the datetime axis a trailing half-day bar made the min gap
+    # 12h against a 24h median, and this test pinned the min-based result (12h x 0.7).
+    # On the bar-sequence axis (gap #76) every gap is one bar, so the same fixture yields
+    # 0.7 bar — an irregular clock gap can no longer narrow every body on the chart.
+    """An irregular clock gap changes nothing: every body is 0.7 bar."""
     from claudia.panel_chart import build_chart_object
 
     idx = pd.to_datetime(
@@ -436,14 +433,7 @@ def test_build_chart_object_body_width_uses_min_not_median_spacing():
         index=idx,
     )
 
-    hv_width = _body_width_ms_of(build_chart_object(df, "T"))
-    assert hv_width == pytest.approx(_ms(pd.Timedelta(hours=12)) * 0.7)
-    # Restate the divergence explicitly: the deleted median-based helper would have
-    # returned 24h here, not the 12h min hvplot actually uses -- these are not expected
-    # to be the same value. Hardcoded rather than calling the deleted `_body_width_ms`
-    # directly.
-    old_median_based_width = _ms(pd.Timedelta(hours=24)) * 0.7
-    assert hv_width != pytest.approx(old_median_based_width)
+    assert _body_width_bars_of(build_chart_object(df, "T")) == pytest.approx(0.7)
 
 
 def test_build_chart_object_rejects_single_row_frame():
@@ -505,7 +495,7 @@ def test_build_chart_object_adds_a_volume_subplot():
 
     layout = build_chart_object(_long_df(), "T")
     assert [type(e).__name__ for e in layout] == ["Overlay", "Bars"]
-    assert list(layout.Bars.Volume.dimension_values("volume")) == pytest.approx(
+    assert list(layout.Bars.I.dimension_values("volume")) == pytest.approx(
         _long_df()["volume"].tolist()
     )
 
@@ -517,13 +507,15 @@ def test_volume_subplot_keeps_a_continuous_x_axis():
     # (FactorRange) volume axis paired with the datetime candle axis would silently break
     # the sync (verified 2026-08-03: pairing a datetime element with a categorical one
     # under shared_axes=True yields two distinct range objects, not one shared one).
-    """The volume row keeps the same continuous time axis as price."""
+    """The volume row keeps the same continuous axis as price — since gap #76 the numeric
+    bar-sequence axis (`test_candles_sit_on_the_bar_sequence_with_no_gap_across_a_weekend`
+    asserts the two rows share one Range1d)."""
     import holoviews as hv
     from bokeh.models import FactorRange
 
     from claudia.panel_chart import build_chart_object
 
-    fig = hv.render(build_chart_object(_long_df(), "T").Bars.Volume, backend="bokeh")
+    fig = hv.render(build_chart_object(_long_df(), "T").Bars.I, backend="bokeh")
     assert not isinstance(fig.x_range, FactorRange)
 
 
@@ -887,3 +879,136 @@ async def test_a_pane_without_a_session_still_fetches_and_writes_nothing():
     tk.execute.assert_called_once()
     lookup.assert_not_called()
     assert [type(e).__name__ for e in _chart(pane).object] == ["Overlay", "Bars"]
+
+
+# ── gap #76 (2026-09-25): continuous candles on the bar sequence, dates as tick labels ─────
+
+
+def _ohlcv(index: pd.DatetimeIndex) -> pd.DataFrame:
+    """A well-formed OHLCV frame on `index`, values rising so every candle is drawable."""
+    n = len(index)
+    base = pd.Series(range(n), index=index, dtype=float) + 100.0
+    return pd.DataFrame(
+        {"open": base, "high": base + 2, "low": base - 2, "close": base + 1, "volume": 1000 + base},
+        index=index,
+    )
+
+
+def _bokeh_figures(obj) -> list[Any]:
+    """The Bokeh figures a HoloViews object renders to, the candle (price) figure first."""
+    import holoviews as hv
+    from bokeh.plotting import figure as BokehFigure
+
+    figs = [m for m in hv.render(obj).references() if isinstance(m, BokehFigure)]
+    has_candles = [
+        any(getattr(r, "glyph", None).__class__.__name__ == "Quad" for r in f.renderers)
+        for f in figs
+    ]
+    return [f for f, c in zip(figs, has_candles, strict=True) if c] + [
+        f for f, c in zip(figs, has_candles, strict=True) if not c
+    ]
+
+
+def _price_axis(layout):
+    """The price row's x axis, rendered."""
+    return _bokeh_figures(layout)[0].xaxis[0]
+
+
+def test_candles_sit_on_the_bar_sequence_with_no_gap_across_a_weekend():
+    """Gap #76: the x axis counts bars, so a weekend is nothing, not an empty stretch. Both
+    rows share one numeric range (a categorical axis would split them, measured 2026-08-03)."""
+    from claudia.panel_chart import build_chart_object
+
+    index = pd.to_datetime(["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-06", "2026-07-07"])
+    layout = build_chart_object(_ohlcv(index), "t")
+    figs = _bokeh_figures(layout)
+    assert len(figs) == 2
+    assert [type(f.x_range).__name__ for f in figs] == ["Range1d", "Range1d"]
+    assert figs[0].x_range is figs[1].x_range, "the volume row must ride the candles' axis"
+    bodies = next(r for r in figs[0].renderers if r.glyph.__class__.__name__ == "Quad")
+    centres = [
+        (lft + rgt) / 2
+        for lft, rgt in zip(
+            bodies.data_source.data["left"], bodies.data_source.data["right"], strict=True
+        )
+    ]
+    assert centres == [0.0, 1.0, 2.0, 3.0, 4.0], centres  # Friday → Monday is one step
+
+
+def test_tick_labels_are_the_dates_of_real_bars_at_month_starts():
+    """Every tick is a bar that exists, labelled with that bar's own date; daily data ticks at
+    the first bar of each month."""
+    from claudia.panel_chart import build_chart_object
+
+    index = pd.bdate_range("2026-06-15", "2026-09-25")
+    layout = build_chart_object(_ohlcv(index), "t")
+    axis = _price_axis(layout)
+    positions = list(axis.ticker.ticks)
+    assert positions, "an explicit tick list is expected"
+    assert all(0 <= p < len(index) for p in positions)
+    first_of_month = [i for i in range(1, len(index)) if index[i].month != index[i - 1].month]
+    assert positions == first_of_month, (positions, first_of_month)
+    for pos in positions:
+        assert axis.major_label_overrides[pos] == index[pos].strftime("%b %Y")
+
+
+def test_intraday_ticks_fall_on_day_changes():
+    """Intraday bars tick at the first bar of each day, labelled with that day."""
+    from claudia.panel_chart import build_chart_object
+
+    days = [
+        pd.date_range(f"2026-09-{d} 09:30", f"2026-09-{d} 15:30", freq="30min")
+        for d in (23, 24, 25)
+    ]
+    index = days[0].append(days[1]).append(days[2])
+    layout = build_chart_object(_ohlcv(index), "t")
+    axis = _price_axis(layout)
+    starts = [len(days[0]), len(days[0]) + len(days[1])]
+    assert list(axis.ticker.ticks) == starts
+    assert [axis.major_label_overrides[p] for p in starts] == ["Sep 24", "Sep 25"]
+
+
+def test_ticks_are_thinned_to_a_readable_number_on_long_ranges():
+    """Two years of daily bars have 24 month starts; at most eight are labelled, every one of
+    them still a real month start (thinned, never interpolated)."""
+    from claudia.panel_chart import build_chart_object
+
+    index = pd.bdate_range("2024-09-25", "2026-09-25")
+    layout = build_chart_object(_ohlcv(index), "t")
+    axis = _price_axis(layout)
+    positions = list(axis.ticker.ticks)
+    assert 2 <= len(positions) <= 8, positions
+    for pos in positions:
+        assert index[pos].month != index[pos - 1].month, (
+            "a thinned tick must still be a month start"
+        )
+
+
+def test_a_short_range_with_no_month_boundary_still_gets_ticks():
+    """Three weeks inside one month: no month start to tick at, so evenly spaced real bars."""
+    from claudia.panel_chart import build_chart_object
+
+    index = pd.bdate_range("2026-09-02", "2026-09-22")
+    layout = build_chart_object(_ohlcv(index), "t")
+    axis = _price_axis(layout)
+    positions = list(axis.ticker.ticks)
+    assert 2 <= len(positions) <= 8 and positions[0] == 0
+    for pos in positions:
+        assert axis.major_label_overrides[pos] == index[pos].strftime("%b %d")
+
+
+def test_hover_carries_the_bar_date_as_text():
+    """On a bar-sequence axis the tooltip must still say which day a candle is — as text,
+    since Bokeh prints a raw datetime column as epoch milliseconds."""
+    from claudia.panel_chart import build_chart_object
+
+    index = pd.to_datetime(["2026-07-01", "2026-07-02", "2026-07-03"])
+    layout = build_chart_object(_ohlcv(index), "t")
+    fig = _bokeh_figures(layout)[0]
+    hover = next(t for t in fig.tools if type(t).__name__ == "HoverTool")
+    assert ("date", "@date") in hover.tooltips, hover.tooltips
+    # The tooltip reads from the renderer the hover tool is bound to (the wicks; measured
+    # 2026-09-25 — the body Quad's source holds geometry only), so that is where the text
+    # date must be, or the browser shows "???".
+    bound = hover.renderers[0]
+    assert list(bound.data_source.data["date"]) == ["2026-07-01", "2026-07-02", "2026-07-03"]

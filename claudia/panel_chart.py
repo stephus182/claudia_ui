@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import date
 from typing import Any
 
@@ -73,6 +74,72 @@ _BODY_WIDTH_FRACTION = 0.7
 # hand-built Bokeh figure used -- deliberate, user decision 2026-08-03, taking
 # 300 + 120 = 420px total over restoring 360 for the price row.
 _VOLUME_HEIGHT = 120
+
+# Most tick labels on the bar-sequence axis (gap #76). Every label is a real bar's own date;
+# when more month (or day) starts exist than this, every k-th is kept — never interpolated.
+_MAX_TICKS = 8
+
+
+def _is_intraday(index: pd.DatetimeIndex) -> bool:
+    """True when the bars are finer than a day (median spacing below 24 h)."""
+    if len(index) < 2:
+        return False
+    return bool(pd.Series(index).diff().median() < pd.Timedelta(days=1))
+
+
+def _plot_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """The frame the chart is drawn from: `bar` (0…n−1) as x, the date as TEXT, OHLCV.
+
+    Gap #76 (2026-09-25): candles sit on the bar sequence, so a weekend, a holiday or an
+    overnight is nothing on the axis rather than an empty stretch — the industry's
+    convention, and what the operator asked for ("continuous candles, matching industry
+    standards"). hvplot's `ohlc` takes any column as `x` ("If not specified, the index is
+    used"; scraped 2026-09-25), and sizes bodies from the minimum x spacing, which is now a
+    constant one bar. The date travels as a string column for the hover tooltip because
+    Bokeh prints a raw datetime column as epoch milliseconds. The caller keeps the
+    `DatetimeIndex` frame for `_infer_bar_label`, which reads the index spacing.
+    """
+    fmt = "%Y-%m-%d %H:%M" if _is_intraday(df.index) else "%Y-%m-%d"
+    frame = df[["open", "high", "low", "close", "volume"]].reset_index(drop=True)
+    frame.insert(0, "bar", range(len(frame)))
+    frame["date"] = [ts.strftime(fmt) for ts in df.index]
+    return frame
+
+
+def _date_ticks(index: pd.DatetimeIndex, max_ticks: int = _MAX_TICKS) -> list[tuple[int, str]]:
+    """Tick positions on the bar axis, each labelled with that bar's own date (gap #76).
+
+    Daily or coarser bars tick at the first bar of each month (`Jul 2026`); intraday bars at
+    the first bar of each day (`Sep 25`). More boundaries than `max_ticks` are thinned by
+    keeping every k-th — a thinned tick is still a real boundary. Fewer than two boundaries
+    (a three-week chart inside one month, a single intraday day) fall back to evenly spaced
+    real bars, labelled `Sep 02` / `Sep 02 09:30`. HoloViews takes the list as
+    `xticks=[(position, label), …]` ("List of tick positions and labels", scraped
+    2026-09-25) and renders a `FixedTicker` with `major_label_overrides`.
+    """
+    n = len(index)
+    if n == 0:
+        return []
+    intraday = _is_intraday(index)
+    if intraday:
+        boundaries = [i for i in range(1, n) if index[i].date() != index[i - 1].date()]
+        boundary_label = "%b %d"
+    else:
+        boundaries = [
+            i
+            for i in range(1, n)
+            if (index[i].year, index[i].month) != (index[i - 1].year, index[i - 1].month)
+        ]
+        boundary_label = "%b %Y"
+    if len(boundaries) >= 2:
+        step = max(1, math.ceil(len(boundaries) / max_ticks))
+        return [(pos, index[pos].strftime(boundary_label)) for pos in boundaries[::step]]
+    count = min(max_ticks, n)
+    positions = (
+        sorted({round(i * (n - 1) / (count - 1)) for i in range(count)}) if count > 1 else [0]
+    )
+    even_label = "%b %d %H:%M" if intraday else "%b %d"
+    return [(pos, index[pos].strftime(even_label)) for pos in positions]
 
 
 def _infer_bar_label(index: pd.DatetimeIndex) -> str:
@@ -124,9 +191,12 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     object is `Any` here, so this function gets no type checking at all.
 
     `df` is indexed by a DatetimeIndex with lowercase open/high/low/close/volume columns.
-    Candle bodies are sized by hvplot from the data's own bar spacing — specifically
-    `np.min(np.diff(x)) * bar_width` (hvplot/converter.py, `ohlc()`) — which is why this
-    module does not compute a width itself. That is MIN, not the MEDIAN the old
+    **The x axis is the bar sequence, not the date** (gap #76, 2026-09-25): `_plot_frame`
+    numbers the bars 0…n−1 and `_date_ticks` labels chosen bars with their own dates, so
+    weekends, holidays and overnights leave no gap. Candle bodies are sized by hvplot from
+    the data's own bar spacing — specifically `np.min(np.diff(x)) * bar_width`
+    (hvplot/converter.py, `ohlc()`) — which on the bar axis is a constant one bar, and is
+    why this module does not compute a width itself. That is MIN, not the MEDIAN the old
     `_body_width_ms` helper used: the two agreed on uniform data and on the
     weekend-gap fixture that covered it, but diverged whenever the single smallest gap
     in the frame wasn't also the median gap (verified 2026-08-03, before deletion: three
@@ -144,7 +214,14 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
         # numpy internals string. A 0-row frame does not reach this function either way --
         # _on_load's `df.empty` check returns before it calls any chart builder.
         raise ValueError("Cannot chart a single bar - need at least 2 bars.")
-    candles = df.hvplot.ohlc(
+    frame = _plot_frame(df)
+    ticks = _date_ticks(df.index)
+    candles = frame.hvplot.ohlc(
+        # x= is the bar sequence, not the date (gap #76): see `_plot_frame` / `_date_ticks`.
+        x="bar",
+        xticks=ticks,
+        xlabel="date",
+        hover_cols=["date"],
         # y= pins the OHLC columns BY NAME. Required, not decorative: hvplot 0.12.2's
         # own docstring (hvplot/plotting/core.py) says the default (y=None) is
         # ["open", "high", "low", "close"], but converter.py's `ohlc()` actually does
@@ -183,7 +260,14 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     # the candle bodies: hv.Bars' default `bar_width` style option is 0.8, scaled by
     # np.min(np.diff(x)) in holoviews/plotting/bokeh/chart.py's BarPlot.get_data. So the
     # volume row cannot smear the way the hand-built candle bodies once did.
-    volume = df["volume"].hvplot.bar(height=_VOLUME_HEIGHT)
+    # Same integer `bar` key as the candles, so HoloViews' Layout `shared_axes` gives both
+    # rows ONE numeric Range1d — measured 2026-09-25 (hvplot 0.12.2 / holoviews 1.23.1 /
+    # bokeh 3.9.2): `hvplot.bar` and `hv.Bars` on the `bar` column share it, `hv.Rectangles`
+    # does not (different dimension names). The 2026-08-03 warning above about a categorical
+    # axis still stands: it is the dimension name and type that must match, and they do.
+    volume = frame.hvplot.bar(
+        x="bar", y="volume", height=_VOLUME_HEIGHT, xticks=ticks, xlabel="date"
+    )
     return (price + volume).cols(1)
 
 

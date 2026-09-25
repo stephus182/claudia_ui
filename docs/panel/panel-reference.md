@@ -355,18 +355,28 @@ libraries guarantee, quoted and executed, are in
 - **HoloViews/hvplot, not hand-built Bokeh glyphs** (superseded 2026-08-03 — see
   `data-surfaces-reference.md` D1). `build_chart_object`
   ([`panel_chart.py:92-175`](../../claudia/panel_chart.py#L92-L175)) makes two separate
-  hvplot calls — `df.hvplot.ohlc(...)` for the price row (wick `Segments` + body
-  `Rectangles`; the 20-period SMA `Curve` once overlaid on it was removed 2026-09-23)
-  and `df["volume"].hvplot.bar(...)` for the volume row below — combined into one
-  `holoviews.Layout` via `(price + volume).cols(1)` and rendered by `pn.pane.HoloViews`
-  (not `pn.pane.Bokeh`).
+  hvplot calls on a **plotting frame** whose x is the bar sequence (gap #76, 2026-09-25:
+  `_plot_frame` numbers the bars 0…n−1 and carries the date as text; `_date_ticks` labels
+  the first bar of each month, or of each day for intraday bars, with that bar's own date,
+  at most eight, thinned never interpolated) — `frame.hvplot.ohlc(x="bar", xticks=…,
+  hover_cols=["date"], …)` for the price row (wick `Segments` + body `Rectangles`; the
+  20-period SMA `Curve` once overlaid on it was removed 2026-09-23) and
+  `frame.hvplot.bar(x="bar", y="volume", …)` for the volume row below, on the **same**
+  `bar` key so both rows share one numeric `Range1d` — combined into one `holoviews.Layout`
+  via `(price + volume).cols(1)` and rendered by `pn.pane.HoloViews` (not `pn.pane.Bokeh`).
+  Weekends, holidays and overnights are therefore nothing on the axis, not empty stretches.
+  The hover's date is read from the wick renderer the tool is bound to (the body Quad's
+  source holds geometry only — measured 2026-09-25). Research behind the shape:
+  [`2026-09-25-chart-axis-ticks-volume-research.md`](2026-09-25-chart-axis-ticks-volume-research.md).
 - **Candle/bar width is derived by hvplot itself**, not computed by this module: both
   `.ohlc()` and `.bar()` scale their default width by `np.min(np.diff(x))` — the data's own
-  **minimum** bar spacing — so 1h/30m candles can no longer smear the way the old hand-built
-  `p.vbar` recipe did before the fix in commit `a51b454` (some docs cited that fix as
-  `794d7c0`; that hash is not a commit in this repository). `bar_width=0.7`
-  (`_BODY_WIDTH_FRACTION`, [`:74`](../../claudia/panel_chart.py#L74)) is the only width knob
-  this module passes; the volume row uses `hv.Bars`' own default instead.
+  **minimum** bar spacing — which on the bar-sequence axis is a constant one bar, so every
+  body is `bar_width=0.7` of a bar at every bar size (until gap #76 this was 0.7 × the
+  minimum clock gap, so 1h/30m candles were narrower than daily ones). Either way they
+  cannot smear the way the old hand-built `p.vbar` recipe did before the fix in commit
+  `a51b454` (some docs cited that fix as `794d7c0`; that hash is not a commit in this
+  repository). `bar_width=0.7` (`_BODY_WIDTH_FRACTION`) is the only width knob this module
+  passes; the volume row uses `hv.Bars`' own default instead.
 - **Colors**: `UP_COLOR` / `DOWN_COLOR`, imported from
   [`claudia/palette.py`](../../claudia/palette.py) since 2026-09-23 (they were
   `_UP_COLOR` / `_DOWN_COLOR`, declared in this module, until then). They are passed to
