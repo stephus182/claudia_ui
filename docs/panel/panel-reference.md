@@ -361,8 +361,11 @@ libraries guarantee, quoted and executed, are in
   at most eight, thinned never interpolated) — `frame.hvplot.ohlc(x="bar", xticks=…,
   hover_cols=["date"], …)` for the price row (wick `Segments` + body `Rectangles`; the
   20-period SMA `Curve` once overlaid on it was removed 2026-09-23) and
-  `frame.hvplot.bar(x="bar", y="volume", …)` for the volume row below, on the **same**
-  `bar` key so both rows share one numeric `Range1d` — combined into one `holoviews.Layout`
+  `hv.Bars(frame, kdims=["bar"], vdims=["volume", "colour", "date"]).opts(color="colour",
+  yformatter=NumeralTickFormatter("0.0a"), …)` for the volume row below (gap #75: each bar
+  wears its own candle's colour from one rule computed in `_plot_frame` — hvplot's
+  `open > close` → negative — and the axis reads `1.2m` / `450.0k` on three ticks), on the
+  **same** `bar` key so both rows share one numeric `Range1d` — combined into one `holoviews.Layout`
   via `(price + volume).cols(1)` and rendered by `pn.pane.HoloViews` (not `pn.pane.Bokeh`).
   Weekends, holidays and overnights are therefore nothing on the axis, not empty stretches.
   The hover's date is read from the wick renderer the tool is bound to (the body Quad's
@@ -375,8 +378,8 @@ libraries guarantee, quoted and executed, are in
   minimum clock gap, so 1h/30m candles were narrower than daily ones). Either way they
   cannot smear the way the old hand-built `p.vbar` recipe did before the fix in commit
   `a51b454` (some docs cited that fix as `794d7c0`; that hash is not a commit in this
-  repository). `bar_width=0.7` (`_BODY_WIDTH_FRACTION`) is the only width knob this module
-  passes; the volume row uses `hv.Bars`' own default instead.
+  repository). `bar_width=0.7` (`_BODY_WIDTH_FRACTION`) is passed to both rows since gap #75
+  (2026-09-25), so a volume bar is exactly as wide as the body above it.
 - **Colors**: `UP_COLOR` / `DOWN_COLOR`, imported from
   [`claudia/palette.py`](../../claudia/palette.py) since 2026-09-23 (they were
   `_UP_COLOR` / `_DOWN_COLOR`, declared in this module, until then). They are passed to

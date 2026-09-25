@@ -131,7 +131,7 @@ becomes the constant the docs describe. Tests: the rendered x-range is `Range1d`
 rows; consecutive bars are one unit apart with no gap at a weekend fixture; every tick label
 is the date of the bar at that position; hover carries the date.
 
-**#75 — volume row.** `hv.Bars` with a `colour` vdim from the candle rule; `yformatter`
+**#75 — volume row — BUILT 2026-09-25 as described here** (the candle rule read from hvplot's converter: `open > close` is negative, a doji positive; `hover_tooltips` names the day). `hv.Bars` with a `colour` vdim from the candle rule; `yformatter`
 `NumeralTickFormatter("0.0a")`; a taller row (a fixed height or a ratio of the price row —
 the current `_VOLUME_HEIGHT` is the knob). Tests: `VBar.fill_color` is a `Field`; the colour
 column equals the candle rule row by row; the y formatter is a `NumeralTickFormatter`.

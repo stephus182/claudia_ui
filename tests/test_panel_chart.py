@@ -1012,3 +1012,98 @@ def test_hover_carries_the_bar_date_as_text():
     # date must be, or the browser shows "???".
     bound = hover.renderers[0]
     assert list(bound.data_source.data["date"]) == ["2026-07-01", "2026-07-02", "2026-07-03"]
+
+
+# ── gap #75 (2026-09-25): the volume row — colour by its candle, human numbers, taller ─────
+
+
+def _mixed_ohlcv() -> pd.DataFrame:
+    """Up, down, doji, down, up — one of each shape, so a colour rule cannot pass by luck."""
+    index = pd.bdate_range("2026-09-21", periods=5)
+    return pd.DataFrame(
+        {
+            "open": [10.0, 12.0, 11.0, 11.5, 10.0],
+            "high": [12.5, 12.5, 11.5, 12.0, 11.5],
+            "low": [9.5, 10.5, 10.5, 10.0, 9.5],
+            "close": [12.0, 11.0, 11.0, 10.0, 11.0],
+            "volume": [120_000.0, 450_000.0, 1_230_000.0, 80_000.0, 300_000.0],
+        },
+        index=index,
+    )
+
+
+def _volume_figure(layout):
+    """The rendered volume row."""
+    return _bokeh_figures(layout)[1]
+
+
+def test_volume_bars_take_the_colour_of_their_own_candle():
+    """Each volume bar is filled with its candle's colour, from the same up/down rule hvplot
+    applies to the bodies — read off both rendered rows, so the two cannot disagree. hvplot's
+    rule (converter.py, read 2026-09-25) is `open > close` → negative; a doji is positive."""
+    from claudia.palette import DOWN_COLOR, UP_COLOR
+    from claudia.panel_chart import build_chart_object
+
+    layout = build_chart_object(_mixed_ohlcv(), "t")
+    price, volume = _bokeh_figures(layout)[:2]
+    quad = next(r for r in price.renderers if r.glyph.__class__.__name__ == "Quad")
+    vbar = next(r for r in volume.renderers if r.glyph.__class__.__name__ == "VBar")
+    assert vbar.glyph.fill_color.__class__.__name__ == "Field", vbar.glyph.fill_color
+    body_colours = list(quad.data_source.data["color"])
+    bar_colours = list(vbar.data_source.data[vbar.glyph.fill_color.field])
+    assert bar_colours == body_colours
+    assert bar_colours == [UP_COLOR, DOWN_COLOR, UP_COLOR, DOWN_COLOR, UP_COLOR]
+
+
+def test_volume_axis_reads_in_human_numbers_on_a_linear_scale():
+    """`1.2m`, `450.0k` — not `1.230e+6`; a linear axis with few ticks, not a log one."""
+    from claudia.panel_chart import build_chart_object
+
+    fig = _volume_figure(build_chart_object(_mixed_ohlcv(), "t"))
+    formatter = fig.yaxis[0].formatter
+    assert type(formatter).__name__ == "NumeralTickFormatter" and formatter.format == "0.0a"
+    assert type(fig.y_scale).__name__ == "LinearScale"
+    assert fig.yaxis[0].ticker.desired_num_ticks <= 4
+
+
+def test_volume_row_has_room_and_a_stated_proportion_of_the_price_row():
+    """The row is drawn at `_VOLUME_HEIGHT`, the price row at `_PRICE_HEIGHT`, and the
+    proportion is the one the module states — a knob, so the operator can tune it."""
+    from claudia.panel_chart import _PRICE_HEIGHT, _VOLUME_HEIGHT, build_chart_object
+
+    price, volume = _bokeh_figures(build_chart_object(_mixed_ohlcv(), "t"))[:2]
+    assert (price.height, volume.height) == (_PRICE_HEIGHT, _VOLUME_HEIGHT)
+    assert _VOLUME_HEIGHT >= 150, "the row the operator called too small was 120 px"
+    assert 0.35 <= _VOLUME_HEIGHT / _PRICE_HEIGHT <= 0.5
+
+
+def test_volume_bars_are_as_wide_as_the_candle_bodies():
+    """Volume bars sit under their candles at the same width, so the rows read as one."""
+    from claudia.panel_chart import _BODY_WIDTH_FRACTION, build_chart_object
+
+    volume = _volume_figure(build_chart_object(_mixed_ohlcv(), "t"))
+    vbar = next(r for r in volume.renderers if r.glyph.__class__.__name__ == "VBar")
+    assert vbar.glyph.width == pytest.approx(_BODY_WIDTH_FRACTION)
+
+
+def test_volume_hover_names_the_date_and_a_readable_volume():
+    """Hovering a volume bar says which day and how much, with thousands separators."""
+    from claudia.panel_chart import build_chart_object
+
+    volume = _volume_figure(build_chart_object(_mixed_ohlcv(), "t"))
+    hover = next(t for t in volume.tools if type(t).__name__ == "HoverTool")
+    fields = [f for f, _spec in hover.tooltips]
+    assert "date" in fields and "volume" in fields, hover.tooltips
+    assert any("{0,0}" in spec for _f, spec in hover.tooltips), hover.tooltips
+
+
+def test_volume_row_is_exactly_as_long_as_the_price_row():
+    """Operator, 2026-09-25, on the first render of #75: "Volume chart should = candle chart
+    length. It's a standard and logic standard." The rows are sized by the same constant, and
+    this reads the two rendered widths rather than trusting the option (hvplot's default
+    gave the price row 700 px, HoloViews' default gave the new `hv.Bars` row 300 px)."""
+    from claudia.panel_chart import _CHART_WIDTH, build_chart_object
+
+    price, volume = _bokeh_figures(build_chart_object(_mixed_ohlcv(), "t"))[:2]
+    assert price.width == volume.width == _CHART_WIDTH
+    assert price.sizing_mode == volume.sizing_mode

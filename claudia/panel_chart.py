@@ -48,9 +48,11 @@ from typing import Any
 # renderer (hv.Store.renderers, a dict, goes {} -> {'bokeh': BokehRenderer(...)}), which
 # is why no hv.extension() call appears in this module; the `.pandas` suffix is what adds
 # the DataFrame/Series `.hvplot` accessor used below — `import hvplot` alone does not.
+import holoviews as hv
 import hvplot.pandas  # noqa: F401
 import pandas as pd
 import panel as pn
+from bokeh.models import NumeralTickFormatter
 
 from claudia.palette import DOWN_COLOR, UP_COLOR
 from claudia.panel_markdown import safe_markdown
@@ -73,7 +75,21 @@ _BODY_WIDTH_FRACTION = 0.7
 # hv.render(...).select({"type": bokeh.plotting.figure})) rather than the 360px the old
 # hand-built Bokeh figure used -- deliberate, user decision 2026-08-03, taking
 # 300 + 120 = 420px total over restoring 360 for the price row.
-_VOLUME_HEIGHT = 120
+# Row heights in pixels. The operator called the 120 px volume row too small (2026-09-25,
+# gap #75: "make the volume proportion a better fit"); 150 under a 340 px price row is the
+# stated proportion, a knob to tune by looking, not a derived value.
+_PRICE_HEIGHT = 340
+_VOLUME_HEIGHT = 150
+# One width for both rows (operator, 2026-09-25: "Volume chart should = candle chart
+# length"). hvplot's own default is 700; HoloViews' `hv.Bars` default is 300, which is how
+# the first render of #75 drew a volume row less than half the candles' length.
+_CHART_WIDTH = 700
+
+# Ticks asked of the volume axis. Its labels are `1.2m` / `450.0k` (a Bokeh
+# `NumeralTickFormatter`, format `0.0a`, from numeral.js — the installed 3.9.2's own table
+# gives `1230974 '0.0a' 1.2m`); the old default printed `3.000e+5` stacked into a short row,
+# which the operator read as a log scale. The axis is linear and always was.
+_VOLUME_TICKS = 3
 
 # Most tick labels on the bar-sequence axis (gap #76). Every label is a real bar's own date;
 # when more month (or day) starts exist than this, every k-th is kept — never interpolated.
@@ -103,6 +119,15 @@ def _plot_frame(df: pd.DataFrame) -> pd.DataFrame:
     frame = df[["open", "high", "low", "close", "volume"]].reset_index(drop=True)
     frame.insert(0, "bar", range(len(frame)))
     frame["date"] = [ts.strftime(fmt) for ts in df.index]
+    # The colour each candle's body gets, computed ONCE here and worn by the volume bar
+    # beneath it (gap #75). The rule is hvplot's own for `ohlc` — converter.py (0.12.2,
+    # read 2026-09-25): `(dim(open) > dim(close)).categorize({True: neg_color, False:
+    # pos_color})` — so a doji (open == close) is positive in both rows. A second rule here
+    # would be a second place for the two rows to disagree; this is the one.
+    frame["colour"] = [
+        DOWN_COLOR if o > c else UP_COLOR
+        for o, c in zip(frame["open"], frame["close"], strict=True)
+    ]
     return frame
 
 
@@ -238,6 +263,8 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
         bar_width=_BODY_WIDTH_FRACTION,
         pos_color=UP_COLOR,
         neg_color=DOWN_COLOR,
+        height=_PRICE_HEIGHT,
+        width=_CHART_WIDTH,
     )
     price = candles.opts(title=title)
     # .hvplot.bar keeps a continuous datetime axis (NOT a categorical FactorRange) -- a
@@ -265,8 +292,24 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     # bokeh 3.9.2): `hvplot.bar` and `hv.Bars` on the `bar` column share it, `hv.Rectangles`
     # does not (different dimension names). The 2026-08-03 warning above about a categorical
     # axis still stands: it is the dimension name and type that must match, and they do.
-    volume = frame.hvplot.bar(
-        x="bar", y="volume", height=_VOLUME_HEIGHT, xticks=ticks, xlabel="date"
+    #
+    # `hv.Bars` rather than `frame.hvplot.bar` (gap #75) so that `color="colour"` names a
+    # value dimension: HoloViews then renders the Bokeh `VBar` with `fill_color =
+    # Field("color")`, each bar taking the hex code in its own row (executed 2026-09-25);
+    # hvplot's `color=` would colormap a column instead. `bar_width` matches the candle
+    # bodies so the rows line up; `hover_tooltips` names the day and the volume.
+    volume = hv.Bars(frame, kdims=["bar"], vdims=["volume", "colour", "date"]).opts(
+        color="colour",
+        bar_width=_BODY_WIDTH_FRACTION,
+        height=_VOLUME_HEIGHT,
+        width=_CHART_WIDTH,
+        xticks=ticks,
+        xlabel="date",
+        ylabel="volume",
+        yformatter=NumeralTickFormatter(format="0.0a"),
+        yticks=_VOLUME_TICKS,
+        tools=["hover"],
+        hover_tooltips=[("date", "@date"), ("volume", "@volume{0,0}")],
     )
     return (price + volume).cols(1)
 
