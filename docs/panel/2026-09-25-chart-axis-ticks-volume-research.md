@@ -1,7 +1,9 @@
 # Chart pane — continuous candles and a readable volume row: what the libraries guarantee
 
 **Date:** 2026-09-25 · **For:** gaps #76 (candle continuity) and #75 (volume row) in
-`docs/project-status.md` · **Status:** research only, nothing built. Every claim below is
+`docs/project-status.md` · **Status:** research, then **both built the same day** as § 5 describes (one
+more finding while building #75: `hv.Bars` defaults to a 300 px width against hvplot's 700, so one
+`_CHART_WIDTH` sizes both rows). Every claim below is
 either a verbatim quote from a vendor page (scraped copy in `.firecrawl/charting/`, git-ignored)
 or a fact executed against the installed libraries on this date: **hvPlot 0.12.2, HoloViews
 1.23.1, Bokeh 3.9.2** (the same three the chart pane renders with).
