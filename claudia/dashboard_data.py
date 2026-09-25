@@ -2047,14 +2047,18 @@ class PendingWindow:
     reconstructed (its opening leg was outside the fill window), so its P&L is excluded and
     the figures are a floor, not a total.
 
-    It carries no count of pending executions on purpose: the poller re-reads the fills
-    only when realised P&L or the date changes (`DashboardPoller._reconstruct`), so a
-    count could omit a recent opening fill. An opening fill realises nothing, so the
-    figures here are unaffected; a count would not be.
+    `fills` is the executions themselves — the Fills tab (gap #68, 2026-09-25) — under the
+    same membership rule as the figures, newest first. A declined contract's executions
+    are listed too: declining withdraws figures, not the fact that IBKR reports a fill.
+    Until 2026-09-25 this window deliberately carried no execution list, because the
+    poller re-read the fills only when realised P&L or the date changed and an opening
+    fill would have been missing; `DashboardPoller._reconstruct` now also re-reads when a
+    position's quantity moves, which every fill does.
     """
 
     rows: tuple[TypeBreakdown, ...] = ()
     declined: tuple[str, ...] = ()
+    fills: tuple[LiveFill, ...] = ()
 
     @property
     def incomplete(self) -> bool:
@@ -2085,7 +2089,15 @@ def pending_window(conn: sqlite3.Connection, reconstruction: Any) -> PendingWind
     if reconstruction is None:
         return None
     ids = [f.execution_id for f in reconstruction.fills]
-    pending = reconstruction.pending(settled_execution_ids(conn, ids))
+    settled = settled_execution_ids(conn, ids)
+    pending = reconstruction.pending(settled)
+    # Newest first, then by id: the fill a trader looks for is the one that just happened,
+    # and two fills in one second must not swap places between polls.
+    fills = sorted(
+        (f for f in reconstruction.fills if f.execution_id not in settled),
+        key=lambda f: (f.trade_time, f.execution_id),
+        reverse=True,
+    )
     classes = set(pending.realised) | {t.asset_class for t in pending.round_trips}
     rows = []
     # Sorted before the stable sort by size below, so equal nets keep one order every poll.
@@ -2103,5 +2115,7 @@ def pending_window(conn: sqlite3.Connection, reconstruction: Any) -> PendingWind
             )
         )
     return PendingWindow(
-        rows=tuple(sorted(rows, key=lambda b: -abs(b.net))), declined=pending.declined
+        rows=tuple(sorted(rows, key=lambda b: -abs(b.net))),
+        declined=pending.declined,
+        fills=tuple(fills),
     )

@@ -139,7 +139,7 @@ pn.Column(                                   sizing_mode="stretch_both"
     │   ├── SystemLog.card                   ← pn.Card, collapsed: session-level events (2026-09-03)
     │   ├── FileInput                        ← screenshot upload
     │   └── ActionBar.row                    ← [IBKR] [TradingView] [Drive] [End Session]
-    └── dashboard.tabs                       ← Tabs( Chart · Positions · Orders · P&L )
+    └── dashboard.tabs                       ← Tabs( Chart · Positions · Orders · Fills · P&L )
 )
 ```
 

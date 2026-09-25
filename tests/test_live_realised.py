@@ -436,7 +436,9 @@ def test_the_fill_position_field_is_not_used():
 
 
 def _raw_fills():
-    """The fixture as raw dicts, so `order_ref` is visible (LiveFill does not carry it)."""
+    """The fixture as raw dicts — the shape IBKR sends, before `parse_fills` types it
+    (`LiveFill` carries `order_ref` since 2026-09-25, display only; the raw row is still
+    the evidence here)."""
     return json.loads(_FIXTURE.read_text())
 
 

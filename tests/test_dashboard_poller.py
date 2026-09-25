@@ -860,6 +860,80 @@ async def test_a_closed_position_triggers_a_refetch(db, monkeypatch):
     assert client.trade_calls == 2, "a new realised figure must refetch the fills"
 
 
+@pytest.mark.asyncio
+async def test_an_opening_fill_triggers_a_refetch(db):
+    """Gap #68 (the Fills tab): an opening fill moves a position's quantity and no realised
+    figure, so the quantities are part of the trigger. Until 2026-09-25 the trigger was the
+    realised figure alone, and an opening fill reached neither the tab nor the Avg entry
+    column until something later closed — the 2026-09-24 side finding (F bought, Avg entry
+    blank on the Positions tab) was exactly this."""
+    client = _CountingClient()
+    poller = DashboardPoller(client, db, today_provider=lambda: _TODAY, session=_owner())
+
+    await poller._poll_once()
+    assert client.trade_calls == 1
+
+    client._positions = [{**_POSITION, "position": 2.0}]  # one more contract bought
+    await poller._poll_once()
+
+    assert client.trade_calls == 2, "a changed position quantity must refetch the fills"
+
+
+@pytest.mark.asyncio
+async def test_a_fill_that_opens_a_new_contract_triggers_a_refetch(db):
+    """A contract the account did not hold appears on the book: that is a fill too."""
+    client = _CountingClient()
+    poller = DashboardPoller(client, db, today_provider=lambda: _TODAY, session=_owner())
+
+    await poller._poll_once()
+    client._positions = [
+        _POSITION,
+        {**_POSITION, "conid": 9599491, "ticker": "F", "contractDesc": "F", "assetClass": "STK"},
+    ]
+    await poller._poll_once()
+
+    assert client.trade_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_a_price_move_alone_does_not_refetch(db):
+    """Market value and unrealised P&L move on every poll of an open market; only the
+    quantity is evidence of a fill. Keying on the whole row would be the 240-calls-an-hour
+    poll again by another route."""
+    client = _CountingClient()
+    poller = DashboardPoller(client, db, today_provider=lambda: _TODAY, session=_owner())
+
+    await poller._poll_once()
+    client._positions = [{**_POSITION, "mktValue": 330000.0, "unrealizedPnl": 4000.0}]
+    await poller._poll_once()
+
+    assert client.trade_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_names_the_contract_of_a_flat_futures_fill(db):
+    """A futures round trip completed since the last statement leaves no position and no
+    order, so nothing else would read its identity; the Fills tab must still show `ESU6`,
+    not `ES` (2026-09-10: the resolved contract is named in IB's strings on every surface)."""
+    from claudia import contract_identity as ci
+
+    ci.clear_cache()
+    es = {"symbol": "ES", "sec_type": "FUT"}
+    trades = [
+        {**_trade(649180671, "B", 1, 7000.0, seq="01", multiplier=50), **es},
+        {**_trade(649180671, "S", 1, 7010.0, seq="02", multiplier=50), **es},
+    ]
+    client = FakeClient(positions=[], trades=trades)
+    poller = _poller(db, client)
+    await poller._poll_once()
+    snap = poller.snapshot()
+    assert snap.pending is not None
+    assert [f.execution_id for f in snap.pending.fills] == ["20260806.02", "20260806.01"]
+    assert snap.identities[649180671].local_symbol == "ESU6"
+    assert client.contract_info_calls == 1
+    ci.clear_cache()
+
+
 _ES_POSITION = {
     **_POSITION,
     "conid": 649180671,

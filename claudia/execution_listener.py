@@ -43,15 +43,15 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 import requests
 from ibkr_core_mcp.auth import BrowserCookieAuth
 from ibkr_core_mcp.order_confirm import price_text_safe
 from ibkr_core_mcp.streaming import IBKRWebSocket, PnLUpdate, TradeExecution
+
+from claudia.live_realised import execution_time_et
 
 if TYPE_CHECKING:
     from ibkr_core_mcp import ClaudeToolkit, SQLiteStore
@@ -68,8 +68,6 @@ _IDLE_POLL = 5
 _PNL_CAPTURE_TIMEOUT = 10.0  # seconds to wait for a P&L tick after an execution
 
 _CLOSED = object()  # sentinel: the pump task signals a clean WebSocket close
-
-_ET = ZoneInfo("America/New_York")
 
 # Execution ids already reported, bounded. IBKR's `str` documentation says only that
 # `realtimeUpdatesOnly` decides whether historical executions are *displayed*; it does not
@@ -140,16 +138,9 @@ class ExecutionReport:
             contract = desc
         else:
             contract = " ".join(p for p in (symbol, desc) if p) or "?"
-        time_et = ""
-        raw = (event.trade_time or "").strip()
+        # One clock rule with the Fills tab (`live_realised.execution_time_et`, gap #68):
         # IBKR's documented format is YYYYMMDD-HH:mm:ss UTC; anything else is left blank.
-        with contextlib.suppress(ValueError):
-            time_et = (
-                datetime.strptime(raw, "%Y%m%d-%H:%M:%S")
-                .replace(tzinfo=UTC)
-                .astimezone(_ET)
-                .strftime("%H:%M:%S ET")
-            )
+        time_et = execution_time_et(event.trade_time or "")
         ref = (event.order_ref or "").strip()
         origin = (
             f"via ClaudIA ({ref})"

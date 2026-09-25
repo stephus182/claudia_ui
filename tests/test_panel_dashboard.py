@@ -527,11 +527,12 @@ def test_age_formatting(seconds, expected):
 # ── 3. Rendering mechanics ────────────────────────────────────────────────────
 
 
-def test_tabs_are_named_chart_positions_orders_pnl():
+def test_tabs_are_named_chart_positions_orders_fills_pnl():
     """The tab set is the one the layout specifies. All P&L lives under ONE tab, chosen
-    by the window selector — Daily included (user, 2026-08-07)."""
+    by the window selector — Daily included (user, 2026-08-07); Fills sits before it
+    (user, 2026-09-25)."""
     v = pdash.build_dashboard(chart_pane=pn.Column(pn.pane.Markdown("chart")))
-    assert list(v.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
+    assert list(v.tabs._names) == ["Chart", "Positions", "Orders", "Fills", "P&L"]
     assert isinstance(v.tabs, pn.Tabs)
 
 
@@ -1414,7 +1415,7 @@ def test_orders_blank_when_the_account_half_goes_stale(view):
 
 def test_the_dashboard_has_an_orders_tab(view):
     """The order book has its own tab."""
-    assert list(view.tabs._names) == ["Chart", "Positions", "Orders", "P&L"]
+    assert "Orders" in list(view.tabs._names)
 
 
 def test_the_orders_table_formats_its_numbers_like_the_positions_table(view):
@@ -2626,3 +2627,207 @@ def test_the_step_frame_survives_hvplot_unreordered():
         assert drawn == [round(float(v), 2) for v in above["fill"]], (
             "hvplot reordered the stepped frame — verticals become diagonals"
         )
+
+
+# -- The Fills tab (gap #68): the executions not yet on a statement --------------
+
+
+def _fill(
+    eid="0000f73b.6ab682e8.01.01",
+    side="B",
+    symbol="F",
+    asset="STK",
+    conid=9599491,
+    price=12.685,
+    time="20260925-15:53:23",
+    exchange="IBKRATS",
+    order_ref="claudecode-gap72-buy-155311",
+    qty=1.0,
+    commission=0.13,
+):
+    """One `LiveFill` as `parse_fills` builds it from IBKR's row — by default the F buy
+    placed for gap #72 on 2026-09-25, values as `/iserver/account/trades` reported them."""
+    from claudia.live_realised import LiveFill
+
+    return LiveFill(
+        execution_id=eid,
+        conid=conid,
+        symbol=symbol,
+        asset_class=asset,
+        signed_quantity=qty if side == "B" else -qty,
+        price=price,
+        commission=commission,
+        multiplier=1.0,
+        trade_time=time,
+        exchange=exchange,
+        order_ref=order_ref,
+    )
+
+
+def _polled(pending, **over):
+    """A snapshot after the first poll (breakdowns present) carrying `pending`."""
+    over.setdefault("breakdowns", {"week": dd.BreakdownWindow(rows=())})
+    return _snapshot(pending=pending, **over)
+
+
+def _fills(*fills):
+    """A pending window holding just these executions."""
+    return dd.PendingWindow(fills=tuple(fills))
+
+
+def test_the_dashboard_has_a_fills_tab_before_the_pnl_tab(view):
+    """Operator 2026-09-25: the Fills tab sits between Orders and P&L."""
+    assert list(view.tabs._names) == ["Chart", "Positions", "Orders", "Fills", "P&L"]
+
+
+def test_the_fills_table_is_read_only_and_has_no_handlers(view):
+    """Hard Rule 1, on the new table too: a fill row must never become an order path."""
+    assert view._fills.disabled is True
+    assert not view._fills._on_click_callbacks
+    assert not view._fills._on_edit_callbacks
+
+
+def test_every_tabulator_on_the_dashboard_is_read_only_with_no_handlers(view):
+    """The class, not the instance: any Tabulator anywhere in the tabs, present or added
+    later, is disabled and unbound. A table added without this shape fails here."""
+    tables = list(view.tabs.select(pn.widgets.Tabulator))
+    assert len(tables) >= 3, "positions, orders and fills at least"
+    for table in tables:
+        assert table.disabled is True
+        assert not table._on_click_callbacks
+        assert not table._on_edit_callbacks
+
+
+def test_fills_frame_renders_a_fill_with_ibkrs_execution_id_verbatim():
+    """The column the operator checks against the chat message and IBKR's own record:
+    the execution id, full and untouched. Time is IBKR's UTC clock read in Eastern."""
+    frame = pdash.fills_frame(_polled(_fills(_fill())))
+    row = frame.iloc[0]
+    assert row["Execution ID"] == "0000f73b.6ab682e8.01.01"
+    assert row["Executed (ET)"] == "2026-09-25 11:53:23 ET"
+    assert row["Side"] == "BUY"
+    assert row["Qty"] == 1.0
+    assert row["Symbol"] == "F"
+    assert row["Price"] == 12.685
+    assert row["Venue"] == "IBKRATS"
+    assert row["Commission"] == 0.13
+    assert row["Order ref"] == "claudecode-gap72-buy-155311"
+
+
+def test_a_sell_reads_sell_with_a_positive_quantity():
+    """The sign lives in the Side column; a quantity of -1 is not how a fill is read."""
+    frame = pdash.fills_frame(_polled(_fills(_fill(eid="s", side="S"))))
+    assert (frame.iloc[0]["Side"], frame.iloc[0]["Qty"]) == ("SELL", 1.0)
+
+
+def test_an_external_fill_shows_a_dash_for_its_order_ref():
+    """IBKR reports no `order_ref` for a fill placed outside the API: a dash, like every
+    other unknown on these tables, never an empty cell or "None"."""
+    frame = pdash.fills_frame(_polled(_fills(_fill(order_ref=""))))
+    assert frame.iloc[0]["Order ref"] == "—"
+
+
+def test_fills_frame_keeps_its_columns_when_nothing_is_pending():
+    """A zero-column Tabulator renders as a blank rectangle (same as the other tables)."""
+    frame = pdash.fills_frame(_polled(_fills()))
+    assert list(frame.columns) == pdash._FILL_COLUMNS
+    assert len(frame) == 0
+
+
+def test_fills_frame_is_empty_not_broken_when_the_fills_could_not_be_read():
+    """`pending is None` draws no rows; the status line is what says why."""
+    frame = pdash.fills_frame(_polled(None))
+    assert list(frame.columns) == pdash._FILL_COLUMNS
+    assert len(frame) == 0
+
+
+def test_a_futures_fill_shows_the_local_symbol_once_its_identity_is_read():
+    """2026-09-10 rule on every surface: a future is named `ESU6`, not `ES`, once its
+    contract info is read — and `ES` until then, never a guess at the month."""
+    from claudia.contract_identity import ContractIdentity
+
+    es = _fill(eid="es", symbol="ES", asset="FUT", conid=649180671)
+    identity = ContractIdentity(
+        conid=649180671,
+        local_symbol="ESU6",
+        month="SEP26",
+        expires="2026-09-18",
+        name="E-mini S&P 500",
+        multiplier=50.0,
+        currency="USD",
+    )
+    named = pdash.fills_frame(_polled(_fills(es), identities={649180671: identity}))
+    unnamed = pdash.fills_frame(_polled(_fills(es)))
+    assert named.iloc[0]["Symbol"] == "ESU6"
+    assert unnamed.iloc[0]["Symbol"] == "ES"
+
+
+def test_fills_frame_keeps_the_order_the_window_gives_it():
+    """Newest first is decided in the data layer; the frame must not re-sort."""
+    frame = pdash.fills_frame(_polled(_fills(_fill(eid="second"), _fill(eid="first"))))
+    assert frame["Execution ID"].tolist() == ["second", "first"]
+
+
+def test_an_unavailable_fill_list_is_not_reported_as_an_empty_one():
+    """The same distinction the order book turns on: `None` is "could not read", and
+    saying "no fills" there would tell a trader nothing executed when something may have."""
+    unknown = pdash.fills_status_line(_polled(None))
+    empty = pdash.fills_status_line(_polled(_fills()))
+
+    assert unknown != empty
+    assert "unavailable" in unknown.lower()
+    assert "not the same as having no fills" in unknown.lower()
+    assert "on a statement" in empty.lower()
+    assert "2026-08-05" in empty
+
+
+def test_the_fills_status_names_the_statement_the_membership_is_measured_against():
+    """Gap #69 on this tab: membership is by execution id against the Flex statement,
+    and the line says which statement — never "today", which would assert a trade date."""
+    line = pdash.fills_status_line(_polled(_fills(_fill(), _fill(eid="b"))))
+    assert "2 execution(s) not yet on a statement" in line
+    assert "Flex through **2026-08-05**" in line
+    assert "today" not in line.lower()
+
+
+def test_the_fills_status_says_when_no_statement_is_in_the_store():
+    """No Flex rows at all: the line must not print a date it does not have."""
+    line = pdash.fills_status_line(_polled(_fills(_fill()), coverage=dd.FlexCoverage(through=None)))
+    assert "no statement in the local store yet" in line
+
+
+def test_fills_wait_for_the_first_poll():
+    """Before the first poll nothing is known — not "unavailable", not "none"."""
+    line = pdash.fills_status_line(_snapshot(pending=None))
+    assert "waiting for the first poll" in line
+
+
+def test_a_stale_fill_list_is_flagged_as_a_floor_not_blanked():
+    """A resting order can fill while the gateway is unreachable, so a stale list is a
+    floor: shown, and said to be a floor — the Daily tab's rule, not the Orders tab's."""
+    line = pdash.fills_status_line(_polled(_fills(_fill())), stale=True)
+    assert "not current" in line.lower()
+    assert "floor" in line.lower()
+    assert "1 execution(s)" in line
+
+
+def test_refresh_paints_the_fills_tab_and_keeps_the_rows_when_stale(view):
+    """The view routes the snapshot's pending fills to the table, and a stale account
+    half does not blank them (they are not stripped by `without_account`)."""
+    snap = _polled(_fills(_fill()))
+    view.refresh(snap, now=_NOW)
+    assert view._fills.value["Execution ID"].tolist() == ["0000f73b.6ab682e8.01.01"]
+    assert "1 execution(s)" in view._fills_status.object
+
+    view.refresh(snap, now=_NOW + timedelta(seconds=STALE_AFTER + 1))
+    assert view._fills.value["Execution ID"].tolist() == ["0000f73b.6ab682e8.01.01"]
+    assert "not current" in view._fills_status.object.lower()
+
+
+def test_the_fills_table_formats_its_numbers_like_the_other_tables(view):
+    """Qty, Price and Commission carry a format and right alignment; no currency column,
+    because the trades feed carries none and none is claimed (the Orders tab's rule)."""
+    assert set(view._fills.formatters) == {"Qty", "Price", "Commission"}
+    assert view._fills.text_align == {"Qty": "right", "Price": "right", "Commission": "right"}
+    assert set(view._fills.header_tooltips) <= set(pdash._FILL_COLUMNS)
+    assert "Currency" not in pdash._FILL_COLUMNS

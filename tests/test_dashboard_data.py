@@ -1642,6 +1642,50 @@ def test_no_reconstruction_means_the_pending_window_is_unknown(tmp_path):
     assert dd.pending_window(_keyed_db(tmp_path, []), None) is None
 
 
+# ── The executions themselves (gap #68, the Fills tab) ─────────────────────────
+
+
+def test_the_pending_window_carries_the_pending_executions_newest_first(tmp_path):
+    """The Fills tab lists the executions not yet on a statement: the same membership
+    rule as the figures above them — by execution id, never by a date — newest first,
+    because the fill a trader is looking for is the one that just happened."""
+    w = dd.pending_window(_keyed_db(tmp_path, ["o1", "c1"]), _es_reconstruction())
+    assert w is not None
+    assert [f.execution_id for f in w.fills] == ["c2", "o2"]
+
+
+def test_an_empty_pending_window_lists_no_executions(tmp_path):
+    """Everything on a statement: known, and nothing to list."""
+    w = dd.pending_window(_keyed_db(tmp_path, ["o1", "c1", "o2", "c2"]), _es_reconstruction())
+    assert w is not None
+    assert w.fills == ()
+
+
+def test_a_declined_contracts_executions_are_still_listed(tmp_path):
+    """Declining a contract withdraws its FIGURES, not the fact that it filled. IBKR
+    reports the execution, so the tab lists it while the P&L rows stay empty."""
+    w = dd.pending_window(_keyed_db(tmp_path, []), _es_reconstruction(ibkr_position=2.0))
+    assert w is not None
+    assert w.rows == ()
+    assert len(w.fills) == 4
+
+
+def test_two_fills_in_the_same_second_keep_a_stable_order(tmp_path):
+    """Newest first by IBKR's time, then by execution id, so a re-poll never reorders
+    two fills that share a second."""
+    from claudia.live_realised import parse_fills, reconstruct
+
+    fills = parse_fills(
+        [
+            _es_raw("b", "B", 7000.0, "15:00:00"),
+            _es_raw("a", "S", 7000.0, "15:00:00"),
+        ]
+    )
+    w = dd.pending_window(_keyed_db(tmp_path, []), reconstruct(fills, {1: 0.0}))
+    assert w is not None
+    assert [f.execution_id for f in w.fills] == ["b", "a"]
+
+
 def test_the_flex_windows_ignore_pending_fills_entirely(tmp_path):
     """A dated window is Flex alone whatever is pending: nothing is placed by a guessed day.
 

@@ -85,7 +85,7 @@ from claudia.dashboard_data import (
     with_economic_entries,
     with_quotes,
 )
-from claudia.live_realised import TradeSource
+from claudia.live_realised import LiveFill, TradeSource
 
 log = logging.getLogger(__name__)
 
@@ -172,11 +172,11 @@ class DashboardPoller:
         self._account_id: str | None = None
         self._base_currency: str | None = None
         self._snapshot = empty_snapshot(error="Dashboard has not polled yet.")
-        # Cached reconstruction plus the (realised P&L, local date) it was built for. See
-        # `_reconstruct`: refetching fills on every poll would defy IBKR's "once per
-        # session" advice for the trades endpoint.
+        # Cached reconstruction plus the (realised P&L, local date, position quantities)
+        # it was built for. See `_reconstruct`: refetching fills on every poll would defy
+        # IBKR's "once per session" advice for the trades endpoint.
         self._fill_cache: Any = None
-        self._fill_cache_key: tuple[Any, Any] = (object(), None)
+        self._fill_cache_key: tuple[Any, ...] = (object(), None, None)
         # Each working order's TIF, read from order status once (gap #70) — see `TifCache`.
         self._tif_cache = TifCache()
         self._task: asyncio.Task[None] | None = None
@@ -304,7 +304,10 @@ class DashboardPoller:
             orders = await asyncio.to_thread(
                 self._tif_cache.resolve, orders, self._client, time.monotonic()
             )
-        identities = await asyncio.to_thread(self._read_identities, positions, orders)
+        pending = flex.get("pending")
+        identities = await asyncio.to_thread(
+            self._read_identities, positions, orders, pending.fills if pending else ()
+        )
         self._snapshot = DashboardSnapshot(
             as_of=datetime.now(UTC),
             ledger=ledger,
@@ -383,13 +386,23 @@ class DashboardPoller:
         calls an hour against explicit advice to issue one — which an earlier version of
         this method did.
 
-        The trigger is the ledger's `realizedpnl`, and it is exact rather than a
-        heuristic: that figure moves **if and only if** a position closed, which is the
-        only event that can change the reconstruction's *realised* output. An *opening*
-        fill changes no realised P&L, so not refetching for it costs no figure; it does
-        mean the cached fills can omit a recent opening fill, which is why the pending
-        window shows no execution count (`dashboard_data.PendingWindow`). The local date
-        is also watched, so each new day starts from a fresh read.
+        The trigger is evidence of a fill in data the poll already holds, never a timer:
+
+        * the ledger's `realizedpnl` moves **if and only if** a position closed, which is
+          the only event that can change the reconstruction's *realised* output;
+        * a position's **quantity** moves on every fill, opening or closing (gap #68,
+          2026-09-25). Until then the realised figure was the whole trigger, so an opening
+          fill reached neither the Fills tab nor the Avg entry column until something
+          later closed — the 2026-09-24 side finding (F bought, Avg entry blank) was
+          exactly that. Quantities only, keyed by conid: market value and unrealised P&L
+          move on every poll of an open market and are not fills;
+        * the local date, so each new day starts from a fresh read.
+
+        The one fill this cannot see: a round trip opened and closed inside one poll
+        interval that realised exactly 0.00, which moves no quantity and no ledger figure.
+        That class waits for the execution stream (core register F5). The cost is bounded
+        by trading activity, not by the poll: at most one trades call per poll, and none
+        while nothing fills.
 
         Never raises: this only feeds the pending window (executions Flex has not settled,
         gap #69), so losing it must cost that window and nothing else. On failure the
@@ -401,7 +414,9 @@ class DashboardPoller:
         """
         realised = getattr(ledger, "realised_pnl", None)
         today = self._today()
-        if self._fill_cache is not None and (realised, today) == self._fill_cache_key:
+        quantities = frozenset((p.conid, p.quantity) for p in positions)
+        key = (realised, today, quantities)
+        if self._fill_cache is not None and key == self._fill_cache_key:
             return self._fill_cache
         try:
             from claudia.live_realised import fetch_fills, reconstruct
@@ -412,7 +427,7 @@ class DashboardPoller:
             log.warning("Dashboard fill reconstruction failed: %s", exc)
             return self._fill_cache
         self._fill_cache = result
-        self._fill_cache_key = (realised, today)
+        self._fill_cache_key = key
         return result
 
     def _read_flex(self, reconstruction: Any = None) -> dict[str, Any] | None:
@@ -436,13 +451,18 @@ class DashboardPoller:
             return None
 
     def _read_identities(
-        self, positions: tuple[Position, ...], orders: tuple[LiveOrder, ...] | None
+        self,
+        positions: tuple[Position, ...],
+        orders: tuple[LiveOrder, ...] | None,
+        fills: tuple[LiveFill, ...] = (),
     ) -> dict[int, ContractIdentity]:
         """Name every futures contract on the book in IBKR's own terms (design 2026-09-10).
 
         One contract-info GET per conid the process has not seen yet; `contract_identity`
         caches and never raises, so a failed read costs the row its local symbol for this
-        poll and nothing else.
+        poll and nothing else. `fills` are the executions not yet on a statement (the
+        Fills tab, gap #68): a futures round trip closed since the last statement has no
+        position and no order left to name it by, and it still has to read `ESU6`.
         """
         conids = [p.conid for p in positions if p.asset_class.upper() in FUTURES_CLASSES]
         conids += [
@@ -450,6 +470,7 @@ class DashboardPoller:
             for o in (orders or ())
             if o.conid is not None and o.sec_type.upper() in FUTURES_CLASSES
         ]
+        conids += [f.conid for f in fills if f.asset_class.upper() in FUTURES_CLASSES]
         identities: dict[int, ContractIdentity] = {}
         for conid in dict.fromkeys(conids):
             identity = contract_identity(self._client, conid)

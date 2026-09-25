@@ -9,7 +9,7 @@ Layout, as decided in the plan:
 
 ```
 KPI strip  (always visible, across the top)
-Chat  |  Tabs( Chart · Positions · Orders · P&L )
+Chat  |  Tabs( Chart · Positions · Orders · Fills · P&L )
 ```
 
 The tabs are built here; the Chart tab's contents are passed in, because that pane is
@@ -84,6 +84,7 @@ from claudia.dashboard_data import (
     weekly_series,
 )
 from claudia.dashboard_poller import STALE_AFTER
+from claudia.live_realised import execution_time_et
 from claudia.palette import (
     DOWN_COLOR,
     FLAT_COLOR,
@@ -1091,6 +1092,129 @@ def orders_status_line(snapshot: DashboardSnapshot) -> str:
     return f"_{len(snapshot.orders)} working order(s) — {staged} staged by ClaudIA._"
 
 
+# ── Fills tab (gap #68, 2026-09-25) ─────────────────────────────────────────────
+
+_FILL_COLUMNS = [
+    "Executed (ET)",
+    "Side",
+    "Qty",
+    "Symbol",
+    "Price",
+    "Venue",
+    "Commission",
+    "Order ref",
+    "Execution ID",
+]
+"""The executions not yet on a statement, one row per IBKR execution.
+
+Membership is the P&L pane's Daily rule (gap #69): an execution is listed if and only if
+its id is not yet a Flex `execution_key`. No trade date is derived or shown — "Executed"
+is IBKR's UTC clock read in Eastern time, a clock reading and not a trade date — and a
+row leaves the tab when its id appears on a statement, never on a clock. The operator's
+purpose (2026-09-24): "an immediate glance and confirmation with execution IDs (real)",
+so the id is full and verbatim, and the chat's fill message carries the same one.
+
+**No currency column**, as on the Orders tab: `/iserver/account/trades` carries no
+currency field (its documented response has none; the 2026-09-25 capture had none), so
+`Price` and `Commission` are bare numbers rather than a code guessed from the listing.
+"""
+
+_FILL_NUMERIC = ["Qty", "Price", "Commission"]
+
+_FILL_TOOLTIPS = {
+    "Executed (ET)": "IBKR's execution time (documented as UTC) read in New York time, with "
+    "its Eastern date. A clock reading, not a trade date: IBKR states the trade date only "
+    "in its statement (gap #69), and an evening futures fill belongs to the next one.",
+    "Side": "BUY or SELL, from IBKR's B / S.",
+    "Qty": "Shares or contracts executed, always positive; the side says which way.",
+    "Symbol": "IBKR's ticker; for a future the exchange local symbol (ESU6) once its contract "
+    "info has been read, so the month is in the symbol itself (2026-09-10).",
+    "Price": "The execution price as IBKR reports it. No currency: the trades feed carries "
+    "none, so none is claimed.",
+    "Venue": "IBKR's `exchange`: where the execution happened (DARK, IBKRATS, CME…).",
+    "Commission": "IBKR's `commission` for this execution, a bare number for the same reason "
+    "as the price.",
+    "Order ref": "The `cOID` given at placement — `CLAUDIA-…` for an order staged here. '—' = "
+    "IBKR reports none, as for an order placed in TWS, mobile or the web portal.",
+    "Execution ID": "IBKR's execution id, verbatim. The same id is on the chat's fill "
+    "message and on `/iserver/account/trades`; a fill is on a statement once this id is "
+    "a Flex execution_key, and then it leaves this tab.",
+}
+
+
+def fills_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
+    """The executions not yet on a statement, as the DataFrame the `Tabulator` renders.
+
+    Rows come from `snapshot.pending.fills` in the order the data layer gives them
+    (newest first) and are not re-sorted here. Always the full column set with no rows
+    for an empty or unreadable window — a zero-column `Tabulator` renders as a blank
+    rectangle — and it is `fills_status_line`'s job to say which of the two it is.
+    """
+    pending = snapshot.pending
+    rows = [
+        {
+            "Executed (ET)": execution_time_et(f.trade_time, with_date=True) or "—",
+            "Side": "BUY" if f.is_buy else "SELL",
+            "Qty": abs(f.signed_quantity),
+            "Symbol": display_symbol(f.symbol, f.asset_class, f.conid, snapshot.identities),
+            "Price": f.price,
+            "Venue": f.exchange or "—",
+            "Commission": f.commission,
+            "Order ref": f.order_ref or "—",
+            "Execution ID": f.execution_id,
+        }
+        for f in (pending.fills if pending is not None else ())
+    ]
+    return pd.DataFrame(rows, columns=_FILL_COLUMNS)
+
+
+def fills_status_line(snapshot: DashboardSnapshot, stale: bool = False) -> str:
+    """One line above the Fills table: which of four states it is in, and against what.
+
+    * **waiting** — nothing has been polled yet;
+    * **unavailable** — `pending is None`: the executions could not be read from the
+      gateway. Not the same claim as "no fills", and never rendered as one (the order
+      book's rule);
+    * **empty** — every execution in IBKR's window is already on a statement;
+    * **rows** — with the count and the statement the membership is measured against.
+
+    `stale` prepends the Daily tab's warning rather than blanking the list: a resting
+    order can fill while the gateway is unreachable, so a stale list is a floor, and a
+    floor stated as a floor is worth more than a blank. The line names the Flex
+    statement, never "today": no trade date is asserted here (gap #69).
+    """
+    if not snapshot.breakdowns:
+        return "_Fills: waiting for the first poll…_"
+    pending = snapshot.pending
+    if pending is None:
+        return (
+            "_**Fills unavailable** — the executions could not be read from the IBKR "
+            "gateway. This is not the same as having no fills; nothing is claimed here._"
+        )
+    cov = snapshot.coverage
+    against = (
+        f"Flex through **{cov.through.isoformat()}**"
+        if cov is not None and cov.through is not None
+        else "no statement in the local store yet"
+    )
+    warn = (
+        "**⚠ Not current — the gateway is unreachable or the last poll failed. Any fill "
+        "since then is missing, so this list is a floor.**\n\n"
+        if stale
+        else ""
+    )
+    if not pending.fills:
+        return (
+            f"{warn}_No executions awaiting a statement — every fill in IBKR's window is on "
+            f"a statement ({against})._"
+        )
+    return (
+        f"{warn}_{len(pending.fills)} execution(s) not yet on a statement ({against}) — "
+        "IBKR's own record, execution ids verbatim. A row leaves this list when its id "
+        "appears on a statement, never on a clock._"
+    )
+
+
 def _as_fraction(percent: float | None) -> float | None:
     """A percentage as the fraction numbro's `%` format expects. None stays None.
 
@@ -1457,7 +1581,7 @@ class DashboardView:
 
     * `kpi_strip` — the tile row and the freshness line. `panel_app` puts it at the top
       of the session root so account state is glanceable from any tab.
-    * `tabs` — `Tabs(Chart · Positions · Orders · P&L)`.
+    * `tabs` — `Tabs(Chart · Positions · Orders · Fills · P&L)`.
 
     They are separate rather than one component because they belong in different places
     in the layout; keeping them as standalone factories is also what makes re-parenting
@@ -1605,6 +1729,26 @@ class DashboardView:
         )
         self._orders_status = safe_markdown("_Orders: waiting for the first poll…_")
 
+        # The Fills tab (gap #68): the same Hard Rule 1 shape, disabled=True and NO
+        # on_click / on_edit handler. A fill row is read, checked against the chat and
+        # IBKR's record, and never acted on from here.
+        self._fills = pn.widgets.Tabulator(
+            fills_frame(_EMPTY),
+            disabled=True,
+            show_index=False,
+            layout="fit_data_stretch",
+            sizing_mode="stretch_width",
+            height=300,
+            formatters={
+                "Qty": NumberFormatter(format=_QTY_FORMAT),
+                "Price": NumberFormatter(format=_PRICE_FORMAT),
+                "Commission": NumberFormatter(format=_PRICE_FORMAT),
+            },
+            text_align=dict.fromkeys(_FILL_NUMERIC, "right"),
+            header_tooltips=dict(_FILL_TOOLTIPS),
+        )
+        self._fills_status = safe_markdown("_Fills: waiting for the first poll…_")
+
         # Sits between the window selector and the breakdown, and carries text only for
         # the Daily tab: which statement it is measured against, that the figures are
         # reconstructed from the account's own executions, and whether they are current.
@@ -1637,6 +1781,9 @@ class DashboardView:
                 ),
             ),
             ("Orders", pn.Column(self._orders_status, self._orders, sizing_mode="stretch_both")),
+            # Before P&L (operator 2026-09-25): a fill is looked for the moment it
+            # happens; its P&L is the next tab's business.
+            ("Fills", pn.Column(self._fills_status, self._fills, sizing_mode="stretch_both")),
             (
                 "P&L",
                 pn.Column(
@@ -1712,6 +1859,7 @@ class DashboardView:
             self._refresh_tiles(display, now)
             self._refresh_positions(display)
             self._refresh_orders(display)
+            self._refresh_fills(display, self.is_stale(snapshot, now))
             self._refresh_pnl(display, now)
             self._notify_staleness(snapshot, now)
         except Exception:
@@ -1840,6 +1988,17 @@ class DashboardView:
         """
         self._orders.value = orders_frame(snapshot)
         self._orders_status.object = orders_status_line(snapshot)
+
+    def _refresh_fills(self, snapshot: DashboardSnapshot, stale: bool) -> None:
+        """Fills tab: the executions not yet on a statement, and a line saying which of
+        four states the list is in (gap #68, 2026-09-25).
+
+        `pending` survives `without_account`, so a stale account half keeps the rows and
+        the line says they are a floor — the Daily tab's rule, because a resting order can
+        fill while the gateway is unreachable and a blank would hide that possibility.
+        """
+        self._fills.value = fills_frame(snapshot)
+        self._fills_status.object = fills_status_line(snapshot, stale)
 
     def _refresh_positions(self, snapshot: DashboardSnapshot) -> None:
         """Positions tab: the table, a count/currency summary, and the reconciliation line."""

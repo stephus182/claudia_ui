@@ -1850,7 +1850,7 @@ async def test_opening_bubble_failure_after_success_settle_wins():
 
 @pytest.mark.asyncio
 async def test_session_root_composes_the_dashboard_tabs_and_table():
-    """One Tabs with three named tabs, one Tabulator, and it is not editable."""
+    """One Tabs with the five named tabs, Fills before P&L, and no editable Tabulator."""
     from claudia.panel_app import _build_session_root
 
     mock_toolkit = MagicMock()
@@ -1875,10 +1875,10 @@ async def test_session_root_composes_the_dashboard_tabs_and_table():
 
     tabs = [n for n in _iter_tree(root) if isinstance(n, pn.Tabs)]
     assert len(tabs) == 1
-    assert list(tabs[0]._names) == ["Chart", "Positions", "Orders", "P&L"]
+    assert list(tabs[0]._names) == ["Chart", "Positions", "Orders", "Fills", "P&L"]
 
     tables = [n for n in _iter_tree(root) if isinstance(n, pn.widgets.Tabulator)]
-    assert len(tables) == 2  # positions, and the orders book added 2026-08-05
+    assert len(tables) == 3  # positions, the orders book (2026-08-05), fills (2026-09-25)
     # Hard Rule 1 regression guard, asserted at the composed-root level: a display
     # surface must never become an order path, and Tabulator cells are editable by
     # default. The absence of handlers is checked, not just the flag.

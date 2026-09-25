@@ -20,7 +20,7 @@ claudia/panel_chart.py      — external HoloViews candlestick chart pane (STK, 
 claudia/panel_theme.py      — session theme (CLAUDIA_THEME + ?theme=), user label, ClaudIA's avatar
 claudia/dashboard_data.py   — live dashboard: pure data (ledger, positions, realised windows), no panel import
 claudia/dashboard_poller.py — live dashboard: process-wide 15s poller caching one DashboardSnapshot
-claudia/panel_dashboard.py  — live dashboard: KPI strip + Tabs(Chart/Positions/Orders/P&L), no IBKR and no SQL
+claudia/panel_dashboard.py  — live dashboard: KPI strip + Tabs(Chart/Positions/Orders/Fills/P&L), no IBKR and no SQL
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching (UI-agnostic via MessageSink)
 claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
@@ -549,12 +549,22 @@ the fix that established this (75,480 → 2,910 tokens/session).
   realised-P&L rule, the T+1 gap, and the source table for every figure. Two invariants that
   must not be relaxed: a failed poll republishes the previous `as_of` (so staleness stays
   visible instead of being masked by a fresh timestamp), and **every** `Tabulator` —
-  positions and the working-order book — is `disabled=True` with **no** click/edit handler
-  bound (Hard Rule 1, asserted over all of them in tests, not over a fixed one). The order
+  positions, the working-order book and the fills list — is `disabled=True` with **no**
+  click/edit handler bound (Hard Rule 1, asserted over every `Tabulator` the tabs contain in
+  tests, not over a fixed one). The order
   book is where that matters most: it is the one surface where a click could plausibly be
   wired to "cancel this", and cancelling stays behind `propose_cancel` and both gates.
   `DashboardSnapshot.orders` is `tuple | None` because `()` ("nothing resting") and a
   failed lookup are opposite claims — never render an empty book for an unknown one.
+  **Fills tab (gap #68, 2026-09-25, between Orders and P&L):** the executions not yet on a
+  statement — membership by execution id against Flex, the Daily tab's rule, no trade date
+  derived — one row per IBKR execution with the execution ID verbatim, so the chat's fill
+  message and IBKR's own record can be checked against it at a glance. It reads the same
+  fetch as the Avg entry column and the Daily tab (`PendingWindow.fills`); the poller now
+  refetches `/iserver/account/trades` when a position's **quantity** moves as well as when
+  the realised figure does, because an opening fill moves no realised figure (until then an
+  opening fill reached neither surface until something later closed). `pending is None`
+  renders "unavailable", never an empty list.
   **Flex is the only source of a trade date (gap #69, operator 2026-09-24).** A live fill
   carries a UTC time and no trade date, so it is **pending** if and only if its
   `execution_id` is not yet a Flex `execution_key`, and pending realised P&L is its own

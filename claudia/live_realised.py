@@ -84,7 +84,9 @@ import logging
 from collections import defaultdict, deque
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 
 class TradeSource(Protocol):
@@ -145,11 +147,40 @@ class LiveFill:
     # and the UTC date differed from it on 29 of 1,223 historical fills (evening futures,
     # holiday sessions, after-hours funds). Never group, bucket or compare by it.
     trade_time: str
+    # Display only, for the Fills tab (gap #68, 2026-09-25): IBKR's `exchange` ("the
+    # exchange the order was executed on") and `order_ref` (the `cOID` given at placement;
+    # `null` for an order placed outside the API, measured 2026-09-25). Neither decides
+    # anything, so a row without them still parses.
+    exchange: str = ""
+    order_ref: str = ""
 
     @property
     def is_buy(self) -> bool:
         """Whether this fill increased the position."""
         return self.signed_quantity > 0
+
+
+_ET = ZoneInfo("America/New_York")
+
+
+def execution_time_et(trade_time: str, with_date: bool = False) -> str:
+    """IBKR's UTC `trade_time` (`YYYYMMDD-HH:MM:SS`) as a clock reading in New York.
+
+    The one conversion behind every surface that shows a fill's time — the chat report and
+    the Fills tab — so the two cannot disagree by a rule. IBKR documents the field as "the
+    UTC format of the trade time"
+    (https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/trades.md). With
+    `with_date` the Eastern date is included, and it is the date in that zone: 01:10Z on
+    15 January is 20:10 ET on the 14th. Anything but the documented format renders blank,
+    never a guess. This is a clock reading, not a trade date (gap #69): IBKR states the
+    trade date only in its statement.
+    """
+    try:
+        moment = datetime.strptime(trade_time.strip(), "%Y%m%d-%H:%M:%S")
+    except ValueError:
+        return ""
+    local = moment.replace(tzinfo=UTC).astimezone(_ET)
+    return local.strftime("%Y-%m-%d %H:%M:%S ET" if with_date else "%H:%M:%S ET")
 
 
 def parse_fills(rows: Sequence[Any]) -> tuple[LiveFill, ...]:
@@ -189,6 +220,8 @@ def parse_fills(rows: Sequence[Any]) -> tuple[LiveFill, ...]:
                     commission=float(row.get("commission") or 0.0),
                     multiplier=multiplier,
                     trade_time=str(row.get("trade_time") or ""),
+                    exchange=str(row.get("exchange") or "").strip(),
+                    order_ref=str(row.get("order_ref") or "").strip(),
                 )
             )
         except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
