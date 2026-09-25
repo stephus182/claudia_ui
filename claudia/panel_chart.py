@@ -12,7 +12,8 @@ docs/panel/2026-07-24-candlestick-chart-pane-research.md):
   toolkit._cache.check / load(symbol, bar.upper(), period, end) return whether the
   bars are cached and the OHLCV DataFrame respectively (DatetimeIndex + lowercase
   open/high/low/close/volume columns — ibkr_core_mcp indicators.py:11,42). On a
-  cache miss, toolkit.execute("fetch_market_data", {...}) fetches from IBKR and
+  cache miss, `record_and_execute(toolkit, "fetch_market_data", …)` fetches from IBKR (leaving a
+  `tool` row under the session, gap #21) and
   populates the parquet cache, returning only a human-readable SUMMARY string
   (claude_tools.py:1142) — the raw bars are read back from the cache.
 
@@ -52,6 +53,7 @@ import panel as pn
 
 from claudia.palette import DOWN_COLOR, UP_COLOR
 from claudia.panel_markdown import safe_markdown
+from claudia.tool_record import UI_BUTTON_ORIGIN, record_and_execute
 
 log = logging.getLogger(__name__)
 
@@ -185,7 +187,7 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     return (price + volume).cols(1)
 
 
-def build_chart_pane() -> pn.Column:
+def build_chart_pane(session_id: str | None = None) -> pn.Column:
     """Return the self-contained candlestick pane.
 
     Layout: a control Row (symbol / period / bar / Load), a Markdown status line,
@@ -238,7 +240,7 @@ def build_chart_pane() -> pn.Column:
         fetch_summary: str | None = None
         try:
             # Deferred import breaks the panel_app <-> panel_chart cycle (module docstring).
-            from claudia.panel_app import _get_toolkit
+            from claudia.panel_app import _get_toolkit, session_store
 
             toolkit = _get_toolkit()
             sym = (symbol.value or "").strip().upper()  # value is str | None
@@ -257,10 +259,21 @@ def build_chart_pane() -> pn.Column:
                 # `load` below then raises a CacheMissError naming an internal cache key.
                 # Discarding this text is why an unknown symbol used to surface
                 # "No cached file for ZZQQXX_30M_1M_2026-08-03" (found live 2026-08-03).
-                fetch_summary, _ = await asyncio.to_thread(
-                    toolkit.execute,
+                # Through the recording seam, never `toolkit.execute` directly (gap #21,
+                # 2026-09-25; tests/security/test_out_of_loop_tool_calls.py forbids the
+                # direct call package-wide): a `tool` row stamped `ui_button` lands under
+                # this session BEFORE the cache is read back, so a bar-cache entry can
+                # always be explained. The store is resolved now, not at build time — it is
+                # created by the session's background init. No session id (a pane built
+                # alone, as in tests) or no store yet → the fetch runs and nothing is written.
+                store = session_store(session_id) if session_id else None
+                fetch_summary, _ = await record_and_execute(
+                    toolkit,
                     "fetch_market_data",
                     {"symbol": sym, "period": period.value, "bar": bar.value},
+                    store=store,
+                    session_id=session_id,
+                    origin=UI_BUTTON_ORIGIN,
                 )
             df = await asyncio.to_thread(toolkit._cache.load, sym, tf, period.value, end)
             if df is None or df.empty:

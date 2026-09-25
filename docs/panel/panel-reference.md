@@ -41,6 +41,8 @@ pn.serve(
 Run with `python -m claudia.panel_app` (or `./start-claudia.sh`, which also starts the IBKR
 gateway). Serving behavior was verified by `docs/probes/pnserve_probe.py`.
 
+**`-m` runs the file as `__main__`, a distinct module object from `claudia.panel_app`** (Python's import reference: "they're still considered distinct modules"), so the `if __name__ == "__main__"` guard delegates to the canonical module's `main` rather than calling its own copy. Until 2026-09-25 it did not, and every deferred `from claudia.panel_app import …` — the chart pane's click-time import — bound a second copy with its own empty session map and a `_toolkit` of None, so the pane fetched through a toolkit of its own and could record nothing (gap #21; the test runs the module under the name `__main__` and asserts the canonical `main` is called).
+
 ---
 
 ## 2. Module map
@@ -386,8 +388,13 @@ Self-contained and **decoupled from the conversation** — driven by its own Loa
   and only its surrounding prose states the positional rule — the isolated line is what a
   reader checks.
 - **Data**: cache-first via `toolkit._cache.check/load` (parquet, `DatetimeIndex`, lowercase
-  columns), fetching from IBKR on a miss. `toolkit.execute` returns `tuple[str, None]` —
-  a text result and a legacy always-`None` slot — **not** bars, hence the direct cache read.
+  columns), fetching from IBKR on a miss — through `tool_record.record_and_execute`, never
+  `toolkit.execute` directly (gap #21, 2026-09-25): the Load click leaves a `tool` row stamped
+  `ui_button` under the session before the cache is read back, the pane having received its
+  `session_id` from `_build_session_root` and resolving the store at click time via
+  `panel_app.session_store`; `tests/security/test_out_of_loop_tool_calls.py` forbids the direct
+  call package-wide. The tool returns `tuple[str, None]` — a text result and a legacy
+  always-`None` slot — **not** bars, hence the direct cache read.
   That text is load-bearing on the failure path (below), so do not discard it.
 - **Failure messaging** (rebuilt 2026-08-03 after the live run, `ba6c83e`): a failed load
   quotes the fetch's own words — `✕ Could not load ZZQQXX — fetch reported: Could not resolve

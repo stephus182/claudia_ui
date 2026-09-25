@@ -3756,3 +3756,65 @@ async def test_the_core_staleness_flag_decides_nothing_any_more(caplog):
     toolkit.execute.assert_any_call("sync_flex_trades", {})
     toolkit._store.get_trade_date_coverage.assert_not_called()
     assert not any("data current" in r.message for r in caplog.records)
+
+
+# ── gap #21 (2026-09-25): the session root owns the session id ───────────────────────────
+
+
+def test_the_session_root_hands_one_session_id_to_the_chat_and_the_chart_pane():
+    """The chat factory used to mint the session id privately, so the chart pane — built
+    beside it from the same root — could not know which session a Load click belongs to.
+    The root mints it now and passes it to both, explicitly: one owner, no lookup by
+    callback context (that alternative works and is magic — the record would depend on
+    which callback the click fired in)."""
+    import uuid
+
+    from claudia.panel_app import _build_session_root
+
+    with (
+        patch("claudia.panel_app.apply_session_theme"),
+        patch("claudia.panel_app._build_chat_app") as chat_factory,
+        patch("claudia.panel_app._action_bar"),
+        patch("claudia.panel_app.build_chart_pane") as chart_factory,
+        patch("claudia.panel_app.build_dashboard"),
+        patch.object(pn.state, "add_periodic_callback"),
+        patch.object(pn.state, "onload"),
+        patch("claudia.panel_app.pn.Column"),
+    ):
+        _build_session_root()
+
+    chat_id = chat_factory.call_args.kwargs["session_id"]
+    chart_id = chart_factory.call_args.kwargs["session_id"]
+    assert chat_id == chart_id
+    uuid.UUID(chat_id)  # a real uuid4 string, not a placeholder
+
+
+def test_session_store_answers_only_for_an_open_session():
+    """The click-time accessor: the registered store for an open session, None otherwise."""
+    import claudia.panel_app as pa
+
+    store = _make_mock_store()
+    with patch.dict(pa._open_sessions, {"open-1": store}, clear=True):
+        assert pa.session_store("open-1") is store
+        assert pa.session_store("never-opened") is None
+
+
+def test_running_the_module_as_main_serves_the_canonical_module_not_a_second_copy():
+    """`python -m claudia.panel_app` (the launcher's line) executes this file as `__main__`.
+    Any later `from claudia.panel_app import …` — the chart pane defers one at click time
+    to break an import cycle — then binds a SECOND module object with its own globals: an
+    empty session map and a `_toolkit` of None. Found live 2026-09-25 (gap #21): a Load
+    click fetched GLD through a toolkit of its own and `session_store` answered None, so no
+    row was written. The guard must delegate to the canonical module's `main`, so one set
+    of singletons exists whichever way the app is launched.
+
+    Executed rather than read: the module is run under the name `__main__` with the
+    canonical `main` replaced; the replacement must be what gets called.
+    """
+    import runpy
+
+    with patch("claudia.panel_app.main") as canonical_main:
+        namespace = runpy.run_module("claudia.panel_app", run_name="__main__", alter_sys=False)
+    canonical_main.assert_called_once_with()
+    # The copy that just ran defined its own `main`; it must not be the one the guard called.
+    assert namespace["main"] is not canonical_main

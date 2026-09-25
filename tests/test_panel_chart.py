@@ -13,6 +13,8 @@ Two layers, both server-free:
     IBKR, no Drive.
 """
 
+from pathlib import Path
+
 import pandas as pd
 import panel as pn
 import pytest
@@ -776,3 +778,112 @@ async def test_on_load_says_nothing_when_the_bar_size_matches():
     assert "Loaded 4 bars for AAPL" in status
     assert "IBKR returned" not in status
     assert "requested" not in hv_title(_chart(pane).object)
+
+
+# ── gap #21 (2026-09-25): a Load click is a real tool run, and leaves a real record ─────
+
+
+def _rows(db: Path) -> list[tuple[str, str, str, str, str]]:
+    """Every `tool` row in the store, read back raw: the DB is what an audit reads."""
+    import sqlite3
+
+    with sqlite3.connect(db) as conn:
+        rows: list[tuple[str, str, str, str, str]] = conn.execute(
+            "SELECT session_id, role, tool_name, content, tool_result_json FROM messages "
+            "WHERE role = 'tool' ORDER BY id"
+        ).fetchall()
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_a_cache_miss_load_leaves_a_ui_button_tool_row_before_the_cache_is_read(tmp_path):
+    """The pane's fetch used to call `toolkit.execute` directly and leave nothing. Now it
+    goes through `record_and_execute`: a `tool` row stamped `ui_button`, carrying the
+    session id, is on disk BEFORE the cache is read back — so a bar-cache entry can always
+    be explained, and a failing render cannot cost the record."""
+    from unittest.mock import patch
+
+    from claudia.conversation_store import ConversationStore
+    from claudia.tool_record import UI_BUTTON_ORIGIN
+
+    db = tmp_path / "chart.db"
+    store = ConversationStore(db)
+    store.create_session("s-chart")
+    tk = _mock_toolkit(cached=False, df=_sample_df())
+    rows_when_loaded: list[int] = []
+    df = _sample_df()
+
+    def _load(*_a: object, **_k: object) -> pd.DataFrame:
+        """Stand in for the cache read, noting how many tool rows exist at that moment."""
+        rows_when_loaded.append(len(_rows(db)))
+        return df
+
+    tk._cache.load.side_effect = _load
+    pane = build_chart_pane(session_id="s-chart")
+    cb = _get_click_callback(_button(pane))
+    with (
+        patch("claudia.panel_app._get_toolkit", return_value=tk),
+        patch("claudia.panel_app.session_store", return_value=store),
+    ):
+        await cb(None)
+
+    rows = _rows(db)
+    assert len(rows) == 1, rows
+    session_id, role, tool_name, content, result_json = rows[0]
+    assert (session_id, role, tool_name, content) == (
+        "s-chart",
+        "tool",
+        "fetch_market_data",
+        UI_BUTTON_ORIGIN,
+    )
+    assert result_json == '"summary"', result_json  # the text, as the model loop writes it
+    assert rows_when_loaded == [1], "the row must exist before the cache is read"
+    assert [type(e).__name__ for e in _chart(pane).object] == ["Overlay", "Bars"]
+
+
+@pytest.mark.asyncio
+async def test_a_raising_fetch_is_recorded_and_still_reported_honestly(tmp_path):
+    """An attempted call is a fact: the row records the failure, the status line still says
+    what went wrong, and the chart stays empty."""
+    from unittest.mock import patch
+
+    from claudia.conversation_store import ConversationStore
+
+    db = tmp_path / "chart.db"
+    store = ConversationStore(db)
+    store.create_session("s-chart")
+    tk = _mock_toolkit(cached=False, df=_sample_df())
+    tk.execute.side_effect = RuntimeError("IBKR down")
+    pane = build_chart_pane(session_id="s-chart")
+    cb = _get_click_callback(_button(pane))
+    with (
+        patch("claudia.panel_app._get_toolkit", return_value=tk),
+        patch("claudia.panel_app.session_store", return_value=store),
+    ):
+        await cb(None)
+
+    rows = _rows(db)
+    assert len(rows) == 1 and "RuntimeError: IBKR down" in rows[0][4], rows
+    assert "IBKR down" in str(_first(pane, pn.pane.Markdown).object) or any(
+        "IBKR down" in str(getattr(m, "object", "")) for m in _iter_tree(pane)
+    )
+    assert _chart(pane).object is None
+    tk._cache.load.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_pane_without_a_session_still_fetches_and_writes_nothing():
+    """The seam's contract for a caller with nowhere to write: the tool runs, no row."""
+    from unittest.mock import patch
+
+    tk = _mock_toolkit(cached=False, df=_sample_df())
+    pane = build_chart_pane()
+    cb = _get_click_callback(_button(pane))
+    with (
+        patch("claudia.panel_app._get_toolkit", return_value=tk),
+        patch("claudia.panel_app.session_store") as lookup,
+    ):
+        await cb(None)
+    tk.execute.assert_called_once()
+    lookup.assert_not_called()
+    assert [type(e).__name__ for e in _chart(pane).object] == ["Overlay", "Bars"]

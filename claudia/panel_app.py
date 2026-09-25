@@ -188,6 +188,20 @@ _background_tasks: set[asyncio.Task[None]] = set()
 # created, removed by `_finalize_session` on every close path.
 _open_sessions: dict[str, ConversationStore] = {}
 
+
+def session_store(session_id: str) -> ConversationStore | None:
+    """The conversation store of an open session, or None before its init has finished.
+
+    The click-time counterpart of `_get_toolkit` for a surface built beside the chat from
+    the same root (gap #21, 2026-09-25): the chart pane learns its `session_id` from
+    `_build_session_root` and resolves the store here when a Load click happens, because
+    the store is created by the background `_init_session` task and does not exist when the
+    pane is composed. None means "no place to write yet", and `record_and_execute` then
+    runs the tool without a row — the same contract the startup Flex calls rely on.
+    """
+    return _open_sessions.get(session_id)
+
+
 # Serializes the check-download-first-store-open section of _init_session across
 # concurrently-initializing sessions — see the comment at its acquire site.
 _init_lock = asyncio.Lock()
@@ -949,7 +963,7 @@ async def _run_session_cleanup(
 # ── Per-session factory ───────────────────────────────────────────────────────
 
 
-def _build_chat_app() -> pn.chat.ChatInterface:
+def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
     """Per-session factory: called fresh for each new browser session by Bokeh's
     _eval_panel (confirmed live against Panel 1.9.3 — see Phase 2 header note).
 
@@ -958,8 +972,11 @@ def _build_chat_app() -> pn.chat.ChatInterface:
     loader, agent) runs in a background _init_session task on the session's own event
     loop, with user input gated on an asyncio.Event so an early message waits for
     init instead of racing it or erroring.
+
+    `session_id` is minted by `_build_session_root`, which hands the same id to the chart
+    pane (gap #21); called alone — every earlier caller and test — this factory mints one.
     """
-    session_id = str(uuid.uuid4())
+    session_id = session_id or str(uuid.uuid4())
     # renderers= routes every string sent through this feed via safe_markdown, closing the
     # raw-HTML/run_scripts execution path (security-audit-2026-07-25.md, H-1). Panel objects
     # (ChatStep, Column, image panes) bypass renderers and are unaffected. Note this must be
@@ -1468,9 +1485,14 @@ def _build_session_root() -> pn.Column:
     # Panel reads the theme at render time; what matters is that it is set HERE, per
     # session, which is what lets `?theme=` override CLAUDIA_THEME (panel_theme.py).
     apply_session_theme()
-    chat = _build_chat_app()
+    # One session, one id, minted here and handed to both surfaces explicitly (gap #21):
+    # the chart pane's Load click records a tool row under this session. The alternative —
+    # the pane looking up its session from the callback's document at click time — works
+    # and is magic; a parameter is duller and cannot depend on which callback fired.
+    session_id = str(uuid.uuid4())
+    chat = _build_chat_app(session_id=session_id)
     bar = _action_bar(chat)
-    dashboard = build_dashboard(chart_pane=build_chart_pane())
+    dashboard = build_dashboard(chart_pane=build_chart_pane(session_id=session_id))
 
     def _refresh() -> None:
         """Repaint the action bar's lights and the dashboard from their cached snapshots.
@@ -1681,4 +1703,17 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # `python -m claudia.panel_app` (the launcher's line, and the documented way to run
+    # ClaudIA alone) executes THIS file as `__main__`. Python's import reference: even when
+    # `__main__` corresponds with an importable module, "they're still considered distinct
+    # modules". So any later `from claudia.panel_app import …` — the chart pane defers one
+    # at click time to break an import cycle — bound a SECOND module object with its own
+    # globals: `_open_sessions` empty and `_toolkit` None, so the pane built a toolkit of
+    # its own and `session_store` answered None (found live 2026-09-25, gap #21; the test is
+    # `test_running_the_module_as_main_serves_the_canonical_module_not_a_second_copy`).
+    # Delegating to the canonical module keeps one set of singletons however the app is
+    # launched. The module-level side effects (pn.extension, the avatar, dotenv) run once
+    # more on that import; they already did whenever the pane's deferred import fired.
+    from claudia.panel_app import main as _canonical_main
+
+    _canonical_main()
