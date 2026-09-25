@@ -347,6 +347,10 @@ bridge under `_tv_bridge_lock` and re-wires the checker and the agent's tool mer
 ## 9. Chart pane
 
 Self-contained and **decoupled from the conversation** — driven by its own Load button.
+**Two presentation gaps are open and researched, not built** (gaps #76 continuous candles,
+#75 the volume row — colour by candle, same axis, human numbers, taller): the mechanisms the
+libraries guarantee, quoted and executed, are in
+[`2026-09-25-chart-axis-ticks-volume-research.md`](2026-09-25-chart-axis-ticks-volume-research.md).
 
 - **HoloViews/hvplot, not hand-built Bokeh glyphs** (superseded 2026-08-03 — see
   `data-surfaces-reference.md` D1). `build_chart_object`

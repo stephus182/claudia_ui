@@ -128,6 +128,10 @@ check; site docs were at 1.9.4 when `ui-customisation-reference.md` was last scr
 ### Research — point-in-time, not updated
 
 - [2026-07-24 — External candlestick chart pane (Phase 10)](2026-07-24-candlestick-chart-pane-research.md)
+- [2026-09-25 — Continuous candles and a readable volume row: what hvPlot, HoloViews and Bokeh guarantee](2026-09-25-chart-axis-ticks-volume-research.md)
+  — for gaps #76/#75: the bar-sequence x axis (`x=`, `hover_cols`), `(position, label)` ticks,
+  `NumeralTickFormatter` (`0.0a` → `1.2m`), a colour value-dimension on `hv.Bars` — vendor quotes
+  plus facts executed against the installed versions; nothing built yet
   — Bokeh candlestick via `segment`+`vbar` glyphs; `pn.pane.Bokeh` embed + `pane.object=`
   refresh; OHLCV from `toolkit._cache.load` with fetch-on-miss; symbol/period/bar controls +
   `loading` spinner; side-by-side placement. All APIs verified live that day. **The

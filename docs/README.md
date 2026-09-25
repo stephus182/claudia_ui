@@ -82,8 +82,9 @@ folder, and the verified findings the migration rests on.
 | [`panel/component-model-reference.md`](panel/component-model-reference.md) | How a Panel component is built, parameterised, wired and updated — taxonomy, real class hierarchy, the Param foundation, the four interactivity APIs ranked, the four routes to a custom component (`PyComponent`, not `Viewer`) — the model behind the two references above |
 | [`panel/data-surfaces-reference.md`](panel/data-surfaces-reference.md) | Tabulator / Number / ECharts, the `pn.extension()` gate, side windows, stream/patch + connectivity, and the gotchas index (27 measured entries as of 2026-08-04, 16 onwards found live against the account) — the reference the live dashboard was built from |
 
-Plus two dated research docs (candlestick chart pane, PineScript/actionable buttons — both
-partly superseded by what shipped, each says by what) and `panel/screenshots/`, which is
+Plus three dated research docs (candlestick chart pane; PineScript/actionable buttons — both
+partly superseded by what shipped, each says by what; and the 2026-09-25 chart axis / ticks /
+volume research for gaps #76 and #75, not yet built) and `panel/screenshots/`, which is
 **git-ignored** because most captures show account data; its own local `README.md` catalogs
 every file with an honest account-data column. The post-migration restyle (Track D) draws
 from here.
