@@ -42,6 +42,33 @@ Sun–Thu; Fridays appear as "closed" from a Mon–Fri perspective — correct, 
   - IBKR routes all CME products via Globex (electronic only — no pit sessions)
   - **CME open when NYSE is closed**: MLK Day, Presidents Day, Memorial Day, Juneteenth, Labor Day, etc. — dynamically computed from exchange_calendars each session
 
+## What the calendar is NOT: a source of trade dates (measured 2026-09-24)
+
+The calendar is **market context** — sessions, closures, hours — for trading and
+calculations. It never assigns a fill's trade date: that comes from the Flex statement alone
+(`docs/trading-data-reference.md`, gap #69). Measured against CME's own holiday notices
+(cmegroup.com holiday calendar + per-holiday PDFs):
+
+- `exchange_calendars` 4.13.2 `CMES` (what `get_calendar("CME")` returns) is **one calendar
+  for every CME product**. It gets the ordinary 18:00 ET evening roll right. All three holiday
+  sessions tested — Labor Day, the Sunday before Memorial Day, Juneteenth 2026 — it dates **on
+  the holiday itself**, where CME assigns holiday trading to the **next** trade date: for Labor
+  Day 2026 CME wrote that orders "on Sunday, September 6th are for trade date Tuesday,
+  September 8th". CME's notices say the same for MLK Day, Presidents' Day and Thanksgiving;
+  those were not run against the library.
+- Its 2026 CME closures are New Year's Day, Good Friday and Christmas. **Good Friday 2026 was
+  not a uniform closure:** it was a jobs-report day, so per CME's notice FX, crypto and
+  interest-rate products had "unique settlements derived on trade date April 3rd", while all
+  other products had their settlements "copy/pasted from April 2nd". A single CME calendar
+  cannot express a closure that varies by product.
+- `pandas_market_calendars` 5.4.0 (a superset: it mirrors every `exchange_calendars` calendar
+  and adds per-product CME calendars) gets the Good Friday split right, but it too dates
+  the tested holiday sessions on the holiday. A possible future move to it is logged,
+  **deferred**, in the core register (F18).
+
+So "CME open when NYSE is closed" in the market context means Globex trades on that day, and,
+per CME's holiday notices, those trades belong to the next trade date.
+
 ## CME product group schedule (`_FUTURES_SCHEDULE` in `store.py`)
 
 | Group | Exchange | Globex Hours (CT) | Key products |

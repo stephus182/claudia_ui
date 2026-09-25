@@ -49,7 +49,7 @@ def db(tmp_path):
     with sqlite3.connect(path) as w:
         w.execute(
             "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
-            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, execution_key TEXT)"
         )
         # `asset_category` is present on the REAL flex_lot (verified against the live
         # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
@@ -58,7 +58,8 @@ def db(tmp_path):
             "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
         )
         w.executemany(
-            "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO flex_trade (trade_date_iso, source, asset_category, currency,"
+            " fifo_pnl_realized) VALUES (?, ?, ?, ?, ?)",
             [
                 ("2026-08-03", "flex", "FUT", "USD", -3516.98),
                 ("2026-08-04", "flex", "STK", "USD", 250.0),
@@ -249,7 +250,7 @@ async def test_poll_populates_every_section(db):
     assert snap.ytd is not None and snap.ytd.trade_count == 2
     assert set(snap.stats) == {"week", "month", "ytd"}
     assert snap.stats["week"].closed_lots == 1
-    assert snap.coverage is not None and snap.coverage.live_pending == 1
+    assert snap.coverage is not None
     assert snap.age_seconds() < 5
 
 
@@ -368,7 +369,7 @@ async def test_an_empty_store_is_not_treated_as_a_failed_read(tmp_path):
     with sqlite3.connect(path) as w:
         w.execute(
             "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
-            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL)"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, execution_key TEXT)"
         )
         # `asset_category` is present on the REAL flex_lot (verified against the live
         # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
@@ -380,7 +381,7 @@ async def test_an_empty_store_is_not_treated_as_a_failed_read(tmp_path):
     await p._poll_once()
     snap = p.snapshot()
     assert snap.week is not None and snap.week.trade_count == 0
-    assert snap.coverage == dd.FlexCoverage(through=None, live_pending=0)
+    assert snap.coverage == dd.FlexCoverage(through=None)
 
 
 async def test_loop_survives_a_client_that_raises_and_keeps_polling(db):
@@ -567,7 +568,7 @@ async def test_entries_are_attached_when_the_store_can_answer(tmp_path):
             "CREATE TABLE flex_trade (trade_date_iso TEXT, trade_date TEXT, source TEXT,"
             " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, conid TEXT,"
             " symbol TEXT, underlying_symbol TEXT, date_time TEXT, quantity REAL,"
-            " trade_price REAL)"
+            " trade_price REAL, execution_key TEXT)"
         )
         # `asset_category` is present on the REAL flex_lot (verified against the live
         # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
@@ -599,7 +600,7 @@ def _replaced_intraday_store(tmp_path):
             "CREATE TABLE flex_trade (trade_date_iso TEXT, trade_date TEXT, source TEXT,"
             " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, conid TEXT,"
             " symbol TEXT, underlying_symbol TEXT, date_time TEXT, quantity REAL,"
-            " trade_price REAL)"
+            " trade_price REAL, execution_key TEXT)"
         )
         w.execute(
             "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"

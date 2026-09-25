@@ -152,7 +152,7 @@ def _snapshot(**over):
                 (6, 250.25, -2194.98),
             ]
         ),
-        "coverage": dd.FlexCoverage(through=date(2026, 8, 5), live_pending=9),
+        "coverage": dd.FlexCoverage(through=date(2026, 8, 5)),
         "error": None,
     }
     fields.update(over)
@@ -296,7 +296,7 @@ def test_coverage_line_states_the_t_plus_one_gap(view):
     line = view._pnl_coverage.object
     assert "2026-08-05" in line
     assert "today is never in it" in line
-    assert "9 fill(s) today not yet in a statement" in line
+    assert "not yet on a statement" in line
     assert "The tile above is today only" in line
 
 
@@ -352,10 +352,13 @@ def test_coverage_line_discloses_the_cost_basis_difference_without_overstating_i
     assert "252.60" not in line
 
 
-def test_coverage_line_without_pending_fills_omits_the_warning():
-    """With no fills awaiting a statement, the pending-fills warning is left off."""
-    snap = _snapshot(coverage=dd.FlexCoverage(through=date(2026, 8, 5), live_pending=0))
-    assert "not yet in a statement" not in pdash.coverage_line(snap)
+def test_coverage_line_points_to_pending_and_claims_no_count():
+    """Gap #69: fills IBKR has not put on a statement are under Pending, never in these
+    windows. The old line counted stored `source='live'` rows and called them "fill(s)
+    today", which was neither the pending set nor today."""
+    line = pdash.coverage_line(_snapshot(coverage=dd.FlexCoverage(through=date(2026, 8, 5))))
+    assert "**Daily**" in line
+    assert "today not yet" not in line
 
 
 def test_coverage_line_with_no_flex_data():
@@ -372,19 +375,21 @@ def test_stats_block_labels_the_two_bases_apart(view):
     assert "pre-wash-sale" in text and "must never be read as realised P&L" in text
 
 
-def test_the_settled_block_never_claims_to_be_the_windows_realised_pnl(view):
-    """Flex is T+1, so this block is structurally incapable of being the week's P&L.
+def test_the_settled_block_says_it_is_settled_and_where_the_rest_is(view):
+    """Flex is T+1, so this block holds only what a statement has confirmed.
 
-    On 2026-08-06 it read -6,175.88 for a week whose realised was -16,480.46, and until
-    that date it was titled "realised & round trips" directly beneath the bridged total —
-    two figures for one window, differing by ten thousand, with nothing to explain why.
-    The heading and the footnote now both say it is the settled statement view.
+    On 2026-08-06 it read -6,175.88 for a week whose realised was -16,480.46 while a
+    bridged total sat above it, two figures for one window with nothing to explain why.
+    Since gap #69 every dated figure on the pane is settled, and what is not yet on a
+    statement is under Pending, so the footnote says exactly that and no longer points
+    at a "bridged table above", which no longer exists.
     """
     view._window.value = "Weekly"
     text = view._pnl_stats.object
     assert "settled by IBKR statement" in text
     assert "Settled only" in text
-    assert "Not the window's realised P&L" in text
+    assert "under **Daily**" in text
+    assert "bridged" not in text
 
 
 def test_each_window_shows_its_own_round_trip_counts(view):
@@ -535,7 +540,7 @@ def test_kpi_strip_holds_five_number_tiles_and_nothing_else(view):
 
     A win-rate grid sat at the right end of this row until 2026-08-07 and was removed as
     clutter. Neither figure it carried is lost: the week is in the P&L tab's breakdown,
-    the day is the P&L pane's Daily window.
+    and what is not yet on a statement is the P&L pane's Daily window (gap #69).
     """
     row = list(view.kpi_strip[0])
     tiles = [o for o in row if isinstance(o, pn.indicators.Number)]
@@ -544,7 +549,7 @@ def test_kpi_strip_holds_five_number_tiles_and_nothing_else(view):
         "Cash",
         "Unrealised P&L",
         dd.realised_ledger_label(),
-        "Realised this week",
+        "Realised this week · through 2026-08-05",
     ]
     assert len(row) == len(tiles)
 
@@ -1446,26 +1451,21 @@ def _bd(asset, winners, losers, net=0.0):
     )
 
 
-def _snap_with(
-    day_rows=(), week_rows=(), incomplete=False, reconstructed=True, ledger=None, as_of=None
-):
-    """A snapshot carrying only the bridged breakdowns these surfaces consume."""
+def _snap_with(rows=(), declined=(), readable=True, ledger=None, as_of=None, through=None):
+    """A snapshot carrying the pending window these surfaces consume (gap #69)."""
     return dd.DashboardSnapshot(
         as_of=as_of or datetime.now(UTC),
         ledger=ledger,
-        breakdowns={
-            "day": dd.BridgedWindow(
-                rows=tuple(day_rows), incomplete=incomplete, reconstructed=reconstructed
-            ),
-            "week": dd.BridgedWindow(rows=tuple(week_rows), reconstructed=reconstructed),
-        },
+        breakdowns={"week": dd.BreakdownWindow()},
+        coverage=dd.FlexCoverage(through=through or date(2026, 9, 22)),
+        pending=dd.PendingWindow(rows=tuple(rows), declined=tuple(declined)) if readable else None,
     )
 
 
-def test_the_daily_tab_shows_todays_realised_by_asset_class():
-    """The requirement: today's realised P&L per type, non-Flex, on its own tab."""
-    out = pdash.daily_table(
-        _snap_with(day_rows=[_bd("FUT", 2, 0, net=1841.04), _bd("STK", 0, 1, net=-141.29)]),
+def test_the_pending_tab_shows_realised_not_yet_on_a_statement_by_asset_class():
+    """The executions Flex has not settled, per type, reconstructed from your own fills."""
+    out = pdash.pending_table(
+        _snap_with(rows=[_bd("FUT", 2, 0, net=1841.04), _bd("STK", 0, 1, net=-141.29)]),
         "USD",
     )
     assert "| **FUT** | 1,841.04 |" in out
@@ -1474,131 +1474,103 @@ def test_the_daily_tab_shows_todays_realised_by_asset_class():
     assert "Net (USD)" in out
 
 
-def test_a_gateway_outage_never_reads_as_a_flat_day():
-    """ "Nothing closed" and "we could not look" are opposite claims.
-
-    No statement covers today, so an unreachable gateway leaves today genuinely
-    unknowable — and it is the one day no later data can contradict.
-    """
-    out = pdash.daily_table(_snap_with(reconstructed=False))
+def test_a_gateway_outage_never_reads_as_nothing_pending():
+    """ "Nothing pending" and "we could not look" are opposite claims."""
+    out = pdash.pending_table(_snap_with(readable=False))
     assert "cannot be computed" in out
     assert "round trip" not in out
 
 
-def test_a_quiet_day_is_stated_as_one():
-    """A reachable gateway that found no closes is an answer, not a failure."""
-    out = pdash.daily_table(_snap_with(reconstructed=True))
-    assert "No closed round trips today" in out
+def test_nothing_pending_is_stated_as_such():
+    """A reachable gateway whose closes Flex already has is an answer, not a failure."""
+    out = pdash.pending_table(_snap_with())
+    assert "No closed round trips awaiting a statement" in out
     assert "cannot be computed" not in out
 
 
-def test_before_the_first_poll_the_daily_tab_claims_nothing():
-    """Waiting, no trades, and no gateway are three states and must read as three."""
-    assert "waiting" in pdash.daily_table(None)
-    assert "waiting" in pdash.daily_table(dd.empty_snapshot())
+def test_before_the_first_poll_the_pending_tab_claims_nothing():
+    """Waiting, nothing pending, and no gateway are three states and must read as three."""
+    assert "waiting" in pdash.pending_table(None)
+    assert "waiting" in pdash.pending_table(dd.empty_snapshot())
 
 
-def test_an_incomplete_day_is_marked_not_silently_short():
+def test_an_incomplete_pending_window_is_marked_not_silently_short():
     """A floor presented as a total is the failure this whole track exists to prevent."""
-    out = pdash.daily_table(_snap_with(day_rows=[_bd("FUT", 1, 0, net=100.0)], incomplete=True))
+    out = pdash.pending_table(_snap_with(rows=[_bd("FUT", 1, 0, net=100.0)], declined=("CL",)))
     assert "⚠" in out and "incomplete" in out
 
 
-def test_a_day_that_could_not_be_reconstructed_is_not_reported_as_quiet():
-    """Declined and quiet are opposite claims, and 2026-08-10 published the wrong one.
+def test_a_pending_window_that_could_not_be_reconstructed_is_not_reported_as_empty():
+    """Declined and empty are opposite claims, and 2026-08-10 published the wrong one.
 
     Every one of that day's seven CL executions closed against a lot opened before the
     fill window, so the reconstruction declined the whole contract and the window came
-    back with no rows — and `incomplete` set. The pane read the empty rows alone and
-    called it a session with no closed round trips, on a day that realised +8,441.12.
-
-    A window with no rows is only quiet if nothing in it was declined.
+    back with no rows. The pane read the empty rows alone and called it quiet, on a
+    session that realised +8,441.12. A window with no rows is only empty if nothing in it
+    was declined.
     """
-    out = pdash.daily_table(_snap_with(incomplete=True), "USD")
-    assert "No closed round trips today" not in out
+    out = pdash.pending_table(_snap_with(declined=("CL",)), "USD")
+    assert "No closed round trips" not in out
     assert "could not be reconstructed" in out
 
 
-def test_the_heading_names_the_window_it_labels_not_the_poll_time():
-    """`as_of` and the day window are read at different moments and can disagree.
-
-    `as_of` is stamped when the poll *completes*, after `_read_flex` has already called
-    `date.today()` — so a poll straddling local midnight dates them a day apart. And a
-    failed poll republishes the *previous* `as_of` on purpose, to keep staleness visible,
-    which would peg the heading to an older day than the figures beneath it for as long
-    as polling stays down. The heading follows the window.
-    """
-    snap = dd.DashboardSnapshot(
-        as_of=datetime(2026, 8, 6, 12, 0, tzinfo=UTC),
-        breakdowns={"day": dd.BridgedWindow(rows=(), reconstructed=True, day=date(2026, 8, 7))},
-    )
-    assert "2026-08-07" in pdash.daily_heading(snap)
-    assert "2026-08-06" not in pdash.daily_heading(snap)
-
-
-def test_the_heading_falls_back_to_as_of_with_no_day_window():
-    """No day window means no figures to mislabel, and no better answer available."""
-    stamp = datetime(2026, 8, 7, 18, 30, tzinfo=UTC)
-    snap = dd.DashboardSnapshot(as_of=stamp, breakdowns={"week": dd.BridgedWindow()})
-    assert stamp.astimezone().strftime("%a %Y-%m-%d") in pdash.daily_heading(snap)
-
-
-def test_the_daily_heading_names_the_day_and_the_source():
-    """The date comes from `as_of` in local time — the clock the poller builds the day
-    window with, so heading and window can never name different days."""
-    stamp = datetime(2026, 8, 7, 18, 30, tzinfo=UTC)
-    out = pdash.daily_heading(_snap_with(as_of=stamp))
-    assert stamp.astimezone().strftime("%a %Y-%m-%d") in out
+def test_the_daily_heading_says_non_flex_names_the_statement_date_and_never_today():
+    """Gap #69: the Daily tab holds non-Flex realised trades not yet on a statement. They
+    carry no trade date, so the heading says so, names the statement they are measured
+    against, and never claims "today" (operator wording 2026-09-24)."""
+    out = pdash.pending_heading(_snap_with(through=date(2026, 9, 22)))
+    assert "Daily realised — non-Flex" in out
+    assert "not yet on a statement" in out
+    assert "2026-09-22" in out
     assert "your own executions" in out
-    assert "T+1" in out
+    assert "today" not in out.lower()
 
 
-def test_a_stale_daily_figure_is_labelled_a_floor_not_blanked():
+def test_a_stale_pending_figure_is_labelled_a_floor_not_blanked():
     """A resting order can fill while the gateway is unreachable, so a stale figure is
     short, not wrong — and must not pass as current."""
-    out = pdash.daily_heading(_snap_with(), stale=True)
+    out = pdash.pending_heading(_snap_with(), stale=True)
     assert "Not current" in out and "floor" in out
-    assert "Not current" not in pdash.daily_heading(_snap_with(), stale=False)
+    assert "Not current" not in pdash.pending_heading(_snap_with(), stale=False)
 
 
-def test_the_daily_table_never_claims_a_flex_provenance():
-    """The table was right and the sentence under it was a confident lie.
+def test_the_pending_table_never_claims_a_flex_provenance():
+    """The table was right and the sentence under it was a confident lie (2026-08-07).
 
     `breakdown_table`'s footnote names `flex_trade` and `flex_lot` as the sources. That
-    is true of the settled windows and FALSE of the day window: no statement covers
-    today, so every figure there is reconstructed from the account's own executions.
-    Shipped attached to the day window on 2026-08-07 and caught in the browser the same
-    hour — which is why the note is now a parameter and this test exists.
+    is true of the settled windows and FALSE of the pending one, whose every figure is
+    reconstructed from the account's own executions.
     """
-    out = pdash.daily_table(_snap_with(day_rows=[_bd("FUT", 0, 2, net=-1629.44)]), "USD")
+    out = pdash.pending_table(_snap_with(rows=[_bd("FUT", 0, 2, net=-1629.44)]), "USD")
     assert "statement basis" not in out
     assert "pre-wash-sale" not in out
     assert "Reconstructed FIFO from your own executions" in out
     # The settled windows keep the note that is true of them.
     assert "statement basis" in pdash.breakdown_table(
-        dd.BridgedWindow(rows=(_bd("FUT", 1, 0, net=100.0),)), "USD"
+        dd.BreakdownWindow(rows=(_bd("FUT", 1, 0, net=100.0),)), "USD"
     )
 
 
-def test_daily_is_the_first_window_option_not_a_separate_tab():
-    """All P&L under one tab, chosen by the selector, shortest window first (user)."""
+def test_pending_is_the_first_window_option_not_a_separate_tab():
+    """All P&L under one tab, chosen by the selector (user). The tab is named "Daily"
+    (operator 2026-09-24) and shows the pending window: not yet on a statement (#69)."""
     v = pdash.build_dashboard()
     assert list(v._window.options) == ["Daily", "Weekly", "Monthly", "YTD"]
     assert v._window.value == "Weekly"
 
 
-def test_selecting_daily_repaints_the_pane_from_the_held_snapshot():
+def test_selecting_pending_repaints_the_pane_from_the_held_snapshot():
     """A radio click must feel immediate — the data is already in memory."""
     v = pdash.build_dashboard()
     v.refresh(_snapshot(), now=_NOW)
     v._window.value = "Daily"
-    assert "Today —" in v._pnl_source_note.object
+    assert "Daily realised — non-Flex" in v._pnl_source_note.object
     assert isinstance(v._pnl_breakdown.object, str)
 
 
-def test_daily_draws_no_curve_and_no_settled_block():
-    """One day is a point, not a shape — and no statement covers today, so the
-    settled block would put a week's confirmed figures under a "Daily" heading."""
+def test_pending_draws_no_curve_and_no_settled_block():
+    """Pending executions have no day, so there is no curve to draw, and no statement
+    covers them, so the settled block would put confirmed figures under a pending one."""
     v = pdash.build_dashboard()
     v.refresh(_snapshot(), now=_NOW)
     v._window.value = "Daily"
@@ -1607,14 +1579,22 @@ def test_daily_draws_no_curve_and_no_settled_block():
     assert v._pnl_stats.object == ""
 
 
-def test_leaving_daily_clears_its_source_note():
-    """The note is about today only; it must not linger over a settled window."""
+def test_leaving_pending_clears_its_source_note():
+    """The note is about pending executions only; it must not linger over a dated window."""
     v = pdash.build_dashboard()
     v.refresh(_snapshot(), now=_NOW)
     v._window.value = "Daily"
     v._window.value = "Weekly"
     assert v._pnl_source_note.object == ""
-    assert "Today —" not in v._pnl_stats.object
+    assert "non-Flex" not in v._pnl_stats.object
+
+
+def test_the_dated_windows_say_which_statement_they_run_through():
+    """Gap #69: Weekly/Monthly/YTD are Flex alone, so they name Flex's newest day."""
+    v = pdash.build_dashboard()
+    v.refresh(_snapshot(), now=_NOW)
+    v._window.value = "Monthly"
+    assert "through 2026-08-05" in v._pnl_stats.object
 
 
 # -- The P&L pane's per-type detail -------------------------------------------
@@ -1639,7 +1619,7 @@ def test_the_pane_shows_money_counts_and_averages_together():
     Measured on this account's own year: FUT won 55% of trades and still lost money,
     while STK won 14% and lost less. Either figure in isolation misleads.
     """
-    win = dd.BridgedWindow(
+    win = dd.BreakdownWindow(
         rows=(
             _full_bd("FUT", -17015.98, 161517.42, -178533.40, 159, 132),
             _full_bd("STK", -3203.71, 11794.38, -27604.68, 14, 83),
@@ -1657,29 +1637,31 @@ def test_the_pane_states_that_net_and_lots_come_from_different_tables():
     Leaving a reader to discover that by subtraction is how a correct pair of numbers
     gets reported as a bug.
     """
-    out = pdash.breakdown_table(dd.BridgedWindow(rows=(_full_bd("FUT", 1.0, 1.0, 0.0, 1, 0),)))
+    out = pdash.breakdown_table(dd.BreakdownWindow(rows=(_full_bd("FUT", 1.0, 1.0, 0.0, 1, 0),)))
     assert "flex_trade" in out and "flex_lot" in out and "wash-sale" in out
 
 
 def test_the_pane_marks_an_incomplete_window():
     """Over-communicate rather than fail silently."""
-    win = dd.BridgedWindow(rows=(_full_bd("FUT", 1.0, 1.0, 0.0, 1, 0),), incomplete=True)
+    win = dd.PendingWindow(rows=(_full_bd("FUT", 1.0, 1.0, 0.0, 1, 0),), declined=("CL",))
     assert "incomplete" in pdash.breakdown_table(win)
 
 
 def test_an_absent_average_renders_a_dash_not_a_zero():
     """No winning lot means there is no average win; 0.00 would claim a break-even trade."""
-    out = pdash.breakdown_table(dd.BridgedWindow(rows=(_full_bd("STK", -10.0, 0.0, -10.0, 0, 3),)))
+    out = pdash.breakdown_table(
+        dd.BreakdownWindow(rows=(_full_bd("STK", -10.0, 0.0, -10.0, 0, 3),))
+    )
     assert "—" in out
 
 
 def test_an_empty_window_says_so():
     """A month with no closes must not render an empty table shell."""
-    assert "No closed trades" in pdash.breakdown_table(dd.BridgedWindow())
+    assert "No closed trades" in pdash.breakdown_table(dd.BreakdownWindow())
     assert "No closed trades" in pdash.breakdown_table(None)
 
 
-def test_the_daily_tab_emits_no_html_tags():
+def test_the_pending_tab_emits_no_html_tags():
     """`safe_markdown` escapes HTML, so a tag reaches the screen as literal text.
 
     Caught in a browser 2026-08-06 on the block this tab replaced: `<sub>` markup
@@ -1687,11 +1669,11 @@ def test_the_daily_tab_emits_no_html_tags():
     itself was correct — only the rendered page was wrong. The guard moves with the
     surface rather than being deleted with it.
     """
-    snap = _snap_with(day_rows=[_bd("FUT", 2, 0, net=1841.04)])
+    snap = _snap_with(rows=[_bd("FUT", 2, 0, net=1841.04)])
     for out in (
-        pdash.daily_table(snap, "USD"),
-        pdash.daily_heading(snap),
-        pdash.daily_heading(snap, stale=True),
+        pdash.pending_table(snap, "USD"),
+        pdash.pending_heading(snap),
+        pdash.pending_heading(snap, stale=True),
     ):
         assert "<" not in out and ">" not in out
 
@@ -1699,22 +1681,18 @@ def test_the_daily_tab_emits_no_html_tags():
 def test_the_week_tile_and_the_pnl_pane_report_the_same_week():
     """Two totals for one window on one screen is the worst failure available here.
 
-    Until 2026-08-06 the KPI tile read Flex-only (-6,175.88) while the P&L pane read the
-    bridged figure (-16,480.46) — a ten-thousand difference, visible side by side. Both
-    must now come from the same bridged window.
+    Until 2026-08-06 the KPI tile and the P&L pane read different weeks, ten thousand
+    apart, side by side. Since gap #69 both are Flex alone: the tile shows the settled
+    week and names the statement it runs through, as the pane does.
     """
-    week = dd.BridgedWindow(
-        rows=(
-            dd.TypeBreakdown("FUT", -13230.76, 4864.86, -18095.62, 5, 5, 0),
-            dd.TypeBreakdown("STK", -3249.70, 0.0, -3249.70, 0, 23, 0),
-        )
-    )
     v = pdash.build_dashboard()
-    snap = dd.DashboardSnapshot(as_of=_NOW, breakdowns={"week": week})
+    # Something IS pending, so a tile that added it back would show a different figure.
+    pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
+    snap = _snapshot(pending=pending)
     v.refresh(snap, now=_NOW)
-
-    assert v._tiles["realised_week"].value == pytest.approx(week.net, abs=0.005)
-    assert f"{week.net:,.2f}" in pdash.breakdown_table(week)
+    assert snap.week is not None
+    assert v._tiles["realised_week"].value == pytest.approx(snap.week.total, abs=0.005)
+    assert "2026-08-05" in v._tiles["realised_week"].label
 
 
 # -- Live quotes on the positions table ---------------------------------------

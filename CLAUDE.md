@@ -553,6 +553,15 @@ the fix that established this (75,480 → 2,910 tokens/session).
   wired to "cancel this", and cancelling stays behind `propose_cancel` and both gates.
   `DashboardSnapshot.orders` is `tuple | None` because `()` ("nothing resting") and a
   failed lookup are opposite claims — never render an empty book for an unknown one.
+  **Flex is the only source of a trade date (gap #69, operator 2026-09-24).** A live fill
+  carries a UTC time and no trade date, so it is **pending** if and only if its
+  `execution_id` is not yet a Flex `execution_key`, and pending realised P&L is its own
+  "Not yet on a statement" window (the P&L pane's **Daily** tab; its heading says "Not yet
+  on a statement · Flex through <date>", which can include an earlier day while a statement
+  is late), never placed in a dated window. Week / month / YTD, their stats, the curve and the
+  "Realised this week" tile are Flex alone and name the statement date they run through.
+  Never bucket a live fill by its UTC date, its ET date, or a calendar library: each
+  disagrees with IBKR's trade date (evening futures, CME holiday sessions).
   **The two realised figures on that screen are different quantities — never add them or
   "fix" one to match the other.** Ledger `realizedpnl` is today only; the week/month/YTD
   windows are Flex, which is T+1 and never includes today. They also use different day
@@ -582,8 +591,9 @@ the fix that established this (75,480 → 2,910 tokens/session).
   statement reproduced IBKR's `2` exactly and certified 77.185 for lots bought at 82.05 — and
   the pane turned the gap into a **+9,734.72 USD** claim that the unrealised P&L was "basis
   rather than market". Same quantity, different lots; no quantity comparison can see it. The
-  input is what closes it: the book is Flex through `flex_coverage().through` plus
-  `/iserver/account/trades` after it, keyed on **conid** (never symbol), and **fills that
+  input is what closes it: the book is every Flex execution plus the
+  `/iserver/account/trades` executions Flex does not have yet (by execution id, gap #69),
+  keyed on **conid** (never symbol), and **fills that
   could not be read (`None`, as against `()`) blank the column rather than certify the stored
   history**
 - **Futures contract identity (2026-09-10, gap #37):** a bare root (`ES`) keeps meaning the

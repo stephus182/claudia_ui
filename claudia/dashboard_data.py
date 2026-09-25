@@ -80,11 +80,21 @@ statement's `dateTime` is ET. One apparent `FUT` exception — 2026-05-25 00:06:
 05-26 — is Memorial Day: the session rolled to the next *trading* day, not the next
 calendar day, which is the same rule.
 
-**Nothing here needs replicating, and that is the point.** Every window in this module
-buckets on `trade_date`, so it inherits IBKR's session convention for free and by
-construction. Re-deriving a roll rule in Python would be a second, drifting definition of
-"day" sitting next to the authoritative one — the class of mistake the realised-P&L rule
-above already cost this project once.
+**Nothing here needs replicating, and that is the point.** Every dated window in this
+module is Flex alone and buckets on `trade_date`, so it inherits IBKR's session convention
+by construction. Re-deriving a roll rule in Python would be a second, drifting definition
+of "day" sitting next to the authoritative one — the class of mistake the realised-P&L
+rule above already cost this project once.
+
+**A live fill therefore has no day here at all (gap #69, operator 2026-09-24).** Flex is
+the only source of a trade date; `/iserver/account/trades` carries a UTC time and nothing
+else. Until 2026-09-24 the windows were "bridged" past Flex by bucketing live fills on
+their UTC date, which is not the trade date for a futures fill between 18:00 ET and UTC
+midnight (18:00-20:00 EDT, 18:00-19:00 EST): such a fill dropped out for a day, and a
+winter after-hours stock fill (19:00-20:00 EST) could be counted twice. Now an
+execution is **pending** if and only if its id is not yet a Flex `execution_key`
+(`settled_execution_ids`), and pending realised P&L is its own window (`pending_window`),
+never placed in a dated one.
 
 What the convention *does* change is what a reader should be told: after 18:00 ET a
 futures fill already belongs to tomorrow as far as these windows are concerned, while the
@@ -103,13 +113,13 @@ cost bases — but that difference has never been observed to move them apart, a
 
 ## The T+1 gap is real and is surfaced, not papered over
 
-Flex never has today. The live Client Portal rows (`source='live'`) carry **no
-`trade_date` at all**, by design: the CP timestamp is UTC, so a 20:56 ET fill reads as
-the next day and cannot be bucketed until the statement confirms it. So the
-Flex-derived windows exclude today, while the ledger figure includes it. Those two
-numbers have different as-of times; `FlexCoverage` carries both facts so the UI can
-say so. An unlabelled pair that disagrees is the exact failure this module exists to
-avoid.
+Flex never has today. A live fill carries **no trade date at all**: the CP timestamp is
+UTC, so a 20:56 ET fill reads as the next day, and IBKR states the trade date only in the
+statement. So the dated windows exclude everything not yet on a statement, while the
+ledger figure includes today. `FlexCoverage.through` says how far the statement reaches,
+and `pending_window` holds the executions it does not have yet, decided by execution id
+and carrying no day (gap #69). An unlabelled pair that disagrees is the exact failure
+this module exists to avoid.
 
 ## Currency
 
@@ -122,10 +132,11 @@ trades from 2024 and 2025 alongside the USD ones (measured 2026-08-04), even tho
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -829,11 +840,13 @@ def economic_entries(
     can see the difference. What closes it is the input, not the check — the fills have
     to be current.
 
-    So the book is assembled from two sources with one boundary between them: Flex owns
-    every day through `flex_coverage().through`, and `live_fills` — executions from
-    `/iserver/account/trades`, which carry their own conid — own every day after it. A
-    fill on a covered day is dropped as the duplicate it is. Nothing is matched on
-    symbol: a ticker is not a unique key, and the executions never make us guess.
+    So the book is assembled from two sources with one boundary between them, and the
+    boundary is the execution id (gap #69): Flex owns every execution it has, and
+    `live_fills` — executions from `/iserver/account/trades`, which carry their own conid —
+    add only those whose id is not yet a Flex key. A fill Flex already has is dropped as
+    the duplicate it is. No date is compared: a live fill's UTC date is not its trade
+    date. Nothing is matched on symbol: a ticker is not a unique key, and the executions
+    never make us guess.
 
     `live_fills` of `None` means the executions could not be read, which is a different
     claim from `()` ("there were none") and is answered with silence: stored history
@@ -853,13 +866,11 @@ def economic_entries(
         log.debug("Economic entries declined: live executions unavailable")
         return {}
 
-    # The Flex/live boundary. Flex states a day's trades T+1, so its newest trade date is
-    # the last day whose fills are already rows here; anything after it is the live feed's.
-    through = flex_coverage(conn).through
-    cutoff = through.strftime("%Y%m%d") if through else ""
+    # The Flex/live boundary, by execution id: a live fill Flex already has is a duplicate.
+    settled = settled_execution_ids(conn, (f.execution_id for f in live_fills))
     unsettled = sorted(
-        (f for f in live_fills if f.trade_day > cutoff),
-        key=lambda f: (f.trade_day, f.execution_id),
+        (f for f in live_fills if f.execution_id not in settled),
+        key=lambda f: (f.trade_time, f.execution_id),
     )
 
     entries: dict[int, float] = {}
@@ -1167,30 +1178,47 @@ def round_trip_stats(conn: sqlite3.Connection, start: date, end: date) -> RoundT
 
 @dataclass(frozen=True)
 class FlexCoverage:
-    """How far the Flex dataset reaches, and how much has not landed in it yet.
+    """How far the Flex dataset reaches: the T+1 gap made visible instead of implicit.
 
-    This is what makes the T+1 gap visible instead of implicit. `through` is the newest
-    Flex `trade_date_iso`; `live_pending` counts Client Portal rows that have no
-    statement yet. When `live_pending` is non-zero the Flex-derived windows are, by construction,
-    missing those fills — and the ledger figure beside them is not.
+    `through` is the newest Flex `trade_date_iso`. What has not landed in Flex yet is
+    `pending_window`'s, decided by execution id. A count of stored `source='live'` rows
+    used to sit here as "fills not yet in a statement"; it counted only rows written when
+    the model called `get_trades(source='live')`, which is not the pending set, and was
+    removed with gap #69.
     """
 
     through: date | None
-    live_pending: int
 
 
 def flex_coverage(conn: sqlite3.Connection) -> FlexCoverage:
-    """Newest Flex trade date and the count of live rows still awaiting a statement."""
+    """The newest Flex trade date, or None when the store holds no statement rows."""
     newest = conn.execute(
         "SELECT MAX(trade_date_iso) AS d FROM flex_trade WHERE source = 'flex'"
     ).fetchone()["d"]
-    pending = conn.execute("SELECT COUNT(*) AS n FROM flex_trade WHERE source = 'live'").fetchone()[
-        "n"
-    ]
-    return FlexCoverage(
-        through=date.fromisoformat(str(newest)) if newest else None,
-        live_pending=int(pending or 0),
+    return FlexCoverage(through=date.fromisoformat(str(newest)) if newest else None)
+
+
+def settled_execution_ids(conn: sqlite3.Connection, ids: Iterable[str]) -> frozenset[str]:
+    """The subset of `ids` IBKR has already put on a statement (gap #69).
+
+    An execution is settled if and only if its id is a `source='flex'` `execution_key`.
+    Flex's key is IBKR's `ibExecID`, the same dotted id `/iserver/account/trades` reports
+    as `execution_id` (measured 2026-09-24: 4 of 4 live ids from the 2026-09-15 capture
+    found as Flex keys; 0 Flex rows with an empty key). A `source='live'` row is our own
+    placeholder and settles nothing. Read-only: the Flex import and merge are untouched.
+    """
+    wanted = sorted(set(ids))
+    if not wanted:
+        return frozenset()
+    # One bound parameter holding the whole id list (SQLite's `json_each`), so the SQL
+    # text is fixed: nothing is ever interpolated into it, and no parameter-count limit
+    # applies however many executions are in view.
+    rows = conn.execute(
+        "SELECT execution_key FROM flex_trade WHERE source = 'flex'"
+        " AND execution_key IN (SELECT value FROM json_each(?))",
+        (json.dumps(wanted),),
     )
+    return frozenset(str(r["execution_key"]) for r in rows)
 
 
 # ── The snapshot the Panel layer reads ────────────────────────────────────────
@@ -1229,13 +1257,14 @@ class DashboardSnapshot:
     # under a YTD heading — caught in the Phase 3 smoke, and the reason these are keyed
     # rather than singular.
     stats: Mapping[str, RoundTripStats] = field(default_factory=dict)
-    # Per-asset-class breakdowns keyed "day"/"week"/"month"/"ytd". Unlike `stats` above
-    # these are BRIDGED: they include the days Flex has not delivered yet, so "day" is a
-    # real figure rather than a permanently empty one. The KPI strip reads day/week; the
-    # P&L pane reads month/ytd.
-    breakdowns: Mapping[str, BridgedWindow] = field(default_factory=dict)
+    # Per-asset-class breakdowns keyed "week"/"month"/"ytd": Flex alone, like `stats`
+    # above, because Flex is the only source of a trade date (gap #69).
+    breakdowns: Mapping[str, BreakdownWindow] = field(default_factory=dict)
     series: tuple[RealisedPoint, ...] = ()
     coverage: FlexCoverage | None = None
+    # The executions Flex has not settled yet, by execution id, with no day. None when the
+    # executions could not be read, which is not the same claim as an empty window.
+    pending: PendingWindow | None = None
     error: str | None = None
     identities: Mapping[int, ContractIdentity] = field(default_factory=dict)
 
@@ -1777,36 +1806,32 @@ def build_flex_sections(
     YTD heading puts a right number under a wrong label, which is the failure this
     project treats as worse than a missing number.
 
-    `reconstruction` is an optional `live_realised.Reconstruction`. When supplied, the
-    per-type breakdowns extend past Flex's coverage into the days it has not delivered —
-    which is what makes a *daily* win rate possible at all. Without it the breakdowns are
-    Flex-only, which is the correct behaviour for a session with no gateway.
+    `reconstruction` is an optional `live_realised.Reconstruction`. It feeds `pending`
+    only: the executions Flex has not settled, decided by id (gap #69). Every dated
+    section — windows, stats, breakdowns, series — is Flex alone, because Flex is the only
+    source of a trade date. Without a reconstruction `pending` is None ("could not look"),
+    never an empty window.
     """
     bounds = {
         "week": (week_start(today), today),
         "month": (month_start(today), today),
         "ytd": (year_start(today), today),
     }
-    # "day" is deliberately not in `bounds`: `realised_window` and `round_trip_stats` are
-    # Flex-only, and Flex never has today (it was two days behind on 2026-08-06). A
-    # Flex-derived "today" would always be empty, so the day window exists only in the
-    # bridged breakdowns below, which is the only place it can be accurate.
-    breakdown_bounds = {"day": (today, today), **bounds}
     coverage = flex_coverage(conn)
     return {
         **{name: realised_window(conn, lo, hi) for name, (lo, hi) in bounds.items()},
         "stats": {name: round_trip_stats(conn, lo, hi) for name, (lo, hi) in bounds.items()},
         "breakdowns": {
-            name: bridged_by_type(conn, lo, hi, reconstruction, coverage.through)
-            for name, (lo, hi) in breakdown_bounds.items()
+            name: BreakdownWindow(rows=realised_by_type(conn, lo, hi))
+            for name, (lo, hi) in bounds.items()
         },
-        # Bridged, not Flex-only: the curve must read the same source as the breakdown
-        # table it is drawn beneath. Flex is T+1 and never has today, so on a day the
-        # account traded, a Flex-only curve reports different money from the table above
-        # it — measured on screen 2026-09-23, the table at 6,050.39 and the curve at
-        # 3,127.43 for the same September window. Same cutoff, same reconstruction.
-        "series": bridged_series(conn, *bounds["ytd"], reconstruction, coverage.through),
+        # The curve reads the same source as the breakdown table it is drawn beneath:
+        # Flex alone. They disagreed on screen 2026-09-23 when the table was bridged and
+        # the curve was not; since gap #69 neither is bridged, so they agree by
+        # construction.
+        "series": realised_series(conn, *bounds["ytd"]),
         "coverage": coverage,
+        "pending": pending_window(conn, reconstruction),
     }
 
 
@@ -1841,68 +1866,6 @@ def weekly_series(points: tuple[RealisedPoint, ...]) -> tuple[RealisedPoint, ...
     for monday in sorted(totals):
         running += totals[monday]
         out.append(RealisedPoint(monday, totals[monday], running))
-    return tuple(out)
-
-
-def bridged_series(
-    conn: sqlite3.Connection,
-    start: date,
-    end: date,
-    reconstruction: Any = None,
-    coverage_through: date | None = None,
-) -> tuple[RealisedPoint, ...]:
-    """`realised_series` for the window, extended with the days Flex has not delivered.
-
-    **This exists so the realised curve and the table above it read the same source**
-    (found on screen 2026-09-23). The P&L pane's breakdown is `bridged_by_type` — Flex
-    through `coverage_through`, the live reconstruction after it — while the chart drew
-    `realised_series`, which is Flex alone. Flex is T+1 and *never* has today, so on any
-    day the account traded, the table and the curve beneath it reported different money.
-
-    Measured live that day against IBKR's own `/iserver/account/trades`: Flex covered
-    through 2026-09-22 and put the month at **3,127.43**; the reconstruction held
-    2026-09-23 at **+2,922.96**; the table showed **6,050.39** (FUT 6,071.70, STK -21.31)
-    and the chart showed 3,127.43. The figures were never wrong — the curve was reading
-    the wrong one of two correct sources.
-
-    Args:
-        conn: Read-only store connection.
-        start: First day of the window, inclusive.
-        end: Last day of the window, inclusive.
-        reconstruction: A `live_realised.Reconstruction`, or None to return Flex alone.
-            None is not a licence to invent data — it degrades to exactly what Flex knows.
-        coverage_through: The newest Flex `trade_date_iso`. Days after it come from the
-            reconstruction; days up to it come from Flex. **Nothing is taken from both.**
-
-    Returns:
-        Daily `RealisedPoint`s with a running total, ordered by day.
-
-    The cutoff rule is `bridged_by_type`'s, deliberately character for character, because
-    the two are read side by side and a difference between them would surface as the table
-    and the chart disagreeing — which is the defect this function was written to end. Days
-    after the cutoff cannot appear in Flex by construction (the cutoff *is* Flex's newest
-    day), so the merge below adds rather than replaces for the same reason that one does:
-    if that assumption ever breaks, both surfaces break identically and visibly, instead of
-    one of them quietly disagreeing.
-    """
-    flex = realised_series(conn, start, end)
-    if reconstruction is None:
-        return flex
-
-    cutoff = coverage_through.strftime("%Y%m%d") if coverage_through else ""
-    lo, hi = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
-    live_days = sorted({d for (d, _) in reconstruction.realised if lo <= d <= hi and d > cutoff})
-
-    daily: dict[date, float] = {p.day: p.realised for p in flex}
-    for compact in live_days:
-        day = date(int(compact[:4]), int(compact[4:6]), int(compact[6:8]))
-        daily[day] = daily.get(day, 0.0) + sum(reconstruction.by_type_for_day(compact).values())
-
-    out: list[RealisedPoint] = []
-    running = 0.0
-    for day in sorted(daily):
-        running += daily[day]
-        out.append(RealisedPoint(day, daily[day], running))
     return tuple(out)
 
 
@@ -2052,40 +2015,14 @@ def realised_by_type(conn: sqlite3.Connection, start: date, end: date) -> tuple[
 
 
 @dataclass(frozen=True)
-class BridgedWindow:
-    """Per-type realised performance over a window, Flex **plus** the days it lacks.
+class BreakdownWindow:
+    """Per-type realised performance over one dated window: Flex alone.
 
-    The Flex dataset is authoritative and always behind — measured 2026-08-06 it was two
-    days behind, so "today's win rate" read from Flex alone was not merely stale, it was
-    *empty*, and an empty window renders as a dash rather than as the +1,841.04 the
-    account had actually made. That is the gap this type closes.
-
-    `incomplete` is the honesty flag. It is set when a contract in the window could not be
-    reconstructed (its opening leg was outside the fill window), meaning the reconstructed
-    part is missing some closes. The figures shown are then a floor, not a total, and the
-    UI must say so — a silently-short number on a P&L surface is the failure this whole
-    module is written against.
+    Flex is the only source of a trade date (gap #69), so a dated window never includes a
+    fill Flex has not settled. Those are `PendingWindow`'s.
     """
 
     rows: tuple[TypeBreakdown, ...] = ()
-    bridged_days: tuple[str, ...] = ()
-    incomplete: bool = False
-    # Whether a reconstruction was available at all — NOT whether it found anything.
-    # `rows == ()` is otherwise two opposite claims wearing the same shape: "nothing
-    # closed" and "the gateway was shut, so the days Flex does not cover are unknowable".
-    # The day window is where that matters, because no statement ever covers today
-    # (IBKR publishes a day's trades T+1), so a gateway-down day window is *always* empty
-    # and would otherwise read as a flat, uneventful session. Same rule as
-    # `DashboardSnapshot.orders` being `tuple | None`: empty and unknown must not share a
-    # representation on a surface a trader acts on.
-    reconstructed: bool = False
-    # The window's last day — for the day window, the day it *is*. Carried so a heading
-    # can name the window it labels instead of deriving a date from `as_of`, which is a
-    # different clock reading: `as_of` is stamped when the poll COMPLETES, after
-    # `_read_flex` has already called `date.today()`, and a failed poll republishes the
-    # PREVIOUS `as_of` on purpose so staleness stays visible. Both make the two disagree —
-    # the first across a local midnight, the second for as long as polling is down.
-    day: date | None = None
 
     @property
     def net(self) -> float:
@@ -2097,57 +2034,74 @@ class BridgedWindow:
         return next((r for r in self.rows if r.asset_class == asset_class), None)
 
 
-def bridged_by_type(
-    conn: sqlite3.Connection,
-    start: date,
-    end: date,
-    reconstruction: Any = None,
-    coverage_through: date | None = None,
-) -> BridgedWindow:
-    """`realised_by_type` for the window, extended with the days Flex has not delivered.
+@dataclass(frozen=True)
+class PendingWindow:
+    """Realised performance of the executions Flex has not settled yet (gap #69).
+
+    Pending is decided by execution id alone (`settled_execution_ids`), so this window has
+    **no day**: it is "not yet on a statement", shown as its own line and never merged into
+    a dated window. The figures are reconstructed FIFO from the account's own executions
+    (`live_realised`), not settled by IBKR.
+
+    `incomplete` is the honesty flag: a contract with a pending execution could not be
+    reconstructed (its opening leg was outside the fill window), so its P&L is excluded and
+    the figures are a floor, not a total.
+
+    It carries no count of pending executions on purpose: the poller re-reads the fills
+    only when realised P&L or the date changes (`DashboardPoller._reconstruct`), so a
+    count could omit a recent opening fill. An opening fill realises nothing, so the
+    figures here are unaffected; a count would not be.
+    """
+
+    rows: tuple[TypeBreakdown, ...] = ()
+    declined: tuple[str, ...] = ()
+
+    @property
+    def incomplete(self) -> bool:
+        """Whether a pending execution belongs to a contract that could not be trusted."""
+        return bool(self.declined)
+
+    @property
+    def net(self) -> float:
+        """Realised across every asset class in the window."""
+        return round(sum(r.net for r in self.rows), 2)
+
+    def for_type(self, asset_class: str) -> TypeBreakdown | None:
+        """The row for one asset class, or None when nothing of it is pending."""
+        return next((r for r in self.rows if r.asset_class == asset_class), None)
+
+
+def pending_window(conn: sqlite3.Connection, reconstruction: Any) -> PendingWindow | None:
+    """The pending part of `reconstruction`, or None when there is no reconstruction.
+
+    None and an empty window are opposite claims, the same rule as
+    `DashboardSnapshot.orders`: None is "the executions could not be read", an empty
+    window is "Flex has every execution we can see".
 
     Args:
-        conn: Read-only store connection.
-        start: First day of the window, inclusive.
-        end: Last day of the window, inclusive.
-        reconstruction: A `live_realised.Reconstruction`, or None to return Flex alone.
-        coverage_through: The newest Flex `trade_date_iso`. Days after it are taken from
-            the reconstruction; days up to it are taken from Flex. **Nothing is taken from
-            both**, which is what stops a bridged window double-counting the moment Flex
-            catches up — the failure mode a naive "add today's live P&L" would hit the
-            following morning.
-
-    Returns:
-        A `BridgedWindow`. Rows are ordered by absolute net, largest first.
+        conn: Read-only store connection, for the settled-id lookup.
+        reconstruction: A `live_realised.Reconstruction`, or None.
     """
-    flex_rows = {r.asset_class: r for r in realised_by_type(conn, start, end)}
     if reconstruction is None:
-        return BridgedWindow(rows=tuple(flex_rows.values()), day=end)
-
-    cutoff = coverage_through.strftime("%Y%m%d") if coverage_through else ""
-    lo, hi = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
-    days = sorted({d for (d, _) in reconstruction.realised if lo <= d <= hi and d > cutoff})
-
-    merged: dict[str, TypeBreakdown] = dict(flex_rows)
-    for day in days:
-        for asset, net in reconstruction.by_type_for_day(day).items():
-            wins, losses, flat, gw, gl = reconstruction.stats_for(day, asset)
-            base = merged.get(asset)
-            merged[asset] = TypeBreakdown(
+        return None
+    ids = [f.execution_id for f in reconstruction.fills]
+    pending = reconstruction.pending(settled_execution_ids(conn, ids))
+    classes = set(pending.realised) | {t.asset_class for t in pending.round_trips}
+    rows = []
+    # Sorted before the stable sort by size below, so equal nets keep one order every poll.
+    for asset in sorted(classes):
+        wins, losses, flat, gross_win, gross_loss = pending.stats(asset)
+        rows.append(
+            TypeBreakdown(
                 asset_class=asset,
-                net=round((base.net if base else 0.0) + net, 2),
-                gross_win=round((base.gross_win if base else 0.0) + gw, 2),
-                gross_loss=round((base.gross_loss if base else 0.0) + gl, 2),
-                winners=(base.winners if base else 0) + wins,
-                losers=(base.losers if base else 0) + losses,
-                scratches=(base.scratches if base else 0) + flat,
+                net=round(pending.realised.get(asset, 0.0), 2),
+                gross_win=gross_win,
+                gross_loss=gross_loss,
+                winners=wins,
+                losers=losses,
+                scratches=flat,
             )
-
-    incomplete = any(lo <= d <= hi and d > cutoff for d in reconstruction.declined_days)
-    return BridgedWindow(
-        rows=tuple(sorted(merged.values(), key=lambda b: -abs(b.net))),
-        bridged_days=tuple(days),
-        incomplete=incomplete,
-        reconstructed=True,
-        day=end,
+        )
+    return PendingWindow(
+        rows=tuple(sorted(rows, key=lambda b: -abs(b.net))), declined=pending.declined
     )

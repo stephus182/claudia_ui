@@ -22,14 +22,12 @@ asserted here against figures obtained independently of this code:
 from __future__ import annotations
 
 import json
-from datetime import date
 from pathlib import Path
 
 import pytest
 
 from claudia.live_realised import (
     LiveFill,
-    days_after,
     parse_fills,
     reconstruct,
 )
@@ -63,6 +61,31 @@ def fills():
 def _conid(fills, symbol):
     """The conid the fixture uses for `symbol`."""
     return next(f.conid for f in fills if f.symbol == symbol)
+
+
+def _closed_on(result, utc_day, asset):
+    """Realised by the closing executions whose UTC timestamp falls on `utc_day`.
+
+    Test-side grouping only, and valid for THIS fixture: its one futures fill in the
+    18:00-20:00 ET window (ES, 2026-08-05 22:22:57 UTC) opens a short and realises nothing,
+    so every closing fill's UTC date equals its Flex trade date. The Flex-to-the-cent
+    assertions below would fail if that stopped being true. Production never groups by it.
+    """
+    by_id = {f.execution_id: f for f in result.fills}
+    return round(
+        sum(
+            amount
+            for eid, (cls, amount) in result.realised.items()
+            if cls == asset and by_id[eid].trade_time[:8] == utc_day
+        ),
+        2,
+    )
+
+
+def _ids_before(fills, utc_day):
+    """Execution ids of fills whose UTC timestamp is before `utc_day`: a stand-in for
+    "what Flex has settled", which in production is the store's execution keys."""
+    return frozenset(f.execution_id for f in fills if f.trade_time[:8] < utc_day)
 
 
 @pytest.fixture
@@ -124,7 +147,7 @@ def test_reconstruction_reproduces_flex_to_the_cent(fills, positions, day, asset
     590.68 for these two days — off by 4.60 and 0.12. Flex says -3,516.98 and 590.80.
     """
     result = reconstruct(fills, positions)
-    assert result.realised[(day, asset)] == pytest.approx(expected, abs=0.005)
+    assert _closed_on(result, day, asset) == pytest.approx(expected, abs=0.005)
 
 
 # ── Leg 2: agreement with ledger realizedpnl on today ────────────────────────
@@ -141,8 +164,9 @@ def test_todays_realised_matches_the_ledger(fills, positions):
     capture time — two vendor figures this reconstruction did not produce.
     """
     result = reconstruct(fills, positions)
-    assert result.total_for_day("20260806") == pytest.approx(1841.04, abs=0.005)
-    assert result.by_type_for_day("20260806") == {"FUT": pytest.approx(1841.04, abs=0.005)}
+    pending = result.pending(_ids_before(fills, "20260806"))
+    assert pending.realised == {"FUT": pytest.approx(1841.04, abs=0.005)}
+    assert not pending.incomplete
 
 
 def test_a_short_opened_and_closed_across_two_days_is_realised_on_the_closing_day():
@@ -179,8 +203,10 @@ def test_a_short_opened_and_closed_across_two_days_is_realised_on_the_closing_da
         ]
     )
     result = reconstruct(fills, {1: 0.0})
-    assert result.total_for_day("20260805") == 0.0
-    assert result.total_for_day("20260806") == pytest.approx(945.52, abs=0.005)
+    assert set(result.realised) == {"b"}
+    asset_class, amount = result.realised["b"]
+    assert asset_class == "FUT"
+    assert amount == pytest.approx(945.52, abs=0.005)
 
 
 # ── Leg 3: the trust check ───────────────────────────────────────────────────
@@ -195,14 +221,18 @@ def test_contracts_opened_before_the_window_are_declined(fills, positions):
     """
     result = reconstruct(fills, positions)
     assert set(result.declined) >= {"CRM", "GLD"}
-    assert "20260804" in result.declined_days
-    assert result.total_for_day("20260804") is None
+    stk = {f.execution_id for f in fills if f.symbol in ("CRM", "GLD")}
+    assert stk <= result.declined_executions
+    pending = result.pending(_ids_before(fills, "20260804"))
+    assert pending.incomplete
+    assert {"CRM", "GLD"} <= set(pending.declined)
 
 
 def test_a_declined_contract_contributes_nothing(fills, positions):
     """Excluded, not merely flagged — a flagged-but-included figure is still wrong."""
     result = reconstruct(fills, positions)
-    assert ("20260804", "STK") not in result.realised
+    assert all(cls != "STK" for cls, _ in result.realised.values())
+    assert all(t.asset_class != "STK" for t in result.round_trips)
 
 
 def test_trusted_contracts_survive_a_neighbours_decline(fills, positions):
@@ -212,7 +242,7 @@ def test_trusted_contracts_survive_a_neighbours_decline(fills, positions):
     the days that reconcile exactly.
     """
     result = reconstruct(fills, positions)
-    assert result.realised[("20260803", "FUT")] == pytest.approx(-3516.98, abs=0.005)
+    assert _closed_on(result, "20260803", "FUT") == pytest.approx(-3516.98, abs=0.005)
 
 
 def test_the_check_is_skipped_only_when_positions_are_not_supplied(fills):
@@ -229,28 +259,163 @@ def test_the_reconstruction_carries_the_fills_it_was_built_from(fills, positions
     about the same executions rather than two fetches taken moments apart.
     """
     result = reconstruct(fills, positions)
-    assert result.fills == tuple(sorted(fills, key=lambda f: (f.trade_day, f.execution_id)))
+    assert result.fills == tuple(sorted(fills, key=lambda f: (f.trade_time, f.execution_id)))
 
 
-# ── The gap the bridge has to cover ──────────────────────────────────────────
+# ── Pending: decided by execution key, never by a date (gap #69) ─────────────
 
 
-def test_the_gap_is_every_day_after_flex_not_just_today(fills):
-    """Flex reached 2026-08-04 while fills existed on 08-05 AND 08-06.
+def test_pending_is_every_execution_flex_has_not_settled(fills, positions):
+    """Flex reached 2026-08-04 while fills existed on 08-05 AND 08-06: both are pending.
 
     A bridge that assumed "today" would have left a whole trading day missing.
     """
-    assert days_after(date(2026, 8, 4), fills) == ("20260805", "20260806")
+    settled = _ids_before(fills, "20260805")
+    pending = reconstruct(fills, positions).pending(settled)
+    assert pending.fills == sum(1 for f in fills if f.execution_id not in settled)
+    assert pending.fills == 11
 
 
-def test_no_flex_coverage_at_all_means_every_day_qualifies(fills):
+def test_nothing_settled_means_every_execution_is_pending(fills, positions):
     """A store with no Flex data must not silently report an empty gap."""
-    assert days_after(None, fills)[0] == "20260803"
+    assert reconstruct(fills, positions).pending(frozenset()).fills == len(fills)
 
 
-def test_a_fully_covered_dataset_leaves_no_gap(fills):
-    """Once Flex catches up, the reconstruction must add nothing and double-count nothing."""
-    assert days_after(date(2026, 8, 6), fills) == ()
+def test_everything_settled_leaves_nothing_pending(fills, positions):
+    """Once Flex has every execution, the reconstruction adds nothing and double-counts
+    nothing."""
+    everything = frozenset(f.execution_id for f in fills)
+    pending = reconstruct(fills, positions).pending(everything)
+    assert pending.fills == 0
+    assert pending.realised == {}
+    assert pending.round_trips == ()
+    assert not pending.incomplete
+
+
+def _es(eid, side, price, trade_time):
+    """One raw ES execution, as `/iserver/account/trades` sends it."""
+    return {
+        "execution_id": eid,
+        "conid": 1,
+        "symbol": "ES",
+        "sec_type": "FUT",
+        "side": side,
+        "size": 1,
+        "price": str(price),
+        "net_amount": price * 50,
+        "commission": "2.24",
+        "trade_time": trade_time,
+    }
+
+
+def test_an_evening_future_not_in_flex_is_pending_whatever_its_utc_date():
+    """Gap #69, failure mode 1: the fill that used to drop out for a day.
+
+    Closed Mon 2026-09-21 at 18:30 EDT = 22:30 UTC, the same UTC day as Monday's statement
+    but trade date Tuesday. When Flex covered Monday, the old UTC-date cutoff called it
+    settled although Flex did not have it. Its execution id is not in Flex, so it is
+    pending: no date is consulted.
+    """
+    fills = parse_fills(
+        [
+            _es("open", "S", 7000.0, "20260921-14:00:00"),
+            _es("close", "B", 6990.0, "20260921-22:30:00"),
+        ]
+    )
+    result = reconstruct(fills, {1: 0.0})
+    pending = result.pending(frozenset({"open"}))
+    assert pending.fills == 1
+    assert pending.realised == {"FUT": pytest.approx(500.0 - 2.24 - 2.24, abs=0.005)}
+
+
+def test_an_execution_in_flex_is_settled_whatever_its_utc_date():
+    """Gap #69, failure mode 2: the fill that used to be counted twice.
+
+    An after-hours fill at 19:30 EST is the next UTC day but the same trade date, so Flex
+    has it while its UTC date is after Flex's newest day. Its id is in Flex, so it is
+    settled and contributes nothing to pending.
+    """
+    fills = parse_fills(
+        [
+            _es("open", "S", 7000.0, "20260105-15:00:00"),
+            _es("close", "B", 6990.0, "20260106-00:30:00"),
+        ]
+    )
+    pending = reconstruct(fills, {1: 0.0}).pending(frozenset({"open", "close"}))
+    assert pending.fills == 0
+    assert pending.realised == {}
+
+
+def test_pending_realised_sums_the_per_execution_reconstruction_exactly(fills, positions):
+    """Pending plus settled is the whole reconstruction: nothing created, nothing lost."""
+    result = reconstruct(fills, positions)
+    settled = _ids_before(fills, "20260805")
+    pending = result.pending(settled)
+    whole = sum(amount for _, amount in result.realised.values())
+    settled_part = sum(amount for eid, (_, amount) in result.realised.items() if eid in settled)
+    assert sum(pending.realised.values()) == pytest.approx(whole - settled_part, abs=0.005)
+
+
+def test_a_declined_contract_taints_pending_only_through_a_pending_execution(fills, positions):
+    """CRM and GLD are declined, but all their fills are on 08-04. With Flex through 08-04
+    they are settled, so the pending window is complete."""
+    pending = reconstruct(fills, positions).pending(_ids_before(fills, "20260805"))
+    assert not pending.incomplete
+    assert pending.declined == ()
+
+
+def test_pending_round_trips_are_counted_like_flex_lots():
+    """Win/loss counts come from the pending round trips, closing fill by closing fill."""
+    fills = parse_fills(
+        [
+            _es("o1", "S", 7000.0, "20260921-14:00:00"),
+            _es("c1", "B", 6990.0, "20260921-15:00:00"),
+            _es("o2", "S", 7000.0, "20260921-16:00:00"),
+            _es("c2", "B", 7010.0, "20260921-17:00:00"),
+        ]
+    )
+    pending = reconstruct(fills, {1: 0.0}).pending(frozenset({"o1", "o2"}))
+    wins, losses, flat, gross_win, gross_loss = pending.stats("FUT")
+    assert (wins, losses, flat) == (1, 1, 0)
+    assert gross_win == pytest.approx(495.52, abs=0.005)
+    assert gross_loss == pytest.approx(-504.48, abs=0.005)
+
+
+def test_a_declined_contract_that_closed_a_round_trip_contributes_nothing():
+    """Excluded, not merely flagged, when it really did realise something in the window.
+
+    The fixture's declined equities only open lots inside the window, so they never carry
+    realised P&L and cannot show this. Here ES closes a round trip (+495.52) but IBKR
+    reports a position of 2 where the fills rebuild 0: an earlier leg is missing, so the
+    contract is declined and its round trip must not reach any figure.
+    """
+    fills = parse_fills(
+        [_es("o", "S", 7000.0, "20260921-14:00:00"), _es("c", "B", 6990.0, "20260921-15:00:00")]
+    )
+    result = reconstruct(fills, {1: 2.0})
+    assert result.declined == ("ES",)
+    assert result.realised == {}
+    assert result.round_trips == ()
+    pending = result.pending(frozenset())
+    assert pending.realised == {}
+    assert pending.incomplete
+
+
+def test_a_fill_without_an_execution_id_is_dropped():
+    """Membership is decided by the id alone, so a fill without one cannot be placed.
+
+    Dropping it is the safe failure: its contract's reconstructed position then misses a
+    leg, so the trust check declines the contract rather than guessing.
+    """
+    raw = _es("x", "B", 7000.0, "20260921-14:00:00")
+    raw["execution_id"] = ""
+    assert parse_fills([raw]) == ()
+
+
+def test_a_live_fill_carries_a_time_and_no_date():
+    """Gap #69: the repo never derives a trade date. The UTC time only orders fills."""
+    assert "trade_time" in LiveFill.__dataclass_fields__
+    assert "trade_day" not in LiveFill.__dataclass_fields__
 
 
 # ── The `position` field trap ────────────────────────────────────────────────
@@ -304,8 +469,8 @@ def test_claudia_staged_fill_closed_the_short_and_realised_895_52(fills, positio
     `realizedPnl` at the moment of capture.
     """
     result = reconstruct(fills, positions)
-    assert result.total_for_day("20260806") == pytest.approx(1841.04, abs=0.005)
-    assert result.by_type_for_day("20260806") == {"FUT": pytest.approx(1841.04, abs=0.005)}
+    pending = result.pending(_ids_before(fills, "20260806"))
+    assert pending.realised == {"FUT": pytest.approx(1841.04, abs=0.005)}
 
 
 def test_only_order_ref_identifies_a_claudia_order():

@@ -57,6 +57,20 @@ in UTC (observed: `2026-08-04T00:56:35` was a Monday-session CL trade). IBKR sta
 authoritative `tradeDate` in the T+1 statement, which lands on the same row. All day / week /
 month aggregation buckets on `trade_date`, never on a parsed timestamp.
 
+**The dashboard follows the same rule for fills it reads live (gap #69, 2026-09-24).** An
+execution from `/iserver/account/trades` is **pending** if and only if its `execution_id` is
+not yet a `source='flex'` `execution_key` (`dashboard_data.settled_execution_ids`). The two
+ids are the same dotted string (measured 2026-09-24: 4 of 4 live ids found as Flex keys; no
+Flex row has an empty key). Pending realised P&L is its own window, "Not yet on a statement",
+and is never placed in a dated window, because placing it would need a trade date only the
+statement states. The rule it replaced compared the fill's UTC date with Flex's newest
+`tradeDate`: a futures fill between 18:00 ET (the next CME trade date) and UTC midnight
+dropped out for a day, and a winter after-hours stock fill (19:00-20:00 EST) could be counted
+twice. No calendar library is used to derive a trade date either: `exchange_calendars` and
+`pandas_market_calendars` both dated the tested holiday Globex sessions (Labor Day, the
+Sunday before Memorial Day, Juneteenth 2026) on the holiday, where CME assigns them to the
+next trade date (tested against CME's own holiday notices, 2026-09-24).
+
 **`store.db` is uploaded via `upload_account_sqlite`, not `upload_account_file`** — it runs in
 WAL mode, so a raw byte read can omit commits still sitting in `store.db-wal` and can tear
 mid-checkpoint. The consistent-snapshot path is verified by downloading the Drive copy back

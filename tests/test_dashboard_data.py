@@ -54,7 +54,7 @@ _TRADES = [
 # (trade_date YYYYMMDD, fifo_pnl_realized)
 # `asset_category` is on the REAL flex_lot — verified against the live store 2026-08-06
 # (FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a double weaker than its
-# dependency: it let `realised_by_type` and `bridged_by_type` pass here while failing
+# dependency: it let `realised_by_type` and the breakdown windows pass here while failing
 # against the real schema, which is exactly the class of gap this project has been bitten
 # by before.
 _LOTS = [
@@ -297,11 +297,10 @@ def test_win_rate_excludes_scratches_and_is_none_when_nothing_closed(store):
 # ── Flex coverage / the T+1 gap ───────────────────────────────────────────────
 
 
-def test_flex_coverage_reports_the_gap(store):
-    """`through` is the newest Flex date; `live_pending` counts unbucketed live fills."""
+def test_flex_coverage_reports_the_newest_statement_day(store):
+    """`through` is the newest Flex trade date, and a stored live row does not move it."""
     cov = dd.flex_coverage(store)
     assert cov.through == date(2026, 8, 6)
-    assert cov.live_pending == 1
 
 
 def test_flex_coverage_on_an_empty_store(tmp_path):
@@ -314,7 +313,7 @@ def test_flex_coverage_on_an_empty_store(tmp_path):
         )
     conn = dd.connect(path)
     try:
-        assert dd.flex_coverage(conn) == dd.FlexCoverage(through=None, live_pending=0)
+        assert dd.flex_coverage(conn) == dd.FlexCoverage(through=None)
     finally:
         conn.close()
 
@@ -328,7 +327,16 @@ def test_connect_is_read_only(store):
 def test_build_flex_sections_wires_every_window(store):
     """One threaded hop produces every section, all consistent."""
     s = dd.build_flex_sections(store, _TODAY)
-    assert set(s) == {"week", "month", "ytd", "stats", "breakdowns", "series", "coverage"}
+    assert set(s) == {
+        "week",
+        "month",
+        "ytd",
+        "stats",
+        "breakdowns",
+        "series",
+        "coverage",
+        "pending",
+    }
     assert s["week"].start == date(2026, 8, 3)
     assert s["month"].start == date(2026, 8, 1)
     assert s["ytd"].start == date(2026, 1, 1)
@@ -339,24 +347,17 @@ def test_build_flex_sections_wires_every_window(store):
     assert s["stats"]["ytd"].start == date(2026, 1, 1)
 
 
-def test_breakdowns_carry_a_day_window_that_the_flex_windows_cannot(store):
-    """`day` exists only among the breakdowns, and that asymmetry is the point.
-
-    `realised_window` and `round_trip_stats` are Flex-only, and Flex never has today — it
-    was two days behind on 2026-08-06. A Flex-derived "today" would therefore be
-    permanently empty, so the daily win rate the KPI strip needs can only come from a
-    bridged breakdown.
-    """
+def test_breakdowns_are_the_dated_flex_windows_only(store):
+    """Gap #69: no "day" window. Flex is the only source of a trade date, and a live fill
+    carries none, so every dated window is Flex alone. Pending fills are `pending`."""
     s = dd.build_flex_sections(store, _TODAY)
-    assert set(s["breakdowns"]) == {"day", "week", "month", "ytd"}
-    assert set(s["stats"]) == {"week", "month", "ytd"}  # no "day" here, deliberately
+    assert set(s["breakdowns"]) == {"week", "month", "ytd"}
+    assert set(s["stats"]) == {"week", "month", "ytd"}
 
 
-def test_breakdowns_are_flex_only_without_a_reconstruction(store):
-    """A logged-out session keeps its settled history instead of showing nothing."""
-    s = dd.build_flex_sections(store, _TODAY)
-    assert s["breakdowns"]["week"].bridged_days == ()
-    assert s["breakdowns"]["week"].incomplete is False
+def test_pending_is_unknown_without_a_reconstruction(store):
+    """No executions in hand is "we could not look", never "nothing pending"."""
+    assert dd.build_flex_sections(store, _TODAY)["pending"] is None
 
 
 def test_round_trip_stats_are_computed_per_window_not_reused(store):
@@ -572,10 +573,11 @@ def fills(tmp_path):
         w.execute(
             "CREATE TABLE flex_trade (conid TEXT, symbol TEXT, underlying_symbol TEXT,"
             " source TEXT, trade_date TEXT, trade_date_iso TEXT, date_time TEXT,"
-            " quantity REAL, trade_price REAL)"
+            " quantity REAL, trade_price REAL, execution_key TEXT)"
         )
         w.executemany(
-            "INSERT INTO flex_trade VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO flex_trade (conid, symbol, underlying_symbol, source, trade_date,"
+            " trade_date_iso, date_time, quantity, trade_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 # GLD: +60 @ 100, +40 @ 110. Today's -50 arrives as a live fill, not a row.
                 (
@@ -663,6 +665,18 @@ def fills(tmp_path):
                 ),
             ],
         )
+        # Every Flex row carries IBKR's execution id, as the real table does (no Flex row
+        # in the live store has an empty key, measured 2026-09-24). The two CL lots get the
+        # ids the "already covered" test hands back as live fills.
+        w.execute("UPDATE flex_trade SET execution_key = 'flex.' || rowid")
+        w.execute(
+            "UPDATE flex_trade SET execution_key = '20260807.90'"
+            " WHERE conid = '6' AND date_time = '20260807;150000'"
+        )
+        w.execute(
+            "UPDATE flex_trade SET execution_key = '20260807.91'"
+            " WHERE conid = '6' AND date_time = '20260807;150100'"
+        )
     conn = dd.connect(path)
     yield conn
     conn.close()
@@ -720,7 +734,7 @@ def test_fifo_open_average_handles_a_reversal_through_zero():
     assert average == pytest.approx(9.0)
 
 
-def _live_fill(conid, symbol, signed_quantity, price, day="20260810", seq="01"):
+def _live_fill(conid, symbol, signed_quantity, price, day="20260810", seq="01", hms="14:00:00"):
     """One execution as `/iserver/account/trades` reports it — conid and all."""
     return LiveFill(
         execution_id=f"{day}.{seq}",
@@ -731,7 +745,7 @@ def _live_fill(conid, symbol, signed_quantity, price, day="20260810", seq="01"):
         price=price,
         commission=0.0,
         multiplier=1000.0 if symbol == "CL" else 1.0,
-        trade_day=day,
+        trade_time=f"{day}-{hms}",
     )
 
 
@@ -785,10 +799,11 @@ def test_economic_entry_declines_when_the_live_fills_are_unknown(fills):
 
 
 def test_economic_entry_ignores_fills_the_statement_already_covers(fills):
-    """Flex owns everything through its coverage date; a fill from there is a duplicate.
+    """A live fill whose execution id is already in Flex is the duplicate it is.
 
-    The CL lots of 2026-08-07 are in the fixture as Flex rows. Handing them back as live
-    fills must change nothing — counting both would double the position and decline it.
+    The CL lots of 2026-08-07 are in the fixture as Flex rows, keyed `20260807.90` and
+    `.91`. Handing them back as live fills must change nothing: counting both would double
+    the position and decline it. Decided by the id (gap #69), never by the date.
     """
     settled = [
         _live_fill(6, "CL", 1.0, 77.47, day="20260807", seq="90"),
@@ -796,6 +811,19 @@ def test_economic_entry_ignores_fills_the_statement_already_covers(fills):
     ]
     entries = dd.economic_entries(fills, [_entry_pos(6, "CL", 2.0)], settled)
     assert entries[6] == pytest.approx(77.185)
+
+
+def test_economic_entry_counts_an_evening_fill_flex_does_not_have(fills):
+    """Gap #69: the fill the old UTC-date cutoff dropped for a day.
+
+    Flex reaches 2026-08-07. A CL buy at 22:30 UTC on 08-07 (18:30 EDT, trade date 08-08)
+    carries the UTC date 08-07, so "UTC date after Flex's newest day" called it settled
+    although Flex does not have it. Its id is not a Flex key, so it is in the book: the
+    position reconstructs to IBKR's 3 instead of being declined.
+    """
+    evening = [_live_fill(6, "CL", 1.0, 80.0, day="20260807", seq="99", hms="22:30:00")]
+    entries = dd.economic_entries(fills, [_entry_pos(6, "CL", 3.0)], evening)
+    assert entries[6] == pytest.approx((77.47 + 76.90 + 80.0) / 3)
 
 
 def test_economic_entry_from_flex_alone(fills):
@@ -1500,135 +1528,136 @@ def test_averages_are_none_rather_than_zero_when_absent(tmp_path):
     assert opt.average_win is None and opt.average_loss is None
 
 
-# -- bridged_by_type: Flex plus the days it has not delivered -----------------
+# -- Pending: the executions Flex has not settled, decided by id (gap #69) ------
 
 
-def _bridge_rec(**kw):
-    """A stand-in Reconstruction with just the surface `bridged_by_type` consumes."""
-    from types import SimpleNamespace
+def _keyed_db(tmp_path, keys):
+    """A store whose flex_trade holds `keys` as settled executions, plus one live row."""
+    path = tmp_path / "keyed.db"
+    with sqlite3.connect(path) as w:
+        w.execute("CREATE TABLE flex_trade (execution_key TEXT, source TEXT)")
+        w.executemany("INSERT INTO flex_trade VALUES (?, 'flex')", [(k,) for k in keys])
+        w.execute("INSERT INTO flex_trade VALUES ('live-only', 'live')")
+    return dd.connect(path)
 
-    base: dict[str, Any] = {
-        "realised": {},
-        "declined_days": frozenset(),
-        "by_type": {},
-        "stats": {},
+
+def test_settled_ids_are_the_ones_flex_has(tmp_path):
+    """Exactly the requested ids present as `source='flex'` keys: nothing else."""
+    conn = _keyed_db(tmp_path, ["a", "b"])
+    assert dd.settled_execution_ids(conn, ["a", "c"]) == frozenset({"a"})
+
+
+def test_a_stored_live_row_does_not_settle_an_execution(tmp_path):
+    """A `source='live'` row is our own placeholder, not IBKR's statement."""
+    conn = _keyed_db(tmp_path, ["a"])
+    assert dd.settled_execution_ids(conn, ["live-only"]) == frozenset()
+
+
+def test_no_ids_asks_nothing(tmp_path):
+    """An empty fill window is answered without a query, and answered empty."""
+    assert dd.settled_execution_ids(_keyed_db(tmp_path, ["a"]), []) == frozenset()
+
+
+def _es_raw(eid, side, price, hms, day="20260921"):
+    """One raw ES execution, as `/iserver/account/trades` sends it."""
+    return {
+        "execution_id": eid,
+        "conid": 1,
+        "symbol": "ES",
+        "sec_type": "FUT",
+        "side": side,
+        "size": 1,
+        "price": str(price),
+        "net_amount": price * 50,
+        "commission": "2.24",
+        "trade_time": f"{day}-{hms}",
     }
-    base.update(kw)
-
-    return SimpleNamespace(
-        realised=base["realised"],
-        declined_days=base["declined_days"],
-        by_type_for_day=lambda d: base["by_type"].get(d, {}),
-        stats_for=lambda d, a: base["stats"].get((d, a), (0, 0, 0, 0.0, 0.0)),
-    )
 
 
-def test_the_bridge_adds_days_flex_has_not_delivered(tmp_path):
-    """Flex was two days behind on 2026-08-06; the week was wrong by 10k without this."""
-    rec = _bridge_rec(
-        realised={("20260806", "FUT"): 1841.04},
-        by_type={"20260806": {"FUT": 1841.04}},
-        stats={("20260806", "FUT"): (2, 0, 0, 1841.04, 0.0)},
+def _es_reconstruction(ibkr_position=0.0, day="20260921"):
+    """Two ES round trips: +495.52 closed by `c1`, -504.48 closed by `c2`."""
+    from claudia.live_realised import parse_fills, reconstruct
+
+    fills = parse_fills(
+        [
+            _es_raw("o1", "S", 7000.0, "14:00:00", day),
+            _es_raw("c1", "B", 6990.0, "15:00:00", day),
+            _es_raw("o2", "S", 7000.0, "16:00:00", day),
+            _es_raw("c2", "B", 7010.0, "22:30:00", day),
+        ]
     )
-    w = dd.bridged_by_type(
-        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
-    )
+    return reconstruct(fills, {1: ibkr_position})
+
+
+def test_the_pending_window_holds_what_flex_has_not_settled(tmp_path):
+    """Flex has the first round trip; the second (closed 18:30 EDT) is pending."""
+    w = dd.pending_window(_keyed_db(tmp_path, ["o1", "c1", "o2"]), _es_reconstruction())
+    assert w is not None
     fut = w.for_type("FUT")
     assert fut is not None
-    assert w.bridged_days == ("20260806",)
-    assert fut.net == pytest.approx(-2926.18 + 1841.04, abs=0.005)
-    assert (fut.winners, fut.losers) == (1 + 2, 2 + 0)
-
-
-def test_a_day_flex_already_covers_is_never_double_counted(tmp_path):
-    """The failure a naive "add today's live P&L" hits the morning Flex catches up.
-
-    `coverage_through` is the cutoff: days up to it come from Flex, days after it from
-    the reconstruction, and nothing is taken from both.
-    """
-    rec = _bridge_rec(
-        realised={("20260804", "FUT"): 590.80},
-        by_type={"20260804": {"FUT": 590.80}},
-        stats={("20260804", "FUT"): (1, 1, 0, 1945.28, -1354.48)},
-    )
-    w = dd.bridged_by_type(
-        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
-    )
-    assert w.bridged_days == ()
-    assert _breakdown(w, "FUT").net == pytest.approx(-2926.18, abs=0.005)
-
-
-def test_a_declined_contract_marks_the_window_incomplete(tmp_path):
-    """A short total on a P&L surface must announce itself.
-
-    The reconstruction excludes contracts it could not match, so the bridged figure is a
-    floor rather than a total, and the UI has to say so.
-    """
-    rec = _bridge_rec(
-        realised={("20260806", "FUT"): 100.0},
-        by_type={"20260806": {"FUT": 100.0}},
-        stats={("20260806", "FUT"): (1, 0, 0, 100.0, 0.0)},
-        declined_days=frozenset({"20260806"}),
-    )
-    w = dd.bridged_by_type(
-        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
-    )
-    assert w.incomplete is True
-
-
-def test_a_decline_outside_the_window_does_not_flag_it(tmp_path):
-    """Otherwise every window inherits every problem the fill history ever had."""
-    rec = _bridge_rec(declined_days=frozenset({"20260701"}))
-    w = dd.bridged_by_type(
-        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
-    )
+    assert fut.net == pytest.approx(-504.48, abs=0.005)
+    assert (fut.winners, fut.losers) == (0, 1)
     assert w.incomplete is False
 
 
-def test_without_a_reconstruction_the_window_is_flex_alone(tmp_path):
-    """A gateway-down session still shows its settled history rather than nothing."""
-    w = dd.bridged_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
-    assert w.bridged_days == () and w.incomplete is False
-    assert _breakdown(w, "FUT").net == pytest.approx(-2926.18, abs=0.005)
+def test_nothing_settled_puts_every_round_trip_in_pending(tmp_path):
+    """A store with none of these executions: the whole reconstruction is pending."""
+    w = dd.pending_window(_keyed_db(tmp_path, []), _es_reconstruction())
+    assert w is not None
+    assert w.net == pytest.approx(495.52 - 504.48, abs=0.005)
 
 
-def test_a_window_records_whether_a_reconstruction_was_available(tmp_path):
-    """ "Nothing closed" and "we could not look" are opposite claims on a P&L surface.
+def test_everything_settled_leaves_an_empty_pending_window(tmp_path):
+    """Once Flex has every execution, pending is empty: known, and nothing in it."""
+    w = dd.pending_window(_keyed_db(tmp_path, ["o1", "c1", "o2", "c2"]), _es_reconstruction())
+    assert w is not None
+    assert w.rows == ()
 
-    Both arrive as a window with no rows, so without this flag the Daily window would assert
-    "no round trips today" during a gateway outage — the one day it cannot know that.
+
+def test_a_declined_contract_with_a_pending_execution_marks_pending_incomplete(tmp_path):
+    """IBKR says 2 where the fills rebuild 0: ES is declined, so pending is a floor."""
+    w = dd.pending_window(_keyed_db(tmp_path, []), _es_reconstruction(ibkr_position=2.0))
+    assert w is not None
+    assert w.incomplete is True
+    assert w.declined == ("ES",)
+    assert w.rows == ()
+
+
+def test_pending_rows_have_a_stable_order_when_nets_tie(tmp_path):
+    """Largest absolute net first, then by asset class: the same data always renders the
+    same table. Built from a set, equal nets could swap places between polls."""
+    from types import SimpleNamespace
+
+    from claudia.live_realised import PendingRealised
+
+    pending = PendingRealised(realised={"STK": 10.0, "FUT": -10.0, "OPT": 10.0})
+    rec = SimpleNamespace(fills=(), pending=lambda settled: pending)
+    w = dd.pending_window(_keyed_db(tmp_path, []), rec)
+    assert w is not None
+    assert [r.asset_class for r in w.rows] == ["FUT", "OPT", "STK"]
+
+
+def test_no_reconstruction_means_the_pending_window_is_unknown(tmp_path):
+    """None, not an empty window: the executions could not be read."""
+    assert dd.pending_window(_keyed_db(tmp_path, []), None) is None
+
+
+def test_the_flex_windows_ignore_pending_fills_entirely(tmp_path):
+    """A dated window is Flex alone whatever is pending: nothing is placed by a guessed day.
+
+    The reconstruction holds two ES round trips on 2026-08-05, none of which Flex has.
+    The old bridge added them to the week by their UTC date; now they are pending only.
     """
-    conn = _breakdown_db(tmp_path)
-    assert dd.bridged_by_type(conn, date(2026, 8, 7), date(2026, 8, 7)).reconstructed is False
-    assert (
-        dd.bridged_by_type(
-            conn, date(2026, 8, 7), date(2026, 8, 7), _bridge_rec(), date(2026, 8, 4)
-        ).reconstructed
-        is True
-    )
-
-
-def test_a_reconstruction_that_found_nothing_is_still_a_reconstruction(tmp_path):
-    """A quiet day is an answer. The flag reports reachability, not activity."""
-    w = dd.bridged_by_type(
-        _breakdown_db(tmp_path), date(2026, 8, 7), date(2026, 8, 7), _bridge_rec(), date(2026, 8, 4)
-    )
-    assert w.rows == () and w.bridged_days == ()
-    assert w.reconstructed is True
-
-
-def test_a_type_traded_only_live_still_gets_a_row(tmp_path):
-    """Today's first-ever trade in a class must appear, not wait for the statement."""
-    rec = _bridge_rec(
-        realised={("20260806", "OPT"): 42.0},
-        by_type={"20260806": {"OPT": 42.0}},
-        stats={("20260806", "OPT"): (1, 0, 0, 42.0, 0.0)},
-    )
-    w = dd.bridged_by_type(
-        _breakdown_db(tmp_path), date(2026, 8, 6), date(2026, 8, 6), rec, date(2026, 8, 4)
-    )
-    assert _breakdown(w, "OPT").net == pytest.approx(42.0)
-    assert _breakdown(w, "OPT").win_rate == pytest.approx(100.0)
+    _breakdown_db(tmp_path).close()
+    with sqlite3.connect(tmp_path / "bd.db") as w:
+        w.execute("ALTER TABLE flex_trade ADD COLUMN execution_key TEXT")
+    conn = dd.connect(tmp_path / "bd.db")
+    rows = dd.realised_by_type(conn, date(2026, 8, 3), date(2026, 8, 6))
+    s = dd.build_flex_sections(conn, date(2026, 8, 6), _es_reconstruction(day="20260805"))
+    assert s["breakdowns"]["week"].rows == rows
+    assert s["series"] == dd.realised_series(conn, date(2026, 1, 1), date(2026, 8, 6))
+    assert s["pending"] is not None
+    assert s["pending"].net == pytest.approx(495.52 - 504.48, abs=0.005)
 
 
 # -- Live quotes: /iserver/marketdata/snapshot --------------------------------
@@ -1927,77 +1956,21 @@ def test_parse_orders_keeps_a_mapping_that_is_not_a_dict():
     assert len(orders) == 1 and orders[0].order_id == "314390101"
 
 
-# -- bridged_series: the curve must read the same source as the table ---------
+# -- The curve reads the same source as the table beside it ---------------------
 #
-# Found on screen 2026-09-23. The P&L pane's table is bridged — Flex through
-# `coverage.through`, the live reconstruction after it — while the chart drew
-# `realised_series`, which is Flex alone. Flex is T+1 and never has today, so on a day
-# the account traded, the table and the curve beneath it reported different money.
-#
-# Verified live that day against IBKR's own `/iserver/account/trades`: Flex covered
-# through 2026-09-22 at 3,127.43 for the month; the reconstruction held 2026-09-23 at
-# +2,922.96; 3,127.43 + 2,922.96 = 6,050.39, which is exactly what the table showed
-# (FUT 6,071.70, STK -21.31). The chart showed 3,127.43.
-#
-# The cutoff rule here is `bridged_by_type`'s, deliberately identical: days up to the
-# cutoff come from Flex, days after it from the reconstruction, and NOTHING is taken from
-# both. That is what stops the curve double-counting the morning Flex catches up.
+# Found on screen 2026-09-23: the table was Flex plus a reconstruction while the curve was
+# Flex alone, so they reported different money for one window. Since gap #69 both are
+# Flex alone (pending fills are their own line), so they agree by construction; this pins
+# it so a future change to one cannot leave the other behind.
 
 
-def test_the_series_includes_a_day_flex_has_not_delivered(tmp_path):
-    """A day the account traded must appear on the curve before Flex settles it."""
-    rec = _bridge_rec(
-        realised={("20260806", "FUT"): 1841.04},
-        by_type={"20260806": {"FUT": 1841.04}},
-    )
-    pts = dd.bridged_series(
-        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
-    )
-    assert [p.day for p in pts][-1] == date(2026, 8, 6)
-    assert pts[-1].realised == pytest.approx(1841.04, abs=0.005)
-
-
-def test_a_day_flex_already_covers_is_never_double_counted_in_the_series(tmp_path):
-    """The curve's version of the trap `bridged_by_type` already guards."""
-    rec = _bridge_rec(
-        realised={("20260804", "FUT"): 590.80},
-        by_type={"20260804": {"FUT": 590.80}},
-    )
-    pts = dd.bridged_series(
-        _breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6), rec, date(2026, 8, 4)
-    )
-    aug4 = next(p for p in pts if p.day == date(2026, 8, 4))
-    # Flex alone for that day: 590.80 + -3249.70. The reconstruction must add nothing.
-    assert aug4.realised == pytest.approx(590.80 - 3249.70, abs=0.005)
-
-
-def test_the_series_total_equals_the_bridged_window_it_is_drawn_beside(tmp_path):
-    """The invariant that binds the curve to the table: same window, same money.
-
-    This is the assertion that would have caught the live defect. It is stated against
-    `bridged_by_type`, the table's own source, rather than against a hand-computed
-    number — so the two can never drift apart again without failing here.
-    """
+def test_the_series_total_equals_the_table_it_is_drawn_beside(tmp_path):
+    """Same window, same money: the invariant that binds the curve to the table."""
     conn = _breakdown_db(tmp_path)
-    rec = _bridge_rec(
-        realised={("20260806", "FUT"): 1841.04},
-        by_type={"20260806": {"FUT": 1841.04}},
-    )
-    start, end, cutoff = date(2026, 8, 3), date(2026, 8, 6), date(2026, 8, 4)
-    pts = dd.bridged_series(conn, start, end, rec, cutoff)
-    table = dd.bridged_by_type(conn, start, end, rec, cutoff)
-    assert sum(p.realised for p in pts) == pytest.approx(
-        sum(r.net for r in table.rows), abs=0.005
-    ), "the curve and the table beside it report different money for the same window"
-
-
-def test_without_a_reconstruction_the_series_is_flex_alone(tmp_path):
-    """No live data in hand is not a licence to invent any — it degrades to Flex."""
-    conn = _breakdown_db(tmp_path)
-    start, end = date(2026, 8, 3), date(2026, 8, 6)
-    assert dd.bridged_series(conn, start, end, None, date(2026, 8, 4)) == dd.realised_series(
-        conn, start, end
-    )
+    s = dd.build_flex_sections(conn, date(2026, 8, 6), None)
+    week = s["breakdowns"]["week"]
+    pts = [p for p in s["series"] if date(2026, 8, 3) <= p.day <= date(2026, 8, 6)]
+    assert sum(p.realised for p in pts) == pytest.approx(week.net, abs=0.005)
 
 
 # -- weekly_series: one resolution per view -----------------------------------

@@ -172,7 +172,7 @@ class DashboardPoller:
         self._account_id: str | None = None
         self._base_currency: str | None = None
         self._snapshot = empty_snapshot(error="Dashboard has not polled yet.")
-        # Cached reconstruction plus the (realised P&L, trade day) it was built for. See
+        # Cached reconstruction plus the (realised P&L, local date) it was built for. See
         # `_reconstruct`: refetching fills on every poll would defy IBKR's "once per
         # session" advice for the trades endpoint.
         self._fill_cache: Any = None
@@ -255,9 +255,9 @@ class DashboardPoller:
         week/month/YTD rather than showing an empty dashboard.
 
         What the session state additionally decides is whether the **reconstruction** can
-        run. Bridging Flex's gap needs live fills and live positions, so a logged-out
-        session gets Flex-only breakdowns — correct, and visibly missing today rather
-        than wrong about it.
+        run. The pending window (executions Flex has not settled, gap #69) needs live
+        fills and live positions, so a logged-out session gets `pending=None`, shown as
+        "could not be read" rather than as an empty window.
         """
         # The account half runs ONLY against a session the owner has confirmed.
         #
@@ -355,7 +355,7 @@ class DashboardPoller:
         None.
 
         `None` from `_read_flex` is the failure signal; a *successful* read always
-        returns all six keys, so it can never be confused with an empty result.
+        returns every key, so it can never be confused with an empty result.
         """
         if flex is not None:
             return flex
@@ -368,6 +368,7 @@ class DashboardPoller:
             "series": previous.series,
             "coverage": previous.coverage,
             "breakdowns": previous.breakdowns,
+            "pending": previous.pending,
         }
 
     def _reconstruct(self, positions: tuple[Position, ...], ledger: Any) -> Any:
@@ -384,14 +385,16 @@ class DashboardPoller:
 
         The trigger is the ledger's `realizedpnl`, and it is exact rather than a
         heuristic: that figure moves **if and only if** a position closed, which is the
-        only event that can change a reconstruction's output. An *opening* fill changes no
-        realised P&L, so not refetching for it costs nothing. The trade day is also
-        watched, because the day boundary re-buckets the same fills into a new window.
+        only event that can change the reconstruction's *realised* output. An *opening*
+        fill changes no realised P&L, so not refetching for it costs no figure; it does
+        mean the cached fills can omit a recent opening fill, which is why the pending
+        window shows no execution count (`dashboard_data.PendingWindow`). The local date
+        is also watched, so each new day starts from a fresh read.
 
-        Never raises: this only *extends* the dashboard past Flex's coverage, so losing it
-        must cost the bridged days and nothing else. On failure the previous
-        reconstruction is kept if there is one — it is still the best available answer —
-        and the breakdowns fall back to Flex-only when there is not.
+        Never raises: this only feeds the pending window (executions Flex has not settled,
+        gap #69), so losing it must cost that window and nothing else. On failure the
+        previous reconstruction is kept if there is one — it is still the best available
+        answer — and the pending window reads "could not be read" when there is not.
 
         The trust check is given IBKR's own position quantities; a reconstruction
         validated against numbers it produced itself would validate nothing.

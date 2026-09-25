@@ -131,13 +131,16 @@ _NON_FUTURES = ("STK", "OPT", "FUND", "CASH")
 # Every realised window the P&L pane can show, shortest first. One mapping, so a window's
 # realised total and its round-trip counts can never be picked from different windows.
 #
-# "Daily" is not like the other three and the pane branches on it: no statement covers
-# today (IBKR publishes a day's trades T+1), so the day window has no Flex
-# `RealisedWindow` behind it — `getattr(snapshot, "day")` does not exist and is never
-# reached — no curve and no settled block. It is the fill reconstruction alone, read from
-# `breakdowns["day"]`. See `_refresh_daily`.
-_DAILY_LABEL = "Daily"
-_WINDOW_KEYS = {_DAILY_LABEL: "day", "Weekly": "week", "Monthly": "month", "YTD": "ytd"}
+# "Daily" is not like the other three and the pane branches on it (gap #69). It shows the
+# PENDING window: the executions IBKR has not put on a statement yet, decided by execution
+# id, which carry NO day because Flex is the only source of a trade date. The operator
+# named the tab "Daily" (2026-09-24): most days that is exactly today's closes, and the
+# heading under the tab states what it really holds ("Not yet on a statement · Flex through
+# <date>"), which can include an earlier day while a statement is late. So it has no
+# `RealisedWindow`, no curve and no settled block; it is `snapshot.pending` alone. See
+# `_refresh_pending`.
+_PENDING_LABEL = "Daily"
+_WINDOW_KEYS = {_PENDING_LABEL: "pending", "Weekly": "week", "Monthly": "month", "YTD": "ytd"}
 _WINDOW_LABELS = tuple(_WINDOW_KEYS)
 
 
@@ -204,19 +207,19 @@ def short_reason(error: str | None) -> str:
 
 # Where the numbers in a breakdown table came from, stated under the table itself.
 #
-# `_FLEX_SOURCE_NOTE` is true of the settled windows and FALSE of the day window, which
-# is why it is a parameter rather than a constant baked into the renderer. Nothing in the
-# day window comes from either table: no statement covers today, so every figure there is
-# reconstructed from the account's own executions. Shipped with the wrong note attached
-# on 2026-08-07 and caught in the browser the same hour — the table was right and the
-# sentence under it was a confident lie about where the money came from.
+# `_FLEX_SOURCE_NOTE` is true of the settled windows and FALSE of the pending window,
+# which is why it is a parameter rather than a constant baked into the renderer. Nothing
+# pending comes from either table: no statement covers those executions yet, so every
+# figure there is reconstructed from the account's own executions. Shipped with the wrong
+# note attached on 2026-08-07 and caught in the browser the same hour — the table was right
+# and the sentence under it was a confident lie about where the money came from.
 _FLEX_SOURCE_NOTE = (
     "_Net is `flex_trade` (statement basis); gross and counts are `flex_lot` "
     "(pre-wash-sale lot detail). They are different quantities and need not tie._"
 )
 _LIVE_SOURCE_NOTE = (
     "_Reconstructed FIFO from your own executions — not `flex_trade`, not `flex_lot`, "
-    "not settled by IBKR. No statement covers today._"
+    "not settled by IBKR. No statement covers these executions yet._"
 )
 
 
@@ -274,32 +277,31 @@ def breakdown_table(window: Any, currency: str = "", note: str = _FLEX_SOURCE_NO
     return "\n".join(lines)
 
 
-def daily_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> str:
-    """The Daily window's heading: which day it is, where the figures come from, and age.
+def pending_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> str:
+    """The Daily tab's heading: what it holds, where the figures come from, and age.
 
-    The date is the day window's **own** `day`, so the heading always names the window it
-    labels. It was derived from `as_of` until the review that followed this function's
-    first commit, on the reasoning that both come from the same local clock — which is
-    true and not sufficient, because they are read at different moments. `as_of` is
-    stamped when the poll *completes*, after `_read_flex` has already called
-    `date.today()`, so a poll straddling local midnight dates them a day apart; and a
-    failed poll republishes the *previous* `as_of` deliberately, so while polling is down
-    the heading would have kept naming an older day than the figures under it. `as_of`
-    remains the fallback for a snapshot carrying no day window at all, where there is no
-    better answer and no figures to mislabel.
+    Gap #69 (operator 2026-09-24): the executions here are the ones whose id is not yet a
+    Flex `execution_key`: non-Flex daily realised trades, in the operator's words. They
+    carry **no trade date** — IBKR states one only in its statement — so the heading says
+    "non-Flex", names the statement they are measured against, and never says "today". The Daily tab before gap #69 did, by dating fills on their UTC
+    timestamp, which is not the trade date for a futures fill between 18:00 ET and UTC
+    midnight.
 
     A stale line is prepended rather than the table being blanked, and this is the one
     place the module's usual "stale account data is not drawn at all" rule is traded for a
-    warning. A resting order can fill while our gateway is unreachable, so a stale daily
+    warning. A resting order can fill while our gateway is unreachable, so a stale pending
     figure is a **floor**, not a wrong number — and a floor stated as a floor is worth
     more than a blank. It must never be left to pass as current, which is what the line
     says.
     """
     if snapshot is None:
-        return "**Today**"
-    window = snapshot.breakdowns.get("day")
-    stamp = window.day if window is not None and window.day else None
-    day = (stamp or snapshot.as_of.astimezone().date()).strftime("%a %Y-%m-%d")
+        return "**Daily realised — non-Flex**"
+    cov = snapshot.coverage
+    against = (
+        f"Flex through **{cov.through.isoformat()}**"
+        if cov is not None and cov.through is not None
+        else "no statement in the local store yet"
+    )
     warn = (
         "**⚠ Not current — the gateway is unreachable or the last poll failed. Any fill "
         "since then is missing, so the figures below are a floor.**\n\n"
@@ -307,58 +309,54 @@ def daily_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> st
         else ""
     )
     return (
-        f"{warn}**Today — {day}** · reconstructed from your own executions. "
-        "IBKR publishes a day's trades T+1, so no statement covers today."
+        f"{warn}**Daily realised — non-Flex** · not yet on a statement ({against}) · "
+        "reconstructed from your own executions. IBKR states a fill's trade date only in "
+        "its statement (T+1), so these carry no trade date yet and appear in no dated "
+        "window."
     )
 
 
-def daily_table(snapshot: DashboardSnapshot | None, currency: str = "") -> str:
-    """The Daily window of the P&L pane: today's realised P&L per asset class.
+def pending_table(snapshot: DashboardSnapshot | None, currency: str = "") -> str:
+    """The Daily tab of the P&L pane: realised P&L not yet on a statement, per type.
 
-    Renders the same nine-column template as the pane's other three windows, against the
-    `"day"` bridged window. That window is **non-Flex by construction**: IBKR publishes a
-    day's trades T+1, so no statement covers today, and `build_flex_sections` builds the
-    day window as `(today, today)`. Every figure here therefore comes from
-    `live_realised.Reconstruction` — reconstructed from the account's own executions and
-    not settled by anyone.
+    Renders the same nine-column template as the pane's other three windows, against
+    `snapshot.pending` — **non-Flex by construction**: every figure is reconstructed from
+    the account's own executions (`live_realised`) and not settled by anyone.
 
-    Three states, and the middle one is the reason this function exists rather than a bare
-    `breakdown_table` call:
+    Four states, and the middle two are the reason this function exists rather than a
+    bare `breakdown_table` call:
 
     * **never polled** — say so;
-    * **no reconstruction** — the gateway was unreachable, so today is not merely empty,
-      it is *unknowable*. Saying "no closed round trips today" here would be a fabricated
-      claim of a flat session, and it is the one day no statement can contradict. Gated on
-      `BridgedWindow.reconstructed`, which reports reachability, not activity;
+    * **unreadable** (`pending is None`) — the gateway was unreachable, so what is pending
+      is *unknowable*. Saying "nothing pending" here would be a fabricated claim;
     * **declined** — the executions were read, but a contract's reconstructed position
       disagreed with IBKR's, so every figure it touched was withdrawn. With no rows left
       there is nothing for `breakdown_table`'s row-level ⚠ to mark, and an empty window
-      says "quiet day" to anyone reading it. On 2026-08-10 that is exactly what it said,
-      on a session that realised +8,441.12 — seven CL executions, all of them declined
-      because the fill window opens mid-position;
-    * **reconstruction, nothing closed** — a genuine quiet day, stated as one.
+      reads as "nothing happened". On 2026-08-10 that is exactly what it said, on a session
+      that realised +8,441.12 — seven CL executions, all declined because the fill window
+      opened mid-position;
+    * **nothing pending** — every closed round trip in view is already on a statement.
     """
     if snapshot is None or not snapshot.breakdowns:
-        return "_Daily P&L: waiting for the first poll…_"
-    day = snapshot.breakdowns.get("day")
-    if day is None or not day.reconstructed:
+        return "_Pending P&L: waiting for the first poll…_"
+    pending = snapshot.pending
+    if pending is None:
         return (
-            "**Daily P&L cannot be computed — live fill data unavailable.**\n\n"
-            "_Today's realised P&L is reconstructed from your own executions, which come "
-            "from the IBKR gateway. IBKR publishes a day's trades T+1, so no statement "
-            "covers today either._"
+            "**Pending P&L cannot be computed — live fill data unavailable.**\n\n"
+            "_It is reconstructed from your own executions, which come from the IBKR "
+            "gateway. No statement covers them yet either._"
         )
-    if not day.rows and day.incomplete:
+    if not pending.rows and pending.incomplete:
         return (
-            "**Today's realised P&L could not be reconstructed.**\n\n"
-            "_At least one contract traded today could not be reproduced from the "
-            "executions in view — its position does not agree with IBKR's — so every "
-            "figure it touched was withdrawn rather than reported short. This is not a "
-            "flat day: the account ledger below carries IBKR's own realised figure._"
+            "**Pending realised P&L could not be reconstructed.**\n\n"
+            "_At least one contract with executions not yet on a statement could not be "
+            "reproduced from the executions in view — its position does not agree with "
+            "IBKR's — so every figure it touched was withdrawn rather than reported short. "
+            "The account ledger below carries IBKR's own realised figure._"
         )
-    if not day.rows:
-        return "_No closed round trips today._"
-    return breakdown_table(day, currency, note=_LIVE_SOURCE_NOTE)
+    if not pending.rows:
+        return "_No closed round trips awaiting a statement._"
+    return breakdown_table(pending, currency, note=_LIVE_SOURCE_NOTE)
 
 
 def freshness_line(snapshot: DashboardSnapshot, now: datetime | None = None) -> str:
@@ -428,15 +426,11 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
     cov = snapshot.coverage
     if cov is None or cov.through is None:
         return "_Realised windows: no Flex data in the local store._"
-    pending = (
-        f" · **{cov.live_pending} fill(s) today not yet in a statement**"
-        if cov.live_pending
-        else ""
-    )
     return (
         f"_Realised week/month/YTD come from the Flex dataset through "
         f"**{cov.through.isoformat()}** (IBKR publishes a day's trades T+1, so today is "
-        f"never in it){pending}, and are "
+        f"never in it) — executions not yet on a statement are under **Daily**, "
+        f"never in these windows — and are "
         f"IBKR's **statement** figures. The tile above is today only, on IBKR's "
         f"**real-time average cost**. The two do not add up and are not meant to: they "
         f"cover different periods, and they use different day boundaries — Flex buckets "
@@ -1333,16 +1327,16 @@ def stats_markdown(
 ) -> str:
     """The **settled** statement view: what Flex has confirmed, and nothing newer.
 
-    ⚠ **This is not the window's realised P&L**, and must never be labelled as if it
-    were. Flex is T+1 and structurally cannot contain the most recent day(s) — on
-    2026-08-06 it was two days behind, so this block read -6,175.88 for a week whose
-    actual realised was -16,480.46. Until that date it was titled "realised & round
-    trips" and sat directly beneath the bridged total, presenting two figures for one
-    window that differed by ten thousand. Caught by rendering the page in a browser.
+    Flex is T+1 and structurally cannot contain the most recent day(s): on 2026-08-06 it
+    was two days behind, so this block read -6,175.88 for a week whose realised was
+    -16,480.46. Until that date it was titled "realised & round trips" and sat beneath a
+    total that included unsettled fills, two figures for one window that differed by ten
+    thousand. Caught by rendering the page in a browser.
 
-    It is retained, relabelled, because "what has IBKR confirmed in a statement" is a
-    genuinely different and useful question from "what did I make this week" — the
-    bridged `breakdown_table` above answers the second.
+    Since gap #69 (2026-09-24) every dated figure on the pane is settled — the breakdown
+    table above is Flex too — and what is not yet on a statement is the Daily tab,
+    never added to a dated one. So this block and the table agree on their source; the
+    footnote says so and points at Pending for the rest.
 
     Two different bases appear here on purpose, and are labelled as such:
 
@@ -1385,8 +1379,8 @@ def stats_markdown(
     lines += [
         "",
         "_**Settled only** — every figure here comes from the Flex statement dataset "
-        "(IBKR publishes a day's trades T+1, so today is never in it). Not the window's "
-        "realised P&L — the bridged table above is._\n\n"
+        "(IBKR publishes a day's trades T+1, so today is never in it). Executions not yet "
+        "on a statement are under **Daily**._\n\n"
         "_Totals are execution-basis (`flex_trade`, the authoritative settled figure). "
         "Win/loss counts and gross figures are lot-basis (`flex_lot`), pre-wash-sale, "
         "and must never be read as realised P&L._",
@@ -1500,7 +1494,8 @@ class DashboardView:
         # Tiles only. A win-rate grid lived at the right end of this row until 2026-08-07
         # and was removed as clutter (user): a small table wedged beside five Number
         # indicators reads as an afterthought, and neither figure it carried is lost —
-        # the week is in the P&L pane, and the day is now its Daily window.
+        # the week is in the P&L pane, and what is not yet on a statement is its Pending
+        # window (gap #69; it was a Daily window until 2026-09-24).
         self._freshness = safe_markdown("_Account data: waiting for the first poll…_")
         self.kpi_strip = pn.Column(
             pn.Row(*self._tiles.values(), sizing_mode="stretch_width"),
@@ -1611,9 +1606,9 @@ class DashboardView:
         self._orders_status = safe_markdown("_Orders: waiting for the first poll…_")
 
         # Sits between the window selector and the breakdown, and carries text only for
-        # the Daily window: which day it is, that the figures are reconstructed from the
-        # account's own executions, and whether they are current. Empty for the other
-        # three, whose provenance is the settled block further down.
+        # the Daily tab: which statement it is measured against, that the figures are
+        # reconstructed from the account's own executions, and whether they are current.
+        # Empty for the other three, whose provenance is the settled block further down.
         self._pnl_source_note = safe_markdown("")
 
         self._window.param.watch(self._on_window_change, "value")
@@ -1796,18 +1791,25 @@ class DashboardView:
         # An empty week has no currency of its own (`currency_label` returns ""), so the
         # account's own base currency stands in — known, not assumed.
         #
-        # The figure is the **bridged** week, not `snapshot.week`. Both exist and they are
-        # different numbers: Flex alone read -6,175.88 for this week while the bridged
-        # total was -16,480.46, because Flex had not yet delivered 08-05's CL loss. Until
-        # 2026-08-06 this tile showed the Flex figure while the P&L pane below showed the
-        # bridged one — two totals for the same window, side by side, differing by ten
-        # thousand. Caught only by rendering the page in a browser; no unit test compares
-        # two surfaces against each other.
+        # The figure is the Flex week, `snapshot.week`, the same source as the P&L pane's
+        # Weekly window, and the tile names the statement it runs through (gap #69). Until
+        # 2026-08-06 the tile and the pane read different weeks, ten thousand apart, side
+        # by side; from then until 2026-09-24 both were "bridged" with live fills dated by
+        # their UTC timestamp, which is not the trade date. Executions not yet on a
+        # statement are under the pane's Daily tab, never added to a dated figure.
         week = snapshot.week
-        bridged = snapshot.breakdowns.get("week")
         week_ccy = (week.currency_label or ccy) if week else ccy
-        week_total = bridged.net if bridged and bridged.rows else (week.total if week else None)
-        self._set(self._tiles["realised_week"], week_total, f"{{value:+,.2f}} {week_ccy}".rstrip())
+        cov = snapshot.coverage
+        self._tiles["realised_week"].label = (
+            f"Realised this week · through {cov.through.isoformat()}"
+            if cov is not None and cov.through is not None
+            else "Realised this week"
+        )
+        self._set(
+            self._tiles["realised_week"],
+            week.total if week else None,
+            f"{{value:+,.2f}} {week_ccy}".rstrip(),
+        )
         self._freshness.object = freshness_line(snapshot, now)
 
     @staticmethod
@@ -1887,17 +1889,17 @@ class DashboardView:
             **{c: NumberFormatter(format=f) for c, f in _money_formats(currency).items()},
         }
 
-    def _refresh_daily(self, snapshot: DashboardSnapshot, now: datetime | None) -> None:
-        """The Daily selection: today's realised P&L per asset class, and nothing else.
+    def _refresh_pending(self, snapshot: DashboardSnapshot, now: datetime | None) -> None:
+        """The Daily selection (the pending window): realised P&L not yet on a statement.
 
         Three of the pane's surfaces are deliberately blanked rather than filled:
 
-        * **the curve** — one day is a point, not a shape, and the YTD series it would be
-          sliced from is Flex, which does not contain today at all;
+        * **the curve** — pending executions carry no day (gap #69: Flex is the only
+          source of a trade date), so there is nothing to place on a dated axis;
         * **its note**, which exists only to explain a curve that is not drawn;
         * **the settled block** — it reports what IBKR has confirmed in a statement, and
-          no statement covers today. Rendering it here would put a week's settled figures
-          under a heading saying "Daily".
+          no statement covers these executions. Rendering it here would put settled
+          figures under a heading saying "Not yet on a statement".
 
         The currency is *not* blanked, and is the reason this reads `self._snapshot` —
         the snapshot **before** `without_account` stripped the ledger — so the money keeps
@@ -1907,8 +1909,8 @@ class DashboardView:
         """
         original = self._snapshot or snapshot
         ccy = original.ledger.currency if original.ledger else ""
-        self._pnl_source_note.object = daily_heading(original, self.is_stale(original, now))
-        self._pnl_breakdown.object = daily_table(original, ccy)
+        self._pnl_source_note.object = pending_heading(original, self.is_stale(original, now))
+        self._pnl_breakdown.object = pending_table(original, ccy)
         self._pnl_chart.object = None
         self._pnl_chart_note.object = ""
         self._pnl_stats.object = ""
@@ -1923,8 +1925,8 @@ class DashboardView:
         stated. Same rule as the KPI strip: substitute a *known* currency or none.
         """
         label = str(self._window.value)
-        if label == _DAILY_LABEL:
-            self._refresh_daily(snapshot, now)
+        if label == _PENDING_LABEL:
+            self._refresh_pending(snapshot, now)
             return
         self._pnl_source_note.object = ""
         window, points, stats = self._selected_window(snapshot)
@@ -1944,8 +1946,14 @@ class DashboardView:
             self._pnl_chart_note.object = realised_chart_note(
                 points, ccy, unit="week" if _WINDOW_KEYS.get(label) == "ytd" else "day"
             )
+            cov = snapshot.coverage
+            through = (
+                f" through {cov.through.isoformat()}"
+                if cov is not None and cov.through is not None
+                else ""
+            )
             self._pnl_stats.object = stats_markdown(
-                window, stats, f"{label} — settled by IBKR statement", currency=ccy
+                window, stats, f"{label} — settled by IBKR statement{through}", currency=ccy
             )
         key = _WINDOW_KEYS.get(label)
         self._pnl_breakdown.object = breakdown_table(
