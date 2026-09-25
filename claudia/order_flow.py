@@ -40,7 +40,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from ibkr_core_mcp.order_confirm import change_value_text, price_text_safe
+from ibkr_core_mcp.order_confirm import _DIALOG_TIMEOUT_S, change_value_text, price_text_safe
 
 from claudia.contract_identity import contract_identity
 
@@ -74,6 +74,54 @@ CANCEL_ORDER_LABEL = "CANCEL ORDER"
 MODIFY_ORDER_LABEL = "MODIFY ORDER"
 DISCARD_LABEL = "DISCARD"
 KEEP_ORDER_LABEL = "KEEP ORDER"
+
+# Gate 2's confirm button, per path, as the core draws it (`order_confirm` passes these as
+# literal `confirm_label=` arguments, not constants, so they are copied here and held to the
+# installed core's source by tests/security/test_cross_repo_contract.py). The pre-gate
+# message and the place card name THIS button — gap #67 defect (2): all three messages
+# promised `SEND TO IBKR`, which exists only on the place dialog. The dialog timeout is a
+# core constant and is imported rather than copied, for the same reason.
+GATE2_SEND_LABEL = "SEND TO IBKR"
+GATE2_MODIFY_LABEL = "MODIFY ORDER"
+GATE2_CANCEL_LABEL = "CANCEL ORDER"
+
+# What the Gate 2 timeout leaves in place, per path — gap #67 defect (3): "confirm or it
+# auto-cancels" read as "the order gets cancelled" on the cancel path, where the timeout KEEPS
+# the order. Each says what is true of the order afterwards, never what the dialog does.
+TIMEOUT_LEAVES_PLACE = "nothing is sent"
+TIMEOUT_LEAVES_MODIFY = "the order stays as it is"
+TIMEOUT_LEAVES_CANCEL = "the order stays working"
+
+
+def _gates_notice(confirm_label: str, timeout_leaves: str) -> str:
+    """The two-gate paragraph of every pre-gate "Initiating…" message.
+
+    Names the Gate 2 button that performs THIS write and states what the dialog's timeout
+    leaves in place. One definition for the three paths, so they cannot drift apart again
+    (they had: the same three lines, copied into each, all naming the place dialog's button).
+    """
+    return (
+        "**Gate 1 — Touch ID:** A macOS authentication prompt will appear. "
+        "Use Touch ID or your system password if prompted.\n\n"
+        "**Gate 2 — Confirmation dialog:** A separate window will appear on your desktop "
+        f"with full order details and a **{confirm_label}** button. You have "
+        f"{_DIALOG_TIMEOUT_S} seconds; if the dialog times out, **{timeout_leaves}**."
+    )
+
+
+def _card_warning(card_label: str, gate2_label: str, nothing: str) -> str:
+    """The ⚠️ line under every proposal card: what the chat button starts, and that nothing
+    happens at IBKR until the named Gate 2 button is clicked there.
+
+    One definition for the three cards. Before 2026-09-25 each card had its own copy: the
+    place card said "You can still cancel at that step" (the word the operator ruled out for
+    anything but cancelling a live order) and the modify card "You can still discard at
+    that step" — "discard" being the chat card's button, not Gate 2's LEAVE UNCHANGED.
+    """
+    return (
+        f"⚠️ **Clicking '{card_label}' starts IBKR confirmation (Touch ID, then a "
+        f"confirmation dialog). Nothing is {nothing} until you click {gate2_label} there.**"
+    )
 
 
 _MISSING_PRICE = "⚠️ NO %s PRICE GIVEN"
@@ -577,10 +625,7 @@ def _format_order_summary(proposal: dict[str, Any], contract_label: str | None =
         lines.append(rth_line)
     if reason:
         lines.append(f"*Reason:* {reason}")
-    lines.append(
-        f"⚠️ **Clicking '{STAGE_ORDER_LABEL}' will initiate IBKR confirmation "
-        "(Touch ID + visual confirmation dialog). You can still cancel at that step.**"
-    )
+    lines.append(_card_warning(STAGE_ORDER_LABEL, GATE2_SEND_LABEL, "sent"))
     # Blank line between entries, not a bare newline: Markdown renders a single newline
     # as a space, which fused every field of this text into one paragraph (gap #44).
     return "\n\n".join(lines)
@@ -707,9 +752,17 @@ _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
         "confirmation-dialog failure. {detail}",
     ),
     (
+        # The core raises "Order cancelled by user" for BOTH the abandon button and the
+        # AppKit auto-dismiss: `_order_dialog.py` prints CANCELLED for either (its docstring
+        # says the timeout "counts as cancel") and `order_confirm` maps anything but
+        # CONFIRMED to that one message; its own "Confirmation dialog timed out" is raised
+        # only when the dialog SUBPROCESS overruns by 10 s. So ClaudIA cannot tell the two
+        # apart (core register F21) and says so. "Cancelled" is not a word for this: found
+        # live 2026-09-25 on the cancel path, where "Order was cancelled at the confirmation
+        # dialog" read as the order being cancelled when the timeout had KEPT it (gap #67).
         lambda m, _t: "cancelled by user" in m.lower(),
         "gate2",
-        "Order was cancelled at the confirmation dialog.",
+        "Declined or timed out at the confirmation dialog — nothing was sent to IBKR.",
     ),
     (
         lambda m, _t: "declined ibkr order reply" in m.lower(),
@@ -720,7 +773,8 @@ _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
     (
         lambda m, _t: "timed out" in m.lower() and "touch" not in m.lower(),
         "timeout",
-        "Confirmation dialog timed out (60 seconds) — no action was taken.",
+        # `{timeout_s}` is the core's constant, substituted when the sentence is built.
+        "Confirmation dialog timed out ({timeout_s} seconds) — nothing was sent to IBKR.",
     ),
     (
         lambda m, t: "authentication" in m.lower() or "touch" in m.lower() or "HumanAuth" in t,
@@ -752,7 +806,9 @@ def _classify_execution_error(exc: Exception) -> str:
             # `.replace`, never `.format`: it is a no-op on the rows that carry no
             # placeholder, whereas `.format` would raise on the first sentence that ever
             # contains a brace for its own sake.
-            return sentence.replace("{detail}", error_msg)
+            return sentence.replace("{detail}", error_msg).replace(
+                "{timeout_s}", str(_DIALOG_TIMEOUT_S)
+            )
     return f"{exc_type}: {error_msg}"
 
 
@@ -760,9 +816,10 @@ def _refusal_stage(exc: Exception) -> str:
     """Which gate refused, for the decision row a refusal writes (#50, 2026-09-11).
 
     `validation` (ibkr_core_mcp refused the write itself — no human and no broker said no),
-    `gate2` (DO NOT SEND / KEEP ORDER / LEAVE UNCHANGED), `reply` (a declined precaution),
-    `timeout` (the dialog auto-cancelled), `touch_id` (denied, unavailable, or timed out at
-    the sensor), `rejected` (IBKR 403), or `other`. Read off the same table as
+    `gate2` (DO NOT SEND / KEEP ORDER / LEAVE UNCHANGED — or the dialog's own auto-dismiss,
+    which the core reports the same way, register F21), `reply` (a declined precaution),
+    `timeout` (the dialog subprocess overran, leaving the order as it was), `touch_id`
+    (denied, unavailable, or timed out at the sensor), `rejected` (IBKR 403), or `other`. Read off the same table as
     `_classify_execution_error`, so the stage and the sentence cannot disagree.
     """
     error_msg = str(exc)
@@ -1518,11 +1575,7 @@ async def _execute_staged_order_core(
     await send_status(
         (
             f"Initiating staging for **{action_str} {qty} {symbol}** ({sec_type})…\n\n"
-            f"**Gate 1 — Touch ID:** A macOS authentication prompt will appear. "
-            f"Use Touch ID or your system password if prompted.\n\n"
-            f"**Gate 2 — Confirmation dialog:** A separate window will appear on your desktop "
-            f"with full order details and a **SEND TO IBKR** button. "
-            f"You have 60 seconds to confirm or it auto-cancels."
+            + _gates_notice(GATE2_SEND_LABEL, TIMEOUT_LEAVES_PLACE)
         ),
         "System",
     )
@@ -1836,10 +1889,7 @@ def _format_cancel_summary(proposal: dict[str, Any], contract_label: str | None 
         lines.append(f"**Contract:** {contract_label}")
     if reason:
         lines.append(f"*Reason:* {reason}")
-    lines.append(
-        f"⚠️ **Clicking '{CANCEL_ORDER_LABEL}' will initiate IBKR confirmation "
-        "(Touch ID + visual confirmation dialog). You can still keep the order at that step.**"
-    )
+    lines.append(_card_warning(CANCEL_ORDER_LABEL, GATE2_CANCEL_LABEL, "cancelled"))
     return "\n\n".join(lines)
 
 
@@ -1866,11 +1916,7 @@ async def _execute_cancel_order_core(
     await send_status(
         (
             f"Initiating cancellation for order **{order_id}** ({symbol})…\n\n"
-            f"**Gate 1 — Touch ID:** A macOS authentication prompt will appear. "
-            f"Use Touch ID or your system password if prompted.\n\n"
-            f"**Gate 2 — Confirmation dialog:** A separate window will appear on your desktop "
-            f"with full order details and a **SEND TO IBKR** button. "
-            f"You have 60 seconds to confirm or it auto-cancels."
+            + _gates_notice(GATE2_CANCEL_LABEL, TIMEOUT_LEAVES_CANCEL)
         ),
         "System",
     )
@@ -2043,10 +2089,7 @@ def _format_modify_summary(proposal: dict[str, Any], contract_label: str | None 
         lines.append("(no changed fields listed)")
     if reason:
         lines.append(f"*Reason:* {reason}")
-    lines.append(
-        f"⚠️ **Clicking '{MODIFY_ORDER_LABEL}' will initiate IBKR confirmation "
-        "(Touch ID + visual confirmation dialog). You can still discard at that step.**"
-    )
+    lines.append(_card_warning(MODIFY_ORDER_LABEL, GATE2_MODIFY_LABEL, "changed"))
     return "\n\n".join(lines)
 
 
@@ -2085,11 +2128,7 @@ async def _execute_modify_order_core(
     await send_status(
         (
             f"Initiating modification for order **{order_id}** ({symbol})…\n\n"
-            f"**Gate 1 — Touch ID:** A macOS authentication prompt will appear. "
-            f"Use Touch ID or your system password if prompted.\n\n"
-            f"**Gate 2 — Confirmation dialog:** A separate window will appear on your desktop "
-            f"with full order details and a **SEND TO IBKR** button. "
-            f"You have 60 seconds to confirm or it auto-cancels."
+            + _gates_notice(GATE2_MODIFY_LABEL, TIMEOUT_LEAVES_MODIFY)
         ),
         "System",
     )

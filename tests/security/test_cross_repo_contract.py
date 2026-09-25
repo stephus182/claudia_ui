@@ -55,7 +55,7 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
         "GDriveCache",
         "SQLiteStore",
     ),
-    "ibkr_core_mcp.order_confirm": ("change_value_text", "price_text_safe"),
+    "ibkr_core_mcp.order_confirm": ("change_value_text", "price_text_safe", "_DIALOG_TIMEOUT_S"),
     "ibkr_core_mcp.streaming": ("IBKRWebSocket", "PnLUpdate", "TradeExecution"),
     "ibkr_core_mcp.gateway": ("GatewayManager",),
     "ibkr_core_mcp.auth": ("BrowserCookieAuth",),
@@ -542,3 +542,22 @@ def test_the_toolkit_call_the_turn_loop_unpacks_keeps_its_arity():
         f"ClaudeToolkit.execute no longer returns a tuple ({annotation!r}); "
         "`result_text, _ = …` in agent._stream_turn unpacks one"
     )
+
+
+def test_the_gate2_button_names_claudia_prints_are_the_ones_the_core_draws():
+    """Gap #67 (2026-09-25): the pre-gate messages and the place card name Gate 2's confirm
+    button for each path. The core writes those labels as literals in `order_confirm`
+    (`confirm_label="…"`), not as constants, so ClaudIA keeps copies — and this test holds the
+    copies to the installed core's source. A relabel there (core register F6) goes red here
+    instead of leaving ClaudIA promising a button that no longer exists, which is exactly the
+    defect #67 was filed for. The dialog timeout, by contrast, IS a core constant and is
+    imported, so it is checked for presence only.
+    """
+    from ibkr_core_mcp import order_confirm
+
+    from claudia.order_flow import GATE2_CANCEL_LABEL, GATE2_MODIFY_LABEL, GATE2_SEND_LABEL
+
+    source = inspect.getsource(order_confirm)
+    for label in (GATE2_SEND_LABEL, GATE2_MODIFY_LABEL, GATE2_CANCEL_LABEL):
+        assert f'confirm_label="{label}"' in source, f"the core no longer draws a {label} button"
+    assert isinstance(order_confirm._DIALOG_TIMEOUT_S, int)

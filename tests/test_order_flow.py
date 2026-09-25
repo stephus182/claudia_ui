@@ -922,7 +922,7 @@ async def test_execute_staged_order_dialog_cancel_error():
     client.place_order_and_confirm.side_effect = RuntimeError("Order cancelled by user")
     action = _make_action()
     recorded = await _run(action, ibkr_mod)
-    assert any("cancelled at" in c for c in _sent_contents(recorded))
+    assert any("Declined or timed out at" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -1789,7 +1789,7 @@ async def test_execute_cancel_order_dialog_cancel_error():
     client.cancel_order.side_effect = RuntimeError("Order cancelled by user")
     action = _make_cancel_action()
     recorded = await _run_cancel(action, ibkr_mod)
-    assert any("cancelled at" in c for c in _sent_contents(recorded))
+    assert any("Declined or timed out at" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -2010,7 +2010,7 @@ async def test_execute_modify_order_dialog_cancel_error():
     client.modify_order_and_confirm.side_effect = RuntimeError("Order cancelled by user")
     action = _make_modify_action()
     recorded = await _run_modify(action, ibkr_mod)
-    assert any("cancelled at" in c for c in _sent_contents(recorded))
+    assert any("Declined or timed out at" in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -3838,7 +3838,7 @@ async def test_a_gate2_abandon_writes_a_refusal_decision_with_the_proposal():
     assert kwargs["metadata"]["proposal"] == json.loads(action.payload["order"])
     assert kwargs["metadata"]["ibkr_replies"] == []
     assert kwargs["metadata"]["dispatched"] is False
-    assert "cancelled at the confirmation dialog" in kwargs["summary_text"]
+    assert "Declined or timed out at the confirmation dialog" in kwargs["summary_text"]
     assert kwargs["symbol"] == "AAPL"
 
 
@@ -4089,3 +4089,256 @@ async def test_a_refusal_logs_at_info_as_a_refusal_not_a_failure(caplog):
         refusal[0].getMessage() == "Order staging refused at gate2 for ES: Order cancelled by user"
     )
     assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Gap #67, the pre-gate text (2026-09-25): name the Gate 2 button that performs THIS write,
+# and say what the dialog's timeout leaves in place — never "auto-cancels"
+# ---------------------------------------------------------------------------
+
+
+def _pre_gate_place_proposal() -> dict[str, Any]:
+    """A minimal, valid place proposal (conid present, so no resolution is attempted)."""
+    return {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 50,
+        "conid": 265598,
+        "order_type": "MKT",
+        "limit_price": None,
+        "stop_price": None,
+        "reason": "Test",
+    }
+
+
+def _pre_gate_cancel_proposal() -> dict[str, Any]:
+    """A minimal cancel proposal: the order id and the display fields the card shows."""
+    return {
+        "order_id": "555",
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "MKT",
+    }
+
+
+def _pre_gate_modify_proposal() -> dict[str, Any]:
+    """A minimal modify proposal with the conid the modify core insists on."""
+    return {
+        "order_id": "242538143",
+        "conid": 265598,
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "LMT",
+        "limit_price": 105.0,
+        "tif": "GTC",
+        "sec_type": "STK",
+        "changes": [{"field": "limit_price", "previous_value": 100.0}],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("core_name", "make_proposal", "make_mock", "button", "outcome", "absent"),
+    [
+        pytest.param(
+            "_execute_staged_order_core",
+            _pre_gate_place_proposal,
+            _make_ibkr_mock,
+            "SEND TO IBKR",
+            "nothing is sent",
+            ("MODIFY ORDER", "CANCEL ORDER"),
+            id="place",
+        ),
+        pytest.param(
+            "_execute_modify_order_core",
+            _pre_gate_modify_proposal,
+            _make_cancel_modify_ibkr_mock,
+            "MODIFY ORDER",
+            "the order stays as it is",
+            ("SEND TO IBKR", "CANCEL ORDER"),
+            id="modify",
+        ),
+        pytest.param(
+            "_execute_cancel_order_core",
+            _pre_gate_cancel_proposal,
+            _make_cancel_modify_ibkr_mock,
+            "CANCEL ORDER",
+            "the order stays working",
+            ("SEND TO IBKR", "MODIFY ORDER"),
+            id="cancel",
+        ),
+    ],
+)
+async def test_the_pre_gate_message_names_its_own_gate2_button_and_what_a_timeout_leaves(
+    core_name, make_proposal, make_mock, button, outcome, absent
+):
+    """Gap #67 defects (2) and (3): the three "Initiating…" messages all promised a
+    **SEND TO IBKR** button — a button that exists only on the place dialog — and said
+    "You have 60 seconds to confirm or it auto-cancels", which on the cancel path reads as
+    "the order gets cancelled" when the timeout actually KEEPS it.
+
+    Each path now names the button Gate 2 really draws for it (the core's
+    `order_confirm` labels, pinned to the installed core by
+    tests/security/test_cross_repo_contract.py) and states what a timeout leaves in place.
+    The number of seconds is the core's own dialog timeout, not a copy.
+    """
+    from ibkr_core_mcp.order_confirm import _DIALOG_TIMEOUT_S
+
+    import claudia.order_flow as order_flow
+
+    core = getattr(order_flow, core_name)
+    ibkr_mod, _client = make_mock()
+    send_status, calls = _make_send_status_recorder()
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        await core(make_proposal(), send_status, session_id="s1", store=None)
+
+    gate_text = next(text for text, _author in calls if "Gate 2" in text)
+    assert f"**{button}**" in gate_text, gate_text
+    for other in absent:
+        assert other not in gate_text, f"{core_name} promises a {other} button it never shows"
+    assert f"**{outcome}**" in gate_text, gate_text
+    assert f"{_DIALOG_TIMEOUT_S} seconds" in gate_text, gate_text
+    assert "auto-cancel" not in gate_text.lower(), gate_text
+    assert "Gate 1 — Touch ID" in gate_text, "the two-gate promise must survive the rewrite"
+
+
+def test_the_place_card_says_nothing_is_sent_until_gate2_and_never_says_cancel():
+    """Gap #67 defect (1)'s last copy on the chat cards: the place card's warning line read
+    "You can still cancel at that step" — the word the operator ruled out for anything that
+    is not cancelling a live order. Gate 2's own button is DO NOT SEND; what the line has to
+    say is that nothing reaches IBKR until SEND TO IBKR is clicked there."""
+    from claudia.order_flow import GATE2_SEND_LABEL, STAGE_ORDER_LABEL, _format_order_summary
+
+    text = _format_order_summary(_pre_gate_place_proposal())
+    warning = next(line for line in text.splitlines() if line.startswith("⚠️"))
+    assert STAGE_ORDER_LABEL in warning and GATE2_SEND_LABEL in warning, warning
+    assert "cancel" not in warning.lower(), warning
+    assert "nothing is sent" in warning.lower(), warning
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("core_name", "make_proposal", "make_mock", "gated_method", "prefix"),
+    [
+        pytest.param(
+            "_execute_staged_order_core",
+            _pre_gate_place_proposal,
+            _make_ibkr_mock,
+            "place_order_and_confirm",
+            "**Order not placed:**",
+            id="place",
+        ),
+        pytest.param(
+            "_execute_modify_order_core",
+            _pre_gate_modify_proposal,
+            _make_cancel_modify_ibkr_mock,
+            "modify_order_and_confirm",
+            "**Order not modified:**",
+            id="modify",
+        ),
+        pytest.param(
+            "_execute_cancel_order_core",
+            _pre_gate_cancel_proposal,
+            _make_cancel_modify_ibkr_mock,
+            "cancel_order",
+            "**Order not cancelled:**",
+            id="cancel",
+        ),
+    ],
+)
+async def test_an_abandoned_or_timed_out_dialog_never_reads_as_the_order_being_cancelled(
+    core_name, make_proposal, make_mock, gated_method, prefix
+):
+    """Gap #67, fourth surface, found live 2026-09-25: a cancel dialog left to time out
+    produced "**Order not cancelled:** Order was cancelled at the confirmation dialog." —
+    the one word the class is about, on the one path where it means the opposite of what
+    happened (the timeout KEPT the order; IBKR still had it to cancel a minute later).
+
+    The core raises the same `HumanAuthError("Order cancelled by user")` for the abandon
+    button AND for the AppKit auto-dismiss (register F21), so ClaudIA cannot tell them apart
+    and must not pretend to: it says "declined or timed out", and what is true on every path
+    — nothing was sent. The per-path outcome ("Order not cancelled") is the prefix's job.
+    """
+    import claudia.order_flow as order_flow
+
+    core = getattr(order_flow, core_name)
+    ibkr_mod, client = make_mock()
+    getattr(client, gated_method).side_effect = HumanAuthError("Order cancelled by user")
+    send_status, calls = _make_send_status_recorder()
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        await core(make_proposal(), send_status, session_id="s1", store=None)
+
+    outcome = next(text for text, _author in calls if text.startswith(prefix))
+    after_prefix = outcome[len(prefix) :]
+    assert "Declined or timed out at the confirmation dialog" in after_prefix, outcome
+    assert "nothing was sent to IBKR" in after_prefix, outcome
+    assert "cancel" not in after_prefix.lower(), outcome
+
+
+def test_the_timeout_sentence_reads_the_core_timeout_at_call_time():
+    """The subprocess-overrun timeout sentence used to carry a typed "60 seconds". The number
+    is the core's, so it is read from the core's constant when the sentence is built — a
+    patched constant must show up in the sentence, or the number is a copy again."""
+    from claudia.order_flow import _classify_execution_error
+
+    with patch("claudia.order_flow._DIALOG_TIMEOUT_S", 75):
+        sentence = _classify_execution_error(RuntimeError("Confirmation dialog timed out"))
+    assert "75 seconds" in sentence, sentence
+    assert "nothing was sent to IBKR" in sentence, sentence
+    assert "cancel" not in sentence.lower(), sentence
+
+
+@pytest.mark.parametrize(
+    ("builder_name", "make_proposal", "card_label", "gate2_label", "nothing_until"),
+    [
+        pytest.param(
+            "_format_order_summary",
+            _pre_gate_place_proposal,
+            "STAGE ORDER",
+            "SEND TO IBKR",
+            "Nothing is sent until",
+            id="place",
+        ),
+        pytest.param(
+            "_format_modify_summary",
+            _pre_gate_modify_proposal,
+            "MODIFY ORDER",
+            "MODIFY ORDER",
+            "Nothing is changed until",
+            id="modify",
+        ),
+        pytest.param(
+            "_format_cancel_summary",
+            _pre_gate_cancel_proposal,
+            "CANCEL ORDER",
+            "CANCEL ORDER",
+            "Nothing is cancelled until",
+            id="cancel",
+        ),
+    ],
+)
+def test_every_card_warning_names_the_gate2_button_and_what_happens_until_it(
+    builder_name, make_proposal, card_label, gate2_label, nothing_until
+):
+    """The ⚠️ line under each proposal card, as a class (the place card alone was fixed
+    first): it names the chat button, names the Gate 2 button that performs the write, and
+    says nothing happens at IBKR until that one is clicked. The old lines promised a "visual
+    confirmation dialog" you could "still cancel" / "still discard" at — "discard" being the
+    chat card's word, not Gate 2's LEAVE UNCHANGED."""
+    import claudia.order_flow as order_flow
+
+    text = getattr(order_flow, builder_name)(make_proposal())
+    warning = next(line for line in text.splitlines() if line.startswith("⚠️"))
+    assert f"'{card_label}'" in warning and f"{gate2_label} there" in warning, warning
+    assert nothing_until in warning, warning
+    assert "still" not in warning.lower() and "visual" not in warning.lower(), warning
+    if builder_name != "_format_cancel_summary":
+        assert "cancel" not in warning.lower(), warning
