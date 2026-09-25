@@ -2644,6 +2644,7 @@ def _fill(
     order_ref="claudecode-gap72-buy-155311",
     qty=1.0,
     commission=0.13,
+    description="F",
 ):
     """One `LiveFill` as `parse_fills` builds it from IBKR's row — by default the F buy
     placed for gap #72 on 2026-09-25, values as `/iserver/account/trades` reported them."""
@@ -2661,6 +2662,22 @@ def _fill(
         trade_time=time,
         exchange=exchange,
         order_ref=order_ref,
+        description=description,
+    )
+
+
+def _f_identity():
+    """The F contract's identity as IBKR's contract info gave it on 2026-09-25 (stock)."""
+    from claudia.contract_identity import ContractIdentity
+
+    return ContractIdentity(
+        conid=9599491,
+        local_symbol="F",
+        month=None,
+        expires=None,
+        name="FORD MOTOR CO",
+        multiplier=None,
+        currency="USD",
     )
 
 
@@ -2825,9 +2842,83 @@ def test_refresh_paints_the_fills_tab_and_keeps_the_rows_when_stale(view):
 
 
 def test_the_fills_table_formats_its_numbers_like_the_other_tables(view):
-    """Qty, Price and Commission carry a format and right alignment; no currency column,
-    because the trades feed carries none and none is claimed (the Orders tab's rule)."""
+    """Qty, Price and Commission carry a format and right alignment. Price and Commission
+    stay bare numbers: the currency is its own column, sourced from contract info, never a
+    code folded into a number from the trades row (which carries none)."""
     assert set(view._fills.formatters) == {"Qty", "Price", "Commission"}
     assert view._fills.text_align == {"Qty": "right", "Price": "right", "Commission": "right"}
     assert set(view._fills.header_tooltips) <= set(pdash._FILL_COLUMNS)
-    assert "Currency" not in pdash._FILL_COLUMNS
+
+
+# -- Name, Currency and side colour (operator 2026-09-25, after the first live look) ------
+
+
+def test_the_fills_columns_carry_name_beside_symbol_and_currency_beside_price():
+    """ "F should be Ford" is checked by eye against Name; the currency beside the price is
+    the second check the operator asked for."""
+    cols = pdash._FILL_COLUMNS
+    assert cols.index("Name") == cols.index("Symbol") + 1
+    assert cols.index("Currency") == cols.index("Price") + 1
+    assert set(pdash._FILL_TOOLTIPS) >= {"Name", "Currency"}
+
+
+def test_a_fill_is_named_by_ibkrs_contract_info_for_its_conid():
+    """Name is IBKR's long name for the conid that traded (contract info, the same read
+    that gives the currency) — a stock's company, an ETF's fund, a future's contract with
+    its month after it, in the Orders tab's shape."""
+    es = _fill(eid="es", symbol="ES", asset="FUT", conid=649180671, description="Dec18 '26")
+    ids = {9599491: _f_identity(), 649180671: _es_identity()}
+    frame = pdash.fills_frame(_polled(_fills(_fill(), es), identities=ids))
+    assert frame["Name"].tolist() == ["FORD MOTOR CO", "E-mini S&P 500 · Dec18 '26"]
+
+
+def test_a_fill_whose_contract_info_is_unread_shows_a_dash_for_its_name():
+    """Unknown is a dash, never the trades row's own ticker or company name: substituting
+    the row's strings would defeat the by-conid check the column exists for."""
+    frame = pdash.fills_frame(_polled(_fills(_fill())))
+    assert frame.iloc[0]["Name"] == "—"
+
+
+def test_the_currency_is_ibkrs_contract_currency_by_conid_or_a_dash():
+    """A second source on purpose: the trades row carries no currency, so the column is
+    IBKR's contract info for the conid, read once per contract. Unknown → dash, never
+    "USD" assumed from a US listing."""
+    with_identity = pdash.fills_frame(_polled(_fills(_fill()), identities={9599491: _f_identity()}))
+    without = pdash.fills_frame(_polled(_fills(_fill())))
+    assert with_identity.iloc[0]["Currency"] == "USD"
+    assert without.iloc[0]["Currency"] == "—"
+
+
+def test_the_currency_column_reads_the_futures_identity_too():
+    """The same map names a future's local symbol and its currency."""
+    es = _fill(eid="es", symbol="ES", asset="FUT", conid=649180671)
+    frame = pdash.fills_frame(_polled(_fills(es), identities={649180671: _es_identity()}))
+    assert (frame.iloc[0]["Symbol"], frame.iloc[0]["Currency"]) == ("ESU6", "USD")
+
+
+@pytest.mark.parametrize(
+    ("side", "expected"),
+    [
+        ("BUY", f"color: {palette.UP_COLOR}"),
+        ("SELL", f"color: {palette.DOWN_COLOR}"),
+        ("—", ""),
+        (5, ""),
+    ],
+)
+def test_side_style(side, expected):
+    """Operator 2026-09-25: green for a buy, red for a sell — the palette's up/down colours,
+    the same pair the candles and the Gate 2 banner use. Anything else is uncoloured."""
+    assert pdash._side_style(side) == expected
+
+
+def test_side_colouring_is_bound_to_the_side_column(view):
+    """`.style.map` colours the Side cells, the way the positions table colours P&L; a
+    styler bound to the wrong column would leave both sides uncoloured."""
+    view.refresh(_polled(_fills(_fill(), _fill(eid="s", side="S"))), now=_NOW)
+    view._fills.style._compute()
+    ctx = view._fills.style.ctx
+    painted = {styles[0] for styles in ctx.values() if styles}
+    assert ("color", palette.UP_COLOR) in painted
+    assert ("color", palette.DOWN_COLOR) in painted
+    side_col = list(view._fills.value.columns).index("Side")
+    assert all(col == side_col for (_row, col) in ctx if ctx[(_row, col)])

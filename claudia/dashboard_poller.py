@@ -461,8 +461,11 @@ class DashboardPoller:
         One contract-info GET per conid the process has not seen yet; `contract_identity`
         caches and never raises, so a failed read costs the row its local symbol for this
         poll and nothing else. `fills` are the executions not yet on a statement (the
-        Fills tab, gap #68): a futures round trip closed since the last statement has no
-        position and no order left to name it by, and it still has to read `ESU6`.
+        Fills tab, gap #68), **every one of them, stocks included**: the tab's Name and
+        Currency columns are IBKR's contract info by conid (operator 2026-09-25 — the
+        trades row carries no currency, and a name read by conid is what makes "F should be
+        Ford" a check rather than an echo), and a futures round trip closed since the last
+        statement has no position and no order left to name it by.
         """
         conids = [p.conid for p in positions if p.asset_class.upper() in FUTURES_CLASSES]
         conids += [
@@ -470,7 +473,7 @@ class DashboardPoller:
             for o in (orders or ())
             if o.conid is not None and o.sec_type.upper() in FUTURES_CLASSES
         ]
-        conids += [f.conid for f in fills if f.asset_class.upper() in FUTURES_CLASSES]
+        conids += [f.conid for f in fills]
         identities: dict[int, ContractIdentity] = {}
         for conid in dict.fromkeys(conids):
             identity = contract_identity(self._client, conid)

@@ -116,3 +116,19 @@ def test_the_chat_report_and_the_fills_tab_share_one_clock_rule():
     rule and keeps no `strptime` of its own."""
     assert vars(execution_listener)["execution_time_et"] is live_realised.execution_time_et
     assert "strptime" not in inspect.getsource(execution_listener.ExecutionReport.from_event)
+
+
+def test_a_fill_carries_ibkrs_contract_description():
+    """`contract_description_1` is the month text of a future ("Dec18 '26", "Nov'26",
+    measured 2026-09-25) and the ticker of a stock; the Fills tab's Name column appends it
+    to the contract's name for a future, as the Orders tab appends `description1`."""
+    assert parse_fills([_raw()])[0].description == "F"
+    assert parse_fills([_raw(contract_description_1="Dec18 '26")])[0].description == "Dec18 '26"
+
+
+def test_the_description_is_optional_and_never_the_word_none():
+    """Absent or null, it parses as an empty string, like the other display fields."""
+    assert parse_fills([_raw(contract_description_1=None)])[0].description == ""
+    row = _raw()
+    del row["contract_description_1"]
+    assert parse_fills([row])[0].description == ""

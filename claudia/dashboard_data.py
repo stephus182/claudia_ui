@@ -1572,6 +1572,27 @@ def order_display_name(order: LiveOrder) -> str:
     return _with_month(order.company_name, _month_from_description1(order.description1))
 
 
+def fill_display_name(fill: LiveFill, identity: ContractIdentity | None) -> str:
+    """The name of the contract a fill traded, by conid; empty until its identity is read.
+
+    Operator 2026-09-25 (the Fills tab): "Ford's name and currency by conid — the correct
+    source". The name is IBKR's contract info for the execution's conid, the same read that
+    gives the currency, so "F should be Ford" is checked against something other than the
+    trades row's own ticker. IBKR calls the field `company_name` and it carries the
+    instrument's long name for any contract — measured "SPDR GOLD SHARES" (ETF), "E-mini S&P
+    500" and "Light Sweet Crude Oil" (futures), "FORD MOTOR CO" (a company). A future
+    carries IBKR's `contract_description_1` from the execution after it ("Dec18 '26"), the
+    Orders tab's shape; the month is shown, never inferred. Unread contract info gives an
+    empty name — the row's own strings are deliberately not substituted, since that would
+    defeat the check the column exists for.
+    """
+    if identity is None:
+        return ""
+    if fill.asset_class.upper() not in FUTURES_CLASSES:
+        return identity.name
+    return _with_month(identity.name, fill.description)
+
+
 def display_symbol(
     symbol: str,
     asset_class: str,

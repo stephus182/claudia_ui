@@ -77,6 +77,7 @@ from claudia.dashboard_data import (
     Reconciliation,
     RoundTripStats,
     display_symbol,
+    fill_display_name,
     order_display_name,
     position_display_name,
     realised_ledger_label,
@@ -1099,7 +1100,9 @@ _FILL_COLUMNS = [
     "Side",
     "Qty",
     "Symbol",
+    "Name",
     "Price",
+    "Currency",
     "Venue",
     "Commission",
     "Order ref",
@@ -1114,9 +1117,15 @@ row leaves the tab when its id appears on a statement, never on a clock. The ope
 purpose (2026-09-24): "an immediate glance and confirmation with execution IDs (real)",
 so the id is full and verbatim, and the chat's fill message carries the same one.
 
-**No currency column**, as on the Orders tab: `/iserver/account/trades` carries no
-currency field (its documented response has none; the 2026-09-25 capture had none), so
-`Price` and `Commission` are bare numbers rather than a code guessed from the listing.
+**Name and Currency are IBKR's contract info for the conid, not the trades row** (operator
+2026-09-25, after the first live look: "a safety measure … make sure ticker and name are
+consistent … and a currency column to make sure it's the expected currency, a second
+check"). `/iserver/account/trades` carries no currency field at all (its documented
+response has none; the 2026-09-25 capture had none), and its `company_name` is the same
+row as its ticker; contract info by conid is a second source, read once per contract and
+cached (`contract_identity`). Until it is read both cells are a dash — never the row's own
+strings, never "USD" assumed from a US listing. `Price` and `Commission` stay bare numbers:
+the currency has its own column.
 """
 
 _FILL_NUMERIC = ["Qty", "Price", "Commission"]
@@ -1125,15 +1134,20 @@ _FILL_TOOLTIPS = {
     "Executed (ET)": "IBKR's execution time (documented as UTC) read in New York time, with "
     "its Eastern date. A clock reading, not a trade date: IBKR states the trade date only "
     "in its statement (gap #69), and an evening futures fill belongs to the next one.",
-    "Side": "BUY or SELL, from IBKR's B / S.",
+    "Side": "BUY (green) or SELL (red), from IBKR's B / S.",
     "Qty": "Shares or contracts executed, always positive; the side says which way.",
     "Symbol": "IBKR's ticker; for a future the exchange local symbol (ESU6) once its contract "
     "info has been read, so the month is in the symbol itself (2026-09-10).",
-    "Price": "The execution price as IBKR reports it. No currency: the trades feed carries "
-    "none, so none is claimed.",
+    "Name": "IBKR's long name for the contract that traded, read by conid from contract info "
+    "(a company, an ETF, a futures contract — with its month after it for a future). A "
+    "second source against the ticker: '—' until the contract info is read.",
+    "Price": "The execution price as IBKR reports it, a bare number: the currency is the "
+    "next column.",
+    "Currency": "The contract's currency by conid, from IBKR's contract info — a second check "
+    "that the fill is in the expected currency. The trades feed carries none; '—' until the "
+    "contract info is read, never assumed from the listing.",
     "Venue": "IBKR's `exchange`: where the execution happened (DARK, IBKRATS, CME…).",
-    "Commission": "IBKR's `commission` for this execution, a bare number for the same reason "
-    "as the price.",
+    "Commission": "IBKR's `commission` for this execution, a bare number in the row's currency.",
     "Order ref": "The `cOID` given at placement — `CLAUDIA-…` for an order staged here. '—' = "
     "IBKR reports none, as for an order placed in TWS, mobile or the web portal.",
     "Execution ID": "IBKR's execution id, verbatim. The same id is on the chat's fill "
@@ -1151,21 +1165,36 @@ def fills_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     rectangle — and it is `fills_status_line`'s job to say which of the two it is.
     """
     pending = snapshot.pending
-    rows = [
-        {
-            "Executed (ET)": execution_time_et(f.trade_time, with_date=True) or "—",
-            "Side": "BUY" if f.is_buy else "SELL",
-            "Qty": abs(f.signed_quantity),
-            "Symbol": display_symbol(f.symbol, f.asset_class, f.conid, snapshot.identities),
-            "Price": f.price,
-            "Venue": f.exchange or "—",
-            "Commission": f.commission,
-            "Order ref": f.order_ref or "—",
-            "Execution ID": f.execution_id,
-        }
-        for f in (pending.fills if pending is not None else ())
-    ]
+    rows = []
+    for f in pending.fills if pending is not None else ():
+        identity = snapshot.identities.get(f.conid)
+        rows.append(
+            {
+                "Executed (ET)": execution_time_et(f.trade_time, with_date=True) or "—",
+                "Side": "BUY" if f.is_buy else "SELL",
+                "Qty": abs(f.signed_quantity),
+                "Symbol": display_symbol(f.symbol, f.asset_class, f.conid, snapshot.identities),
+                "Name": fill_display_name(f, identity) or "—",
+                "Price": f.price,
+                "Currency": (identity.currency if identity is not None else None) or "—",
+                "Venue": f.exchange or "—",
+                "Commission": f.commission,
+                "Order ref": f.order_ref or "—",
+                "Execution ID": f.execution_id,
+            }
+        )
     return pd.DataFrame(rows, columns=_FILL_COLUMNS)
+
+
+def _side_style(value: Any) -> str:
+    """Green for BUY, red for SELL (operator 2026-09-25), the palette's up/down pair — the
+    same two colours the candles and the Gate 2 banner use for direction. Anything else,
+    including the dash, is left uncoloured."""
+    if value == "BUY":
+        return f"color: {UP_COLOR}"
+    if value == "SELL":
+        return f"color: {DOWN_COLOR}"
+    return ""
 
 
 def fills_status_line(snapshot: DashboardSnapshot, stale: bool = False) -> str:
@@ -1747,6 +1776,11 @@ class DashboardView:
             text_align=dict.fromkeys(_FILL_NUMERIC, "right"),
             header_tooltips=dict(_FILL_TOOLTIPS),
         )
+        # The same Styler mechanism as the positions table's P&L colours (applied once; it
+        # rebinds to every new frame): BUY green, SELL red, on the Side column only.
+        fills_styler = self._fills.style
+        assert fills_styler is not None  # noqa: S101 - narrowing for mypy, as above
+        fills_styler.map(_side_style, subset=["Side"])
         self._fills_status = safe_markdown("_Fills: waiting for the first poll…_")
 
         # Sits between the window selector and the breakdown, and carries text only for

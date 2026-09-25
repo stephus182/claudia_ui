@@ -148,11 +148,13 @@ class LiveFill:
     # holiday sessions, after-hours funds). Never group, bucket or compare by it.
     trade_time: str
     # Display only, for the Fills tab (gap #68, 2026-09-25): IBKR's `exchange` ("the
-    # exchange the order was executed on") and `order_ref` (the `cOID` given at placement;
-    # `null` for an order placed outside the API, measured 2026-09-25). Neither decides
-    # anything, so a row without them still parses.
+    # exchange the order was executed on"), `order_ref` (the `cOID` given at placement;
+    # `null` for an order placed outside the API, measured 2026-09-25) and
+    # `contract_description_1` — the month text of a future ("Dec18 '26", "Nov'26"), a
+    # stock's own ticker. None of them decides anything, so a row without them still parses.
     exchange: str = ""
     order_ref: str = ""
+    description: str = ""
 
     @property
     def is_buy(self) -> bool:
@@ -222,6 +224,7 @@ def parse_fills(rows: Sequence[Any]) -> tuple[LiveFill, ...]:
                     trade_time=str(row.get("trade_time") or ""),
                     exchange=str(row.get("exchange") or "").strip(),
                     order_ref=str(row.get("order_ref") or "").strip(),
+                    description=str(row.get("contract_description_1") or "").strip(),
                 )
             )
         except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:

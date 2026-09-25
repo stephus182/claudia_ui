@@ -2197,3 +2197,91 @@ def test_orders_that_left_the_book_are_dropped_from_the_cache():
     cache.resolve(dd.parse_orders([_F_DAY_ROW, other]), source, now=0.0)
     cache.resolve(dd.parse_orders([other]), source, now=15.0)
     assert cache.cached_order_ids() == {"9"}
+
+
+# ── The Fills tab's Name column (gap #68, operator 2026-09-25) ─────────────────
+
+
+def _named_fill(symbol, asset, description=""):
+    """A `LiveFill` with just the fields the display name reads."""
+    from claudia.live_realised import LiveFill
+
+    return LiveFill(
+        execution_id="x",
+        conid=1,
+        symbol=symbol,
+        asset_class=asset,
+        signed_quantity=1.0,
+        price=1.0,
+        commission=0.0,
+        multiplier=1.0,
+        trade_time="20260925-15:53:23",
+        description=description,
+    )
+
+
+def _named_identity(name, month=None, currency="USD"):
+    """A contract identity as IBKR's contract info gives it, for conid 1."""
+    from claudia.contract_identity import ContractIdentity
+
+    return ContractIdentity(
+        conid=1,
+        local_symbol="X",  # a stand-in; the display name never reads it
+        month=month,
+        expires=None,
+        name=name,
+        multiplier=None,
+        currency=currency,
+    )
+
+
+def test_a_fill_is_named_by_ibkrs_contract_info_for_its_conid():
+    """Operator 2026-09-25: "Ford's name and currency by conid — the correct source". The
+    name is IBKR's own for the contract that traded, read by conid, so "F should be Ford"
+    is checked against something other than the trades row's own ticker."""
+    assert (
+        dd.fill_display_name(_named_fill("F", "STK"), _named_identity("FORD MOTOR CO"))
+        == "FORD MOTOR CO"
+    )
+
+
+def test_the_name_is_ibkrs_long_name_for_any_instrument_not_only_a_company():
+    """IBKR calls the field `company_name`, and it carries the instrument's long name for an
+    ETF and a future too (measured: "SPDR GOLD SHARES", "E-mini S&P 500", "Light Sweet
+    Crude Oil") — operator 2026-09-25: "any name, not only a company's"."""
+    assert (
+        dd.fill_display_name(_named_fill("GLD", "STK"), _named_identity("SPDR GOLD SHARES"))
+        == "SPDR GOLD SHARES"
+    )
+    cl = dd.fill_display_name(
+        _named_fill("CL", "FUT", "Nov'26"), _named_identity("Light Sweet Crude Oil")
+    )
+    assert cl == "Light Sweet Crude Oil · Nov'26"
+
+
+def test_a_futures_fill_carries_its_contract_month_after_the_name():
+    """The contract's name by conid · IBKR's `contract_description_1` on the execution
+    ("Dec18 '26", measured 2026-09-25) — the Orders tab's shape; the month is never inferred."""
+    es = _named_fill("ES", "FUT", "Dec18 '26")
+    assert (
+        dd.fill_display_name(es, _named_identity("E-mini S&P 500")) == "E-mini S&P 500 · Dec18 '26"
+    )
+
+
+def test_a_missing_half_of_a_futures_name_is_simply_absent():
+    """Whichever half is known is shown; never a filler for the other."""
+    assert (
+        dd.fill_display_name(_named_fill("ES", "FUT", "Dec18 '26"), _named_identity(""))
+        == "Dec18 '26"
+    )
+    assert (
+        dd.fill_display_name(_named_fill("ES", "FUT", ""), _named_identity("E-mini S&P 500"))
+        == "E-mini S&P 500"
+    )
+
+
+def test_no_identity_means_no_name_not_the_rows_own_ticker():
+    """Unread contract info gives an empty name: the row's own strings would defeat the
+    by-conid check, so they are not substituted."""
+    assert dd.fill_display_name(_named_fill("F", "STK"), None) == ""
+    assert dd.fill_display_name(_named_fill("ES", "FUT", "Dec18 '26"), None) == ""

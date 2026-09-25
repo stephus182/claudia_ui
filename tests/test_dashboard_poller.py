@@ -988,3 +988,21 @@ async def test_a_stale_poll_carries_the_identities_forward(db):
     snap = poller.snapshot()
     assert snap.error is not None and snap.identities[649180671].local_symbol == "ESU6"
     ci.clear_cache()
+
+
+@pytest.mark.asyncio
+async def test_poll_names_every_pending_fills_contract_stocks_included(db):
+    """The Fills tab's Currency column (operator 2026-09-25) is IBKR's contract currency by
+    conid — a second source, since the trades row carries none — so a pending STOCK fill's
+    identity is read too, not only a future's."""
+    from claudia import contract_identity as ci
+
+    ci.clear_cache()
+    client = FakeClient(positions=[], trades=[_trade(9599491, "B", 1, 12.685)])
+    poller = _poller(db, client)
+    await poller._poll_once()
+    snap = poller.snapshot()
+    assert [f.execution_id for f in snap.pending.fills] == ["20260806.01"]
+    assert 9599491 in snap.identities
+    assert client.contract_info_calls == 1
+    ci.clear_cache()

@@ -559,7 +559,12 @@ the fix that established this (75,480 → 2,910 tokens/session).
   **Fills tab (gap #68, 2026-09-25, between Orders and P&L):** the executions not yet on a
   statement — membership by execution id against Flex, the Daily tab's rule, no trade date
   derived — one row per IBKR execution with the execution ID verbatim, so the chat's fill
-  message and IBKR's own record can be checked against it at a glance. It reads the same
+  message and IBKR's own record can be checked against it at a glance. **Name and Currency
+  are IBKR's contract info by conid** (operator, same day: "the correct source"), never the
+  trades row's own strings — the row carries no currency and its name sits beside its own
+  ticker, so a by-conid read is a second check that "F is Ford, in USD"; a dash until read.
+  BUY is green and SELL red (the palette's up/down pair) through the same pandas Styler the
+  Positions table uses. It reads the same
   fetch as the Avg entry column and the Daily tab (`PendingWindow.fills`); the poller now
   refetches `/iserver/account/trades` when a position's **quantity** moves as well as when
   the realised figure does, because an opening fill moves no realised figure (until then an
