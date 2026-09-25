@@ -16,12 +16,51 @@ ClaudIA uses two complementary data sources — each covers what the other canno
 
 **Key rule:** Flex never has today's trades. The most current Flex data is always yesterday's settled activity. Today's intraday executions are only available via the live API.
 
-**Startup sync logic:**
-- Skip if `newest >= penultimate_trading_day` (NYSE-calendar-aware, not a fixed day count) —
-  a one-trading-day gap is normal Flex T+1 lag, not staleness; see
-  `docs/market-calendar-reference.md`
-- Skip if last sync attempt was < 4 hours ago — avoid API lockout from repeated restarts
-- Sync otherwise — pulls last 30 days, upserts idempotently, logs the event
+### When a day's statement becomes available (researched 2026-09-25, gap #72)
+
+**IBKR publishes what a day's statement *includes*, not when it can be pulled.** From the
+Client Portal statements guide (https://www.ibkrguides.com/clientportal/performanceandstatements/statements.htm,
+read 2026-09-25): *"The statement cutoff time for commodities is generally 5:15 PM EST, and the
+statement cutoff time for securities is generally 8:20 PM EST."* and *"Any trades executed for
+those asset classes before the cutoff times will be reflected in your statement for the day."*
+No IBKR page we could reach states a time at which the finished statement can be retrieved:
+not the Web API Flex pages (`introduction`, `using-flex-web-service`, `generate-the-report`,
+`retrieve-the-report`, `error-codes`, `send-request`, `get-statement`, all fetched as `.md`),
+not the Client Portal Flex Web Service v3 guide, not the Campus glossary, not the ibkrguides
+Flex Queries or Reporting pages (raw copies in `.firecrawl/flex-availability/`, git-ignored).
+A search-engine summary attributed *"updated once daily at close of business"* to IBKR; that
+sentence appears verbatim on none of those pages, so it is not cited here. What the Flex pages
+do state is the pacing: *"1 request per second; maximum 10 requests per minute per token"*
+(`send-request`; error 1018 says the same).
+
+**Measured on our own pull log** (`store.db` `session_log`, event `flex_sync`, 43 pulls
+2026-06-24 → 2026-09-25, each with its UTC time and the newest trade date it brought back):
+
+| Observation | Evidence |
+| --- | --- |
+| The previous trading day's trades were present on **every** morning pull, the earliest at **08:18 ET** (2026-08-05 → newest 08-04); also 09:30, 09:55, 09:57, 10:04, 10:07, 10:29, 10:40, 10:41 ET on other days | lower bound: by 08:18 ET the statement is out |
+| A day's own trades were present on **no** evening pull, the latest at **22:07 ET** (2026-07-01 → newest 06-30) and 21:01 ET (2026-09-24 → newest 09-23) | upper bound: not before ~22:07 ET the same day |
+| The window **22:07 ET → 08:18 ET is unobserved** | do not put a clock time in code or in user-facing text |
+
+Two cautions when reading that log: `newest` is the newest *trade* date in the store, so a pull
+that reports an older date may mean "no trades that day" rather than "not yet available" (the
+five coverage gaps are genuine inactivity — memory `project-flex-gap-audit`); and the June
+pulls with `trades_fetched: 0` were failures of the early integration, not evidence.
+
+**Consequence for a pull policy:** an evening pull never brings the day's own trades, a morning
+pull after ~08:18 ET does, and a pull that finds nothing new is a no-op behind the fingerprint
+gate. Spending a Flex call to find out is cheap (one `SendRequest`, ten a minute allowed); what
+must never happen is a clock rule that claims to know when IBKR publishes.
+
+
+**Startup sync logic** (rewritten 2026-09-25, gap #72):
+- Skip if IBKR is offline (logged — the sync needs the gateway for the account id)
+- Skip if a pull already **changed the store since the most recent midnight ET** — read from
+  the store's own `flex_sync` log (`claudia/flex_sync.py`: `last_fruitful_pull`, `pull_due`);
+  a pull that changed nothing is not evidence and does not count
+- Sync otherwise — pulls last 30 days, upserts idempotently, logs the event. No retry window
+  and no staleness definition: over-checking on a weekend or a no-trade day costs one request
+  out of the ten a minute IBKR allows; under-checking is what the core's flag did on 2026-09-24
 
 ## Why Flex Queries
 

@@ -29,7 +29,9 @@ claudia/opening_status.py   — UI-free opening-status builders (session state +
 claudia/briefing.py         — startup briefing: expiring positions + today's exchange closures,
                               pure builders, no network (section state is Ready/Degraded/Unavailable
                               so a failed read can never render as "nothing today")
-claudia/flex_sync.py        — session-start dataset validation + the "did this pull change anything" gate
+claudia/flex_sync.py        — session-start dataset validation, the "did this pull change anything" gate,
+                              and the startup pull rule (evidence from the store's own pull log,
+                              no staleness definition — gap #72, 2026-09-25)
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
 claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger fallback; since

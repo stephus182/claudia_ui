@@ -400,3 +400,79 @@ def test_the_model_is_told_the_same_update_time_as_the_user():
     assert stamp in context and stamp in status  # same moment on both surfaces
     assert "Last refreshed: 2026-07-22" not in context  # the mislabel, gone from here too
     assert "newest trade date 2026-07-22" in context  # stated as what it is
+
+
+# ---------------------------------------------------------------------------
+# Gap #72 (2026-09-25): the model gets facts and ClaudIA's own pull verdict, never a
+# staleness rule of its own
+# ---------------------------------------------------------------------------
+
+
+def _coverage() -> dict[str, object]:
+    """A covered dataset, as `get_trade_date_coverage` reports it."""
+    return {
+        "oldest": "2024-01-02",
+        "newest": "2026-09-24",
+        "total_trades": 1375,
+        "days_since_newest": 1,
+    }
+
+
+def _pull_row(ts: str, newest: str, total: int) -> dict[str, object]:
+    """A `flex_sync` log row as `get_log` returns it."""
+    import json
+
+    return {"ts": ts, "event": "flex_sync", "data": json.dumps({"newest": newest, "total": total})}
+
+
+def test_the_model_is_given_no_staleness_rule_of_its_own():
+    """The system prompt used to say "Do not flag the data as stale … unless days_since_newest
+    > 3 on a weekday" — a second definition beside the core's flag, and on 2026-09-24 it told
+    the model a two-trading-day-old store was fine. Neither definition is given now."""
+    toolkit = _make_toolkit()
+    toolkit._store.get_trade_date_coverage.return_value = _coverage()
+    toolkit._store.get_log.return_value = []
+    _status, context = build_trade_lines(toolkit, ibkr_offline=False)
+    assert context is not None
+    assert "days_since_newest" not in context
+    assert "not stale" not in context
+    assert "Do not flag" not in context
+
+
+def test_the_model_is_told_when_a_pull_brought_new_data_today():
+    """Evidence in the prompt: the last pull that changed the store, and that nothing newer
+    can exist until the next overnight publication."""
+    from datetime import UTC, datetime
+
+    toolkit = _make_toolkit()
+    toolkit._store.get_trade_date_coverage.return_value = _coverage()
+    toolkit._store.get_log.return_value = [
+        _pull_row("2026-09-25T01:01:06+00:00", "2026-09-23", 1334),
+        _pull_row("2026-09-25T13:57:42+00:00", "2026-09-24", 1375),
+    ]
+    with patch(
+        "claudia.opening_status._now_utc", return_value=datetime(2026, 9, 25, 18, 0, tzinfo=UTC)
+    ):
+        _status, context = build_trade_lines(toolkit, ibkr_offline=False)
+    assert context is not None
+    assert "brought new data" in context and "09:57" in context, context
+    assert "as current as Flex can be" in context, context
+
+
+def test_the_model_is_told_when_a_pull_is_still_due():
+    """No new data since midnight ET: the prompt says so and names the tool, instead of a
+    rule the model would apply to a number."""
+    from datetime import UTC, datetime
+
+    toolkit = _make_toolkit()
+    toolkit._store.get_trade_date_coverage.return_value = _coverage()
+    toolkit._store.get_log.return_value = [
+        _pull_row("2026-09-25T01:01:06+00:00", "2026-09-23", 1334)
+    ]
+    with patch(
+        "claudia.opening_status._now_utc", return_value=datetime(2026, 9, 25, 13, 52, tzinfo=UTC)
+    ):
+        _status, context = build_trade_lines(toolkit, ibkr_offline=False)
+    assert context is not None
+    assert "No pull has brought new data since midnight ET" in context, context
+    assert "sync_flex_trades" in context

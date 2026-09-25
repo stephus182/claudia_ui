@@ -53,11 +53,20 @@ wrong place for it.
 import json
 import logging
 import sqlite3
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
+
+# IBKR publishes a day's statement overnight, on the ET clock (its statement cutoffs are
+# 17:15 ET for commodities and 20:20 ET for securities — docs/flex-query-setup.md § When a
+# day's statement becomes available). Midnight ET is therefore the boundary after which a
+# newer statement MAY exist. Nothing here claims to know the hour it does.
+_ET = ZoneInfo("America/New_York")
 
 # Cent-denominated sums do not survive binary float exactly, so the identity is compared
 # to the cent rather than to zero — the same allowance audit_flex_dataset.py #17 uses.
@@ -418,3 +427,74 @@ def _write_record(
         path.chmod(0o600)
     except OSError as exc:
         log.warning("Could not cache the dataset verdict (%s) — it will be re-checked", exc)
+
+
+# ---------------------------------------------------------------------------
+# Gap #72 (2026-09-25): is a Flex pull worth making? Evidence, not a clock and not a
+# definition of "stale"
+# ---------------------------------------------------------------------------
+
+
+def last_fruitful_pull(events: Sequence[Mapping[str, Any]]) -> datetime | None:
+    """The moment of the most recent Flex pull that CHANGED the store — or None.
+
+    `events` are `session_log` rows of event `flex_sync`, ascending, as
+    `SQLiteStore.get_log` returns them; `data` is the JSON the core writes on every
+    `sync_flex_trades` call, whoever made it (ClaudIA at startup, the model, the MCP
+    server): `newest` (newest trade date) and `total` (trade count) after the pull. A pull
+    is fruitful iff either differs from the previous pull's; the first pull ever is
+    fruitful iff it holds any trades. The operator's ruling (2026-09-25): "count a check
+    as done only when it brought new data — evidence based". A fruitless pull is not
+    evidence of anything and so keeps the next start pulling.
+
+    Why not `flex_import_log`: it records every import, fruitful or not — rows 40 and 41
+    of the real store hold the same statement (same sha256, 40 trades) imported on two
+    consecutive days, neither bringing a trade. Why not the fingerprint: it is computed
+    around ClaudIA's own pull only, and a pull the model asked for would be invisible.
+
+    A row whose timestamp or JSON cannot be read is skipped, never guessed at.
+    """
+    last: datetime | None = None
+    previous: tuple[object, object] | None = None
+    for row in events:
+        try:
+            at = datetime.fromisoformat(str(row["ts"]))
+            data = json.loads(str(row.get("data") or "{}"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        state = (data.get("newest"), data.get("total"))
+        fruitful = bool(data.get("total")) if previous is None else state != previous
+        if fruitful:
+            last = at
+        previous = state
+    return last
+
+
+def midnight_et(now: datetime) -> datetime:
+    """The most recent midnight in New York at or before `now` (aware, any zone)."""
+    if now.tzinfo is None:
+        raise ValueError("midnight_et needs an aware datetime; a naive one has no ET midnight")
+    local = now.astimezone(_ET)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def pull_due(now: datetime, last_fruitful: datetime | None) -> bool:
+    """True unless a pull already brought new data since the most recent midnight ET.
+
+    The whole startup rule, agreed with the operator 2026-09-25 after gap #72 (a store two
+    trading days behind presented as current for a whole day): a new statement can appear
+    once a day, overnight, so a pull that changed the store after the last midnight ET has
+    already picked up everything that can exist today, and any other state — no pull ever,
+    or none that changed the store since that boundary — is worth one Flex call to find
+    out. No calendar, no staleness flag, no retry window: over-checking on a weekend or a
+    no-trade day costs one request (the Flex service allows ten a minute); under-checking
+    is what the core's flag did on 2026-09-24.
+    """
+    boundary = midnight_et(now)
+    if last_fruitful is None:
+        return True
+    if last_fruitful.tzinfo is None:
+        last_fruitful = last_fruitful.replace(tzinfo=UTC)
+    return last_fruitful < boundary

@@ -214,7 +214,7 @@ beside a dashboard drawing live balances (2026-08-04, `docs/connectivity.md`).
 
 **If ping returns True:** chat says nothing about the account at all.
 
-- Flex sync staleness check runs
+- Flex sync decision runs (evidence from the store's own pull log, see Phase 6)
 - Market calendar context is injected into system prompt
 
 **No account figure is fetched here (2026-08-05).** Account summary, live orders and positions
@@ -231,10 +231,13 @@ the same numbers. On the healthy path the whole phase is now one `ping()`. See
 
 Runs as a background asyncio task (non-blocking) after the welcome message is sent.
 
-Sync is **skipped** when any of:
-1. `store.db` is fresh — newest trade date == last NYSE trading day (calendar-aware)
-2. Last sync attempt was < 4 hours ago (prevents IBKR API lockout on rapid retries)
-3. `IBKR_FLEX_TOKEN` or `IBKR_FLEX_QUERY_ID` not configured
+Sync is **skipped** when any of (rewritten 2026-09-25, gap #72):
+1. `IBKR_FLEX_TOKEN` or `IBKR_FLEX_QUERY_ID` not configured
+2. IBKR offline — logged as such (the sync resolves the account id through the gateway)
+3. A pull already **changed the store since the most recent midnight ET**, read from the
+   store's own `flex_sync` log (`flex_sync.last_fruitful_pull` + `pull_due`) — logged with
+   that pull's time. A fruitless pull is not evidence; there is no retry window and no
+   staleness definition (the core's off-by-one flag and a 4 h window did this until then).
 
 On sync success: `store.db` is backed up to Drive `account_data/`.
 

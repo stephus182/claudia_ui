@@ -29,12 +29,13 @@ halves are up, because the flag it returns is what the buttons and the Flex sync
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ibkr_core_mcp import ClaudeToolkit, Config
 
-from claudia.flex_sync import last_import, validate_dataset_daily
+from claudia.flex_sync import last_fruitful_pull, last_import, pull_due, validate_dataset_daily
 
 log = logging.getLogger(__name__)
 
@@ -197,6 +198,51 @@ def _sync_note(config: Config, cov: dict[str, Any], ibkr_offline: bool) -> str:
     return f"last refreshed {cov['newest']}"
 
 
+_ET = ZoneInfo("America/New_York")
+
+_FLEX_TIMING = (
+    "Flex statements are T+1: a day's trades appear the next morning, never the same evening "
+    "(IBKR's statement cutoffs are 17:15 ET for commodities and 20:20 ET for securities; on "
+    "ClaudIA's own pull log a finished statement was never present before 22:07 ET and never "
+    "missing after 08:18 ET)."
+)
+
+
+def _now_utc() -> datetime:
+    """Now, aware, UTC — a seam so tests can pose the clock without patching `datetime`."""
+    return datetime.now(UTC)
+
+
+def _pull_verdict_sentence(toolkit: ClaudeToolkit) -> str:
+    """ClaudIA's own answer to "could a newer statement exist?", for the model (gap #72).
+
+    The same evidence and the same rule as the startup sync decision
+    (`flex_sync.last_fruitful_pull` + `flex_sync.pull_due`), so the prompt and the pull
+    cannot disagree. Stated as of session start: the trade context is built once.
+    """
+    try:
+        events = toolkit._store.get_log(n=200, event="flex_sync")
+        last = last_fruitful_pull(events)
+        due = pull_due(_now_utc(), last)
+    except Exception as exc:
+        log.warning("Flex pull verdict unavailable for the model: %s", exc)
+        return (
+            "Whether a newer statement exists is not known at session start; "
+            "`check_flex_coverage` reports the store and `sync_flex_trades` pulls."
+        )
+    if not due and last is not None:
+        return (
+            f"As of session start a pull brought new data today at "
+            f"{last.astimezone(_ET).strftime('%H:%M')} ET, so the store is as current as Flex "
+            f"can be until IBKR's next overnight publication; do not suggest syncing."
+        )
+    return (
+        "As of session start: No pull has brought new data since midnight ET; ClaudIA pulls at "
+        "startup. If the user asks whether the data is current, say a pull is pending and offer "
+        "`sync_flex_trades`."
+    )
+
+
 def _store_updated_sentence(config: Config, cov: dict[str, Any]) -> str:
     """The same fact as `_sync_note`, worded for the model rather than the user.
 
@@ -294,9 +340,11 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
                     # 2026-08-04 vs an actual update at 08-05 08:18 EDT.
                     f"{cov['total_trades']} executions from {cov['oldest']} to {cov['newest']}. "
                     f"{_store_updated_sentence(config, cov)} {integrity_context}\n"
-                    f"Flex data lags 1 day (T+1). Newest entry being yesterday is normal, not stale. "
-                    f"Do not flag the data as stale or suggest syncing unless the user explicitly asks "
-                    f"or days_since_newest > 3 on a weekday.\n"
+                    # Until 2026-09-25 this was a rule of the model's own — "not stale
+                    # unless days_since_newest > 3 on a weekday" — a second definition
+                    # beside the core's flag, and on 2026-09-24 it called a two-trading-day-
+                    # old store fine. Now: the facts, and ClaudIA's own pull verdict (gap #72).
+                    f"{_FLEX_TIMING} {_pull_verdict_sentence(toolkit)}\n"
                     # SETTLED — do not re-raise this as an unbacked claim (it has been, twice).
                     # The five gaps are real inactivity in this account, audited 2026-06-30
                     # against the Drive XML archive: 2020-09-02→11-09, 2020-11-11→2021-01-07,

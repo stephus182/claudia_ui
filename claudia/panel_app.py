@@ -36,6 +36,7 @@ from datetime import UTC, date, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import panel as pn
 from bokeh.settings import settings as bokeh_settings
@@ -62,7 +63,7 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.dashboard_poller import DashboardPoller
 from claudia.execution_listener import ExecutionListener, ExecutionReport, format_execution_report
-from claudia.flex_sync import dataset_fingerprint, validate_dataset
+from claudia.flex_sync import dataset_fingerprint, last_fruitful_pull, pull_due, validate_dataset
 from claudia.gateway_preflight import warn_if_session_borrowed
 from claudia.gateway_session import SessionPhase, get_session
 from claudia.gdrive_sync import GDriveSync
@@ -711,6 +712,14 @@ def _build_action_bar(
     )
 
 
+_ET = ZoneInfo("America/New_York")
+
+
+def _now_utc() -> datetime:
+    """Now, aware, UTC — a seam so tests can pose the clock without patching `datetime`."""
+    return datetime.now(UTC)
+
+
 async def _maybe_background_flex_sync(
     syslog: SystemLog,
     toolkit: ClaudeToolkit,
@@ -722,16 +731,22 @@ async def _maybe_background_flex_sync(
     """Startup Flex sync decision + background sync (parity with the removed app.py).
 
     Decision (fast sqlite, threaded) runs inline; only the actual work — Flex API call,
-    conditional Drive backup, re-validation — is spawned as a background task. Logic:
+    conditional Drive backup, re-validation — is spawned as a background task. Logic
+    (gap #72, operator 2026-09-25 — **evidence, not a clock, not a definition of "stale"**):
 
-    1. **Coverage** check first (SQLite, no API): if the data is current, skip. This is
-       `get_trade_date_coverage`, which is an *activity report* — it counts trades and
-       finds date gaps. It is deliberately **not** called an integrity check here: that
-       mislabel is what let "integrity validated" sit unearned in the opening line for
-       months. The real checks are `flex_sync.validate_dataset`.
-    2. Only if stale: check the logs for a recent attempt (<4h) — avoid hammering the
-       rate-limited Flex API on restarts.
-    3. Only if stale AND no recent attempt: call the Flex API.
+    1. IBKR offline: skip, and say so in the log (the sync resolves the account id through
+       the gateway, so it cannot run; before 2026-09-25 this skip was silent).
+    2. Read the store's own `flex_sync` log and find the last pull that CHANGED the store
+       (`flex_sync.last_fruitful_pull`). If one happened since the most recent midnight ET,
+       everything that can exist today is already in — skip (`flex_sync.pull_due`).
+    3. Otherwise pull. A pull that brings nothing is not evidence, so the next start pulls
+       again; there is no retry window (the operator ruled against one) and the Flex
+       service allows ten requests a minute.
+
+    Until 2026-09-25 step 2 was the core's `get_trade_date_coverage()["stale"]`, which
+    accepts a store two trading days old (core register F19) and so pulled nothing all day
+    on 2026-09-24, and step 3 was a 4 h window that also suppressed a retry after a
+    fruitless pull. `get_trade_date_coverage` is no longer read here at all.
 
     **Where validation happens, and why not here.** Every session start validates the
     dataset through `opening_status.build_trade_lines`, which runs whether or not a sync
@@ -741,56 +756,33 @@ async def _maybe_background_flex_sync(
     one thing in a session that can change the answer.
     """
     cfg = toolkit._config
-    if not (cfg and cfg.flex_token and cfg.flex_query_id) or ibkr_offline:
+    if not (cfg and cfg.flex_token and cfg.flex_query_id):
+        return
+    if ibkr_offline:
+        log.info(
+            "Startup Flex sync skipped — IBKR offline: the sync resolves the account id "
+            "through the gateway. Reconnect and restart, or ask for sync_flex_trades once connected."
+        )
         return
 
-    should_sync = False
-    skip_reason = ""
     try:
-        cov = await asyncio.to_thread(toolkit._store.get_trade_date_coverage)
-        # **Only an explicit `False` is a claim that the data is current (gap #6).**
-        # `get_trade_date_coverage` returns EARLY when the trades table holds no dated
-        # rows, and that short form — measured 2026-09-23 against a brand-new store as
-        # `{"oldest": None, "newest": None, "total_trades": 0, "gaps": []}` — omits
-        # `stale` altogether. The test was `not cov.get("stale")`, which cannot tell an
-        # absent verdict from a negative one, so the first-ever sync was skipped and the
-        # log announced `data current (newest: None, last trading day: None)`. An empty
-        # dataset is the one state that most needs a pull.
-        #
-        # The core gained a `⚠ FLEX DATASET EMPTY` marker for this in 2.1.0, but it is in
-        # `check_flex_coverage`'s formatted output and this decision reads the raw dict,
-        # so it could never reach here. Fixed on this side rather than by re-routing the
-        # decision through the tool: the decision must stay a cheap local SQLite read.
-        if cov.get("stale") is False:
-            skip_reason = (
-                f"data current (newest: {cov['newest']}, "
-                f"last trading day: {cov.get('last_trading_day')})"
+        events = await asyncio.to_thread(toolkit._store.get_log, n=200, event="flex_sync")
+        last_fruitful = last_fruitful_pull(events)
+        now = _now_utc()
+        if last_fruitful is not None and not pull_due(now, last_fruitful):
+            log.info(
+                "Startup Flex sync skipped — a pull already brought new data at %s ET today "
+                "(%s); nothing newer can exist before IBKR's next overnight publication",
+                last_fruitful.astimezone(_ET).strftime("%H:%M"),
+                last_fruitful.isoformat(timespec="seconds"),
             )
-        else:
-            # Stale, or no verdict at all. An empty dataset is a *stronger* reason to
-            # sync but not a licence to bypass the 4 h window — Flex is rate-limited and
-            # a restart loop would otherwise retry on every session start.
-            have_no_data = "stale" not in cov
-            last_attempts = await asyncio.to_thread(toolkit._store.get_log, n=1, event="flex_sync")
-            if last_attempts:
-                last_ts = datetime.fromisoformat(last_attempts[0]["ts"]).replace(tzinfo=UTC)
-                hours_since = (datetime.now(UTC) - last_ts).total_seconds() / 3600
-                if hours_since < 4:
-                    # "newest: None" reads as a bug in the log; say what is actually so.
-                    have = "no settled rows yet" if have_no_data else f"newest: {cov['newest']}"
-                    skip_reason = f"already attempted {hours_since:.1f}h ago ({have})"
-                else:
-                    should_sync = True
-            else:
-                should_sync = True  # never synced
-    except Exception:
-        should_sync = True  # on any check failure, attempt sync
-
-    if skip_reason:
-        log.info("Startup Flex sync skipped — %s", skip_reason)
-        return
-    if not should_sync:
-        return
+            return
+        log.info(
+            "Startup Flex sync due — last pull that brought new data: %s",
+            last_fruitful.isoformat(timespec="seconds") if last_fruitful else "never",
+        )
+    except Exception as exc:  # on any check failure, attempt the sync — unknown is not "current"
+        log.warning("Startup Flex sync decision failed (%s) — pulling", exc)
 
     async def _background_flex_sync() -> None:
         """Run the Flex trade sync off the critical path, then back up store.db to Drive.
