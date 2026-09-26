@@ -483,10 +483,16 @@ and `workflow_dispatch` (TestPyPI only), and the `pypi` environment requires the
 manual approval (`required reviewer = the owner; deployment tag rule v*`). A push, a merge,
 even a pushed tag, publishes nothing.
 
-**When ClaudIA needs a core change:** make it on the release branch in its worktree (created
-once per window from the release tag, e.g. `git -C ../ibkr_core_mcp worktree add
-../ibkr_core_mcp-next -b release/next main`; the branch name and path are settled with the
-operator before the first line); add an entry under `## [Unreleased]` in the core's CHANGELOG
+**When ClaudIA needs a core change:** make it on the release branch in its worktree — agreed
+2026-09-26 for the next window: branch `release/2.2.0` (the core's own `release/2.0.1`
+precedent), worktree `../ibkr_core_mcp-2.2.0` (a sibling, named after the branch), cut from
+the tag so the base is provably the release: `git -C ../ibkr_core_mcp worktree add
+../ibkr_core_mcp-2.2.0 -b release/2.2.0 v2.1.0`. **ClaudIA pivots to the next core only when
+it is released** (operator 2026-09-26): `core-ref.txt` moves to the published version, never to
+the branch; the one exception is testing and validating the pre-release — a local, uncommitted
+override pointed at the worktree, pointed back before any commit, and the informational
+`forward-compat` lane, whose checkout ref is set to the branch when the window opens and back
+to `main` in the same commit that moves the pin. Add an entry under `## [Unreleased]` in the core's CHANGELOG
 — that entry *is* the next release note, written while you still remember why; run the core's
 four gates **in that worktree, bare, unpiped, as four separate commands** (`ruff check .`,
 `ruff format --check .`, `mypy`, `pytest -m "not integration"`) and its integration suite
