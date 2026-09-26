@@ -60,13 +60,57 @@ class ClosedExchange:
     label: str
 
 
-ClosureSection: TypeAlias = "Ready[ClosedExchange] | Degraded | Unavailable"
-"""The three constructors are a shared vocabulary across every section builder in this
-module, not a per-function contract: `build_closures` below only ever returns `Ready` or
-`Unavailable` (there is nothing about "today's closures" that is a benign not-yet-available
-state), while Task 3's expiries builder does return `Degraded`. A caller that matches on
-`build_closures` alone will see a `Degraded` branch it can never reach — that is intentional,
-not a sign the branch belongs here."""
+@dataclass(frozen=True)
+class Weekend:
+    """A Saturday or Sunday: the regular weekly schedule decides, and no holiday list is read.
+
+    Operator rule 2026-09-26 (gap #78, after "All tracked exchanges open today" printed on a
+    Saturday): **the regular schedule comes first and holidays only subtract from it** — no
+    exchange ever opens on its weekend; the surprises are all special closures. The holiday
+    lists could never have said "closed" here: the core builds them from weekdays only
+    (`weekdays − sessions`), so a weekend is in nobody's list by construction.
+
+    `open_today` names the tracked exchanges whose regular week includes this day (Tadawul
+    on a Sunday); `globex_hours` is CME's own schedule string quoted from the context's
+    futures table, or None when the context did not carry it — never an hour typed here.
+    """
+
+    day: str
+    open_today: tuple[str, ...] = ()
+    globex_hours: str | None = None
+
+
+ClosureSection: TypeAlias = "Ready[ClosedExchange] | Weekend | Degraded | Unavailable"
+"""The `Ready`/`Degraded`/`Unavailable` constructors are a shared vocabulary across every
+section builder in this module, not a per-function contract: `build_closures` below only
+ever returns `Ready`, `Weekend` or `Unavailable` (there is nothing about "today's closures"
+that is a benign not-yet-available state), while Task 3's expiries builder does return
+`Degraded`. A caller that matches on `build_closures` alone will see a `Degraded` branch it
+can never reach — that is intentional, not a sign the branch belongs here."""
+
+# The tracked exchanges whose regular week includes Sunday. Tadawul trades Sun–Thu — the
+# `exchange_calendars` XSAU calendar the core reads, and the core's own comment on it
+# ("Fridays appear as holidays from a Mon–Fri perspective"). A weekday rule living here is
+# an interim: core register F24 asks the context to carry per-exchange session status, at
+# which point this constant goes.
+_SUNDAY_SESSIONS = ("XSAU",)
+_DAY_NAMES = {5: "Saturday", 6: "Sunday"}
+
+
+def _globex_hours(mkt: Mapping[str, object] | None) -> str | None:
+    """CME's Globex hours for the equity-index group, verbatim from the context, or None.
+
+    The string is the core's `_FUTURES_SCHEDULE` entry ("Sun 5:00 PM – Fri 4:00 PM", CT)
+    passed through `get_market_calendar_context()["futures"]`; it is quoted, not copied,
+    so a schedule change in the core reaches the screen with no edit here.
+    """
+    if mkt is None:
+        return None
+    futures = mkt.get("futures")
+    groups = futures.get("product_groups") if isinstance(futures, Mapping) else None
+    equity = groups.get("equity_index") if isinstance(groups, Mapping) else None
+    hours = equity.get("globex_hours_ct") if isinstance(equity, Mapping) else None
+    return hours.strip() if isinstance(hours, str) and hours.strip() else None
 
 
 def build_closures(mkt: Mapping[str, object] | None, today: date) -> ClosureSection:
@@ -94,7 +138,17 @@ def build_closures(mkt: Mapping[str, object] | None, today: date) -> ClosureSect
     against every other key, so one `int`/`str` (or `None`/`str`) pair anywhere in the dict
     raises `TypeError` before a single iteration — an in-loop guard placed after the sort
     can never run.
+
+    **A weekend is decided before any of that** (gap #78): the weekly schedule is known from
+    the date alone, so a Saturday or Sunday is a `Weekend` even when the calendar could not
+    be read — an unreadable calendar then costs the Globex hours line, not the verdict.
     """
+    day = _DAY_NAMES.get(today.weekday())
+    if day is not None:
+        open_today = tuple(
+            EXCHANGE_LABELS.get(code, code) for code in _SUNDAY_SESSIONS if day == "Sunday"
+        )
+        return Weekend(day=day, open_today=open_today, globex_hours=_globex_hours(mkt))
     if mkt is None:
         return Unavailable(reason="market calendar could not be read")
     raw = mkt.get("holidays_by_exchange")
@@ -353,6 +407,26 @@ def _render_closures(section: ClosureSection, escape: Callable[[str], str]) -> s
         return f"⚠ Exchange closures unavailable — {_degraded_reason(section)}."
     elif isinstance(section, Unavailable):
         return f"⚠ Exchange closures could not be read — {section.reason}."
+    elif isinstance(section, Weekend):
+        # The regular schedule, stated as such: never the weekday "open today" sentence,
+        # and never an hour that did not come from the context (gap #78).
+        globex = (
+            f" CME Globex reopens this evening: {escape(section.globex_hours)} CT."
+            if section.globex_hours and section.day == "Sunday"
+            else f" CME Globex: {escape(section.globex_hours)} CT."
+            if section.globex_hours
+            else ""
+        )
+        if section.open_today:
+            names = ", ".join(escape(n) for n in section.open_today)
+            return (
+                f"**{section.day} — weekend:** tracked exchanges closed on their regular "
+                f"schedule, except {names}, whose regular week includes today.{globex}"
+            )
+        return (
+            f"**{section.day} — weekend:** every tracked exchange closed on its regular "
+            f"schedule.{globex}"
+        )
     elif isinstance(section, Ready):
         if not section.items:
             return "All tracked exchanges open today."

@@ -700,3 +700,106 @@ def test_a_real_position_survives_the_whole_chain_to_the_rendered_text() -> None
     assert "**Expiring soon:**" in text
     assert "ESZ6" in text
     assert "2026-09-18" in text
+
+
+# ── Weekend: the regular schedule comes first (operator 2026-09-26, gap #78) ───────────
+
+_SATURDAY = date(2026, 9, 26)
+_SUNDAY = date(2026, 9, 27)
+_GLOBEX = {
+    "futures": {
+        "product_groups": {"equity_index": {"globex_hours_ct": "Sun 5:00 PM – Fri 4:00 PM"}}
+    }
+}
+
+
+def test_a_saturday_is_a_weekend_closure_never_an_open_day() -> None:
+    """2026-09-26, a Saturday: the section printed "All tracked exchanges open today",
+    because a weekend is in no holiday list — the core builds the lists from weekdays.
+    Operator: regular schedule first, holidays only subtract; no exchange opens on its
+    weekend. So a weekend day is a `Weekend`, whatever the lists say."""
+    mkt = {"holidays_by_exchange": {"XTKS": ["2026-09-21"]}, **_GLOBEX}
+    out = br.build_closures(mkt, today=_SATURDAY)
+    assert isinstance(out, br.Weekend)
+    assert out.day == "Saturday"
+    assert out.open_today == ()
+
+
+def test_a_sunday_names_the_exchange_whose_regular_week_includes_it() -> None:
+    """Tadawul trades Sun–Thu (exchange_calendars' XSAU calendar, the core's own source):
+    on a Sunday it is the one tracked exchange with a session, and it is named."""
+    out = br.build_closures({"holidays_by_exchange": {}}, today=_SUNDAY)
+    assert isinstance(out, br.Weekend)
+    assert out.day == "Sunday"
+    assert out.open_today == ("Tadawul (Sun–Thu week)",)
+
+
+def test_the_weekend_verdict_needs_no_calendar() -> None:
+    """The weekly schedule is known from the date alone; an unreadable calendar costs
+    the Globex hours line and nothing else — never an "unavailable" on a Saturday."""
+    out = br.build_closures(None, today=_SATURDAY)
+    assert isinstance(out, br.Weekend)
+    assert out.globex_hours is None
+
+
+def test_the_globex_hours_are_quoted_from_the_context_not_copied() -> None:
+    """CME's schedule string reaches the briefing from the core's `_FUTURES_SCHEDULE`
+    through the context; a context without it yields no hours, never a copy typed here."""
+    with_hours = br.build_closures({"holidays_by_exchange": {}, **_GLOBEX}, today=_SATURDAY)
+    without = br.build_closures({"holidays_by_exchange": {}}, today=_SATURDAY)
+    assert isinstance(with_hours, br.Weekend) and isinstance(without, br.Weekend)
+    assert with_hours.globex_hours == "Sun 5:00 PM – Fri 4:00 PM"
+    assert without.globex_hours is None
+
+
+def test_a_weekday_still_gets_the_holiday_verdict() -> None:
+    """Regular schedule first, holidays second: on a weekday the lists decide as before."""
+    out = br.build_closures(
+        {"holidays_by_exchange": {"XTKS": ["2026-09-21"]}}, today=date(2026, 9, 21)
+    )
+    assert isinstance(out, br.Ready)
+    assert [c.code for c in out.items] == ["XTKS"]
+
+
+def test_a_saturday_renders_as_a_weekend_closure() -> None:
+    """The sentence the operator reads on a Saturday: closed on the regular schedule,
+    with CME's own hours quoted — and never the weekday "open today" sentence."""
+    b = br.Briefing(
+        expiries=br.Ready(items=()),
+        closures=br.Weekend(
+            day="Saturday", open_today=(), globex_hours="Sun 5:00 PM – Fri 4:00 PM"
+        ),
+    )
+    text = br.render_briefing(b, escape=str)
+    assert "Saturday — weekend" in text
+    assert "every tracked exchange closed" in text
+    assert "Sun 5:00 PM – Fri 4:00 PM CT" in text
+    assert "open today" not in text
+
+
+def test_a_sunday_renders_its_exception_and_the_globex_reopen() -> None:
+    """Sunday is a session day for Tadawul and the evening Globex open; both are said."""
+    b = br.Briefing(
+        expiries=br.Ready(items=()),
+        closures=br.Weekend(
+            day="Sunday",
+            open_today=("Tadawul (Sun–Thu week)",),
+            globex_hours="Sun 5:00 PM – Fri 4:00 PM",
+        ),
+    )
+    text = br.render_briefing(b, escape=str)
+    assert "Sunday — weekend" in text
+    assert "except Tadawul (Sun–Thu week)" in text
+    assert "reopens this evening" in text
+    assert "open today" not in text
+
+
+def test_a_weekend_without_hours_says_nothing_about_globex_rather_than_guessing() -> None:
+    """No schedule string in hand → no hour on screen (a clock claim is never invented)."""
+    b = br.Briefing(
+        expiries=br.Ready(items=()),
+        closures=br.Weekend(day="Saturday", open_today=(), globex_hours=None),
+    )
+    text = br.render_briefing(b, escape=str)
+    assert "Saturday — weekend" in text
+    assert "PM" not in text and "Globex" not in text

@@ -27,8 +27,11 @@ claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-d
 claudia/order_flow.py       — framework-agnostic order-execution cores → ibkr_core_mcp biometric gates
 claudia/opening_status.py   — UI-free opening-status builders (session state + trade line; no account figures)
 claudia/briefing.py         — startup briefing: expiring positions + today's exchange closures,
-                              pure builders, no network (section state is Ready/Degraded/Unavailable
-                              so a failed read can never render as "nothing today")
+                              pure builders, no network (section state is Ready/Weekend/Degraded/Unavailable
+                              so a failed read can never render as "nothing today"; a Saturday or
+                              Sunday is decided by the regular weekly schedule before any holiday
+                              list is read — operator rule 2026-09-26, gap #78: no exchange opens
+                              on its weekend, holidays only subtract)
 claudia/flex_sync.py        — session-start dataset validation, the "did this pull change anything" gate,
                               and the startup pull rule (evidence from the store's own pull log,
                               no staleness definition — gap #72, 2026-09-25)
