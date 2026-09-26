@@ -47,7 +47,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
 import panel as pn
@@ -198,7 +198,10 @@ async def test_build_chat_app_returns_a_chat_interface_with_callback_wired():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -225,7 +228,10 @@ async def test_build_chat_app_callback_waits_for_init_then_dispatches_to_agent()
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -256,7 +262,10 @@ async def test_build_chat_app_constructs_sink_with_the_real_store():
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.agent.AsyncAnthropic"),
         patch("claudia.panel_app.PanelMessageSink") as mock_sink_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         chat = _build_chat_app()
@@ -287,7 +296,10 @@ async def test_build_chat_app_wires_tv_bridge_getter_reading_live_module_global(
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.agent.AsyncAnthropic"),
         patch("claudia.panel_app.PanelMessageSink") as mock_sink_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         chat = _build_chat_app()
@@ -332,7 +344,10 @@ async def test_init_downloads_drive_db_before_first_store_open(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -366,7 +381,10 @@ async def test_init_continues_without_drive_when_gdrive_sync_fails(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -451,7 +469,10 @@ async def test_init_registers_doc_version_and_creates_session_with_metadata():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot") as mock_snapshot,
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -486,7 +507,10 @@ async def test_init_hash_change_sends_warning():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -518,7 +542,10 @@ async def test_init_no_warning_when_hash_unchanged_or_first_run():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -558,7 +585,10 @@ async def test_init_reads_context_docs_from_drive_when_sync_available(monkeypatc
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -613,7 +643,7 @@ async def test_init_sends_opening_status_and_stamps_trade_context():
     # that failed to load rather than one with nothing to report.
     assert status[0].startswith("_trade status line_")
     assert mock_agent_cls.return_value._trade_context == "TRADE CTX"
-    mock_build.assert_called_once_with(mock_toolkit, False)
+    mock_build.assert_called_once_with(mock_toolkit, False, pull_note=ANY)
     mock_agent_cls.return_value.handle_message.assert_called_once_with("hello")
 
 
@@ -648,7 +678,7 @@ async def test_init_offline_flag_flows_from_gather_to_trade_lines():
         chat = _build_chat_app()
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-    mock_build.assert_called_once_with(mock_toolkit, True)
+    mock_build.assert_called_once_with(mock_toolkit, True, pull_note=ANY)
     assert any("OFFLINE BLOCK" in t for t in _message_texts(chat))
 
 
@@ -667,7 +697,10 @@ async def test_init_starts_doc_watcher_with_alert_callback():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -699,7 +732,10 @@ async def test_doc_change_callback_delivers_alert_from_a_plain_thread():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -738,7 +774,10 @@ async def test_init_starts_connectivity_and_execution_singletons(monkeypatch, ba
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -775,7 +814,10 @@ async def test_second_session_reuses_singletons_but_restarts_them(backend_single
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -902,7 +944,10 @@ async def test_session_destroy_hook_registered_and_runs_cleanup_once():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "on_session_destroyed") as mock_register,
         patch(
             "claudia.panel_app._run_session_cleanup", new=AsyncMock(return_value="ok")
@@ -947,7 +992,10 @@ async def test_end_session_button_always_present_and_runs_cleanup():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch(
             "claudia.panel_app._run_session_cleanup", new=AsyncMock(return_value="7 messages saved")
         ) as mock_cleanup,
@@ -983,7 +1031,7 @@ async def test_ibkr_button_is_always_in_the_bar_whatever_the_ibkr_state():
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch(
-            "claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, True))
+            "claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, True, None))
         ),  # offline
     ):
         _configure_loader(mock_loader_cls)
@@ -1012,7 +1060,10 @@ async def test_destroy_hook_cleanup_failure_is_logged_not_raised(caplog):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "on_session_destroyed") as mock_register,
         patch(
             "claudia.panel_app._run_session_cleanup",
@@ -1062,7 +1113,7 @@ async def test_start_gateway_click_success_path_streams_and_refreshes_status(mon
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch(
-            "claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, True))
+            "claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, True, None))
         ),  # offline → button present
         patch("claudia.panel_app.GatewayManager"),
         patch("claudia.panel_app.get_session", return_value=session),
@@ -1109,7 +1160,7 @@ async def test_start_gateway_click_timeout_reports_and_skips_login_page():
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch(
-            "claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, True))
+            "claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, True, None))
         ),  # offline → button present
         patch("claudia.panel_app.GatewayManager"),
         patch("claudia.panel_app.get_session", return_value=session),
@@ -1555,7 +1606,10 @@ async def test_build_session_root_registers_5s_periodic_refresh():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "add_periodic_callback") as mock_cb,
         patch.object(pn.state, "onload") as mock_onload,
     ):
@@ -1647,7 +1701,10 @@ async def test_chat_interface_phase1_surface(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -1687,7 +1744,10 @@ async def test_session_root_applies_the_session_theme():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch("claudia.panel_app.apply_session_theme", return_value="dark") as apply_theme,
         patch.object(pn.state, "add_periodic_callback"),
     ):
@@ -1727,7 +1787,7 @@ async def _build_chat_with_ibkr(
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch(
             "claudia.panel_app._send_opening_status",
-            new=AsyncMock(return_value=(None, ibkr_offline)),
+            new=AsyncMock(return_value=(None, ibkr_offline, None)),
         ),
     ):
         _configure_loader(mock_loader_cls)
@@ -1803,7 +1863,10 @@ async def test_chat_pane_is_viewport_bound_so_the_input_stays_at_the_bottom():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "add_periodic_callback"),
     ):
         _configure_loader(mock_loader_cls)
@@ -1864,7 +1927,10 @@ async def test_session_root_composes_the_dashboard_tabs_and_table():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "add_periodic_callback"),
     ):
         _configure_loader(mock_loader_cls)
@@ -1936,7 +2002,10 @@ async def test_periodic_refresh_repaints_both_the_dots_and_the_dashboard():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "add_periodic_callback") as mock_cb,
         patch.object(app, "_dashboard_poller", poller),
     ):
@@ -1971,7 +2040,10 @@ async def test_periodic_refresh_survives_a_poller_that_is_not_up_yet():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "add_periodic_callback") as mock_cb,
         patch.object(app, "_dashboard_poller", None),
     ):
@@ -1999,7 +2071,10 @@ async def test_init_starts_the_dashboard_poller_on_the_toolkit_client(backend_si
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "add_periodic_callback"),
         patch.object(app, "DashboardPoller") as poller_cls,
     ):
@@ -2029,7 +2104,10 @@ async def test_init_subscribes_alert_callback_and_it_writes_the_system_log(backe
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -2066,7 +2144,10 @@ async def test_destroy_hook_unsubscribes_before_cleanup(backend_singletons):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "on_session_destroyed") as mock_register,
         patch("claudia.panel_app._run_session_cleanup", mock_cleanup),
     ):
@@ -2109,7 +2190,10 @@ async def test_destroy_during_init_undoes_fresh_subscription(backend_singletons)
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "on_session_destroyed") as mock_register,
         patch("claudia.panel_app._run_session_cleanup", new=AsyncMock(return_value="ok")),
     ):
@@ -2145,7 +2229,10 @@ async def test_end_session_button_unsubscribes_too(backend_singletons):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch(
             "claudia.panel_app._run_session_cleanup", new=AsyncMock(return_value="7 messages saved")
         ),
@@ -2175,7 +2262,9 @@ async def test_init_awaits_flex_sync_seam_with_gather_offline_flag(flex_sync):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, True))),
+        patch(
+            "claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, True, None))
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -2224,7 +2313,10 @@ async def test_image_upload_reaches_agent_as_vision_block(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         handle = mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -2270,7 +2362,10 @@ async def test_non_image_upload_gets_honest_refusal_no_agent_call():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -2308,7 +2403,10 @@ async def test_file_widget_configured_and_composed_in_session_root():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         # Same discipline as the Task 6.2 composition test: the timer is not
         # this test's subject.
         patch.object(pn.state, "add_periodic_callback"),
@@ -2350,7 +2448,7 @@ async def test_upload_metadata_snapshotted_before_init_gate():
     async def _blocked_status(chat, toolkit, tv_offline):
         """Record the status line and block, so ordering around the await can be asserted."""
         await release_init.wait()
-        return (None, False)
+        return (None, False, None)
 
     with (
         patch.dict(os.environ, _NO_GDRIVE),
@@ -2475,7 +2573,8 @@ async def test_tradingview_button_is_always_in_the_bar():
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
         patch(
-            "claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
         ),  # IBKR online
         patch("claudia.panel_app._get_tv_bridge", new=AsyncMock(return_value=bridge)),
         patch("claudia.panel_app.check_cdp_running", return_value=False),  # → tv_offline
@@ -2505,7 +2604,10 @@ async def test_tv_failure_does_not_block_init_and_chat_still_works():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch(
             "claudia.panel_app._get_tv_bridge",
             new=AsyncMock(side_effect=RuntimeError("sidecar down")),
@@ -2550,7 +2652,10 @@ async def test_launch_tv_button_click_success_wires_agent_in_order(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch("claudia.panel_app._get_tv_bridge", new=get_bridge_mock),
         patch("claudia.panel_app.check_cdp_running", return_value=False),  # init → offline
         patch("claudia.panel_app.launch_tradingview", new=launch_mock),
@@ -2610,7 +2715,10 @@ async def test_launch_tv_click_stops_stale_bridge_before_rebuild(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch("claudia.panel_app._get_tv_bridge", new=get_bridge_mock),
         patch("claudia.panel_app.check_cdp_running", return_value=False),  # init → offline
         patch("claudia.panel_app.launch_tradingview", new=launch_mock),
@@ -2652,7 +2760,10 @@ async def test_launch_tv_button_click_failure_shows_manual_launch(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch("claudia.panel_app._get_tv_bridge", new=get_bridge_mock),
         patch("claudia.panel_app.check_cdp_running", return_value=False),  # init → offline
         patch("claudia.panel_app.launch_tradingview", new=AsyncMock(return_value=False)),
@@ -2699,7 +2810,10 @@ async def test_chat_interface_installs_the_safe_markdown_renderer():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
     ):
         _configure_loader(mock_loader_cls)
         mock_agent_cls.return_value.handle_message = AsyncMock()
@@ -3041,7 +3155,10 @@ async def test_session_root_left_column_is_chat_log_picker_bar():
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "add_periodic_callback"),
     ):
         _configure_loader(mock_loader_cls)
@@ -3081,7 +3198,10 @@ async def test_refresh_repaints_the_bar_from_the_checker(monkeypatch):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "add_periodic_callback") as periodic,
     ):
         _configure_loader(mock_loader_cls)
@@ -3326,7 +3446,10 @@ async def test_init_subscribes_to_fills_and_end_session_unsubscribes(backend_sin
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch(
             "claudia.panel_app._run_session_cleanup", new=AsyncMock(return_value="7 messages saved")
         ),
@@ -3373,7 +3496,10 @@ async def test_destroy_hook_unsubscribes_fills_too(backend_singletons):
         patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
         patch("claudia.panel_app._write_version_snapshot"),
         patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
-        patch("claudia.panel_app._send_opening_status", new=AsyncMock(return_value=(None, False))),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
         patch.object(pn.state, "on_session_destroyed") as mock_register,
         patch("claudia.panel_app._run_session_cleanup", new=AsyncMock(return_value="ok")),
     ):
@@ -3818,3 +3944,252 @@ def test_running_the_module_as_main_serves_the_canonical_module_not_a_second_cop
     canonical_main.assert_called_once_with()
     # The copy that just ran defined its own `main`; it must not be the one the guard called.
     assert namespace["main"] is not canonical_main
+
+
+# ── Gap #77: the opening line follows the startup pull ──────────────────────────────────
+
+
+class _SentMessage:
+    """What `ChatInterface.send` hands back: an object whose `.object` is the text."""
+
+    def __init__(self, text: str) -> None:
+        """Hold the text as sent."""
+        self.object = text
+
+
+class _FakeChat:
+    """A chat whose `send` returns a message handle, like Panel's, and keeps the texts."""
+
+    def __init__(self) -> None:
+        """Start with nothing sent."""
+        self.sent: list[_SentMessage] = []
+
+    def send(self, text: str, user: str = "", respond: bool = True) -> _SentMessage:
+        """Record the message and return its handle."""
+        msg = _SentMessage(text)
+        self.sent.append(msg)
+        return msg
+
+
+def _today_1442z() -> datetime:
+    """2026-09-26 14:42Z — 10:42 ET, the Saturday start that found the defect."""
+    from datetime import UTC, datetime
+
+    return datetime(2026, 9, 26, 14, 42, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_the_opening_line_says_a_startup_pull_is_running_when_one_is_due():
+    """The 10:42 start: the last fruitful pull was the day before, so a pull is due and
+    starts seconds later. The line must say so instead of reading as the final word."""
+    from datetime import timedelta
+
+    from claudia.opening_status import PULL_RUNNING_NOTE
+    from claudia.panel_app import _send_opening_status
+
+    now = _today_1442z()
+    toolkit = _flex_toolkit(
+        stale=False, attempts=[_flex_pull(now - timedelta(days=1), "2026-09-24", 1375)]
+    )
+    chat = _FakeChat()
+    with (
+        patch("claudia.panel_app._now_utc", return_value=now),
+        patch("claudia.panel_app.gather_session_state", new=AsyncMock(return_value=("", False))),
+        patch("claudia.panel_app._build_briefing_text", return_value=""),
+        patch(
+            "claudia.panel_app.build_trade_lines",
+            side_effect=lambda t, o, pull_note="": (
+                f"dataset line; {pull_note}" if pull_note else "dataset line",
+                "CTX",
+            ),
+        ) as build,
+    ):
+        _ctx, offline, opening = await _send_opening_status(
+            cast(Any, chat), toolkit, tv_offline=True
+        )
+    assert offline is False
+    assert opening.pull is not None and opening.pull.due is True
+    build.assert_called_once_with(toolkit, False, pull_note=PULL_RUNNING_NOTE)
+    assert chat.sent[0].object.startswith(f"_dataset line; {PULL_RUNNING_NOTE}_")
+
+
+@pytest.mark.asyncio
+async def test_the_opening_line_makes_no_pull_claim_when_none_is_due():
+    """A restart after today's fruitful pull: no pull runs, so the line says nothing about one."""
+    from datetime import timedelta
+
+    from claudia.panel_app import _send_opening_status
+
+    now = _today_1442z()
+    toolkit = _flex_toolkit(
+        stale=False, attempts=[_flex_pull(now - timedelta(minutes=30), "2026-09-25", 1377)]
+    )
+    chat = _FakeChat()
+    with (
+        patch("claudia.panel_app._now_utc", return_value=now),
+        patch("claudia.panel_app.gather_session_state", new=AsyncMock(return_value=("", False))),
+        patch("claudia.panel_app._build_briefing_text", return_value=""),
+        patch("claudia.panel_app.build_trade_lines", return_value=("dataset line", "CTX")) as build,
+    ):
+        _ctx, _offline, opening = await _send_opening_status(
+            cast(Any, chat), toolkit, tv_offline=True
+        )
+    assert opening.pull is not None and opening.pull.due is False
+    build.assert_called_once_with(toolkit, False, pull_note="")
+    assert chat.sent[0].object.startswith("_dataset line_")
+
+
+def test_replace_dataset_line_rewrites_only_that_part_of_the_same_message():
+    """The `_settle_intro` shape: the same chat message, its text replaced in place — no new
+    chat line, so the routing rule (session events go to the System log) still holds."""
+    from claudia.panel_app import OpeningMessage
+
+    msg = _SentMessage("_old dataset line_\n\n_TradingView: connected._\n\nbriefing")
+    opening = OpeningMessage(
+        message=msg,
+        parts=["_old dataset line_", "_TradingView: connected._", "briefing"],
+        dataset_index=0,
+        pull=None,
+    )
+    opening.replace_dataset_line("new dataset line")
+    assert msg.object == "_new dataset line_\n\n_TradingView: connected._\n\nbriefing"
+
+
+def test_the_dataset_line_keeps_its_place_after_an_ibkr_caveat():
+    """With an IBKR caveat first, the dataset line is the second part; the index says so."""
+    from claudia.panel_app import OpeningMessage
+
+    msg = _SentMessage("caveat\n\n_old_\n\n_TradingView: connected._")
+    opening = OpeningMessage(
+        message=msg,
+        parts=["caveat", "_old_", "_TradingView: connected._"],
+        dataset_index=1,
+        pull=None,
+    )
+    opening.replace_dataset_line("new")
+    assert msg.object == "caveat\n\n_new_\n\n_TradingView: connected._"
+
+
+@pytest.mark.asyncio
+async def test_after_a_fruitful_pull_the_opening_line_and_the_model_context_are_refreshed():
+    """The two things the 10:42 start left stale, made current from a fresh store read."""
+    from claudia.panel_app import OpeningMessage, _refresh_opening_after_pull
+
+    msg = _SentMessage("_old_\n\n_TradingView: connected._")
+    opening = OpeningMessage(
+        message=msg, parts=["_old_", "_TradingView: connected._"], dataset_index=0, pull=None
+    )
+    agent = MagicMock()
+    agent._trade_context = "OLD CTX"
+    toolkit = MagicMock()
+    with patch(
+        "claudia.panel_app.build_trade_lines", return_value=("fresh line", "FRESH CTX")
+    ) as build:
+        await _refresh_opening_after_pull(opening, agent, toolkit, ibkr_offline=False, changed=True)
+    build.assert_called_once_with(toolkit, False, pull_note="")
+    assert msg.object.startswith("_fresh line_")
+    assert agent._trade_context == "FRESH CTX"
+
+
+@pytest.mark.asyncio
+async def test_after_a_fruitless_pull_the_line_says_the_statement_is_not_out_yet():
+    """A pull that changed nothing is not evidence (gap #72); the line says so and the
+    model is told, rather than the line silently keeping its pre-pull "pull running"."""
+    from claudia.opening_status import PULL_FRUITLESS_NOTE
+    from claudia.panel_app import OpeningMessage, _refresh_opening_after_pull
+
+    msg = _SentMessage("_old_")
+    opening = OpeningMessage(message=msg, parts=["_old_"], dataset_index=0, pull=None)
+    agent = MagicMock()
+    with patch("claudia.panel_app.build_trade_lines", return_value=("line", "CTX")) as build:
+        await _refresh_opening_after_pull(
+            opening, agent, MagicMock(), ibkr_offline=False, changed=False
+        )
+    build.assert_called_once_with(ANY, False, pull_note=PULL_FRUITLESS_NOTE)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_never_takes_down_the_session():
+    """The refresh runs inside the background sync task: it logs and returns."""
+    from claudia.panel_app import OpeningMessage, _refresh_opening_after_pull
+
+    opening = OpeningMessage(
+        message=_SentMessage("_old_"), parts=["_old_"], dataset_index=0, pull=None
+    )
+    with patch("claudia.panel_app.build_trade_lines", side_effect=RuntimeError("store locked")):
+        await _refresh_opening_after_pull(
+            opening, MagicMock(), MagicMock(), ibkr_offline=False, changed=True
+        )
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_the_sync_tells_its_caller_whether_the_store_changed():
+    """`on_done(changed)` is what lets the caller rewrite the opening line: True when the
+    fingerprint moved (the 10:43 pull), False when the pull brought nothing."""
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    seen: list[bool] = []
+
+    async def on_done(changed: bool) -> None:
+        """Record what the sync reported."""
+        seen.append(changed)
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    with patch(
+        "claudia.panel_app.dataset_fingerprint",
+        side_effect=[(1375, 1375, "2026-09-24"), (1377, 1377, "2026-09-25")],
+    ):
+        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False, on_done=on_done)
+        await _drain_flex_sync()
+    with patch(
+        "claudia.panel_app.dataset_fingerprint",
+        side_effect=[(1377, 1377, "2026-09-25"), (1377, 1377, "2026-09-25")],
+    ):
+        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False, on_done=on_done)
+        await _drain_flex_sync()
+    assert seen == [True, False]
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
+async def test_a_decision_taken_before_the_opening_status_is_reused_by_the_sync():
+    """The decision is taken once, before the line is sent, and handed to the sync — the
+    sync must not read the log a second time and reach a different verdict."""
+    from claudia.panel_app import FlexPullDecision, _maybe_background_flex_sync
+
+    toolkit = _flex_toolkit(stale=True, attempts=[])
+    await _maybe_background_flex_sync(
+        MagicMock(),
+        toolkit,
+        ibkr_offline=False,
+        decision=FlexPullDecision(due=False, last_fruitful=None, reason="posed: not due"),
+    )
+    toolkit.execute.assert_not_called()
+    toolkit._store.get_log.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_sent_message_records_where_its_dataset_line_sits_after_a_caveat():
+    """With an IBKR caveat leading the message, the dataset line is the second part, and
+    the handle must say so — otherwise the refresh after the pull would overwrite the
+    caveat and leave the stale dataset line in place (the surviving mutant of 2026-09-26)."""
+    from claudia.panel_app import _send_opening_status
+
+    toolkit = _flex_toolkit(stale=False, attempts=[])
+    chat = _FakeChat()
+    with (
+        patch("claudia.panel_app._now_utc", return_value=_today_1442z()),
+        patch(
+            "claudia.panel_app.gather_session_state",
+            new=AsyncMock(return_value=("OFFLINE BLOCK", True)),
+        ),
+        patch("claudia.panel_app._build_briefing_text", return_value=""),
+        patch("claudia.panel_app.build_trade_lines", return_value=("dataset line", "CTX")),
+    ):
+        _ctx, _offline, opening = await _send_opening_status(
+            cast(Any, chat), toolkit, tv_offline=True
+        )
+    assert opening.dataset_index == 1
+    opening.replace_dataset_line("fresh")
+    assert chat.sent[0].object.startswith("OFFLINE BLOCK\n\n_fresh_\n\n")

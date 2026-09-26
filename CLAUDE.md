@@ -25,7 +25,9 @@ claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prom
 claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
 claudia/order_flow.py       — framework-agnostic order-execution cores → ibkr_core_mcp biometric gates
-claudia/opening_status.py   — UI-free opening-status builders (session state + trade line; no account figures)
+claudia/opening_status.py   — UI-free opening-status builders (session state + trade line; no account
+                              figures); the trade line carries the startup pull's state and is rewritten
+                              in place by panel_app once the pull lands (gap #77, 2026-09-26)
 claudia/briefing.py         — startup briefing: expiring positions + today's exchange closures,
                               pure builders, no network (section state is Ready/Weekend/Degraded/Unavailable
                               so a failed read can never render as "nothing today"; a Saturday or

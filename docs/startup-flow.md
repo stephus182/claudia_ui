@@ -227,9 +227,18 @@ the same numbers. On the healthy path the whole phase is now one `ping()`. See
 
 ## Phase 6 — Flex trade sync
 
-**File:** `claudia/panel_app.py` → `_maybe_background_flex_sync()` (was app.py's `_background_flex_sync`)
+**File:** `claudia/panel_app.py` → `_flex_pull_decision()` + `_maybe_background_flex_sync()` (was app.py's `_background_flex_sync`)
 
-Runs as a background asyncio task (non-blocking) after the welcome message is sent.
+**The decision is taken before the welcome message is sent** (gap #77, 2026-09-26) and the
+pull itself runs as a background asyncio task (non-blocking) after it. The welcome message's
+dataset line says "startup Flex pull running — this line updates when it lands" while the
+pull is in flight; once it lands, `_refresh_opening_after_pull` rebuilds the line from a
+fresh store read and **rewrites it in place** (the same chat message, no new line — the
+System log keeps the ✅ sync result as the event record) and re-stamps the model's trade
+context. A pull that changed nothing is said as such ("the startup pull brought nothing new
+… the next start tries again"), never left reading "running". Until 2026-09-26 the line and
+the model's context were stamped once, seconds before the pull landed, and stayed stale for
+the whole session — "1375 trades → 2026-09-24" over a store holding 1377 through 09-25.
 
 Sync is **skipped** when any of (rewritten 2026-09-25, gap #72):
 1. `IBKR_FLEX_TOKEN` or `IBKR_FLEX_QUERY_ID` not configured
@@ -266,7 +275,8 @@ Injects trading-day awareness into ClaudIA's system prompt:
 The welcome message includes:
 - Account summary (positions, unrealized P&L, cash balance) — if IBKR online
 - Live orders summary — if IBKR online
-- Flex trade coverage info (date range, integrity status)
+- Flex trade coverage info (date range, integrity status) — with the startup pull's state
+  while one is running, and rewritten in place once it lands (Phase 6, gap #77)
 - Market calendar block (today, trading day status)
 - (Until 2026-09-03 the welcome message also carried the action buttons. They now live in
   the **action bar** under the chat, always present: IBKR, TradingView, Drive — colour =

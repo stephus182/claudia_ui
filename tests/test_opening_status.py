@@ -476,3 +476,28 @@ def test_the_model_is_told_when_a_pull_is_still_due():
     assert context is not None
     assert "No pull has brought new data since midnight ET" in context, context
     assert "sync_flex_trades" in context
+
+
+# ── Gap #77: the dataset line can carry the startup pull's state ─────────────────────
+
+
+def test_a_pull_note_reaches_both_the_line_and_the_model():
+    """2026-09-26: the opening line said "1375 trades → 2026-09-24" seconds before the
+    startup pull landed 1377 through 2026-09-25, and the model's context was stamped from
+    the same pre-pull read. The caller now says what the pull is doing, on both surfaces."""
+    with patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()):
+        status, context = build_trade_lines(
+            _covered_toolkit(), ibkr_offline=False, pull_note="startup Flex pull running"
+        )
+    assert status.endswith("; startup Flex pull running")
+    assert context is not None
+    assert "Startup Flex pull: startup Flex pull running." in context
+
+
+def test_no_pull_note_leaves_both_surfaces_exactly_as_before():
+    """The default is the old wording, byte for byte: nothing to say, nothing said."""
+    with patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()):
+        plain = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
+        explicit = build_trade_lines(_covered_toolkit(), ibkr_offline=False, pull_note="")
+    assert plain == explicit
+    assert "Startup Flex pull:" not in (plain[1] or "")

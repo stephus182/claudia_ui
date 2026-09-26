@@ -200,6 +200,16 @@ def _sync_note(config: Config, cov: dict[str, Any], ibkr_offline: bool) -> str:
 
 _ET = ZoneInfo("America/New_York")
 
+# The startup pull's state on the dataset line and in the model's context (gap #77,
+# 2026-09-26): the line is sent seconds before the background pull lands, so it says what
+# the pull is doing rather than reading as the final word; the caller rewrites it in place
+# once the pull is done. A fruitless pull is said, never left as "running".
+PULL_RUNNING_NOTE = "startup Flex pull running — this line updates when it lands"
+PULL_FRUITLESS_NOTE = (
+    "the startup pull brought nothing new — IBKR's statement for the last session is not out "
+    "yet; the next start tries again"
+)
+
 _FLEX_TIMING = (
     "Flex statements are T+1: a day's trades appear the next morning, never the same evening "
     "(IBKR's statement cutoffs are 17:15 ET for commodities and 20:20 ET for securities; on "
@@ -305,13 +315,21 @@ def _integrity_phrases(config: Config) -> tuple[str, str]:
     )
 
 
-def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, str | None]:
+def build_trade_lines(
+    toolkit: ClaudeToolkit, ibkr_offline: bool, pull_note: str = ""
+) -> tuple[str, str | None]:
     """(trade_status_line, trade_context_or_None) — the welcome status line and
     the system-prompt trade/calendar context for agent._trade_context.
 
     Blocking (SQLite reads) — call via asyncio.to_thread. Port of the removed app.py,
     including the subtlety that the market-calendar block appends to
     trade_context even when Flex is unconfigured.
+
+    `pull_note` (gap #77, 2026-09-26) is the startup pull's state as the caller knows it —
+    `PULL_RUNNING_NOTE` while the background pull is in flight, `PULL_FRUITLESS_NOTE` after
+    one that changed nothing, empty otherwise — appended to the status line and stated to
+    the model. Both surfaces are built here so they cannot disagree; the caller rebuilds
+    them from a fresh store read once the pull has landed.
 
     **The "integrity validated" phrase is earned here, not decoration (2026-08-05).**
     It — and the stronger claim made to the model, "Dataset is complete and verified —
@@ -331,6 +349,8 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
                 sync_note = _sync_note(config, cov, ibkr_offline)
                 integrity_note, integrity_context = _integrity_phrases(config)
                 trade_status = f"Historical dataset loaded: {cov['total_trades']} trades ({cov['oldest']} → {cov['newest']}{integrity_note}) — {sync_note}"
+                if pull_note:
+                    trade_status += f"; {pull_note}"
                 trade_context = (
                     f"## Trade History (local store)\n"
                     # "Last refreshed: {newest}" lived here until 2026-08-05 and was the
@@ -358,6 +378,7 @@ def build_trade_lines(toolkit: ClaudeToolkit, ibkr_offline: bool) -> tuple[str, 
                     f"Do not mention gaps or suggest XML backfill unless the user specifically asks about data integrity.\n"
                     f"Use `get_trades` (default: source='store') for any analysis beyond 6 days. "
                     f"Today's intraday trades: use `get_trades source='live'`."
+                    + (f" Startup Flex pull: {pull_note}." if pull_note else "")
                 )
             else:
                 trade_status = "Trade history: no data yet — syncing…"

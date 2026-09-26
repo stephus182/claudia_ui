@@ -32,6 +32,7 @@ import signal
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from functools import partial
 from pathlib import Path
@@ -68,7 +69,12 @@ from claudia.gateway_preflight import warn_if_session_borrowed
 from claudia.gateway_session import SessionPhase, get_session
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
-from claudia.opening_status import build_trade_lines, gather_session_state
+from claudia.opening_status import (
+    PULL_FRUITLESS_NOTE,
+    PULL_RUNNING_NOTE,
+    build_trade_lines,
+    gather_session_state,
+)
 from claudia.panel_action_bar import SERVICE_LABELS, ActionBar
 from claudia.panel_chart import build_chart_pane
 from claudia.panel_dashboard import build_dashboard
@@ -467,18 +473,134 @@ def _build_briefing_text(toolkit: ClaudeToolkit) -> str:
         return ""
 
 
+@dataclass(frozen=True)
+class FlexPullDecision:
+    """Whether the startup Flex pull runs, decided once from the store's own pull log.
+
+    Taken *before* the opening status is sent (gap #77), so the dataset line can say a
+    pull is running, and handed to `_maybe_background_flex_sync` so the sync does not read
+    the log a second time and reach a different verdict.
+    """
+
+    due: bool
+    last_fruitful: datetime | None
+    reason: str
+
+
+@dataclass
+class OpeningMessage:
+    """The opening chat message, kept so one part of it can be rewritten in place.
+
+    Gap #77 (2026-09-26): the dataset line is sent seconds before the background Flex pull
+    lands, and used to stay stale for the whole session — "1375 trades → 2026-09-24" over a
+    store that held 1377 through 2026-09-25 from 10:43:02. `replace_dataset_line` follows the
+    `_settle_intro` shape: the same `ChatMessage`, its `object` reassigned, so no new chat
+    line is sent and the routing rule (session events go to the System log) still holds.
+    """
+
+    message: Any
+    parts: list[str]
+    dataset_index: int | None
+    pull: FlexPullDecision | None
+
+    def replace_dataset_line(self, text: str) -> None:
+        """Swap the dataset part for `text` (italicised like the original) and repaint."""
+        if self.dataset_index is None:
+            return
+        self.parts[self.dataset_index] = f"_{text}_"
+        self.message.object = "\n\n".join(self.parts)
+
+
+async def _flex_pull_decision(toolkit: ClaudeToolkit, ibkr_offline: bool) -> FlexPullDecision:
+    """Decide the startup Flex pull from evidence (gap #72), and log the decision.
+
+    1. Flex unconfigured, or IBKR offline (the sync resolves the account id through the
+       gateway): not due, and the offline case is said in the log — before 2026-09-25 that
+       skip was silent.
+    2. Read the store's own `flex_sync` log and find the last pull that CHANGED the store
+       (`flex_sync.last_fruitful_pull`). If one happened since the most recent midnight ET,
+       everything that can exist today is already in — not due (`flex_sync.pull_due`).
+    3. Otherwise due. A pull that brings nothing is not evidence, so the next start pulls
+       again; there is no retry window (the operator ruled against one).
+
+    Any failure of the check means due: unknown is not "current".
+    """
+    cfg = toolkit._config
+    if not (cfg and cfg.flex_token and cfg.flex_query_id):
+        return FlexPullDecision(due=False, last_fruitful=None, reason="Flex not configured")
+    if ibkr_offline:
+        log.info(
+            "Startup Flex sync skipped — IBKR offline: the sync resolves the account id "
+            "through the gateway. Reconnect and restart, or ask for sync_flex_trades once connected."
+        )
+        return FlexPullDecision(due=False, last_fruitful=None, reason="IBKR offline")
+    try:
+        events = await asyncio.to_thread(toolkit._store.get_log, n=200, event="flex_sync")
+        last_fruitful = last_fruitful_pull(events)
+        now = _now_utc()
+        if last_fruitful is not None and not pull_due(now, last_fruitful):
+            log.info(
+                "Startup Flex sync skipped — a pull already brought new data at %s ET today "
+                "(%s); nothing newer can exist before IBKR's next overnight publication",
+                last_fruitful.astimezone(_ET).strftime("%H:%M"),
+                last_fruitful.isoformat(timespec="seconds"),
+            )
+            return FlexPullDecision(
+                due=False, last_fruitful=last_fruitful, reason="a pull brought new data today"
+            )
+        log.info(
+            "Startup Flex sync due — last pull that brought new data: %s",
+            last_fruitful.isoformat(timespec="seconds") if last_fruitful else "never",
+        )
+        return FlexPullDecision(
+            due=True, last_fruitful=last_fruitful, reason="no fruitful pull since midnight ET"
+        )
+    except Exception as exc:  # on any check failure, attempt the sync — unknown is not "current"
+        log.warning("Startup Flex sync decision failed (%s) — pulling", exc)
+        return FlexPullDecision(due=True, last_fruitful=None, reason=f"decision failed: {exc}")
+
+
+async def _refresh_opening_after_pull(
+    opening: OpeningMessage,
+    agent: Any,
+    toolkit: ClaudeToolkit,
+    ibkr_offline: bool,
+    changed: bool,
+) -> None:
+    """Rebuild the dataset line and the model's trade context from a fresh store read.
+
+    Runs inside the background sync task once the pull has landed (gap #77). `changed` is
+    whether the pull moved the store's fingerprint: a fruitful pull needs no note — the
+    rebuilt line's own "updated HH:MM" says it — and a fruitless one is said as such rather
+    than left reading "pull running". Never raises: the session is already up.
+    """
+    try:
+        status, context = await asyncio.to_thread(
+            build_trade_lines,
+            toolkit,
+            ibkr_offline,
+            pull_note="" if changed else PULL_FRUITLESS_NOTE,
+        )
+        opening.replace_dataset_line(status)
+        agent._trade_context = context
+    except Exception as exc:
+        log.warning("Opening status refresh after the Flex pull failed: %s", exc)
+
+
 async def _send_opening_status(
     chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, tv_offline: bool
-) -> tuple[str | None, bool]:
+) -> tuple[str | None, bool, OpeningMessage]:
     """Send the second chat message — what is *not* working, plus the local dataset and
-    the startup briefing — and return (trade_context, ibkr_offline): the trade/calendar
-    context for the caller to stamp on agent._trade_context, and the offline flag so
-    _init_session can decide whether to offer the Start-Gateway button (Task 5.3/5.6b —
-    parity with the removed app.py). tv_offline (from _connect_tradingview) drives the
-    TradingView status line. Effectively non-raising: both builders catch their
-    own IBKR/store failures internally and degrade to offline/fallback text, and the
-    briefing has its own two-layer failure handling (`_build_briefing_text`); an
-    unexpected escape is caught by _init_session's generic handler.
+    the startup briefing — and return (trade_context, ibkr_offline, opening): the
+    trade/calendar context for the caller to stamp on agent._trade_context, the offline
+    flag so _init_session can decide whether to offer the Start-Gateway button (Task
+    5.3/5.6b — parity with the removed app.py), and the message handle with the startup
+    pull decision, so the dataset line can be rewritten once the pull lands (gap #77).
+    tv_offline (from _connect_tradingview) drives the TradingView status line. Effectively
+    non-raising: both builders catch their own IBKR/store failures internally and degrade
+    to offline/fallback text, and the briefing has its own two-layer failure handling
+    (`_build_briefing_text`); an unexpected escape is caught by _init_session's generic
+    handler.
 
     The IBKR half is a caveat, not a report: `gather_session_state` returns `""` when both
     halves of the gateway answer, and the empty part is dropped rather than sent as a
@@ -492,18 +614,25 @@ async def _send_opening_status(
     bullet per position, so the whole message can run to several lines on a healthy
     start."""
     ibkr_caveat, ibkr_offline = await gather_session_state(toolkit)
-    trade_status, trade_context = await asyncio.to_thread(build_trade_lines, toolkit, ibkr_offline)
+    # The pull decision is taken here, before the line is built, so the line can say that
+    # a pull is running (gap #77); the sync reuses this decision rather than deciding again.
+    pull = await _flex_pull_decision(toolkit, ibkr_offline)
+    trade_status, trade_context = await asyncio.to_thread(
+        build_trade_lines, toolkit, ibkr_offline, pull_note=PULL_RUNNING_NOTE if pull.due else ""
+    )
     tv_line = (
         "_TradingView: not connected — click Launch below._"
         if tv_offline
         else "_TradingView: connected._"
     )
     parts = ([ibkr_caveat] if ibkr_caveat else []) + [f"_{trade_status}_", tv_line]
+    dataset_index = 1 if ibkr_caveat else 0
     briefing_text = await asyncio.to_thread(_build_briefing_text, toolkit)
     if briefing_text:
         parts.append(briefing_text)
-    chat.send("\n\n".join(parts), user="ClaudIA", respond=False)
-    return trade_context, ibkr_offline
+    message = chat.send("\n\n".join(parts), user="ClaudIA", respond=False)
+    opening = OpeningMessage(message=message, parts=parts, dataset_index=dataset_index, pull=pull)
+    return trade_context, ibkr_offline, opening
 
 
 def _detach_subscriptions(_session: dict[str, Any]) -> None:
@@ -741,26 +870,25 @@ async def _maybe_background_flex_sync(
     *,
     store: ConversationStore | None = None,
     session_id: str | None = None,
+    decision: FlexPullDecision | None = None,
+    on_done: Callable[[bool], Awaitable[None]] | None = None,
 ) -> None:
-    """Startup Flex sync decision + background sync (parity with the removed app.py).
+    """Startup Flex sync: the decision (`_flex_pull_decision`) + the background sync.
 
-    Decision (fast sqlite, threaded) runs inline; only the actual work — Flex API call,
-    conditional Drive backup, re-validation — is spawned as a background task. Logic
-    (gap #72, operator 2026-09-25 — **evidence, not a clock, not a definition of "stale"**):
+    The decision (fast sqlite, threaded) is taken by `_flex_pull_decision` — passed in by a
+    caller that already took it before sending the opening status (gap #77), or taken here
+    — and only the actual work — Flex API call, conditional Drive backup, re-validation — is
+    spawned as a background task. The rule (gap #72, operator 2026-09-25 — **evidence, not
+    a clock, not a definition of "stale"**) is documented on `_flex_pull_decision`.
 
-    1. IBKR offline: skip, and say so in the log (the sync resolves the account id through
-       the gateway, so it cannot run; before 2026-09-25 this skip was silent).
-    2. Read the store's own `flex_sync` log and find the last pull that CHANGED the store
-       (`flex_sync.last_fruitful_pull`). If one happened since the most recent midnight ET,
-       everything that can exist today is already in — skip (`flex_sync.pull_due`).
-    3. Otherwise pull. A pull that brings nothing is not evidence, so the next start pulls
-       again; there is no retry window (the operator ruled against one) and the Flex
-       service allows ten requests a minute.
-
-    Until 2026-09-25 step 2 was the core's `get_trade_date_coverage()["stale"]`, which
+    Until 2026-09-25 the decision was the core's `get_trade_date_coverage()["stale"]`, which
     accepts a store two trading days old (core register F19) and so pulled nothing all day
-    on 2026-09-24, and step 3 was a 4 h window that also suppressed a retry after a
-    fruitless pull. `get_trade_date_coverage` is no longer read here at all.
+    on 2026-09-24, behind a 4 h window that also suppressed a retry after a fruitless pull.
+    `get_trade_date_coverage` is no longer read here at all.
+
+    `on_done(changed)` is awaited once the pull has landed, with whether the store's
+    fingerprint moved (unknown counts as moved: unknown is not "unchanged"), so the caller
+    can rewrite the opening line and re-stamp the model's context (gap #77).
 
     **Where validation happens, and why not here.** Every session start validates the
     dataset through `opening_status.build_trade_lines`, which runs whether or not a sync
@@ -770,33 +898,10 @@ async def _maybe_background_flex_sync(
     one thing in a session that can change the answer.
     """
     cfg = toolkit._config
-    if not (cfg and cfg.flex_token and cfg.flex_query_id):
+    if decision is None:
+        decision = await _flex_pull_decision(toolkit, ibkr_offline)
+    if not decision.due:
         return
-    if ibkr_offline:
-        log.info(
-            "Startup Flex sync skipped — IBKR offline: the sync resolves the account id "
-            "through the gateway. Reconnect and restart, or ask for sync_flex_trades once connected."
-        )
-        return
-
-    try:
-        events = await asyncio.to_thread(toolkit._store.get_log, n=200, event="flex_sync")
-        last_fruitful = last_fruitful_pull(events)
-        now = _now_utc()
-        if last_fruitful is not None and not pull_due(now, last_fruitful):
-            log.info(
-                "Startup Flex sync skipped — a pull already brought new data at %s ET today "
-                "(%s); nothing newer can exist before IBKR's next overnight publication",
-                last_fruitful.astimezone(_ET).strftime("%H:%M"),
-                last_fruitful.isoformat(timespec="seconds"),
-            )
-            return
-        log.info(
-            "Startup Flex sync due — last pull that brought new data: %s",
-            last_fruitful.isoformat(timespec="seconds") if last_fruitful else "never",
-        )
-    except Exception as exc:  # on any check failure, attempt the sync — unknown is not "current"
-        log.warning("Startup Flex sync decision failed (%s) — pulling", exc)
 
     async def _background_flex_sync() -> None:
         """Run the Flex trade sync off the critical path, then back up store.db to Drive.
@@ -827,7 +932,8 @@ async def _maybe_background_flex_sync(
             # a raw byte read would miss commits still sitting in store.db-wal and could tear
             # mid-checkpoint. Same consistent-snapshot guarantee GDriveSync.upload_db gives
             # claudia.db.
-            if before is not None and after is not None and before == after:
+            changed = not (before is not None and after is not None and before == after)
+            if not changed:
                 log.info("store.db unchanged by this pull — Drive backup left as is")
             else:
                 try:
@@ -849,6 +955,8 @@ async def _maybe_background_flex_sync(
                     f"treat them as unverified until this is resolved.",
                     "warning",
                 )
+            if on_done is not None:
+                await on_done(changed)
         except Exception as exc:
             log.warning("Background Flex sync failed: %s", exc)
             # Sync failed — still run integrity check so data status is known
@@ -1405,7 +1513,7 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
             # Stamp trade context BEFORE publishing the agent: an agent visible
             # to the input gate without _trade_context would silently answer
             # without trade-history grounding.
-            agent._trade_context, ibkr_offline = await _send_opening_status(
+            agent._trade_context, ibkr_offline, opening = await _send_opening_status(
                 chat, toolkit, tv_offline
             )
             _session["agent"] = agent
@@ -1414,8 +1522,21 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
                 if ibkr_offline
                 else "**ClaudIA is ready** — connected to IBKR."
             )
+
+            async def _after_pull(changed: bool) -> None:
+                """Rewrite the dataset line and re-stamp the model's context (gap #77)."""
+                await _refresh_opening_after_pull(opening, agent, toolkit, ibkr_offline, changed)
+
             await _maybe_background_flex_sync(
-                syslog, toolkit, ibkr_offline, store=store, session_id=session_id
+                syslog,
+                toolkit,
+                ibkr_offline,
+                store=store,
+                session_id=session_id,
+                # The decision was taken before the opening line was sent; a stub in the
+                # tests hands back no message, and then the sync decides for itself.
+                decision=opening.pull if opening is not None else None,
+                on_done=_after_pull if opening is not None else None,
             )
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
