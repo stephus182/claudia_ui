@@ -431,12 +431,20 @@ ibkr_core_mcp-side by moving `websockets` out of `[server]` into base `dependenc
 `2.1.0`, `core-ref.txt` moved to it the same day, and nothing here is blocked on an unreleased
 core. What follows is the practice, for the next time one opens — not a description of today.
 
-**The practice.** Core changes driven from this repository are accumulated on core `main` and
-released together, because releasing each one would cost a version number for a one-line fix.
-This is Keep a Changelog's `[Unreleased]` section used for exactly what it is for — "Keep an
-`Unreleased` section at the top to track upcoming changes … At release time, you can move the
-`Unreleased` section changes into a new release version section"
-(https://keepachangelog.com/en/1.1.0/) — and the core's CHANGELOG already declares that format.
+**The practice (operator decision 2026-09-25, reaffirmed 2026-09-26).** Core changes driven
+from this repository are accumulated **on a release branch in a separate `git worktree`** —
+never on core `main`, which stays byte-identical to its release tag (`v2.1.0` = `41487a1`)
+until the batch is finished, validated and reviewed — and released together, because releasing
+each one would cost a version number for a one-line fix. **No intermediary commit reaches core
+`main`**: the branch carries the work record, `main` receives one merge, then the tag and the
+release. Meanwhile this repository keeps running and importing the *released* core (the
+developer override points at the `main` checkout, which is that release), and nothing on
+claudia_ui `main` references the branch. This is Keep a Changelog's `[Unreleased]` section used
+for exactly what it is for — "Keep an `Unreleased` section at the top to track upcoming changes
+… At release time, you can move the `Unreleased` section changes into a new release version
+section" (https://keepachangelog.com/en/1.1.0/) — and the core's CHANGELOG already declares
+that format. Until 2026-09-25 the batch lived on core `main` itself (the 2.1.0 window); the
+worktree is the change.
 
 **Which core you are actually running** — ask, never assume. `pip show ibkr-core-mcp` reports
 the *checkout's declared version* when the developer override (Dev Setup step 3) is in place,
@@ -462,22 +470,31 @@ bracket-seam names it warned about are all in 2.1.0, so calling them no longer f
 **The bracket build itself is still deferred** (Known Gaps #36) — the seam being importable is
 not the same as this repository expressing a bracket, and it still has zero call sites here.
 
-**While a window is open, do not:** change `core-ref.txt`; tag, release, or bump the version of
-`../ibkr_core_mcp`; loosen the `ibkr-core-mcp` range, add `--pre`, or repoint the dependency at
-a git ref; add `continue-on-error` to the `test` job, set `CLAUDIA_CORE_UNPINNED=1`, or skip
-`tests/security/test_cross_repo_contract.py`; merge to `main` with CI red.
+**While a window is open, do not:** commit to core `main` (the batch lives on its worktree
+branch); change `core-ref.txt`; tag, release, or bump the version of `../ibkr_core_mcp`; loosen
+the `ibkr-core-mcp` range, add `--pre`, or repoint the dependency at a git ref; point the
+developer override at the worktree except for a local, uncommitted integration check that is
+pointed back before anything is committed; add `continue-on-error` to the `test` job, set
+`CLAUDIA_CORE_UNPINNED=1`, or skip `tests/security/test_cross_repo_contract.py`; merge to
+`main` with CI red.
 
 Nothing here can publish by accident. `publish.yml` triggers only on `release: [published]`
 and `workflow_dispatch` (TestPyPI only), and the `pypi` environment requires the owner's
 manual approval (`required reviewer = the owner; deployment tag rule v*`). A push, a merge,
 even a pushed tag, publishes nothing.
 
-**When ClaudIA needs a core change:** make it on core `main`; add an entry under
-`## [Unreleased]` in the core's CHANGELOG — that entry *is* the next release note, written
-while you still remember why; run the core's four gates **bare, unpiped, as four separate
-commands** (`ruff check .`, `ruff format --check .`, `mypy`, `pytest -m "not integration"`);
-commit and push. Do not tag. If you added, renamed or removed a module, re-run the strict
-editable install from Dev Setup step 3 or this project keeps resolving the old set.
+**When ClaudIA needs a core change:** make it on the release branch in its worktree (created
+once per window from the release tag, e.g. `git -C ../ibkr_core_mcp worktree add
+../ibkr_core_mcp-next -b release/next main`; the branch name and path are settled with the
+operator before the first line); add an entry under `## [Unreleased]` in the core's CHANGELOG
+— that entry *is* the next release note, written while you still remember why; run the core's
+four gates **in that worktree, bare, unpiped, as four separate commands** (`ruff check .`,
+`ruff format --check .`, `mypy`, `pytest -m "not integration"`) and its integration suite
+against the live gateway where the change touches IBKR; commit and push **the branch**. Never
+`main`, never a tag. The ClaudIA-side half of a change that needs a name only the branch has
+goes on a claudia_ui branch and is merged only after `core-ref.txt` moves to the release that
+carries it. If a module was added, renamed or removed, re-run the strict editable install from
+Dev Setup step 3 once the pin moves, or this project keeps resolving the old set.
 
 **Closing the window is the operator's step, in this order:** core `[Unreleased]` →
 `## [X.Y.Z] — <date>`, `pyproject.toml` version, four gates, tag, GitHub Release, approve the
