@@ -1030,5 +1030,14 @@ IBKR.
 
 Both human gates are untouched: Gate 1 (Touch ID) and Gate 2 (AppKit dialog) run in
 `ibkr_core_mcp` before any write, and the read-back happens strictly after a dispatch that
-already passed both. The read runs on the already-blocked event loop via `asyncio.to_thread` —
-one ~2 s call, not a loop (Known Gap #15 is unchanged and out of scope).
+already passed both. The read goes through `asyncio.to_thread` — one ~2 s call, not a loop.
+Since 2026-09-28 (gap #17) the dispatch itself runs there too: every synchronous IBKR call in
+the three order cores — the client's cookie read, the reads before the gates, and the gated
+write with Touch ID and the 60 s dialog — goes through `asyncio.to_thread`, so the event loop
+every session is served from stays free, and the cores are **queued one at a time in click
+order** (`order_flow._one_order_at_a_time`, a per-loop `asyncio.Lock`, which Python documents
+as fair). A click while another order is at its gates is told `order_flow.QUEUED_TEXT` at once
+and reaches its own gates when that one is done. Running the gates in a worker thread is a
+contract the core must keep on every platform — sound on macOS (Gate 2 is a subprocess; Gate 1's
+`LAContext` reply arrives on a private queue), not yet on the non-macOS tkinter dialog, which
+must run on the main thread (core register F25).

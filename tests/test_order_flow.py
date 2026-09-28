@@ -4342,3 +4342,216 @@ def test_every_card_warning_names_the_gate2_button_and_what_happens_until_it(
     assert "still" not in warning.lower() and "visual" not in warning.lower(), warning
     if builder_name != "_format_cancel_summary":
         assert "cancel" not in warning.lower(), warning
+
+
+# ---------------------------------------------------------------------------
+# Gap #17 (2026-09-28): an order write no longer freezes the event loop, and order writes
+# are confirmed one at a time, in click order (operator: "queue" — a batch of orders is
+# validated safely one by one). Panel serves every tab from one event loop; the Gate 1/Gate 2
+# chain used to run on it synchronously, so the dashboard, the chat and every other tab
+# froze for up to 60 s per dialog. The doubles below block the way the gates do.
+# ---------------------------------------------------------------------------
+
+_BLOCK_S = 0.3
+
+
+def _blocking(value: Any) -> Any:
+    """A side effect that holds its thread for `_BLOCK_S`, as Touch ID or a dialog does."""
+    import time
+
+    def _call(*_args: Any, **_kwargs: Any) -> Any:
+        """Block this thread, then answer."""
+        time.sleep(_BLOCK_S)
+        return value
+
+    return _call
+
+
+async def _ticks_while(coro: Any) -> int:
+    """Run `coro` and count how often a 10 ms ticker got the loop meanwhile."""
+    ticks = 0
+    task = asyncio.ensure_future(coro)
+    while not task.done():
+        await asyncio.sleep(0.01)
+        ticks += 1
+    await task
+    return ticks
+
+
+def _core_run(kind: str, ibkr_mod: Any, proposal: dict[str, Any] | None = None) -> Any:
+    """The coroutine of one core against `ibkr_mod`, with a status recorder."""
+    send_status, _calls = _make_send_status_recorder()
+    if kind == "place":
+        core, action = _execute_staged_order_core, _make_action()
+    elif kind == "cancel":
+        core, action = _execute_cancel_order_core, _make_cancel_action()
+    else:
+        core, action = _execute_modify_order_core, _make_modify_action()
+    return core(proposal or json.loads(action.payload["order"]), send_status)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "blocking_call"),
+    [
+        ("place", "IBKRClient"),
+        ("place", "get_accounts"),
+        ("place", "place_order_and_confirm"),
+        ("cancel", "IBKRClient"),
+        ("cancel", "get_accounts"),
+        ("cancel", "cancel_order"),
+        ("modify", "IBKRClient"),
+        ("modify", "get_accounts"),
+        ("modify", "modify_order_and_confirm"),
+    ],
+)
+async def test_no_synchronous_ibkr_call_holds_the_event_loop(kind, blocking_call):
+    """Every synchronous step of a core — the client construction (browser-cookie read),
+    the reads before the gates, and the gated write itself (Touch ID + the 60 s dialog) —
+    runs off the loop, so a 10 ms ticker keeps running while it blocks."""
+    ibkr_mod, client = _make_ibkr_mock() if kind == "place" else _make_cancel_modify_ibkr_mock()
+    if blocking_call == "IBKRClient":
+        ibkr_mod.IBKRClient.side_effect = _blocking(client)
+    else:
+        target = getattr(client, blocking_call)
+        target.side_effect = _blocking(target.return_value)
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        ticks = await _ticks_while(_core_run(kind, ibkr_mod))
+    assert ticks >= 10, f"{kind}: the loop ticked {ticks} times while {blocking_call} blocked"
+
+
+def _held_write(client: Any, name: str, released: Any, entered: list[str], tag: str) -> None:
+    """Make `client.<name>` wait for `released` (a threading.Event), as a human at the gates."""
+    value = getattr(client, name).return_value
+
+    def _call(*_args: Any, **_kwargs: Any) -> Any:
+        """Record the entry, then wait for the human."""
+        entered.append(tag)
+        released.wait(timeout=5)
+        return value
+
+    getattr(client, name).side_effect = _call
+
+
+async def _until(predicate: Any) -> None:
+    """Yield to the loop until `predicate()` holds (bounded)."""
+    for _ in range(500):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition never held")
+
+
+@pytest.mark.asyncio
+async def test_order_writes_are_confirmed_one_at_a_time_in_click_order():
+    """Three STAGE clicks in a row: the second's gates appear only after the first write is
+    over, the third's after the second's — first come, first served (asyncio.Lock is fair,
+    Python 3.11 docs). The later two are told at once that they are queued."""
+    import threading
+
+    ibkr_mod, client = _make_ibkr_mock()
+    entered: list[str] = []
+    gates = {tag: threading.Event() for tag in ("A", "B", "C")}
+
+    def _call(_account: Any, body: dict[str, Any], **_kwargs: Any) -> Any:
+        """Record which order reached its gates, then wait for that order's human."""
+        tag = body["ticker"]  # which proposal reached its gates, from the order itself
+        entered.append(tag)
+        gates[tag].wait(timeout=5)
+        return [{"orderId": "999"}]
+
+    client.place_order_and_confirm.side_effect = _call
+    recorders = {tag: _make_send_status_recorder() for tag in ("A", "B", "C")}
+    base = json.loads(_make_action().payload["order"])
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        tasks = []
+        for tag in ("A", "B", "C"):
+            tasks.append(
+                asyncio.ensure_future(
+                    _execute_staged_order_core(dict(base, symbol=tag), recorders[tag][0])
+                )
+            )
+            await asyncio.sleep(0)
+        await _until(lambda: entered == ["A"])
+        await asyncio.sleep(0.05)
+        assert entered == ["A"], "a second order reached its gates while the first was open"
+        for tag in ("B", "C"):
+            texts = [t for t, _a in recorders[tag][1]]
+            assert texts and texts[0] == order_flow.QUEUED_TEXT, texts
+        assert order_flow.QUEUED_TEXT not in [t for t, _a in recorders["A"][1]]
+        gates["A"].set()
+        await _until(lambda: entered == ["A", "B"])
+        gates["B"].set()
+        await _until(lambda: entered == ["A", "B", "C"])
+        gates["C"].set()
+        await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_waits_behind_an_order_at_its_gates():
+    """One queue for every order write: a cancel clicked while a placement's dialog is open
+    reaches its own gates only after the placement is over."""
+    import threading
+
+    place_mod, place_client = _make_ibkr_mock()
+    released = threading.Event()
+    entered: list[str] = []
+    _held_write(place_client, "place_order_and_confirm", released, entered, "place")
+    cancel_client = _make_cancel_modify_ibkr_mock()[1]
+    cancelled = cancel_client.cancel_order.return_value
+
+    def _cancel(*_args: Any, **_kwargs: Any) -> Any:
+        """Record that the cancel reached its gates."""
+        entered.append("cancel")
+        return cancelled
+
+    cancel_client.cancel_order.side_effect = _cancel
+    place_mod.IBKRClient.side_effect = [place_client, cancel_client]
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": place_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        first = asyncio.ensure_future(_core_run("place", place_mod))
+        await _until(lambda: entered == ["place"])
+        second = asyncio.ensure_future(_core_run("cancel", place_mod))
+        await asyncio.sleep(0.1)
+        assert entered == ["place"]
+        released.set()
+        await asyncio.gather(first, second)
+    assert entered == ["place", "cancel"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_order_releases_the_queue():
+    """Neither a refused write (a declined Touch ID, recorded by the core) nor an exception
+    that escapes the core (the click layer re-raises them) may strand the next order."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.side_effect = [
+        HumanAuthError("Touch ID denied"),
+        [{"orderId": "999"}],
+        [{"orderId": "1000"}],
+    ]
+    proposal = json.loads(_make_action().payload["order"])
+
+    async def _broken_status(_text: str, _author: str) -> None:
+        """A chat that fails on the first status line."""
+        raise RuntimeError("the chat is gone")
+
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        await asyncio.wait_for(
+            asyncio.gather(_core_run("place", ibkr_mod), _core_run("place", ibkr_mod)),
+            timeout=5,
+        )
+        with pytest.raises(RuntimeError, match="the chat is gone"):
+            await _execute_staged_order_core(proposal, _broken_status)
+        await asyncio.wait_for(_core_run("place", ibkr_mod), timeout=5)
+    assert client.place_order_and_confirm.call_count == 3

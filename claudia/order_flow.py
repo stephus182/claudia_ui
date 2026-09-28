@@ -36,7 +36,9 @@ import json
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+import weakref
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -1185,8 +1187,8 @@ async def _read_back(
     a cancellation is only ever confirmed by this endpoint reporting `Cancelled`, and why
     disappearance from the live book proves nothing about one.
 
-    Runs on the event loop that the dispatch already blocked (Known Gap #15); this adds
-    one ~2 s call, not a loop.
+    One settle delay and one status read in a worker thread — not a poll loop, and not on
+    the event loop (gap #17, 2026-09-28: the dispatch before it no longer blocks it either).
     """
     await asyncio.sleep(_READBACK_DELAY_S)
     return await _read_order_status(ibkr, order_id, action)
@@ -1333,8 +1335,8 @@ async def _read_back_place(ibkr: Any, order_id: str) -> tuple[bool, str, dict[st
 
     Cost: one settle delay, then get_live_orders (~1 s of internal warmup + two round
     trips), then at most one status read. No poll loop, no retry state machine (user
-    direction 2026-07-27). It runs on the event loop the dispatch already blocked
-    (Known Gap #15).
+    direction 2026-07-27). Every read goes through `asyncio.to_thread`, as the dispatch
+    before it does since gap #17 (2026-09-28).
 
     Returns:
         (confirmed, human-readable line, observed dict). On presence the observed dict is
@@ -1555,6 +1557,43 @@ def _compare_modify_readback(
     return agree, line
 
 
+# ---------------------------------------------------------------------------
+# One order write at a time, in click order (gap #17, operator 2026-09-28: "queue" — a
+# batch of orders is validated safely one by one). The synchronous IBKR calls below run
+# through `asyncio.to_thread`, so the gates no longer freeze the event loop Panel serves
+# every tab from; that freedom is what makes a second write possible while a first one's
+# gates are open, and this lock is what keeps it waiting. It wraps the whole core, from the
+# click, not only the gated call: each core reads IBKR before its gates, so a narrower lock
+# would let a later click overtake an earlier one. `asyncio.Lock` is fair — "the coroutine
+# that proceeds will be the first coroutine that started waiting on the lock" (Python 3.11
+# docs, asyncio-sync, Lock.acquire). Platform-neutral on purpose: nothing here knows how the
+# gates prompt; running them in a worker thread is a contract the core must keep on every
+# platform (core register F25).
+# ---------------------------------------------------------------------------
+
+# One queue per running event loop. Panel serves every session from one process-wide loop,
+# so in production this is one queue; keyed by loop because an `asyncio.Lock` binds to the
+# first loop that contends for it, and a lock bound to another loop raises instead of queuing.
+_ORDER_QUEUES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    weakref.WeakKeyDictionary()
+)
+
+QUEUED_TEXT = (
+    "**Queued** — another order is at its confirmation gates. This one's gates follow "
+    "when that one is done; nothing has been sent for it yet."
+)
+
+
+@asynccontextmanager
+async def _one_order_at_a_time(send_status: SendStatus) -> AsyncIterator[None]:
+    """Hold the order queue for one core; say so first when another order holds it."""
+    queue = _ORDER_QUEUES.setdefault(asyncio.get_running_loop(), asyncio.Lock())
+    if queue.locked():
+        await send_status(QUEUED_TEXT, "System")
+    async with queue:
+        yield
+
+
 async def _execute_staged_order_core(
     proposal: dict[str, Any],
     send_status: SendStatus,
@@ -1563,7 +1602,19 @@ async def _execute_staged_order_core(
 ) -> None:
     """Framework-agnostic core of the staged-order flow — the full Gate 1/Gate 2 spec is
     in this module's docstring. Called with an already-parsed proposal dict and a
-    send_status callback supplied by the UI layer."""
+    send_status callback supplied by the UI layer. Queued behind any order write already
+    in progress (gap #17)."""
+    async with _one_order_at_a_time(send_status):
+        await _stage_order(proposal, send_status, session_id, store)
+
+
+async def _stage_order(
+    proposal: dict[str, Any],
+    send_status: SendStatus,
+    session_id: str | None,
+    store: ConversationStore | None,
+) -> None:
+    """The staged-order flow itself; reached only through `_execute_staged_order_core`."""
     symbol = proposal.get("symbol", "?")
     action_str = proposal.get("action", "?")
     qty = proposal.get("quantity", 0)
@@ -1587,8 +1638,13 @@ async def _execute_staged_order_core(
 
         load_dotenv(override=False)
         config = Config.from_env()
-        ibkr = IBKRClient(
-            config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome"))
+        # Every synchronous IBKR call in this flow runs in a worker thread (gap #17): the
+        # client reads browser cookies here, and the gated write blocks on Touch ID and a
+        # 60 s dialog — none of it may hold the event loop every tab is served from.
+        ibkr = await asyncio.to_thread(
+            IBKRClient,
+            config=config,
+            auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
         )
 
         # Resolve conid — routing depends on sec_type and optional conid override.
@@ -1602,7 +1658,7 @@ async def _execute_staged_order_core(
             conid = int(override_conid)
             company_name = proposal.get("_companyName", "")
         elif sec_type == "FUT":
-            futures = ibkr.get_futures([symbol])
+            futures = await asyncio.to_thread(ibkr.get_futures, [symbol])
             if not futures:
                 await send_status(
                     f"Could not find futures contracts for {symbol}. Order not placed.",
@@ -1649,7 +1705,9 @@ async def _execute_staged_order_core(
             # a price into a notional on the Gate 2 screen, and the label carries the
             # contract month the proposal text cannot show. Live 2026-09-04 (conid path):
             # the dialog printed 7,735.00 for one ES contract worth 386,750 USD.
-            multiplier, currency, contract_label, maturity = _futures_contract_facts(ibkr, conid)
+            multiplier, currency, contract_label, maturity = await asyncio.to_thread(
+                _futures_contract_facts, ibkr, conid
+            )
             if sec_type == "FUT" and (not maturity or _today_key() >= maturity):
                 # HARD RULE (gap #71, operator 2026-09-24): an expired future is never staged.
                 # Before Gate 1, from the read above — no extra call. See the exception.
@@ -1660,7 +1718,9 @@ async def _execute_staged_order_core(
             # A stock's price IS money: its listing's name and currency reach Gate 2 too
             # (gap #49, 2026-09-11). A name the proposal already carries is kept.
             name, currency = (
-                _stock_contract_facts(ibkr, int(conid)) if conid is not None else (None, None)
+                await asyncio.to_thread(_stock_contract_facts, ibkr, int(conid))
+                if conid is not None
+                else (None, None)
             )
             if name and not company_name:
                 company_name = name
@@ -1743,13 +1803,15 @@ async def _execute_staged_order_core(
         _apply_outside_rth(order_body, proposal)
 
         # Gate 1 (Touch ID) + Gate 2 (AppKit colored dialog) fire inside place_order()
-        accounts = ibkr.get_accounts()
+        accounts = await asyncio.to_thread(ibkr.get_accounts)
         account_id = _resolve_account_id(accounts)
         order_body["acctId"] = account_id
         log.info(
             "Placing order: %s", {k: v for k, v in order_body.items() if not k.startswith("_")}
         )
-        result = ibkr.place_order_and_confirm(account_id, order_body, reply_log=reply_log)
+        result = await asyncio.to_thread(
+            ibkr.place_order_and_confirm, account_id, order_body, reply_log=reply_log
+        )
         dispatched = True
         reply_line = _format_reply_log(reply_log)
         if reply_line:
@@ -1901,7 +1963,19 @@ async def _execute_cancel_order_core(
 ) -> None:
     """Framework-agnostic core of the cancel-order flow — the full Gate 1/Gate 2 spec is
     in this module's docstring. Called with an already-parsed proposal dict and a
-    send_status callback supplied by the UI layer."""
+    send_status callback supplied by the UI layer. Queued behind any order write already
+    in progress (gap #17)."""
+    async with _one_order_at_a_time(send_status):
+        await _cancel_order(proposal, send_status, session_id, store)
+
+
+async def _cancel_order(
+    proposal: dict[str, Any],
+    send_status: SendStatus,
+    session_id: str | None,
+    store: ConversationStore | None,
+) -> None:
+    """The cancel flow itself; reached only through `_execute_cancel_order_core`."""
     order_id = proposal.get("order_id")
     symbol = proposal.get("symbol", "?")
     dispatched = False  # flips once the IBKR write has returned — see the except block
@@ -1927,18 +2001,25 @@ async def _execute_cancel_order_core(
 
         load_dotenv(override=False)
         config = Config.from_env()
-        ibkr = IBKRClient(
-            config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome"))
+        # Every synchronous IBKR call in this flow runs in a worker thread (gap #17): the
+        # client reads browser cookies here, and the gated write blocks on Touch ID and a
+        # 60 s dialog — none of it may hold the event loop every tab is served from.
+        ibkr = await asyncio.to_thread(
+            IBKRClient,
+            config=config,
+            auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
         )
 
-        accounts = ibkr.get_accounts()
+        accounts = await asyncio.to_thread(ibkr.get_accounts)
         account_id = _resolve_account_id(accounts)
 
         log.info("Cancelling order %s (%s)", order_id, symbol)
         # One read-only status GET before Touch ID: the dialog shows the order as IBKR holds
         # it, not the proposal's copy (gap #40). A failed read falls back to the proposal.
-        order_details = _cancel_display_details(ibkr, proposal)
-        result = ibkr.cancel_order(account_id, order_id, order_details=order_details)
+        order_details = await asyncio.to_thread(_cancel_display_details, ibkr, proposal)
+        result = await asyncio.to_thread(
+            ibkr.cancel_order, account_id, order_id, order_details=order_details
+        )
         dispatched = True
 
         # Same 200-with-rejection classification as the place path — cancel_order
@@ -2101,7 +2182,19 @@ async def _execute_modify_order_core(
 ) -> None:
     """Framework-agnostic core of the modify-order flow — the full Gate 1/Gate 2 spec is
     in this module's docstring. Called with an already-parsed proposal dict and a
-    send_status callback supplied by the UI layer."""
+    send_status callback supplied by the UI layer. Queued behind any order write already
+    in progress (gap #17)."""
+    async with _one_order_at_a_time(send_status):
+        await _modify_order(proposal, send_status, session_id, store)
+
+
+async def _modify_order(
+    proposal: dict[str, Any],
+    send_status: SendStatus,
+    session_id: str | None,
+    store: ConversationStore | None,
+) -> None:
+    """The modify flow itself; reached only through `_execute_modify_order_core`."""
     order_id = proposal.get("order_id")
     conid = proposal.get("conid")
     symbol = proposal.get("symbol", "?")
@@ -2140,8 +2233,13 @@ async def _execute_modify_order_core(
 
         load_dotenv(override=False)
         config = Config.from_env()
-        ibkr = IBKRClient(
-            config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome"))
+        # Every synchronous IBKR call in this flow runs in a worker thread (gap #17): the
+        # client reads browser cookies here, and the gated write blocks on Touch ID and a
+        # 60 s dialog — none of it may hold the event loop every tab is served from.
+        ibkr = await asyncio.to_thread(
+            IBKRClient,
+            config=config,
+            auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
         )
 
         action_str = proposal.get("action", "?")
@@ -2187,18 +2285,20 @@ async def _execute_modify_order_core(
         # Same facts as the place path (gap #34): a future's label carries the contract
         # month and its multiplier turns the price into a notional; a stock gets its name
         # and currency (gap #49). Always an ISO code, never a guess.
-        _apply_contract_display_facts(ibkr, order_body, int(conid), sec_type)
+        await asyncio.to_thread(
+            _apply_contract_display_facts, ibkr, order_body, int(conid), sec_type
+        )
         order_body["_changes"] = list(proposal.get("changes") or [])
-        current = _current_order_description(ibkr, str(order_id))
+        current = await asyncio.to_thread(_current_order_description, ibkr, str(order_id))
         if current:
             order_body["_current_description"] = current
 
-        accounts = ibkr.get_accounts()
+        accounts = await asyncio.to_thread(ibkr.get_accounts)
         account_id = _resolve_account_id(accounts)
 
         log.info("Modifying order %s: %s", order_id, order_body)
-        result = ibkr.modify_order_and_confirm(
-            account_id, order_id, order_body, reply_log=reply_log
+        result = await asyncio.to_thread(
+            ibkr.modify_order_and_confirm, account_id, order_id, order_body, reply_log=reply_log
         )
         dispatched = True
         reply_line = _format_reply_log(reply_log)

@@ -181,11 +181,11 @@ async def render_order_proposal(
         does not itself confirm anything. Exceptions are logged and re-raised so Panel's own
         error surfacing still fires rather than the failure being swallowed.
         """
-        # Disabled before the call starts, not only in finally: _execute_staged_order_core's
-        # Gate 1/Gate 2 chain is fully synchronous (blocking threading/subprocess calls, no
-        # await suspension point) — the server-side state is stale from the first moment a
-        # double-click could happen either way, but there is no reason to leave the earlier
-        # window open when closing it costs nothing.
+        # Claimed and disabled before the call starts, not only in finally. Since gap #17
+        # (2026-09-28) the Gate 1/Gate 2 chain runs in a worker thread and the loop stays free
+        # while it waits, so a second click on this card CAN arrive mid-flight: the claim
+        # below turns it away, and the disabled buttons say so on screen. A click on another
+        # card is queued by the core (`order_flow._one_order_at_a_time`).
         if not acted.claim():
             return
         stage_btn.disabled = True
