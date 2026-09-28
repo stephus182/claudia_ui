@@ -3,7 +3,7 @@
 import asyncio
 import json
 import re
-from typing import Any, cast
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -915,43 +915,103 @@ async def test_start_gives_up_on_a_wedged_sidecar_handshake(tmp_path, monkeypatc
     cm.__aexit__.assert_awaited(), "a timed-out handshake must not orphan the subprocess"
 
 
-# ── gap #20 (orphan half): stop() must forget the context manager ────────────
+# ── gap #20: one task owns the sidecar's context managers ───────────────────
 #
-# stop() cleared _session, _tools and _curated_tools but NOT _cm. A relaunch then called
-# start(), which assigns a fresh stdio_client over the old reference — so if the teardown
-# had raised (the anyio cancel-scope error this gap is also about), the first sidecar was
-# left running with nothing holding it. Clearing _cm makes that impossible rather than
-# unlikely.
+# `stdio_client` holds an anyio task group open across its `yield` (mcp 1.28.1), and anyio
+# requires cancel scopes — task groups included — to be "entered and exited in LIFO (last in,
+# first out) order within each task" (https://anyio.readthedocs.io/en/stable/cancellation.html,
+# "Avoiding cancel scope stack corruption"). The bridge entered it in one task and exited it
+# in another twice over: `start()` ran the handshake under `asyncio.wait_for`, which on
+# Python 3.11 runs its coroutine in a NEW task, and the action bar's TradingView reconnect
+# calls `stop()` from its own task. That is the traceback after every reconnect (live
+# 2026-09-04). The double below enforces the rule the way anyio does.
+
+
+class _SameTaskCM:
+    """A stdio_client / ClientSession stand-in that must be exited in the task that entered it."""
+
+    def __init__(self, value: Any = None, raise_on_exit: bool = False) -> None:
+        """Hand back `value` on entry; optionally fail on exit, as a dying sidecar can."""
+        self.value = self if value is None else value
+        self.raise_on_exit = raise_on_exit
+        self.entered_in: asyncio.Task[Any] | None = None
+        self.exited_cleanly = False
+
+    async def __aenter__(self) -> Any:
+        """Remember the entering task."""
+        self.entered_in = asyncio.current_task()
+        return self.value
+
+    async def __aexit__(self, *_a: Any) -> bool:
+        """Refuse a cross-task exit, as anyio's cancel scope does."""
+        if asyncio.current_task() is not self.entered_in:
+            raise RuntimeError("Attempted to exit cancel scope in a different task")
+        if self.raise_on_exit:
+            raise RuntimeError("sidecar teardown failed")
+        self.exited_cleanly = True
+        return False
+
+    async def initialize(self) -> None:
+        """The MCP handshake answers at once."""
+
+    async def list_tools(self) -> Any:
+        """No tools: nothing here is about the catalogue."""
+        return MagicMock(tools=[])
+
+
+def _same_task_sidecar(monkeypatch: Any, tmp_path: Any, **session_kw: Any) -> tuple[Any, Any]:
+    """Patch the bridge onto same-task doubles; return (stdio double, session double)."""
+    fake = tmp_path / "index.js"
+    fake.write_text("// sidecar")
+    monkeypatch.setattr(tv_module, "_TV_MCP_BIN", str(fake))
+    stdio = _SameTaskCM(value=(MagicMock(), MagicMock()))
+    session = _SameTaskCM(**session_kw)
+    monkeypatch.setattr(tv_module, "stdio_client", lambda *_a, **_kw: stdio)
+    monkeypatch.setattr(tv_module, "ClientSession", lambda *_a, **_kw: session)
+    return stdio, session
 
 
 @pytest.mark.asyncio
-async def test_stop_clears_the_context_manager_so_a_relaunch_cannot_orphan():
-    """After stop() there is no retained sidecar handle for start() to overwrite."""
+async def test_a_reconnect_exits_the_sidecar_in_the_task_that_entered_it(tmp_path, monkeypatch):
+    """start() in the session-init task, stop() in the action bar's task: both context
+    managers are still exited cleanly — the anyio traceback of every live reconnect."""
+    stdio, session = _same_task_sidecar(monkeypatch, tmp_path)
     bridge = TradingViewBridge()
-    session, cm = MagicMock(), MagicMock()
-    session.__aexit__ = AsyncMock(return_value=False)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    # cast to Any so mypy does not narrow these attributes to the mocks just assigned —
-    # it would then read `is None` as always-false and call the asserts unreachable.
-    bridge._session, bridge._cm = cast(Any, session), cast(Any, cm)
+    await asyncio.create_task(bridge.start())  # the session-init task
+    await asyncio.create_task(bridge.stop())  # the reconnect button's task
 
-    await bridge.stop()
-
-    assert bridge._session is None
-    assert bridge._cm is None, "a retained _cm is exactly how the first sidecar is orphaned"
+    assert session.exited_cleanly, "the MCP session was exited from the wrong task"
+    assert stdio.exited_cleanly, "stdio_client (the Node subprocess) was exited from the wrong task"
 
 
 @pytest.mark.asyncio
-async def test_stop_is_idempotent_and_survives_a_raising_teardown():
-    """A teardown that raises must still clear state, and a second stop must be a no-op."""
+async def test_stop_is_idempotent_and_survives_a_raising_teardown(tmp_path, monkeypatch):
+    """A teardown that raises (a sidecar that already died) must not escape stop(), must
+    still close the subprocess, and a second stop must be a no-op."""
+    stdio, _session = _same_task_sidecar(monkeypatch, tmp_path, raise_on_exit=True)
     bridge = TradingViewBridge()
-    session, cm = MagicMock(), MagicMock()
-    session.__aexit__ = AsyncMock(side_effect=RuntimeError("anyio cancel scope"))
-    cm.__aexit__ = AsyncMock(side_effect=RuntimeError("anyio cancel scope"))
-    bridge._session, bridge._cm = cast(Any, session), cast(Any, cm)
+    await bridge.start()
 
     await bridge.stop()  # must not raise
-    assert bridge._session is None
-    assert bridge._cm is None, "a failed teardown must still drop both handles"
+    assert stdio.exited_cleanly, "a failing session teardown must still close the subprocess"
+    assert bridge.get_tools() == []
+    assert await bridge.execute("chart_get_state", {}) == "TradingView is not connected."
 
     await bridge.stop()  # must not raise a second time
+
+
+@pytest.mark.asyncio
+async def test_a_relaunch_closes_the_first_sidecar(tmp_path, monkeypatch):
+    """The orphan half of gap #20, stated as behaviour: after stop() and a fresh start(),
+    the first sidecar's subprocess was closed and the bridge talks to the second one."""
+    first_stdio, _ = _same_task_sidecar(monkeypatch, tmp_path)
+    bridge = TradingViewBridge()
+    await bridge.start()
+    await bridge.stop()
+    second_stdio, _ = _same_task_sidecar(monkeypatch, tmp_path)
+    await bridge.start()
+
+    assert first_stdio.exited_cleanly, "the first sidecar was orphaned"
+    assert second_stdio.entered_in is not None and not second_stdio.exited_cleanly
+    await bridge.stop()
+    assert second_stdio.exited_cleanly

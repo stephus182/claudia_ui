@@ -53,6 +53,20 @@ chat).
 > Python 3.11 (`requires-python >=3.11,<3.14`) and `app.py` was removed in the Phase 11 Panel
 > cutover, so that patch no longer applies.
 
+## Sidecar lifecycle — one task owns it (gap #20, 2026-09-28)
+
+`TradingViewBridge.start()` creates **one owner task** (`_own`) that enters `stdio_client`
+and `ClientSession`, hand-shakes, then waits for a stop event; `stop()` sets the event and the
+owner exits both context managers itself, in LIFO order. A handshake that never finished is
+cancelled instead, and a sidecar that ignores the stop is cancelled after `_STOP_TIMEOUT_S`.
+The rule it keeps: `stdio_client` holds an anyio task group open across its `yield`, and anyio
+cancel scopes must be "entered and exited in LIFO (last in, first out) order within each task"
+(<https://anyio.readthedocs.io/en/stable/cancellation.html>, "Avoiding cancel scope stack
+corruption"). Until 2026-09-28 the bridge broke it twice — `asyncio.wait_for` runs its
+coroutine in a new task on Python 3.11, and the action bar's reconnect calls `stop()` from its
+own task — which was the traceback after every TradingView reconnect. **Never enter or exit
+the sidecar's context managers outside `_own`.**
+
 ## Binary discovery order (`_find_tv_mcp_bin()`)
 
 1. `TRADINGVIEW_MCP_PATH` env var (validated: file must exist and end in `.js`)

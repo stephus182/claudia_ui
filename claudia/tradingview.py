@@ -49,7 +49,6 @@ import shutil
 import socket
 import subprocess
 from collections.abc import Callable
-from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -697,6 +696,11 @@ async def launch_tradingview(emit: Callable[[str], None] | None = None) -> bool:
 # is one session without TradingView tools, which `_get_tv_bridge` already degrades to.
 _HANDSHAKE_TIMEOUT_S = 15.0
 
+# How long `stop()` waits for the owner task to leave the sidecar's context managers after
+# being asked, before cancelling it (gap #20). A healthy teardown signals the Node process
+# and returns well inside this; the bound only matters for a sidecar that ignores it.
+_STOP_TIMEOUT_S = 5.0
+
 
 class TradingViewBridge:
     """Manages the tradingview-mcp sidecar and exposes its tools to ClaudIA.
@@ -711,15 +715,16 @@ class TradingViewBridge:
     def __init__(self) -> None:
         """Create an unstarted bridge. Nothing is spawned until `start()`.
 
-        Holds four pieces of state: the MCP `ClientSession`, the sidecar's full tool list,
-        the curated subset actually exposed to the LLM, and `_cm` — the retained
-        `stdio_client` context manager, which `stop()` needs in order to shut the
-        subprocess down cleanly.
+        Holds the MCP `ClientSession` (set only while the sidecar is connected), the
+        sidecar's full tool list, the curated subset actually exposed to the LLM, and the
+        **owner task** — the one task that enters and exits the sidecar's context managers
+        (gap #20) — with the event that tells it to stop.
         """
         self._session: ClientSession | None = None
         self._tools: list[dict[str, Any]] = []
         self._curated_tools: list[dict[str, Any]] = []
-        self._cm: AbstractAsyncContextManager[Any] | None = None  # stdio_client's context manager
+        self._owner: asyncio.Task[None] | None = None
+        self._stop_requested = asyncio.Event()
 
     async def start(self) -> None:
         """Spawn the tradingview-mcp sidecar and connect via MCP stdio.
@@ -770,11 +775,21 @@ class TradingViewBridge:
             sidecar_commit = "unknown"
         log.info("tradingview-mcp sidecar: %s (commit %s)", bin_path, sidecar_commit)
 
+        # One task owns the sidecar for its whole life (gap #20): `stdio_client` holds an anyio
+        # task group open across its `yield`, and anyio requires cancel scopes to be "entered
+        # and exited in LIFO (last in, first out) order within each task"
+        # (https://anyio.readthedocs.io/en/stable/cancellation.html). Entering here and exiting
+        # from `stop()` broke that twice: `asyncio.wait_for` runs its coroutine in a new task on
+        # Python 3.11, and the action bar's reconnect calls `stop()` from another task.
+        ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._stop_requested = asyncio.Event()
+        self._owner = asyncio.create_task(self._own(server_params, ready), name="tradingview-mcp")
         try:
             # Bounded as one unit (gap #11): connect, initialize and list_tools are all
             # round-trips to the same subprocess, and any of the three can be the one that
             # never answers. Timing only the last would leave the first two unbounded.
-            await asyncio.wait_for(self._handshake(server_params), timeout=_HANDSHAKE_TIMEOUT_S)
+            # Shielded: the timeout must not cancel `ready`, which the owner still resolves.
+            await asyncio.wait_for(asyncio.shield(ready), timeout=_HANDSHAKE_TIMEOUT_S)
         except Exception as exc:
             if isinstance(exc, TimeoutError):
                 log.warning(
@@ -786,31 +801,49 @@ class TradingViewBridge:
                 log.warning("tradingview-mcp sidecar failed to start: %s", exc)
             self._tools = []
             self._curated_tools = []
-            # A timeout cancels `_handshake` wherever it stood, which can leave the stdio
-            # context manager entered and the Node process alive. Nothing else would ever
-            # exit it — `start()` re-raises and the caller keeps `_tv_bridge` None — so the
-            # subprocess would be orphaned for the life of the server.
+            # The owner may still be inside the stdio context manager with the Node process
+            # alive. Nothing else would ever exit it — `start()` re-raises and the caller
+            # keeps `_tv_bridge` None — so the subprocess would be orphaned for the life of
+            # the server.
             await self._release_sidecar()
             raise
 
-    async def _handshake(self, server_params: StdioServerParameters) -> None:
-        """Connect to the sidecar and learn its tools. Called only under a timeout.
+    async def _own(self, server_params: StdioServerParameters, ready: asyncio.Future[None]) -> None:
+        """The owner task: enter the sidecar, hand-shake, then hold it until asked to stop.
 
-        Split out of `start()` so `asyncio.wait_for` can bound the whole exchange rather
-        than one leg of it. Assigns `_cm` and `_session` as it goes precisely so that a
-        cancellation part-way through still leaves `_release_sidecar` something to
-        close.
+        Both context managers are entered and exited here and nowhere else, in LIFO order,
+        so anyio's same-task rule holds whoever calls `start()` or `stop()` (gap #20).
+        `ready` resolves when the tools are known, or carries the handshake's exception.
+        A teardown that raises (a sidecar that already died) is logged, never propagated.
         """
-        self._cm = stdio_client(server_params)
-        read, write = await self._cm.__aenter__()
-        self._session = ClientSession(read, write)
-        await self._session.__aenter__()
-        await self._session.initialize()
+        try:
+            async with (
+                stdio_client(server_params) as (read, write),
+                ClientSession(read, write) as session,
+            ):
+                await self._handshake(session)
+                self._session = session
+                ready.set_result(None)
+                await self._stop_requested.wait()
+                self._session = None
+        except Exception as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            else:
+                log.warning("tradingview-mcp sidecar session ended with an error: %s", exc)
+        finally:
+            self._session = None
+            if not ready.done():
+                ready.cancel()
+
+    async def _handshake(self, session: ClientSession) -> None:
+        """Initialize the MCP session and learn the sidecar's tools. Runs in the owner task."""
+        await session.initialize()
 
         # Discover available tools from sidecar — descriptions and schemas come from here,
         # not from the ClaudIA codebase. This is the only documentation ClaudIA receives
         # about what each tool does.
-        response = await self._session.list_tools()
+        response = await session.list_tools()
         self._tools = [
             {
                 "name": t.name,
@@ -834,36 +867,32 @@ class TradingViewBridge:
         )
 
     async def _release_sidecar(self) -> None:
-        """Close whatever is open and forget it. Shared by `stop()` and a failed `start()`.
+        """Make the owner task leave the sidecar, and forget it. Shared by `stop()` and a
+        failed `start()`. Never raises: teardown runs on paths that are already failing.
 
-        **Every step is independently guarded, and that is the fix, not a nicety (gap #20).**
-        The previous `stop()` wrapped both exits in ONE `try`, so a raising
-        `_session.__aexit__` — the anyio cancel-scope error this gap is about — skipped
-        `_cm.__aexit__` entirely and the Node subprocess was never signalled. It also left
-        `_cm` set, so the next `start()` assigned over the reference and nothing could ever
-        close the first sidecar again. Guarding each exit and clearing both handles makes
-        the orphan impossible rather than unlikely.
+        A connected owner is asked to stop and exits its own context managers (gap #20); one
+        still in its handshake has nothing to finish, so it is cancelled — the cancellation
+        is delivered inside the owner task, where anyio unwinds it correctly. Either way the
+        wait is bounded, and a sidecar that ignores the request is cancelled after
+        `_STOP_TIMEOUT_S`.
 
-        Never raises: teardown runs on paths that are already failing.
+        The orphan half of gap #20 (fixed 2026-09-23) stays impossible: the only handle is
+        the owner task, it is dropped here, and the owner's own `finally` clears the session.
         """
-        # Written out rather than looped over the two attribute names on purpose: the loop
-        # form needed `setattr`, and `tests/security/test_human_click_execution_boundary.py`
-        # forbids `setattr` anywhere in the shipped package — `setattr(btn, "clicks", 1)`
-        # fires a button handler and is invisible to every other probe there. The rule is
-        # deliberately blunt; this is the cheaper side of obeying it.
-        try:
-            if self._session is not None:
-                await self._session.__aexit__(None, None, None)
-        except Exception:
-            log.debug("tradingview-mcp: session teardown raised during cleanup", exc_info=True)
+        owner, self._owner = self._owner, None
+        if owner is None:
+            return
+        if self._session is None:
+            owner.cancel()
+        self._stop_requested.set()
+        done, _ = await asyncio.wait({owner}, timeout=_STOP_TIMEOUT_S)
+        if not done:
+            log.warning(
+                "tradingview-mcp sidecar did not stop within %.0fs — cancelling", _STOP_TIMEOUT_S
+            )
+            owner.cancel()
+            await asyncio.wait({owner}, timeout=_STOP_TIMEOUT_S)
         self._session = None
-
-        try:
-            if self._cm is not None:
-                await self._cm.__aexit__(None, None, None)
-        except Exception:
-            log.debug("tradingview-mcp: stdio teardown raised during cleanup", exc_info=True)
-        self._cm = None
 
     def get_tools(self) -> list[dict[str, Any]]:
         """Return the curated subset of tools for the Anthropic tools= list."""
@@ -905,9 +934,8 @@ class TradingViewBridge:
     async def stop(self) -> None:
         """Tear down the MCP stdio session. Never raises, and is safe to call twice.
 
-        Delegates to `_release_sidecar`, which closes the session and the stdio context
-        manager under separate guards and clears both handles — see its docstring for why
-        the single shared `try` this replaced could orphan the subprocess (gap #20).
+        Delegates to `_release_sidecar`, which has the owner task leave the sidecar's
+        context managers itself — the task that entered them (gap #20).
         """
         await self._release_sidecar()
         self._tools = []
