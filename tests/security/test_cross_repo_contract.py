@@ -31,6 +31,11 @@ Three ways that happens, each with a test here:
    `redact_error` (ClaudIA has no call site for it — § 9 records that as a known limit, and
    pinning an API this repository does not use would be coupling for its own sake).
 
+5. **The gate's recovery path changes.** Gate 1 evaluates `LAPolicyDeviceOwnerAuthentication`
+   (biometrics, then the device password after a failed scan); the biometrics-only policy
+   leaves no recovery. The core's LocalAuthentication test double cannot see a switch, so the
+   installed core is held to it here (gap #60, 2026-09-28; docs/code agreement is core F2).
+
 These assertions run against the *installed* core, so they check what this machine and CI
 actually resolve rather than what a document claims.
 """
@@ -561,3 +566,60 @@ def test_the_gate2_button_names_claudia_prints_are_the_ones_the_core_draws():
     for label in (GATE2_SEND_LABEL, GATE2_MODIFY_LABEL, GATE2_CANCEL_LABEL):
         assert f'confirm_label="{label}"' in source, f"the core no longer draws a {label} button"
     assert isinstance(order_confirm._DIALOG_TIMEOUT_S, int)
+
+
+# ── Gate 1's policy (gap #60, 2026-09-28) ─────────────────────────────────────────────────
+#
+# ClaudIA's Hard Rules and security architecture rest on Gate 1, and Gate 1's recovery rests
+# on WHICH LocalAuthentication policy the core evaluates. `LAPolicyDeviceOwnerAuthentication`
+# tries biometrics first and lets the OS offer the device password after a failed scan; the
+# biometrics-only `LAPolicyDeviceOwnerAuthenticationWithBiometrics` leaves no recovery at all.
+# The core's own tests cannot see a switch — their LocalAuthentication double is a bare
+# MagicMock that resolves any constant — so claudia_ui holds the installed core to it here.
+# The core's SECURITY.md states the policy (it owns that fact; ClaudIA points at it) and the
+# docs/code agreement test belongs to the core (register F2). Platform note: this pins the
+# macOS gate; a Windows Hello gate (register F25) adds its own row rather than loosening this.
+
+GATE1_POLICY = "LAPolicyDeviceOwnerAuthentication"
+GATE1_POLICY_CALLS = ("canEvaluatePolicy_error_", "evaluatePolicy_localizedReason_reply_")
+
+
+def _policies_passed(source: str) -> dict[str, list[str]]:
+    """For each LocalAuthentication call in `source`, the name passed as its first argument."""
+    import ast
+
+    passed: dict[str, list[str]] = {name: [] for name in GATE1_POLICY_CALLS}
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in passed
+            and node.args
+        ):
+            first = node.args[0]
+            passed[node.func.attr].append(
+                first.id if isinstance(first, ast.Name) else ast.dump(first)
+            )
+    return passed
+
+
+def test_gate1_evaluates_the_policy_with_the_device_password_fallback():
+    """Both LocalAuthentication calls in the installed core pass the device-owner policy —
+    the one whose failed scan the OS recovers with the device password — and nothing else."""
+    from ibkr_core_mcp import human_auth
+
+    passed = _policies_passed(inspect.getsource(human_auth))
+    for call, policies in passed.items():
+        assert policies, f"Gate 1 no longer calls {call} — re-read the gate before relaxing this"
+        assert set(policies) == {GATE1_POLICY}, f"{call} evaluates {policies}, not {GATE1_POLICY}"
+
+
+def test_the_policy_probe_sees_the_biometrics_only_switch():
+    """The checker above, against the one-word change it exists to catch."""
+    snippet = (
+        "ctx.canEvaluatePolicy_error_(LAPolicyDeviceOwnerAuthenticationWithBiometrics, None)\n"
+        "ctx.evaluatePolicy_localizedReason_reply_(LAPolicyDeviceOwnerAuthentication, r, cb)\n"
+    )
+    passed = _policies_passed(snippet)
+    assert passed["canEvaluatePolicy_error_"] == ["LAPolicyDeviceOwnerAuthenticationWithBiometrics"]
+    assert set(passed["canEvaluatePolicy_error_"]) != {GATE1_POLICY}
