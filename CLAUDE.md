@@ -202,9 +202,11 @@ repository is *supported* against — and it is the only file here allowed to na
 **installed** distribution version equals it). The blocking `test` and `dependency-audit`
 jobs install exactly that release from PyPI, so a green commit is reproducible and a core
 release published between two pushes here cannot silently become the tested core. A separate
-`forward-compat` job still **checks out** core `main` — that is the one lane a checkout is
-right for, since its whole subject is unreleased changes — installs it editable over the
-PyPI copy, and runs the seam tests only (`tests/security/`, `tests/test_order_flow.py`,
+`forward-compat` job still **checks out** the core from GitHub — its release branch while a
+window is open (`release/2.2.0` since 2026-09-28), `main` between windows — that is the one
+lane a checkout is right for, since its whole subject is unreleased changes — installs it
+editable over the PyPI copy, and runs the seam tests only (`tests/security/`,
+`tests/test_order_flow.py`,
 `tests/test_install_check.py`) with `CLAUDIA_CORE_UNPINNED=1`, which switches off the
 supported-release assertion and nothing else. It is **informational** (`continue-on-error`)
 on purpose — a push in the other repository must not be able to make this one un-mergeable,
@@ -431,9 +433,11 @@ ibkr_core_mcp-side by moving `websockets` out of `[server]` into base `dependenc
 
 ### Release batching — core changes accumulate into ONE release
 
-**The window that opened 2026-09-21 closed on 2026-09-22**: the 21 batched commits shipped as
-`2.1.0`, `core-ref.txt` moved to it the same day, and nothing here is blocked on an unreleased
-core. What follows is the practice, for the next time one opens — not a description of today.
+**A window is OPEN since 2026-09-28** — branch `release/2.2.0` in the worktree
+`../ibkr_core_mcp-2.2.0`, cut from `v2.1.0` (`41487a1`) and pushed; the forward-compat lane
+checks it out; core `main` stays at the tag. The previous window (2026-09-21 → 09-22) shipped
+as `2.1.0` and `core-ref.txt` moved to it the same day. What follows is the practice, and it
+describes today.
 
 **The practice (operator decision 2026-09-25, reaffirmed 2026-09-26).** Core changes driven
 from this repository are accumulated **on a release branch in a separate `git worktree`** —

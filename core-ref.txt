@@ -9,7 +9,9 @@
 # Two CI lanes read this file, and they answer different questions (.github/workflows/ci.yml):
 #
 #   "Does ClaudIA work with the core it supports?"   → the `test` job, pinned here. BLOCKS.
-#   "Did core main change something ClaudIA needs?"  → the `forward-compat` job, at main.
+#   "Did the NEXT core change something ClaudIA needs?" → the `forward-compat` job, at the
+#                                                      core's release branch while a window
+#                                                      is open, at main between windows.
 #                                                      Informational; it is an early warning,
 #                                                      not a merge requirement, because a
 #                                                      push in the other repository must not

@@ -51,8 +51,10 @@ on:
 #       would hand the other repository the power to fail this one, the thing the two-lane
 #       split was built to prevent.
 #
-#   `forward-compat` — "did core `main` change something ClaudIA depends on?"
-#       Core checked OUT of GitHub at `main` and installed editable over the PyPI copy,
+#   `forward-compat` — "did the NEXT core change something ClaudIA depends on?"
+#       Core checked OUT of GitHub — at its release branch while a release window is open
+#       (`release/2.2.0` since 2026-09-28; CLAUDE.md § Release batching), at `main` between
+#       windows — and installed editable over the PyPI copy,
 #       running the seam tests only. This lane keeps a checkout on purpose and cannot use
 #       PyPI: its whole subject is changes that have not been released yet. INFORMATIONAL
 #       (continue-on-error), deliberately: a push in another repository must not be able to
@@ -178,7 +180,7 @@ jobs:
           pip-audit --strict --desc --vulnerability-service osv --progress-spinner off $IGNORES -r /tmp/audit-requirements.txt
 
   forward-compat:
-    name: Forward compatibility (ibkr_core_mcp @ main)
+    name: Forward compatibility (ibkr_core_mcp @ release/2.2.0)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # Informational. A push in the other repository must not be able to make this one
@@ -207,7 +209,11 @@ jobs:
         with:
           repository: stephus182/ibkr_core_mcp
           path: ibkr_core_mcp
-          # `main`, deliberately — this lane exists because the other one is pinned.
+          # The core's release branch while a window is open, `main` between windows — never
+          # a release: this lane exists because the other one is pinned. Set to the branch in
+          # the commit that opens the window (2026-09-28), back to `main` in the commit that
+          # moves core-ref.txt to the release it produced.
+          ref: release/2.2.0
 
       - uses: actions/setup-python@v6
         with:
@@ -219,9 +225,9 @@ jobs:
 
       - name: Report which core revision this lane resolved
         # Printed before the install so a failure below can be attributed to a core commit
-        # without re-running anything. The supported SHA is beside it for the diff.
+        # without re-running anything. The supported release is beside it for the diff.
         run: |
-          echo "core main:      $(git -C ../ibkr_core_mcp rev-parse HEAD)"
+          echo "core checkout:  $(git -C ../ibkr_core_mcp rev-parse HEAD)"
           echo "core supported: $(grep -v '^#' core-ref.txt | grep -v '^$' | head -1)"
           git -C ../ibkr_core_mcp log --oneline -5
 
@@ -250,7 +256,7 @@ jobs:
         run: python -m claudia.install_check --require-editable
 
       - name: Seam tests only
-        # NOT the full suite. The question this lane answers is "did core main change
+        # NOT the full suite. The question this lane answers is "did the core checkout change
         # something ClaudIA depends on?", and 1,900 tests run a second time answer it no
         # better than these do — collection alone imports every claudia module, so an import
         # break is caught whatever is selected.

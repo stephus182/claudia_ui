@@ -290,7 +290,7 @@ network; every other test in that run stays blocked.
 | ruff format | — | — | yes |
 | mypy strict, over `claudia/` and `tests/` | Type errors | Everything typed correctly and wrong | yes |
 | pytest, including `tests/security/` | Behaviour, and the thirteen invariants | Anything without a test | yes; the `test` job installs `ibkr-core-mcp` from PyPI at the release in `core-ref.txt` |
-| **forward-compat** | A core `main` push that moves the seam ClaudIA depends on | Anything outside the seam tests it runs | **no — informational by design**: a push in another repository must not make this one un-mergeable. **Its tick is not evidence** — see below |
+| **forward-compat** | A push to the core's release branch (`release/2.2.0` while the window opened 2026-09-28 is open; `main` between windows) that moves the seam ClaudIA depends on | Anything outside the seam tests it runs | **no — informational by design**: a push in another repository must not make this one un-mergeable. **Its tick is not evidence** — see below |
 | **pip-audit** | A known-vulnerable version in the **resolved** tree, audited with the scraper extra a real install carries. The whole Panel/Bokeh/Tornado stack — 18 packages measured 2026-09-13, `tornado` among them — is audited by no other repository | Unknown vulnerabilities | yes; no-fix findings go in `security/pip-audit-ignores.txt` with a reason and a re-check date |
 | **gitleaks** | A committed secret or account identifier in the pushed range | History before the scan started | yes |
 | CodeQL default setup | A fixed set of Python patterns | Taint from this codebase's untrusted source: tool inputs are not "remote flow sources" | no |
@@ -339,6 +339,7 @@ Dated, so a future reader can tell a decision from a default.
 | 2026-09-14 | The gitleaks scanner version is pinned | The action's default asset was returning 504; and a gate whose scanner version floats is not a reproducible control | Bump deliberately |
 | 2026-09-14 | Structural helpers are **not** shared with the core's | A shared helper would make one repository's CI depend on the other's test layout — the coupling this work is making explicit, not deepening | — |
 | 2026-09-28 | A refusal before the gates **raises** into the core's one handler instead of reporting and returning (gap #80) | Six pre-gate exits (no conid, no futures found, none tradeable; a cancel or modify without an order id; a modify without a conid) wrote no decision row, so a click refused there looked like a proposal never clicked — this section had listed three of them as a known limit | Never |
+| 2026-09-28 | The forward-compat lane checks out the core's **release branch** while a release window is open (`release/2.2.0`) | Core `main` is frozen at its tag between releases (operator 2026-09-25), so a `main` checkout would see nothing the next release will ship; the branch is where it accumulates | Back to `main` in the commit that moves `core-ref.txt` to the release |
 
 ---
 
