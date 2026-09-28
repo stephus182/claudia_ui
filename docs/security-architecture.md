@@ -290,7 +290,7 @@ network; every other test in that run stays blocked.
 | ruff format | — | — | yes |
 | mypy strict, over `claudia/` and `tests/` | Type errors | Everything typed correctly and wrong | yes |
 | pytest, including `tests/security/` | Behaviour, and the thirteen invariants | Anything without a test | yes; the `test` job installs `ibkr-core-mcp` from PyPI at the release in `core-ref.txt` |
-| **forward-compat** | A push to the core's release branch (`release/2.2.0` while the window opened 2026-09-28 is open; `main` between windows) that moves the seam ClaudIA depends on | Anything outside the seam tests it runs | **no — informational by design**: a push in another repository must not make this one un-mergeable. **Its tick is not evidence** — see below |
+| **forward-compat** | A push to the core's release branch (`release/2.2.0` during the window opened 2026-09-28; `main` between windows) that moves the seam ClaudIA depends on | Anything outside the seam tests it runs | **no — informational by design**: a push in another repository must not make this one un-mergeable. **Its tick is not evidence** — see below |
 | **pip-audit** | A known-vulnerable version in the **resolved** tree, audited with the scraper extra a real install carries. The whole Panel/Bokeh/Tornado stack — 18 packages measured 2026-09-13, `tornado` among them — is audited by no other repository | Unknown vulnerabilities | yes; no-fix findings go in `security/pip-audit-ignores.txt` with a reason and a re-check date |
 | **gitleaks** | A committed secret or account identifier in the pushed range | History before the scan started | yes |
 | CodeQL default setup | A fixed set of Python patterns | Taint from this codebase's untrusted source: tool inputs are not "remote flow sources" | no |

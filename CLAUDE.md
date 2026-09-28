@@ -202,12 +202,12 @@ repository is *supported* against — and it is the only file here allowed to na
 **installed** distribution version equals it). The blocking `test` and `dependency-audit`
 jobs install exactly that release from PyPI, so a green commit is reproducible and a core
 release published between two pushes here cannot silently become the tested core. A separate
-`forward-compat` job still **checks out** the core from GitHub — its release branch while a
-window is open (`release/2.2.0` since 2026-09-28), `main` between windows — that is the one
-lane a checkout is right for, since its whole subject is unreleased changes — installs it
-editable over the PyPI copy, and runs the seam tests only (`tests/security/`,
-`tests/test_order_flow.py`,
-`tests/test_install_check.py`) with `CLAUDIA_CORE_UNPINNED=1`, which switches off the
+`forward-compat` job still **checks out** the core from GitHub: its release branch while a
+window is open (`release/2.2.0` since 2026-09-28), `main` between windows. That is the one
+lane a checkout is right for, since its whole subject is unreleased changes. It installs the
+checkout editable over the PyPI copy and runs the seam tests only (`tests/security/`,
+`tests/test_order_flow.py`, `tests/test_install_check.py`) with `CLAUDIA_CORE_UNPINNED=1`,
+which switches off the
 supported-release assertion and nothing else. It is **informational** (`continue-on-error`)
 on purpose — a push in the other repository must not be able to make this one un-mergeable,
 and the value is seeing the drift days before an upgrade. To move the supported release:
@@ -465,9 +465,11 @@ bump: `editable`, metadata `2.1.0`, and `tests/security/test_cross_repo_contract
 with **`CLAUDIA_CORE_UNPINNED` unset** — the override satisfies the supported-release
 assertion for as long as the checkout's declared version equals the pin, so do not set it.
 
-**While a window is open, the blocking `test` lane installs the pinned release from PyPI while
-you develop against `main`, so a public name that exists only on `main` passes locally and
-fails that lane — and that is the lane working correctly.** Keep such work on a branch, do not
+**While a window is open, the blocking `test` lane installs the pinned release from PyPI, and
+the developer override points at the `main` checkout — the same release — so a public name that
+exists only on the release branch fails locally AND in that lane, and both are working
+correctly; from here it is visible only through the forward-compat lane, which checks out the
+branch, or a local, uncommitted override pointed at the worktree.** Keep such work on a branch, do not
 merge it, and report it as blocked on the next core release. Measure the gap rather than
 trusting a list: walk every top-level function, class and public method under `ibkr_core_mcp/`
 at both refs (the command is in
@@ -495,7 +497,7 @@ even a pushed tag, publishes nothing.
 2026-09-26 for the next window: branch `release/2.2.0` (the core's own `release/2.0.1`
 precedent), worktree `../ibkr_core_mcp-2.2.0` (a sibling, named after the branch), cut from
 the tag so the base is provably the release: `git -C ../ibkr_core_mcp worktree add
-../ibkr_core_mcp-2.2.0 -b release/2.2.0 v2.1.0`. **ClaudIA pivots to the next core only when
+../ibkr_core_mcp-2.2.0 -b release/2.2.0 v2.1.0` — done 2026-09-28. **ClaudIA pivots to the next core only when
 it is released** (operator 2026-09-26): `core-ref.txt` moves to the published version, never to
 the branch; the one exception is testing and validating the pre-release — a local, uncommitted
 override pointed at the worktree, pointed back before any commit, and the informational
