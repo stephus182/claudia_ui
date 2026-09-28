@@ -47,20 +47,43 @@ that reports an older date may mean "no trades that day" rather than "not yet av
 five coverage gaps are genuine inactivity — memory `project-flex-gap-audit`); and the June
 pulls with `trades_fetched: 0` were failures of the early integration, not evidence.
 
-**Consequence for a pull policy:** an evening pull never brings the day's own trades, a morning
-pull after ~08:18 ET does, and a pull that finds nothing new is a no-op behind the fingerprint
-gate. Spending a Flex call to find out is cheap (one `SendRequest`, ten a minute allowed); what
-must never happen is a clock rule that claims to know when IBKR publishes.
+**The statement's own dates settle it (measured 2026-09-28).** Every Flex statement ClaudIA
+has pulled — all 29 on Drive `account_data/`, 28 distinct, 2026-06-26 → 09-28 — carries IBKR's
+`whenGenerated` (ET) and `toDate` in its `<FlexStatement>` header, and `toDate` does not
+depend on whether the account traded that day:
 
+| When the pull ran (ET) | `toDate` | Seen |
+| --- | --- | --- |
+| Mornings, the earliest 08:17:55 | the weekday before the pull's date | every one |
+| Afternoons and evenings, the latest 22:09 | the weekday before — never the pull's own day | every one (21:33, 21:50, 21:58, 22:09) |
+| Saturday, Sunday, Monday | the Friday | every one (09-26, 09-20, 09-28, 07-27, 08-03, 08-10, 09-14) |
+| Monday 07-06, after the 07-03 US holiday | 07-03 | statement days are **weekdays**, not exchange days |
 
-**Startup sync logic** (rewritten 2026-09-25, gap #72):
-- Skip if IBKR is offline (logged — the sync needs the gateway for the account id)
-- Skip if a pull already **changed the store since the most recent midnight ET** — read from
-  the store's own `flex_sync` log (`claudia/flex_sync.py`: `last_fruitful_pull`, `pull_due`);
-  a pull that changed nothing is not evidence and does not count
-- Sync otherwise — pulls last 30 days, upserts idempotently, logs the event. No retry window
-  and no staleness definition: over-checking on a weekend or a no-trade day costs one request
-  out of the ten a minute IBKR allows; under-checking is what the core's flag did on 2026-09-24
+A repeat request the same day returns IBKR's **cached** statement: a probe at 10:59 ET on
+09-28 got back the reference (4774944881) and `whenGenerated` (10:44:17) of ClaudIA's 10:44
+startup pull, and the 09-20 and 09-21 files are one statement. So an extra pull costs one
+request and changes nothing. A statement that is not finished is answered with an error code
+(1004 *incomplete*, 1005–1008 settlement / P&L data not ready, 1019 in progress — IBKR's
+error-code table), which the core raises on before anything is written.
+
+**Consequence — the startup rule needs no clock** (operator 2026-09-28): the newest statement
+that can exist is the one for the weekday before today (ET), and the store knows which one it
+holds. The exact publication time is irrelevant to the rule and is not looked for.
+
+**Startup sync logic** (operator rule 2026-09-28, gap #79; replaces gap #72's "a pull that
+changed the store since midnight ET"):
+- Skip if Flex is not configured, or IBKR is offline (logged — the sync needs the gateway
+  for the account id)
+- Skip if the store already holds **the statement for the weekday before today (ET)** —
+  `flex_sync.statement_through` (`MAX(stmt_to_date)` in `flex_change_in_nav`, one row per
+  statement) against `flex_sync.pull_due` / `newest_statement_day`
+- Pull otherwise. Nothing held, or unreadable, counts as "pull". A pull made before IBKR
+  publishes brings an older `toDate`, so the next start is still due.
+
+The opening line says both facts, each true after any pull: *"Flex statement through
+2026-09-25, pulled 2026-09-28 10:44 EDT"* (`toDate` held, and the last `flex_import_log` row
+of source `auto`). It used to say "updated <last import>", which after a pull that returned
+the same statement read "updated 2026-09-28 10:44 EDT; the startup pull brought nothing new".
 
 ## Why Flex Queries
 

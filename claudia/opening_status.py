@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 from ibkr_core_mcp import ClaudeToolkit, Config
 
-from claudia.flex_sync import last_fruitful_pull, last_import, pull_due, validate_dataset_daily
+from claudia.flex_sync import last_import, pull_due, statement_through, validate_dataset_daily
 
 log = logging.getLogger(__name__)
 
@@ -176,23 +176,31 @@ def _local_stamp(moment: datetime, with_date: bool = False) -> str:
     return local.strftime("%Y-%m-%d %H:%M %Z" if with_date else "%H:%M %Z")
 
 
-def _sync_note(config: Config, cov: dict[str, Any], ibkr_offline: bool) -> str:
-    """When the store was last actually updated — a real timestamp where one exists.
+def _flex_facts(config: Config) -> str:
+    """The facts "Flex statement through <toDate>, pulled <time>", or "" when neither is known.
 
-    This line used to read "last refreshed {newest}", where `newest` is the newest
-    **trade date** in the dataset. Those are different things and Flex's T+1 lag puts a
-    full day between them: on 2026-08-05 the store was updated at 08:18 EDT with a
-    statement whose newest trade was 2026-08-04. Printing the second under the word
-    "refreshed" told the user the store was a day staler than it was.
-
-    `flex_import_log` records when each statement landed, so the honest answer is
-    available and is used. The old wording remains the fallback for a store that has
-    never recorded an import.
+    Both facts stay true after any pull (gap #79, 2026-09-28). The line used to say
+    "updated <time of the last import>", and `flex_import_log` gains a row on every pull,
+    including one that changes nothing — so after Monday's pull returned Friday's statement
+    again, one sentence read "updated 2026-09-28 10:44 EDT; the startup pull brought nothing
+    new". Before 2026-08-05 it read "last refreshed <newest trade date>", a trade date under a
+    word meaning "when we last pulled". The statement's own `toDate` is what the store holds;
+    the import time is only when Flex was last asked.
     """
+    through = statement_through(config.sqlite_path)
     imported = last_import(config.sqlite_path)
+    facts = [f"Flex statement through {through.isoformat()}"] if through else []
     if imported is not None:
-        note = f"updated {_local_stamp(imported.at, with_date=True)}"
-        return f"{note} — connect IBKR to refresh" if ibkr_offline else note
+        facts.append(f"pulled {_local_stamp(imported.at, with_date=True)}")
+    return ", ".join(facts)
+
+
+def _sync_note(config: Config, cov: dict[str, Any], ibkr_offline: bool) -> str:
+    """The dataset line's tail: `_flex_facts`, or the newest trade date when nothing is on
+    record (a store that has never recorded a pull)."""
+    facts = _flex_facts(config)
+    if facts:
+        return f"{facts} — connect IBKR to refresh" if ibkr_offline else facts
     if ibkr_offline:
         return f"last refreshed {cov['newest']} ({cov['days_since_newest']}d ago) — connect IBKR to refresh"
     return f"last refreshed {cov['newest']}"
@@ -201,20 +209,13 @@ def _sync_note(config: Config, cov: dict[str, Any], ibkr_offline: bool) -> str:
 _ET = ZoneInfo("America/New_York")
 
 # The startup pull's state on the dataset line and in the model's context (gap #77,
-# 2026-09-26): the line is sent seconds before the background pull lands, so it says what
-# the pull is doing rather than reading as the final word; the caller rewrites it in place
-# once the pull is done. A fruitless pull is said, never left as "running".
+# 2026-09-26): the line is sent seconds before the background pull lands, so it says a pull
+# is running; the caller rewrites the line in place once the pull is done.
 PULL_RUNNING_NOTE = "startup Flex pull running — this line updates when it lands"
-PULL_FRUITLESS_NOTE = (
-    "the startup pull brought nothing new — IBKR's statement for the last session is not out "
-    "yet; the next start tries again"
-)
 
 _FLEX_TIMING = (
-    "Flex statements are T+1: a day's trades appear the next morning, never the same evening "
-    "(IBKR's statement cutoffs are 17:15 ET for commodities and 20:20 ET for securities; on "
-    "ClaudIA's own pull log a finished statement was never present before 22:07 ET and never "
-    "missing after 08:18 ET)."
+    "Flex statements are T+1: IBKR issues one statement per weekday, and a day's trades are "
+    "never on a statement the same day."
 )
 
 
@@ -223,51 +224,36 @@ def _now_utc() -> datetime:
     return datetime.now(UTC)
 
 
-def _pull_verdict_sentence(toolkit: ClaudeToolkit) -> str:
-    """ClaudIA's own answer to "could a newer statement exist?", for the model (gap #72).
+def _pull_verdict_sentence(config: Config) -> str:
+    """ClaudIA's own answer to "could a newer statement exist?", for the model.
 
-    The same evidence and the same rule as the startup sync decision
-    (`flex_sync.last_fruitful_pull` + `flex_sync.pull_due`), so the prompt and the pull
-    cannot disagree. Stated as of session start: the trade context is built once.
+    The startup rule itself (`flex_sync.pull_due` over `flex_sync.statement_through`), so
+    the prompt and the pull cannot disagree. Stated as of session start: the trade context
+    is built once, and rebuilt when the startup pull lands.
     """
-    try:
-        events = toolkit._store.get_log(n=200, event="flex_sync")
-        last = last_fruitful_pull(events)
-        due = pull_due(_now_utc(), last)
-    except Exception as exc:
-        log.warning("Flex pull verdict unavailable for the model: %s", exc)
+    if not pull_due(_now_utc(), statement_through(config.sqlite_path)):
         return (
-            "Whether a newer statement exists is not known at session start; "
-            "`check_flex_coverage` reports the store and `sync_flex_trades` pulls."
-        )
-    if not due and last is not None:
-        return (
-            f"As of session start a pull brought new data today at "
-            f"{last.astimezone(_ET).strftime('%H:%M')} ET, so the store is as current as Flex "
-            f"can be until IBKR's next overnight publication; do not suggest syncing."
+            "As of session start the store holds the newest statement that can exist; "
+            "do not suggest syncing."
         )
     return (
-        "As of session start: No pull has brought new data since midnight ET; ClaudIA pulls at "
-        "startup. If the user asks whether the data is current, say a pull is pending and offer "
+        "A newer statement may exist as of session start; ClaudIA pulls at startup. If the "
+        "user asks whether the data is current, say a pull is pending and offer "
         "`sync_flex_trades`."
     )
 
 
 def _store_updated_sentence(config: Config, cov: dict[str, Any]) -> str:
-    """The same fact as `_sync_note`, worded for the model rather than the user.
+    """The same facts as `_sync_note`, worded for the model rather than the user.
 
     Kept separate from `_sync_note` on purpose: that one may end in "connect IBKR to
-    refresh", which is an instruction to a person looking at a button. Both read the same
-    source, so the two surfaces cannot drift into disagreeing about when the store was
-    updated.
+    refresh", which is an instruction to a person looking at a button. Both read
+    `_flex_facts`, so the two surfaces cannot disagree.
     """
-    imported = last_import(config.sqlite_path)
-    if imported is None:
+    facts = _flex_facts(config)
+    if not facts:
         return f"Newest trade date: {cov['newest']}."
-    return (
-        f"Store last updated {_local_stamp(imported.at, with_date=True)}; "
-        f"newest trade date {cov['newest']}."
-    )
+    return f"{facts}; newest trade date {cov['newest']}."
 
 
 def _integrity_phrases(config: Config) -> tuple[str, str]:
@@ -326,9 +312,8 @@ def build_trade_lines(
     trade_context even when Flex is unconfigured.
 
     `pull_note` (gap #77, 2026-09-26) is the startup pull's state as the caller knows it —
-    `PULL_RUNNING_NOTE` while the background pull is in flight, `PULL_FRUITLESS_NOTE` after
-    one that changed nothing, empty otherwise — appended to the status line and stated to
-    the model. Both surfaces are built here so they cannot disagree; the caller rebuilds
+    `PULL_RUNNING_NOTE` while the background pull is in flight, empty otherwise — appended
+    to the status line and stated to the model. Both surfaces are built here so they cannot disagree; the caller rebuilds
     them from a fresh store read once the pull has landed.
 
     **The "integrity validated" phrase is earned here, not decoration (2026-08-05).**
@@ -364,7 +349,7 @@ def build_trade_lines(
                     # unless days_since_newest > 3 on a weekday" — a second definition
                     # beside the core's flag, and on 2026-09-24 it called a two-trading-day-
                     # old store fine. Now: the facts, and ClaudIA's own pull verdict (gap #72).
-                    f"{_FLEX_TIMING} {_pull_verdict_sentence(toolkit)}\n"
+                    f"{_FLEX_TIMING} {_pull_verdict_sentence(config)}\n"
                     # SETTLED — do not re-raise this as an unbacked claim (it has been, twice).
                     # The five gaps are real inactivity in this account, audited 2026-06-30
                     # against the Drive XML archive: 2020-09-02→11-09, 2020-11-11→2021-01-07,

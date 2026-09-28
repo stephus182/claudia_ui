@@ -53,11 +53,9 @@ wrong place for it.
 import json
 import logging
 import sqlite3
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
 from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
@@ -266,14 +264,17 @@ def _record_path(sqlite_path: str | Path) -> Path:
 
 
 def last_import(sqlite_path: str | Path) -> LastImport | None:
-    """The most recent row of `flex_import_log`, or None if there is nothing to report.
+    """The most recent Flex pull on record (`flex_import_log`, source 'auto'), or None.
 
-    This is the honest answer to "when was the data last updated" — the moment a Flex
-    statement was imported. It is **not** the newest trade date, which is what the
-    opening line used to print under the label "last refreshed": on 2026-08-05 those
-    were 08-05 12:18 UTC and 2026-08-04 respectively, a full day apart, because Flex is
-    T+1. Showing the second and calling it the first tells the user the store is a day
-    staler than it is.
+    The moment Flex last returned a statement — every successful pull writes its statement's
+    row (a same-day repeat gets IBKR's cached statement and updates that row's time),
+    including a pull that brings nothing new, so this is "last pulled", never "last changed"
+    (gap #79). Rows with source 'manual' are hand-downloaded archive statements,
+    registered when the archive check first sees them; they are not pulls.
+
+    It is **not** the newest trade date, which is what the opening line used to print
+    under the label "last refreshed": on 2026-08-05 those were 08-05 12:18 UTC and
+    2026-08-04 respectively, a full day apart, because Flex is T+1.
 
     Returns None rather than a guess when the timestamp cannot be parsed: no time on
     screen is better than a wrong one.
@@ -285,7 +286,7 @@ def last_import(sqlite_path: str | Path) -> LastImport | None:
     try:
         row = conn.execute(
             "SELECT filename, imported_at, trade_id_count FROM flex_import_log "
-            "ORDER BY imported_at DESC, id DESC LIMIT 1"
+            "WHERE source = 'auto' ORDER BY imported_at DESC, id DESC LIMIT 1"
         ).fetchone()
     except sqlite3.DatabaseError:
         return None  # table absent on a store that has never imported
@@ -430,71 +431,60 @@ def _write_record(
 
 
 # ---------------------------------------------------------------------------
-# Gap #72 (2026-09-25): is a Flex pull worth making? Evidence, not a clock and not a
-# definition of "stale"
+# The startup pull rule (operator 2026-09-28): pull unless the store already holds the
+# statement for the weekday before today (ET). It replaces gap #72's "a pull that changed
+# the store since midnight ET", which needed a replay of the pull log and a "fruitful"
+# concept, and whose "updated" stamp contradicted itself after a pull that changed nothing.
 # ---------------------------------------------------------------------------
 
 
-def last_fruitful_pull(events: Sequence[Mapping[str, Any]]) -> datetime | None:
-    """The moment of the most recent Flex pull that CHANGED the store — or None.
+def statement_through(sqlite_path: str | Path) -> date | None:
+    """The newest statement day the store holds — IBKR's own `toDate` — or None.
 
-    `events` are `session_log` rows of event `flex_sync`, ascending, as
-    `SQLiteStore.get_log` returns them; `data` is the JSON the core writes on every
-    `sync_flex_trades` call, whoever made it (ClaudIA at startup, the model, the MCP
-    server): `newest` (newest trade date) and `total` (trade count) after the pull. A pull
-    is fruitful iff either differs from the previous pull's; the first pull ever is
-    fruitful iff it holds any trades. The operator's ruling (2026-09-25): "count a check
-    as done only when it brought new data — evidence based". A fruitless pull is not
-    evidence of anything and so keeps the next start pulling.
-
-    Why not `flex_import_log`: it records every import, fruitful or not — rows 40 and 41
-    of the real store hold the same statement (same sha256, 40 trades) imported on two
-    consecutive days, neither bringing a trade. Why not the fingerprint: it is computed
-    around ClaudIA's own pull only, and a pull the model asked for would be invisible.
-
-    A row whose timestamp or JSON cannot be read is skipped, never guessed at.
+    Read from `flex_change_in_nav`, which the core's archive fills with one row per Flex
+    statement and which carries the statement header's `toDate` as `stmt_to_date`. That is
+    the evidence, not a trade date: a weekday with no trades still has a statement.
+    Anything unreadable is None, never a guess; the caller treats None as "pull".
     """
-    last: datetime | None = None
-    previous: tuple[object, object] | None = None
-    for row in events:
-        try:
-            at = datetime.fromisoformat(str(row["ts"]))
-            data = json.loads(str(row.get("data") or "{}"))
-        except (KeyError, TypeError, ValueError):
-            continue
-        if at.tzinfo is None:
-            at = at.replace(tzinfo=UTC)
-        state = (data.get("newest"), data.get("total"))
-        fruitful = bool(data.get("total")) if previous is None else state != previous
-        if fruitful:
-            last = at
-        previous = state
-    return last
+    try:
+        conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute("SELECT MAX(stmt_to_date) FROM flex_change_in_nav").fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        conn.close()
+    try:
+        return datetime.strptime(str(row[0]), "%Y%m%d").date() if row and row[0] else None
+    except ValueError:
+        log.warning("statement_through: unparseable stmt_to_date %r", row[0])
+        return None
 
 
-def midnight_et(now: datetime) -> datetime:
-    """The most recent midnight in New York at or before `now` (aware, any zone)."""
+def newest_statement_day(now: datetime) -> date:
+    """The newest statement that can exist at `now`: the weekday before today (ET).
+
+    Flex is T+1 and IBKR issues one statement per weekday — every one of our 29 pulls,
+    2026-06-26 → 09-28, at any hour, came back through the previous weekday and never the
+    same day; weekdays, not exchange days (the 07-06 pull came back through the 07-03 US
+    holiday).
+    """
     if now.tzinfo is None:
-        raise ValueError("midnight_et needs an aware datetime; a naive one has no ET midnight")
-    local = now.astimezone(_ET)
-    return local.replace(hour=0, minute=0, second=0, microsecond=0)
+        raise ValueError("newest_statement_day needs an aware datetime; a naive one has no ET date")
+    day = now.astimezone(_ET).date() - timedelta(days=1)
+    while day.weekday() >= 5:  # Saturday, Sunday
+        day -= timedelta(days=1)
+    return day
 
 
-def pull_due(now: datetime, last_fruitful: datetime | None) -> bool:
-    """True unless a pull already brought new data since the most recent midnight ET.
+def pull_due(now: datetime, held: date | None) -> bool:
+    """True unless the store holds the newest statement that can exist.
 
-    The whole startup rule, agreed with the operator 2026-09-25 after gap #72 (a store two
-    trading days behind presented as current for a whole day): a new statement can appear
-    once a day, overnight, so a pull that changed the store after the last midnight ET has
-    already picked up everything that can exist today, and any other state — no pull ever,
-    or none that changed the store since that boundary — is worth one Flex call to find
-    out. No calendar, no staleness flag, no retry window: over-checking on a weekend or a
-    no-trade day costs one request (the Flex service allows ten a minute); under-checking
-    is what the core's flag did on 2026-09-24.
+    A pull made before IBKR publishes brings an older `toDate`, so the next start is still
+    due: no clock is involved. A repeat pull the same day returns IBKR's cached statement,
+    so an extra pull costs one request and changes nothing.
     """
-    boundary = midnight_et(now)
-    if last_fruitful is None:
-        return True
-    if last_fruitful.tzinfo is None:
-        last_fruitful = last_fruitful.replace(tzinfo=UTC)
-    return last_fruitful < boundary
+    newest = newest_statement_day(now)
+    return held is None or held < newest

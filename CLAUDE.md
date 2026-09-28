@@ -35,8 +35,9 @@ claudia/briefing.py         — startup briefing: expiring positions + today's e
                               list is read — operator rule 2026-09-26, gap #78: no exchange opens
                               on its weekend, holidays only subtract)
 claudia/flex_sync.py        — session-start dataset validation, the "did this pull change anything" gate,
-                              and the startup pull rule (evidence from the store's own pull log,
-                              no staleness definition — gap #72, 2026-09-25)
+                              and the startup pull rule: pull unless the store holds the statement
+                              for the weekday before today (ET), read from IBKR's own `toDate` —
+                              no clock, no staleness definition (operator 2026-09-28, gap #79)
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
 claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger fallback; since

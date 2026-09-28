@@ -340,6 +340,22 @@ def test_last_import_reports_the_most_recent_pull(good_db):
     assert record.at == datetime(2026, 8, 5, 12, 18, 1, tzinfo=UTC)
 
 
+def test_last_import_counts_only_flex_pulls(good_db):
+    """`flex_import_log` also registers hand-downloaded archive statements (source
+    'manual', stamped when the archive check first sees them); that is not a Flex pull."""
+    _import_log(good_db, datetime(2026, 9, 28, 14, 44, tzinfo=UTC), "flex_pull.xml")
+    conn = sqlite3.connect(good_db)
+    conn.execute(
+        "INSERT INTO flex_import_log (filename, source, imported_at) VALUES (?, 'manual', ?)",
+        ("ClaudIA_Full_Activity_123125.xml", "2026-09-28T15:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    record = last_import(good_db)
+    assert record is not None and record.filename == "flex_pull.xml"
+
+
 def test_last_import_is_none_before_anything_was_ever_imported(good_db):
     """With no import history there is no last import to report."""
     assert last_import(good_db) is None
@@ -353,7 +369,9 @@ def test_last_import_survives_an_unparseable_timestamp(good_db):
         " trade_id_count INTEGER, raw_trade_count INTEGER, source TEXT, imported_at TEXT,"
         " verified_at TEXT)"
     )
-    conn.execute("INSERT INTO flex_import_log (filename, imported_at) VALUES ('x.xml', 'never')")
+    conn.execute(
+        "INSERT INTO flex_import_log (filename, source, imported_at) VALUES ('x.xml', 'auto', 'never')"
+    )
     conn.commit()
     conn.close()
 
@@ -389,115 +407,88 @@ def test_a_mock_shaped_path_leaves_the_working_directory_clean(tmp_path, monkeyp
 
 
 # ---------------------------------------------------------------------------
-# Gap #72 (2026-09-25): when is a Flex pull worth making? Evidence, not a clock and not a
-# definition of "stale" (operator: "no definition of 'stale' at all, wrong way to approach
-# the problem"; "I favor to check vs evidence")
+# The startup pull rule (operator 2026-09-28, supersedes gap #72's "fruitful pull since
+# midnight ET"): pull unless the store already holds the statement for the weekday before
+# today (ET). Flex is T+1 and IBKR serves one statement per weekday — every one of our 29
+# pulls, 2026-06-26 → 09-28, at any hour, came back through the previous weekday and never
+# the same day — and a repeat pull on the same day returns the cached statement, so an
+# extra pull costs one request and changes nothing.
 # ---------------------------------------------------------------------------
 
 
-def _ev(ts: str, newest: str | None, total: int) -> dict[str, object]:
-    """One `session_log` row of event `flex_sync`, shaped as `SQLiteStore.get_log` returns it."""
-    import json
-
-    return {"ts": ts, "event": "flex_sync", "data": json.dumps({"newest": newest, "total": total})}
-
-
-def test_a_pull_is_fruitful_only_when_it_changed_the_store():
-    """Real log of 2026-09-23 → 09-25: the 15:44Z pull brought 09-22, the 00:59Z pull brought
-    09-23, the operator's 01:01Z re-pull brought the same statement again (same newest, same
-    total) and so counts for nothing, the 13:57Z pull brought 09-24."""
-    from datetime import UTC, datetime
-
-    from claudia.flex_sync import last_fruitful_pull
-
-    events = [
-        _ev("2026-09-23T15:44:21+00:00", "2026-09-22", 1319),
-        _ev("2026-09-25T00:59:54+00:00", "2026-09-23", 1334),
-        _ev("2026-09-25T01:01:06+00:00", "2026-09-23", 1334),
-    ]
-    assert last_fruitful_pull(events) == datetime(2026, 9, 25, 0, 59, 54, tzinfo=UTC)
-    events.append(_ev("2026-09-25T13:57:42+00:00", "2026-09-24", 1375))
-    assert last_fruitful_pull(events) == datetime(2026, 9, 25, 13, 57, 42, tzinfo=UTC)
-
-
-def test_the_first_pull_ever_is_fruitful_only_if_it_brought_trades():
-    """An empty log is no evidence; a first pull that landed rows is; one that landed none is not."""
-    from datetime import UTC, datetime
-
-    from claudia.flex_sync import last_fruitful_pull
-
-    assert last_fruitful_pull([]) is None
-    assert last_fruitful_pull([_ev("2026-06-24T14:42:00+00:00", None, 0)]) is None
-    assert last_fruitful_pull([_ev("2026-06-26T20:11:00+00:00", "2026-06-25", 1041)]) == datetime(
-        2026, 6, 26, 20, 11, tzinfo=UTC
+def _nav_rows(path, *to_dates: str) -> None:
+    """One `flex_change_in_nav` row per archived statement, as the core's archive stores it."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS flex_change_in_nav (row_uid TEXT, src_file TEXT,"
+        " stmt_to_date TEXT)"
     )
+    for i, to_date in enumerate(to_dates):
+        conn.execute(
+            "INSERT INTO flex_change_in_nav VALUES (?, ?, ?)", (f"r{i}", f"f{i}.xml", to_date)
+        )
+    conn.commit()
+    conn.close()
 
 
-def test_a_naive_or_unparseable_event_never_becomes_evidence():
-    """A row without a usable timestamp is skipped, never guessed at."""
-    from claudia.flex_sync import last_fruitful_pull
+def test_statement_through_is_the_newest_statement_the_store_holds(good_db):
+    """The evidence is the statement's own `toDate`, not a trade date: a weekday with no
+    trades still has a statement."""
+    from datetime import date
 
-    assert (
-        last_fruitful_pull([{"ts": "not a time", "data": '{"newest": "2026-09-24", "total": 5}'}])
-        is None
-    )
-    assert last_fruitful_pull([{"ts": "2026-09-25T13:57:42+00:00", "data": "not json"}]) is None
+    from claudia.flex_sync import statement_through
+
+    _nav_rows(good_db, "20260923", "20260925", "20260924")
+    assert statement_through(good_db) == date(2026, 9, 25)
+
+
+def test_statement_through_is_none_when_nothing_can_be_read(good_db, tmp_path):
+    """No archive table, an empty one, an unparseable date, a missing file: unknown, never
+    a guess — and unknown makes the pull due."""
+    from claudia.flex_sync import statement_through
+
+    assert statement_through(good_db) is None  # table absent
+    _nav_rows(good_db)
+    assert statement_through(good_db) is None  # table empty
+    _nav_rows(good_db, "not a date")
+    assert statement_through(good_db) is None
+    assert statement_through(str(tmp_path / "missing.db")) is None
 
 
 @pytest.mark.parametrize(
-    ("now", "last_fruitful", "due", "why"),
+    ("now_utc", "through", "due", "why"),
     [
-        ("2026-09-25T13:52:00+00:00", None, True, "never brought anything"),
-        (
-            "2026-09-25T13:52:00+00:00",
-            "2026-09-25T01:01:06+00:00",
-            True,
-            "last new data 21:01 ET yesterday",
-        ),
-        (
-            "2026-09-25T18:00:00+00:00",
-            "2026-09-25T13:57:42+00:00",
-            False,
-            "new data at 09:57 ET today",
-        ),
-        (
-            "2026-09-26T03:59:00+00:00",
-            "2026-09-25T13:57:42+00:00",
-            False,
-            "23:59 ET, still the same ET day",
-        ),
-        ("2026-09-26T04:01:00+00:00", "2026-09-25T13:57:42+00:00", True, "00:01 ET, a new ET day"),
-        (
-            "2026-01-13T05:30:00+00:00",
-            "2026-01-13T04:30:00+00:00",
-            True,
-            "EST: 00:30 ET after new data at 23:30 ET",
-        ),
-        (
-            "2026-01-13T04:30:00+00:00",
-            "2026-01-13T03:30:00+00:00",
-            False,
-            "EST: 23:30 ET, new data at 22:30 ET",
-        ),
+        ("2026-09-28T14:44:00+00:00", "2026-09-25", False, "Mon: Friday's statement is the newest"),
+        ("2026-09-28T14:44:00+00:00", "2026-09-24", True, "Mon: Friday's is missing"),
+        ("2026-09-29T12:00:00+00:00", "2026-09-25", True, "Tue: Monday's is missing"),
+        ("2026-09-29T12:00:00+00:00", "2026-09-28", False, "Tue: Monday's is held"),
+        ("2026-09-26T14:42:00+00:00", "2026-09-25", False, "Sat: Friday's is the newest"),
+        ("2026-09-27T14:42:00+00:00", "2026-09-25", False, "Sun: Friday's is the newest"),
+        ("2026-09-26T14:42:00+00:00", "2026-09-24", True, "Sat: Friday's is missing"),
+        ("2026-09-28T14:44:00+00:00", None, True, "unknown is not current"),
+        ("2026-09-29T03:30:00+00:00", "2026-09-25", False, "23:30 ET Mon is still Monday in ET"),
+        ("2026-09-29T04:30:00+00:00", "2026-09-25", True, "00:30 ET Tue: Monday's can exist"),
     ],
 )
-def test_a_pull_is_due_unless_one_brought_new_data_since_midnight_et(now, last_fruitful, due, why):
-    """The whole rule. Midnight ET is the boundary because a statement is published
-    overnight (never seen before 22:07 ET, never missing after 08:18 ET on our log); a fruitless
-    pull is not evidence, so it keeps the next start pulling; no clock claim beyond that."""
-    from datetime import datetime
+def test_a_pull_is_due_unless_the_store_holds_the_previous_weekdays_statement(
+    now_utc, through, due, why
+):
+    """The whole rule. Weekdays, not exchange days: the 07-06 pull came back through the
+    07-03 US holiday. A pull made before IBKR publishes brings an older `toDate`, so the next
+    start is still due — no clock in the rule."""
+    from datetime import date, datetime
 
     from claudia.flex_sync import pull_due
 
-    last = datetime.fromisoformat(last_fruitful) if last_fruitful else None
-    assert pull_due(datetime.fromisoformat(now), last) is due, why
+    held = date.fromisoformat(through) if through else None
+    assert pull_due(datetime.fromisoformat(now_utc), held) is due, why
 
 
 def test_pull_due_refuses_a_naive_now():
-    """A naive datetime has no ET midnight; refusing it is safer than assuming UTC."""
+    """A naive datetime has no ET date; refusing it is safer than assuming UTC."""
     from datetime import datetime
 
     from claudia.flex_sync import pull_due
 
     with pytest.raises(ValueError):
-        pull_due(datetime(2026, 9, 25, 13, 52), None)
+        pull_due(datetime(2026, 9, 28, 10, 44), None)

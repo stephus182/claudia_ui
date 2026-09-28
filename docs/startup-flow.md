@@ -235,20 +235,20 @@ dataset line says "startup Flex pull running — this line updates when it lands
 pull is in flight; once it lands, `_refresh_opening_after_pull` rebuilds the line from a
 fresh store read and **rewrites it in place** (the same chat message, no new line — the
 System log keeps the ✅ sync result as the event record) and re-stamps the model's trade
-context. A pull that changed nothing is said as such ("the startup pull brought nothing new
-… the next start tries again"), never left reading "running". Until 2026-09-26 the line and
-the model's context were stamped once, seconds before the pull landed, and stayed stale for
-the whole session — "1375 trades → 2026-09-24" over a store holding 1377 through 09-25.
+context, whatever the pull brought — the rebuilt line names the statement held and when Flex
+was pulled, so it needs no separate note. Until 2026-09-26 the line and the model's context
+were stamped once, seconds before the pull landed, and stayed stale for the whole session —
+"1375 trades → 2026-09-24" over a store holding 1377 through 09-25.
 
-Sync is **skipped** when any of (rewritten 2026-09-25, gap #72):
+Sync is **skipped** when any of (operator rule 2026-09-28, gap #79):
 1. `IBKR_FLEX_TOKEN` or `IBKR_FLEX_QUERY_ID` not configured
 2. IBKR offline — logged as such (the sync resolves the account id through the gateway)
-3. A pull already **changed the store since the most recent midnight ET**, read from the
-   store's own `flex_sync` log (`flex_sync.last_fruitful_pull` + `pull_due`) — logged with
-   that pull's time. A fruitless pull is not evidence; there is no retry window and no
-   staleness definition (the core's off-by-one flag and a 4 h window did this until then).
+3. The store already holds **the statement for the weekday before today (ET)**
+   (`flex_sync.statement_through` + `pull_due`) — logged with the statement date. Nothing
+   held or unreadable means pull. No clock and no staleness definition; the evidence is in
+   `docs/flex-query-setup.md` § When a day's statement becomes available.
 
-On sync success: `store.db` is backed up to Drive `account_data/`.
+On sync success: `store.db` is backed up to Drive `account_data/` when its fingerprint moved.
 
 ---
 

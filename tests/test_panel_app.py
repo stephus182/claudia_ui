@@ -1229,90 +1229,72 @@ async def _drain_flex_sync() -> None:
     await asyncio.sleep(0)  # done callbacks are scheduled via call_soon
 
 
-def _flex_toolkit(stale: bool, attempts: list[dict[str, Any]] | None = None) -> MagicMock:
-    """A stub toolkit whose Flex coverage and sync log can be posed.
+def _flex_toolkit(stale: bool) -> MagicMock:
+    """A stub toolkit whose Flex coverage can be posed.
 
-    `stale` is the core's flag; since gap #72 (2026-09-25) the startup decision does not
-    read it, and the tests below assert that. `attempts` are `flex_sync` log rows as
-    `get_log` returns them (ascending); see `_flex_pull` for a row that carries evidence.
+    `stale` is the core's flag; the startup decision does not read it (gap #72), and the
+    tests below assert that. The store path cannot exist, so `statement_through` reads
+    nothing unless a test poses it — and nothing held means a pull is due.
     """
     toolkit = MagicMock()
     toolkit._config.flex_token = "tok"
     toolkit._config.flex_query_id = "qid"
-    toolkit._config.sqlite_path = "/tmp/store.db"
+    toolkit._config.sqlite_path = "/nonexistent/claudia-tests/store.db"
     toolkit._store.get_trade_date_coverage.return_value = {
         "stale": stale,
         "newest": "2026-07-22",
         "last_trading_day": "2026-07-23",
     }
-    toolkit._store.get_log.return_value = attempts or []
     toolkit.execute.return_value = ("synced 3 trades", None)
     return toolkit
 
 
-def _flex_pull(at: datetime, newest: str | None, total: int) -> dict[str, Any]:
-    """A `flex_sync` log row: the pull at `at` left the store with `newest` and `total`."""
-    import json
-
-    return {
-        "ts": at.isoformat(),
-        "event": "flex_sync",
-        "data": json.dumps({"newest": newest, "total": total}),
-    }
-
-
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
-async def test_flex_sync_skips_when_a_pull_already_brought_new_data_since_midnight_et(caplog):
-    """Gap #72: the one reason to skip is evidence — a pull that changed the store since the
-    most recent midnight ET. No Flex API call then, and the log says which pull it was."""
-    from datetime import UTC, datetime, timedelta
+async def test_flex_sync_skips_when_the_store_holds_the_previous_weekdays_statement(caplog):
+    """Monday 10:44 ET with Friday's statement held: nothing newer can exist. No Flex call,
+    and the log names the statement held."""
+    from datetime import UTC, date, datetime
 
     from claudia.panel_app import _maybe_background_flex_sync
 
-    now = datetime(2026, 9, 25, 18, 0, tzinfo=UTC)  # 14:00 ET
-    toolkit = _flex_toolkit(
-        stale=True,  # the core's flag says stale; it is not consulted
-        attempts=[
-            _flex_pull(now - timedelta(days=1), "2026-09-23", 1334),
-            _flex_pull(now - timedelta(hours=4), "2026-09-24", 1375),  # 09:57 ET, fruitful
-        ],
-    )
+    toolkit = _flex_toolkit(stale=True)  # the core's flag says stale; it is not consulted
     with (
-        patch("claudia.panel_app._now_utc", return_value=now),
+        patch("claudia.panel_app._now_utc", return_value=datetime(2026, 9, 28, 14, 44, tzinfo=UTC)),
+        patch("claudia.panel_app.statement_through", return_value=date(2026, 9, 25)),
         caplog.at_level(logging.INFO),
     ):
         await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+        await _drain_flex_sync()
     toolkit.execute.assert_not_called()
     assert any(
-        "Flex sync skipped" in r.message and "brought new data" in r.message for r in caplog.records
+        "Flex sync skipped" in r.message and "2026-09-25" in r.message for r in caplog.records
     )
 
 
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
-async def test_flex_sync_runs_after_a_fruitless_pull_ten_minutes_ago():
-    """Gap #72, the operator's ruling against a time throttle: a pull that brought nothing is
-    not evidence, so the next start pulls again even ten minutes later. (Before 2026-09-25 a
-    4 h window would have suppressed it — and the core's flag would have skipped the whole
-    morning of 2026-09-24.)"""
-    from datetime import UTC, datetime, timedelta
+async def test_flex_sync_runs_when_the_previous_weekdays_statement_is_missing(caplog):
+    """Tuesday with only Friday's statement held: Monday's can exist, so pull — whatever the
+    core's flag says, and however recently Flex was last asked."""
+    from datetime import UTC, date, datetime
 
     from claudia.panel_app import _maybe_background_flex_sync
 
-    now = datetime(2026, 9, 25, 13, 52, tzinfo=UTC)  # 09:52 ET
-    toolkit = _flex_toolkit(
-        stale=False,  # the core's off-by-one flag says current; it is not consulted
-        attempts=[
-            _flex_pull(now - timedelta(hours=13), "2026-09-23", 1334),  # 20:52 ET yesterday
-            _flex_pull(now - timedelta(minutes=10), "2026-09-23", 1334),  # fruitless re-pull
-        ],
-    )
-    with patch("claudia.panel_app._now_utc", return_value=now):
+    toolkit = _flex_toolkit(stale=False)  # the core's flag says current; not consulted
+    with (
+        patch("claudia.panel_app._now_utc", return_value=datetime(2026, 9, 29, 13, 0, tzinfo=UTC)),
+        patch("claudia.panel_app.statement_through", return_value=date(2026, 9, 25)),
+        caplog.at_level(logging.INFO),
+    ):
         await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
         await _drain_flex_sync()
     toolkit.execute.assert_any_call("sync_flex_trades", {})
     toolkit._store.get_trade_date_coverage.assert_not_called()
+    assert any(
+        "Flex sync due" in r.message and "2026-09-25" in r.message and "2026-09-28" in r.message
+        for r in caplog.records
+    )
 
 
 @pytest.mark.real_flex_sync
@@ -1322,7 +1304,7 @@ async def test_flex_sync_offline_skip_is_logged(caplog):
     the sync resolves the account id through the gateway — so the fix is the log line."""
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     with caplog.at_level(logging.INFO):
         await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=True)
     toolkit.execute.assert_not_called()
@@ -1335,9 +1317,9 @@ async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
     """Stale and never attempted triggers a sync, then a Drive backup of the store."""
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     syslog = MagicMock()
-    # Pinned rather than left to the real fingerprint of the fixture's "/tmp/store.db":
+    # Pinned rather than left to the real fingerprint of the fixture's store path:
     # that path not existing is what made this pass, which is a filesystem accident, not
     # the behaviour under test. A pull that lands new trades is.
     with patch(
@@ -1369,7 +1351,7 @@ async def test_the_startup_flex_sync_leaves_a_tool_row(monkeypatch):
     from claudia.panel_app import _maybe_background_flex_sync
     from claudia.tool_record import STARTUP_ORIGIN
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     store = MagicMock()
     with patch(
         "claudia.panel_app.dataset_fingerprint",
@@ -1396,7 +1378,7 @@ async def test_a_failing_startup_sync_still_records_both_calls(monkeypatch):
     from claudia.panel_app import _maybe_background_flex_sync
     from claudia.tool_record import STARTUP_ORIGIN
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     toolkit.execute.side_effect = [RuntimeError("Flex 1025"), ("coverage report", None)]
     store = MagicMock()
     await _maybe_background_flex_sync(
@@ -1418,7 +1400,7 @@ async def test_flex_sync_failure_sends_coverage_fallback():
     """A failed sync still reports what data is present, rather than only that something broke."""
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     toolkit.execute.side_effect = [
         RuntimeError("flex api down"),
         ("coverage: 1129 trades", None),
@@ -1433,6 +1415,28 @@ async def test_flex_sync_failure_sends_coverage_fallback():
 
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
+async def test_a_failed_pull_still_rewrites_the_running_line():
+    """Found in review 2026-09-28: `on_done` ran only after a pull that landed, so a failed
+    pull left "startup Flex pull running — this line updates when it lands" on screen for the
+    whole session. The rebuilt line is true after a failure too: it names the statement held
+    and the last pull that succeeded."""
+    from claudia.panel_app import _maybe_background_flex_sync
+
+    calls: list[None] = []
+
+    async def on_done() -> None:
+        """Record the call."""
+        calls.append(None)
+
+    toolkit = _flex_toolkit(stale=True)
+    toolkit.execute.side_effect = [RuntimeError("flex api down"), ("coverage", None)]
+    await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False, on_done=on_done)
+    await _drain_flex_sync()
+    assert calls == [None]
+
+
+@pytest.mark.real_flex_sync
+@pytest.mark.asyncio
 async def test_flex_sync_task_death_is_logged_by_done_callback(caplog):
     """I1 (Task 5.7 quality review): if the background sync coroutine itself
     dies — sync fails AND the fallback System-log line raises too — the done callback
@@ -1442,7 +1446,7 @@ async def test_flex_sync_task_death_is_logged_by_done_callback(caplog):
     import claudia.panel_app as pa
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     toolkit.execute.side_effect = RuntimeError("flex api down")  # both execute calls fail
     syslog = MagicMock()
     syslog.say.side_effect = RuntimeError("session gone")
@@ -1476,7 +1480,7 @@ async def test_no_upload_when_the_pull_changed_nothing():
     """A pull that returns the same dataset must not spend 21s re-sending 53 MB."""
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     syslog = MagicMock()
     with patch("claudia.panel_app.dataset_fingerprint", return_value=(1110, 1110, "2026-08-04")):
         await _maybe_background_flex_sync(syslog, toolkit, ibkr_offline=False)
@@ -1494,7 +1498,7 @@ async def test_upload_when_the_merge_moves_the_source_mix_without_moving_the_cou
     that 'unchanged' and skipped the backup — losing the settled statement figures."""
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     with patch(
         "claudia.panel_app.dataset_fingerprint",
         side_effect=[(1110, 1101, "2026-08-03"), (1110, 1110, "2026-08-04")],
@@ -1515,7 +1519,7 @@ async def test_an_unreadable_fingerprint_uploads_rather_than_skips():
     restore point."""
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     with patch("claudia.panel_app.dataset_fingerprint", return_value=None):
         await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
         await _drain_flex_sync()
@@ -1532,7 +1536,7 @@ async def test_a_pull_that_breaks_the_dataset_is_reported_not_swallowed(caplog):
     from claudia.flex_sync import DatasetCheck, DatasetValidity
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     syslog = MagicMock()
     broken = DatasetValidity(
         (DatasetCheck("execution_key is unique", False, "75 duplicated key(s)"),)
@@ -1557,7 +1561,7 @@ async def test_a_sound_pull_stays_quiet():
     from claudia.flex_sync import DatasetValidity
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
+    toolkit = _flex_toolkit(stale=True)
     syslog = MagicMock()
     with (
         patch("claudia.panel_app.dataset_fingerprint", return_value=None),
@@ -3791,9 +3795,9 @@ _EMPTY_STORE_COVERAGE: dict[str, Any] = {
 }
 
 
-def _flex_toolkit_empty_store(attempts: list[dict[str, Any]] | None = None) -> MagicMock:
+def _flex_toolkit_empty_store() -> MagicMock:
     """A toolkit over a store whose trades table has never been written to."""
-    toolkit = _flex_toolkit(stale=False, attempts=attempts)
+    toolkit = _flex_toolkit(stale=False)
     toolkit._store.get_trade_date_coverage.return_value = dict(_EMPTY_STORE_COVERAGE)
     return toolkit
 
@@ -3810,7 +3814,7 @@ async def test_an_empty_trades_table_triggers_the_first_ever_sync(caplog):
     from claudia.panel_app import _maybe_background_flex_sync
 
     toolkit = _flex_toolkit_empty_store()
-    # Pinned rather than left to the real fingerprint of the fixture's "/tmp/store.db" —
+    # Pinned rather than left to the real fingerprint of the fixture's store path —
     # that path not existing would be a filesystem accident standing in for behaviour.
     with (
         caplog.at_level(logging.INFO),
@@ -3830,40 +3834,19 @@ async def test_an_empty_trades_table_triggers_the_first_ever_sync(caplog):
 
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
-async def test_an_empty_dataset_still_respects_the_four_hour_suppression():
-    """An empty store is a stronger reason to sync — not a licence to hammer Flex.
-
-    The suppression window exists because the Flex API is rate-limited and a restart
-    loop would otherwise retry on every session start.
-    """
-    from datetime import UTC, datetime
-
+async def test_an_empty_store_pulls(caplog):
+    """Gap #6's intent under the statement rule: an empty store holds no statement, which is
+    the strongest reason to pull, and the log says nothing is held."""
     from claudia.panel_app import _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit_empty_store(attempts=[{"ts": datetime.now(UTC).isoformat()}])
-    await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
-    toolkit.execute.assert_not_called()
-
-
-@pytest.mark.real_flex_sync
-@pytest.mark.asyncio
-async def test_an_empty_store_pulls_even_after_a_fresh_fruitless_attempt(caplog):
-    """Gap #6's intent under gap #72's rule: an empty store is the strongest reason to pull,
-    and a minute-old attempt that brought nothing is not evidence against pulling. (Until
-    2026-09-25 the 4 h window suppressed it and this test pinned the suppression's wording,
-    "no settled rows yet"; the window is gone, so there is no suppression to word.)"""
-    from datetime import UTC, datetime
-
-    from claudia.panel_app import _maybe_background_flex_sync
-
-    toolkit = _flex_toolkit_empty_store(attempts=[_flex_pull(datetime.now(UTC), None, 0)])
+    toolkit = _flex_toolkit_empty_store()
     with caplog.at_level(logging.INFO):
         await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
         await _drain_flex_sync()
 
     toolkit.execute.assert_any_call("sync_flex_trades", {})
     assert not any("Flex sync skipped" in r.message for r in caplog.records)
-    assert any("Flex sync due" in r.message and "never" in r.message for r in caplog.records)
+    assert any("Flex sync due" in r.message and "nothing" in r.message for r in caplog.records)
 
 
 @pytest.mark.real_flex_sync
@@ -3980,20 +3963,20 @@ def _today_1442z() -> datetime:
 
 @pytest.mark.asyncio
 async def test_the_opening_line_says_a_startup_pull_is_running_when_one_is_due():
-    """The 10:42 start: the last fruitful pull was the day before, so a pull is due and
-    starts seconds later. The line must say so instead of reading as the final word."""
-    from datetime import timedelta
+    """The Saturday 10:42 start: the store held Thursday's statement, Friday's could exist,
+    so a pull is due and starts seconds later. The line must say so instead of reading as
+    the final word."""
+    from datetime import date
 
     from claudia.opening_status import PULL_RUNNING_NOTE
     from claudia.panel_app import _send_opening_status
 
     now = _today_1442z()
-    toolkit = _flex_toolkit(
-        stale=False, attempts=[_flex_pull(now - timedelta(days=1), "2026-09-24", 1375)]
-    )
+    toolkit = _flex_toolkit(stale=False)
     chat = _FakeChat()
     with (
         patch("claudia.panel_app._now_utc", return_value=now),
+        patch("claudia.panel_app.statement_through", return_value=date(2026, 9, 24)),
         patch("claudia.panel_app.gather_session_state", new=AsyncMock(return_value=("", False))),
         patch("claudia.panel_app._build_briefing_text", return_value=""),
         patch(
@@ -4015,18 +3998,18 @@ async def test_the_opening_line_says_a_startup_pull_is_running_when_one_is_due()
 
 @pytest.mark.asyncio
 async def test_the_opening_line_makes_no_pull_claim_when_none_is_due():
-    """A restart after today's fruitful pull: no pull runs, so the line says nothing about one."""
-    from datetime import timedelta
+    """Friday's statement already held on a Saturday: no pull runs, so the line says nothing
+    about one."""
+    from datetime import date
 
     from claudia.panel_app import _send_opening_status
 
     now = _today_1442z()
-    toolkit = _flex_toolkit(
-        stale=False, attempts=[_flex_pull(now - timedelta(minutes=30), "2026-09-25", 1377)]
-    )
+    toolkit = _flex_toolkit(stale=False)
     chat = _FakeChat()
     with (
         patch("claudia.panel_app._now_utc", return_value=now),
+        patch("claudia.panel_app.statement_through", return_value=date(2026, 9, 25)),
         patch("claudia.panel_app.gather_session_state", new=AsyncMock(return_value=("", False))),
         patch("claudia.panel_app._build_briefing_text", return_value=""),
         patch("claudia.panel_app.build_trade_lines", return_value=("dataset line", "CTX")) as build,
@@ -4071,8 +4054,10 @@ def test_the_dataset_line_keeps_its_place_after_an_ibkr_caveat():
 
 
 @pytest.mark.asyncio
-async def test_after_a_fruitful_pull_the_opening_line_and_the_model_context_are_refreshed():
-    """The two things the 10:42 start left stale, made current from a fresh store read."""
+async def test_after_the_pull_the_opening_line_and_the_model_context_are_refreshed():
+    """The two things the 10:42 start left stale, made current from a fresh store read —
+    whatever the pull brought: the rebuilt line names the statement held and the pull time,
+    so a pull that brought nothing needs no note of its own (gap #79)."""
     from claudia.panel_app import OpeningMessage, _refresh_opening_after_pull
 
     msg = _SentMessage("_old_\n\n_TradingView: connected._")
@@ -4085,27 +4070,10 @@ async def test_after_a_fruitful_pull_the_opening_line_and_the_model_context_are_
     with patch(
         "claudia.panel_app.build_trade_lines", return_value=("fresh line", "FRESH CTX")
     ) as build:
-        await _refresh_opening_after_pull(opening, agent, toolkit, ibkr_offline=False, changed=True)
-    build.assert_called_once_with(toolkit, False, pull_note="")
+        await _refresh_opening_after_pull(opening, agent, toolkit, ibkr_offline=False)
+    build.assert_called_once_with(toolkit, False)
     assert msg.object.startswith("_fresh line_")
     assert agent._trade_context == "FRESH CTX"
-
-
-@pytest.mark.asyncio
-async def test_after_a_fruitless_pull_the_line_says_the_statement_is_not_out_yet():
-    """A pull that changed nothing is not evidence (gap #72); the line says so and the
-    model is told, rather than the line silently keeping its pre-pull "pull running"."""
-    from claudia.opening_status import PULL_FRUITLESS_NOTE
-    from claudia.panel_app import OpeningMessage, _refresh_opening_after_pull
-
-    msg = _SentMessage("_old_")
-    opening = OpeningMessage(message=msg, parts=["_old_"], dataset_index=0, pull=None)
-    agent = MagicMock()
-    with patch("claudia.panel_app.build_trade_lines", return_value=("line", "CTX")) as build:
-        await _refresh_opening_after_pull(
-            opening, agent, MagicMock(), ibkr_offline=False, changed=False
-        )
-    build.assert_called_once_with(ANY, False, pull_note=PULL_FRUITLESS_NOTE)
 
 
 @pytest.mark.asyncio
@@ -4117,56 +4085,49 @@ async def test_a_failed_refresh_never_takes_down_the_session():
         message=_SentMessage("_old_"), parts=["_old_"], dataset_index=0, pull=None
     )
     with patch("claudia.panel_app.build_trade_lines", side_effect=RuntimeError("store locked")):
-        await _refresh_opening_after_pull(
-            opening, MagicMock(), MagicMock(), ibkr_offline=False, changed=True
-        )
+        await _refresh_opening_after_pull(opening, MagicMock(), MagicMock(), ibkr_offline=False)
 
 
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
-async def test_the_sync_tells_its_caller_whether_the_store_changed():
-    """`on_done(changed)` is what lets the caller rewrite the opening line: True when the
-    fingerprint moved (the 10:43 pull), False when the pull brought nothing."""
+async def test_the_sync_tells_its_caller_once_the_pull_has_landed():
+    """`on_done()` is what lets the caller rewrite the opening line; it runs after every
+    pull that landed, whatever it brought."""
     from claudia.panel_app import _maybe_background_flex_sync
 
-    seen: list[bool] = []
+    calls: list[None] = []
 
-    async def on_done(changed: bool) -> None:
-        """Record what the sync reported."""
-        seen.append(changed)
+    async def on_done() -> None:
+        """Record the call."""
+        calls.append(None)
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
-    with patch(
-        "claudia.panel_app.dataset_fingerprint",
-        side_effect=[(1375, 1375, "2026-09-24"), (1377, 1377, "2026-09-25")],
-    ):
-        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False, on_done=on_done)
-        await _drain_flex_sync()
+    toolkit = _flex_toolkit(stale=True)
     with patch(
         "claudia.panel_app.dataset_fingerprint",
         side_effect=[(1377, 1377, "2026-09-25"), (1377, 1377, "2026-09-25")],
     ):
         await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False, on_done=on_done)
         await _drain_flex_sync()
-    assert seen == [True, False]
+    assert calls == [None]
 
 
 @pytest.mark.real_flex_sync
 @pytest.mark.asyncio
 async def test_a_decision_taken_before_the_opening_status_is_reused_by_the_sync():
     """The decision is taken once, before the line is sent, and handed to the sync — the
-    sync must not read the log a second time and reach a different verdict."""
+    sync must not read the store a second time and reach a different verdict."""
     from claudia.panel_app import FlexPullDecision, _maybe_background_flex_sync
 
-    toolkit = _flex_toolkit(stale=True, attempts=[])
-    await _maybe_background_flex_sync(
-        MagicMock(),
-        toolkit,
-        ibkr_offline=False,
-        decision=FlexPullDecision(due=False, last_fruitful=None, reason="posed: not due"),
-    )
+    toolkit = _flex_toolkit(stale=True)
+    with patch("claudia.panel_app.statement_through") as read:
+        await _maybe_background_flex_sync(
+            MagicMock(),
+            toolkit,
+            ibkr_offline=False,
+            decision=FlexPullDecision(due=False),
+        )
     toolkit.execute.assert_not_called()
-    toolkit._store.get_log.assert_not_called()
+    read.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -4176,7 +4137,7 @@ async def test_the_sent_message_records_where_its_dataset_line_sits_after_a_cave
     caveat and leave the stale dataset line in place (the surviving mutant of 2026-09-26)."""
     from claudia.panel_app import _send_opening_status
 
-    toolkit = _flex_toolkit(stale=False, attempts=[])
+    toolkit = _flex_toolkit(stale=False)
     chat = _FakeChat()
     with (
         patch("claudia.panel_app._now_utc", return_value=_today_1442z()),

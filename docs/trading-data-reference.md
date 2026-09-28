@@ -11,23 +11,20 @@ Two complementary sources — each covers what the other cannot:
 
 Flex never has today's trades. The live API fills that gap.
 
-**Startup sync decision** (in `panel_app.py → _maybe_background_flex_sync`; rewritten
-2026-09-25, gap #72 — **evidence, not a clock, and no definition of "stale"**):
-1. IBKR offline → skip, logged (the sync resolves the account id through the gateway).
-2. Read the store's own `flex_sync` log; the last pull that **changed** the store (newest
-   trade date or trade count moved — `flex_sync.last_fruitful_pull`) is the evidence. If it
-   happened since the most recent **midnight ET**, everything that can exist today is already
-   in → skip, logged with that pull's time (`flex_sync.pull_due`).
-3. Otherwise → sync, log result, back up `store.db` to Drive `account_data/` if it changed.
-   A pull that brings nothing is not evidence, so the next start pulls again; there is no
-   retry window (operator ruling) and the Flex service allows ten requests a minute.
+**Startup sync decision** (in `panel_app.py → _flex_pull_decision`; operator rule
+2026-09-28, gap #79): **pull unless the store already holds the statement for the weekday
+before today (ET)** — `flex_sync.statement_through` (IBKR's own `toDate`, `MAX(stmt_to_date)`
+in `flex_change_in_nav`) against `flex_sync.pull_due`. IBKR offline or Flex unconfigured →
+skip, logged. After a pull, `store.db` is backed up to Drive `account_data/` if it changed.
+The same rule feeds the model's trade context (`opening_status._pull_verdict_sentence`), so
+the prompt and the pull cannot disagree.
 
-Until 2026-09-25 step 2 was the core's `get_trade_date_coverage()["stale"]`, which accepts a
-store two trading days old (core register F19; it skipped every pull on 2026-09-24), and a
-4 h window that also suppressed a retry after a fruitless pull. Neither is read any more. The
-same evidence and rule feed the model's trade context (`opening_status._pull_verdict_sentence`),
-so the prompt and the pull cannot disagree. Why midnight ET, and what IBKR does and does not
-publish about timing: `docs/flex-query-setup.md` § When a day's statement becomes available.
+Until 2026-09-25 the decision was the core's `get_trade_date_coverage()["stale"]`, which
+accepts a store two trading days old (core register F19; it skipped every pull on
+2026-09-24); from 2026-09-25 to 09-28 it was "a pull that changed the store since midnight
+ET", replayed from the `session_log`. Neither is read any more. Evidence (29 statements,
+their `toDate` and `whenGenerated`): `docs/flex-query-setup.md` § When a day's statement
+becomes available.
 
 **Data stores:**
 - `~/.ibkr_core/store.db` — SQLite. Legacy `trades` table **plus** the complete Flex archive

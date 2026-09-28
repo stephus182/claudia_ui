@@ -64,13 +64,18 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.dashboard_poller import DashboardPoller
 from claudia.execution_listener import ExecutionListener, ExecutionReport, format_execution_report
-from claudia.flex_sync import dataset_fingerprint, last_fruitful_pull, pull_due, validate_dataset
+from claudia.flex_sync import (
+    dataset_fingerprint,
+    newest_statement_day,
+    pull_due,
+    statement_through,
+    validate_dataset,
+)
 from claudia.gateway_preflight import warn_if_session_borrowed
 from claudia.gateway_session import SessionPhase, get_session
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
 from claudia.opening_status import (
-    PULL_FRUITLESS_NOTE,
     PULL_RUNNING_NOTE,
     build_trade_lines,
     gather_session_state,
@@ -475,16 +480,14 @@ def _build_briefing_text(toolkit: ClaudeToolkit) -> str:
 
 @dataclass(frozen=True)
 class FlexPullDecision:
-    """Whether the startup Flex pull runs, decided once from the store's own pull log.
+    """Whether the startup Flex pull runs.
 
     Taken *before* the opening status is sent (gap #77), so the dataset line can say a
     pull is running, and handed to `_maybe_background_flex_sync` so the sync does not read
-    the log a second time and reach a different verdict.
+    the store a second time and reach a different verdict.
     """
 
     due: bool
-    last_fruitful: datetime | None
-    reason: str
 
 
 @dataclass
@@ -512,52 +515,39 @@ class OpeningMessage:
 
 
 async def _flex_pull_decision(toolkit: ClaudeToolkit, ibkr_offline: bool) -> FlexPullDecision:
-    """Decide the startup Flex pull from evidence (gap #72), and log the decision.
+    """Decide the startup Flex pull, and log the decision (operator rule 2026-09-28).
 
     1. Flex unconfigured, or IBKR offline (the sync resolves the account id through the
-       gateway): not due, and the offline case is said in the log — before 2026-09-25 that
-       skip was silent.
-    2. Read the store's own `flex_sync` log and find the last pull that CHANGED the store
-       (`flex_sync.last_fruitful_pull`). If one happened since the most recent midnight ET,
-       everything that can exist today is already in — not due (`flex_sync.pull_due`).
-    3. Otherwise due. A pull that brings nothing is not evidence, so the next start pulls
-       again; there is no retry window (the operator ruled against one).
-
-    Any failure of the check means due: unknown is not "current".
+       gateway): not due, and the offline case is said in the log.
+    2. Otherwise pull unless the store already holds the statement for the weekday before
+       today (ET) — `flex_sync.statement_through` against `flex_sync.pull_due`. Nothing
+       held, or unreadable, means pull: unknown is not "current".
     """
     cfg = toolkit._config
     if not (cfg and cfg.flex_token and cfg.flex_query_id):
-        return FlexPullDecision(due=False, last_fruitful=None, reason="Flex not configured")
+        return FlexPullDecision(due=False)
     if ibkr_offline:
         log.info(
             "Startup Flex sync skipped — IBKR offline: the sync resolves the account id "
             "through the gateway. Reconnect and restart, or ask for sync_flex_trades once connected."
         )
-        return FlexPullDecision(due=False, last_fruitful=None, reason="IBKR offline")
-    try:
-        events = await asyncio.to_thread(toolkit._store.get_log, n=200, event="flex_sync")
-        last_fruitful = last_fruitful_pull(events)
-        now = _now_utc()
-        if last_fruitful is not None and not pull_due(now, last_fruitful):
-            log.info(
-                "Startup Flex sync skipped — a pull already brought new data at %s ET today "
-                "(%s); nothing newer can exist before IBKR's next overnight publication",
-                last_fruitful.astimezone(_ET).strftime("%H:%M"),
-                last_fruitful.isoformat(timespec="seconds"),
-            )
-            return FlexPullDecision(
-                due=False, last_fruitful=last_fruitful, reason="a pull brought new data today"
-            )
+        return FlexPullDecision(due=False)
+    held = await asyncio.to_thread(statement_through, cfg.sqlite_path)
+    now = _now_utc()
+    if not pull_due(now, held):
         log.info(
-            "Startup Flex sync due — last pull that brought new data: %s",
-            last_fruitful.isoformat(timespec="seconds") if last_fruitful else "never",
+            "Startup Flex sync skipped — the store already holds the statement through %s, "
+            "the newest that can exist",
+            held,
         )
-        return FlexPullDecision(
-            due=True, last_fruitful=last_fruitful, reason="no fruitful pull since midnight ET"
-        )
-    except Exception as exc:  # on any check failure, attempt the sync — unknown is not "current"
-        log.warning("Startup Flex sync decision failed (%s) — pulling", exc)
-        return FlexPullDecision(due=True, last_fruitful=None, reason=f"decision failed: {exc}")
+        return FlexPullDecision(due=False)
+    log.info(
+        "Startup Flex sync due — the store holds statements through %s; the newest that can "
+        "exist is through %s",
+        held or "nothing",
+        newest_statement_day(now),
+    )
+    return FlexPullDecision(due=True)
 
 
 async def _refresh_opening_after_pull(
@@ -565,22 +555,15 @@ async def _refresh_opening_after_pull(
     agent: Any,
     toolkit: ClaudeToolkit,
     ibkr_offline: bool,
-    changed: bool,
 ) -> None:
     """Rebuild the dataset line and the model's trade context from a fresh store read.
 
-    Runs inside the background sync task once the pull has landed (gap #77). `changed` is
-    whether the pull moved the store's fingerprint: a fruitful pull needs no note — the
-    rebuilt line's own "updated HH:MM" says it — and a fruitless one is said as such rather
-    than left reading "pull running". Never raises: the session is already up.
+    Runs inside the background sync task once the pull is over (gap #77), whatever it
+    brought or if it failed: the rebuilt line names the statement held and when Flex was pulled, which says
+    both cases truthfully (gap #79). Never raises: the session is already up.
     """
     try:
-        status, context = await asyncio.to_thread(
-            build_trade_lines,
-            toolkit,
-            ibkr_offline,
-            pull_note="" if changed else PULL_FRUITLESS_NOTE,
-        )
+        status, context = await asyncio.to_thread(build_trade_lines, toolkit, ibkr_offline)
         opening.replace_dataset_line(status)
         agent._trade_context = context
     except Exception as exc:
@@ -871,24 +854,23 @@ async def _maybe_background_flex_sync(
     store: ConversationStore | None = None,
     session_id: str | None = None,
     decision: FlexPullDecision | None = None,
-    on_done: Callable[[bool], Awaitable[None]] | None = None,
+    on_done: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Startup Flex sync: the decision (`_flex_pull_decision`) + the background sync.
 
     The decision (fast sqlite, threaded) is taken by `_flex_pull_decision` — passed in by a
     caller that already took it before sending the opening status (gap #77), or taken here
     — and only the actual work — Flex API call, conditional Drive backup, re-validation — is
-    spawned as a background task. The rule (gap #72, operator 2026-09-25 — **evidence, not
-    a clock, not a definition of "stale"**) is documented on `_flex_pull_decision`.
+    spawned as a background task. The rule (operator 2026-09-28: pull unless the store
+    holds the statement for the weekday before today) is documented on `_flex_pull_decision`.
 
     Until 2026-09-25 the decision was the core's `get_trade_date_coverage()["stale"]`, which
     accepts a store two trading days old (core register F19) and so pulled nothing all day
-    on 2026-09-24, behind a 4 h window that also suppressed a retry after a fruitless pull.
-    `get_trade_date_coverage` is no longer read here at all.
+    on 2026-09-24. `get_trade_date_coverage` is no longer read here at all.
 
-    `on_done(changed)` is awaited once the pull has landed, with whether the store's
-    fingerprint moved (unknown counts as moved: unknown is not "unchanged"), so the caller
-    can rewrite the opening line and re-stamp the model's context (gap #77).
+    `on_done()` is awaited once the pull is over — landed or failed — so the caller can
+    rewrite the opening line and re-stamp the model's context (gap #77). Until 2026-09-28 a
+    failed pull skipped it and left "pull running" on screen for the whole session.
 
     **Where validation happens, and why not here.** Every session start validates the
     dataset through `opening_status.build_trade_lines`, which runs whether or not a sync
@@ -955,8 +937,6 @@ async def _maybe_background_flex_sync(
                     f"treat them as unverified until this is resolved.",
                     "warning",
                 )
-            if on_done is not None:
-                await on_done(changed)
         except Exception as exc:
             log.warning("Background Flex sync failed: %s", exc)
             # Sync failed — still run integrity check so data status is known
@@ -978,6 +958,10 @@ async def _maybe_background_flex_sync(
                     f"⚠ Trade data sync failed: {exc}. Run `sync_flex_trades` manually.",
                     "warning",
                 )
+        finally:
+            # Landed or failed, the pull is over: the "pull running" line must not outlive it.
+            if on_done is not None:
+                await on_done()
 
     task = asyncio.get_running_loop().create_task(_background_flex_sync())
     _background_tasks.add(task)
@@ -1523,9 +1507,9 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
                 else "**ClaudIA is ready** — connected to IBKR."
             )
 
-            async def _after_pull(changed: bool) -> None:
+            async def _after_pull() -> None:
                 """Rewrite the dataset line and re-stamp the model's context (gap #77)."""
-                await _refresh_opening_after_pull(opening, agent, toolkit, ibkr_offline, changed)
+                await _refresh_opening_after_pull(opening, agent, toolkit, ibkr_offline)
 
             await _maybe_background_flex_sync(
                 syslog,

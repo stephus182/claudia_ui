@@ -331,10 +331,13 @@ def test_a_fresh_verdict_does_not_claim_to_be_reused():
     assert "not re-checked" not in status
 
 
-def test_the_line_reports_when_the_store_was_updated_not_the_newest_trade_date():
-    """These are different things and T+1 puts a day between them. The line used to read
-    "last refreshed 2026-08-04" for a store updated on 08-05 at 08:18 — telling the user
-    it was a day staler than it was."""
+def test_the_line_names_the_statement_held_and_when_flex_was_last_pulled():
+    """Two facts, each true after any pull. Gap #79 (2026-09-28): the line read "updated
+    2026-09-28 10:44 EDT; the startup pull brought nothing new" — "updated" was the time of
+    a pull that changed nothing. Before that (2026-08-05) it read "last refreshed
+    2026-08-04", a trade date under a word meaning "when we last pulled"."""
+    from datetime import date
+
     from claudia.flex_sync import LastImport
 
     imported = LastImport(
@@ -344,13 +347,15 @@ def test_the_line_reports_when_the_store_was_updated_not_the_newest_trade_date()
     )
     with (
         patch("claudia.opening_status.last_import", return_value=imported),
+        patch("claudia.opening_status.statement_through", return_value=date(2026, 8, 4)),
         patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()),
     ):
         status, _ = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
 
     stamp = imported.at.astimezone().strftime("%Y-%m-%d %H:%M")
-    assert f"updated {stamp}" in status
-    assert "last refreshed" not in status  # the mislabel is gone, not merely supplemented
+    assert f"Flex statement through 2026-08-04, pulled {stamp}" in status
+    assert "updated" not in status  # the word that made the line contradict itself
+    assert "last refreshed" not in status
 
 
 def test_a_store_that_never_recorded_an_import_keeps_the_old_wording():
@@ -384,6 +389,8 @@ def test_the_model_is_told_the_same_update_time_as_the_user():
     system-prompt copy still read "Last refreshed: {newest trade date}" — so the model
     was reasoning about staleness from a date a full day behind what the user could see.
     """
+    from datetime import date
+
     from claudia.flex_sync import LastImport
 
     imported = LastImport(
@@ -391,6 +398,7 @@ def test_the_model_is_told_the_same_update_time_as_the_user():
     )
     with (
         patch("claudia.opening_status.last_import", return_value=imported),
+        patch("claudia.opening_status.statement_through", return_value=date(2026, 8, 4)),
         patch("claudia.opening_status.validate_dataset_daily", return_value=_outcome()),
     ):
         status, context = build_trade_lines(_covered_toolkit(), ibkr_offline=False)
@@ -398,6 +406,7 @@ def test_the_model_is_told_the_same_update_time_as_the_user():
     stamp = imported.at.astimezone().strftime("%Y-%m-%d %H:%M")
     assert context is not None
     assert stamp in context and stamp in status  # same moment on both surfaces
+    assert "statement through 2026-08-04" in context and "through 2026-08-04" in status
     assert "Last refreshed: 2026-07-22" not in context  # the mislabel, gone from here too
     assert "newest trade date 2026-07-22" in context  # stated as what it is
 
@@ -418,20 +427,12 @@ def _coverage() -> dict[str, object]:
     }
 
 
-def _pull_row(ts: str, newest: str, total: int) -> dict[str, object]:
-    """A `flex_sync` log row as `get_log` returns it."""
-    import json
-
-    return {"ts": ts, "event": "flex_sync", "data": json.dumps({"newest": newest, "total": total})}
-
-
 def test_the_model_is_given_no_staleness_rule_of_its_own():
     """The system prompt used to say "Do not flag the data as stale … unless days_since_newest
     > 3 on a weekday" — a second definition beside the core's flag, and on 2026-09-24 it told
     the model a two-trading-day-old store was fine. Neither definition is given now."""
     toolkit = _make_toolkit()
     toolkit._store.get_trade_date_coverage.return_value = _coverage()
-    toolkit._store.get_log.return_value = []
     _status, context = build_trade_lines(toolkit, ibkr_offline=False)
     assert context is not None
     assert "days_since_newest" not in context
@@ -439,43 +440,56 @@ def test_the_model_is_given_no_staleness_rule_of_its_own():
     assert "Do not flag" not in context
 
 
-def test_the_model_is_told_when_a_pull_brought_new_data_today():
-    """Evidence in the prompt: the last pull that changed the store, and that nothing newer
-    can exist until the next overnight publication."""
-    from datetime import UTC, datetime
+def test_the_model_is_told_the_store_holds_the_newest_statement():
+    """Monday 10:44 ET with Friday's statement held: nothing newer can exist, and the model
+    is told so in the same terms as the startup rule (`flex_sync.pull_due`)."""
+    from datetime import UTC, date, datetime
 
     toolkit = _make_toolkit()
     toolkit._store.get_trade_date_coverage.return_value = _coverage()
-    toolkit._store.get_log.return_value = [
-        _pull_row("2026-09-25T01:01:06+00:00", "2026-09-23", 1334),
-        _pull_row("2026-09-25T13:57:42+00:00", "2026-09-24", 1375),
-    ]
-    with patch(
-        "claudia.opening_status._now_utc", return_value=datetime(2026, 9, 25, 18, 0, tzinfo=UTC)
+    with (
+        patch("claudia.opening_status.statement_through", return_value=date(2026, 9, 25)),
+        patch(
+            "claudia.opening_status._now_utc",
+            return_value=datetime(2026, 9, 28, 14, 44, tzinfo=UTC),
+        ),
     ):
         _status, context = build_trade_lines(toolkit, ibkr_offline=False)
     assert context is not None
-    assert "brought new data" in context and "09:57" in context, context
-    assert "as current as Flex can be" in context, context
+    assert "newest statement that can exist" in context, context
+    assert "do not suggest syncing" in context, context
 
 
-def test_the_model_is_told_when_a_pull_is_still_due():
-    """No new data since midnight ET: the prompt says so and names the tool, instead of a
-    rule the model would apply to a number."""
-    from datetime import UTC, datetime
+def test_the_model_is_told_when_a_newer_statement_may_exist():
+    """Tuesday with only Friday's statement held: Monday's may exist; the prompt says a pull
+    is pending and names the tool, instead of a rule the model would apply to a number."""
+    from datetime import UTC, date, datetime
 
     toolkit = _make_toolkit()
     toolkit._store.get_trade_date_coverage.return_value = _coverage()
-    toolkit._store.get_log.return_value = [
-        _pull_row("2026-09-25T01:01:06+00:00", "2026-09-23", 1334)
-    ]
-    with patch(
-        "claudia.opening_status._now_utc", return_value=datetime(2026, 9, 25, 13, 52, tzinfo=UTC)
+    with (
+        patch("claudia.opening_status.statement_through", return_value=date(2026, 9, 25)),
+        patch(
+            "claudia.opening_status._now_utc",
+            return_value=datetime(2026, 9, 29, 13, 0, tzinfo=UTC),
+        ),
     ):
         _status, context = build_trade_lines(toolkit, ibkr_offline=False)
     assert context is not None
-    assert "No pull has brought new data since midnight ET" in context, context
+    assert "A newer statement may exist" in context, context
     assert "sync_flex_trades" in context
+
+
+def test_the_model_gets_no_clock_time_for_flex_publication():
+    """Operator 2026-09-28: the publication time is irrelevant to the rule, so the prompt
+    carries none (it used to quote 17:15, 20:20, 22:07 and 08:18 ET)."""
+    toolkit = _make_toolkit()
+    toolkit._store.get_trade_date_coverage.return_value = _coverage()
+    _status, context = build_trade_lines(toolkit, ibkr_offline=False)
+    assert context is not None
+    assert "T+1" in context
+    for clock in ("17:15", "20:20", "22:07", "08:18"):
+        assert clock not in context, clock
 
 
 # ── Gap #77: the dataset line can carry the startup pull's state ─────────────────────
