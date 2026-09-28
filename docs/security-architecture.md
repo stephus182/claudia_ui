@@ -338,6 +338,7 @@ Dated, so a future reader can tell a decision from a default.
 | 2026-09-14 | CI has a pinned lane and an informational `main` lane | One floating lane conflated "does it work with the core we support" with "did the core move"; and a push in another repository must not make this one un-mergeable | If forward compatibility becomes a stated requirement |
 | 2026-09-14 | The gitleaks scanner version is pinned | The action's default asset was returning 504; and a gate whose scanner version floats is not a reproducible control | Bump deliberately |
 | 2026-09-14 | Structural helpers are **not** shared with the core's | A shared helper would make one repository's CI depend on the other's test layout — the coupling this work is making explicit, not deepening | — |
+| 2026-09-28 | A refusal before the gates **raises** into the core's one handler instead of reporting and returning (gap #80) | Six pre-gate exits (no conid, no futures found, none tradeable; a cancel or modify without an order id; a modify without a conid) wrote no decision row, so a click refused there looked like a proposal never clicked — this section had listed three of them as a known limit | Never |
 
 ---
 
@@ -450,8 +451,6 @@ oversight.
   result is taken; freshness is not trust; a changed document raises a warning in a collapsed
   card and the session continues. The hash baseline for that warning lives in the database,
   which is itself downloaded from Drive.
-- **Three refusals before dispatch leave no decision row**, so "every outcome after the button
-  is recorded" is true of the exception paths only.
 - **A failure to run the secret scan looks like a failure of it.**
 
 ---

@@ -4555,3 +4555,99 @@ async def test_a_failed_order_releases_the_queue():
             await _execute_staged_order_core(proposal, _broken_status)
         await asyncio.wait_for(_core_run("place", ibkr_mod), timeout=5)
     assert client.place_order_and_confirm.call_count == 3
+
+
+# ── Gap #80: a refusal before the gates leaves a decision row too ────────────────────────
+#
+# Found live 2026-09-28 16:04: two F proposals without a conid were clicked, the chat showed
+# the refusal, and the store kept `trade_proposed` alone — the six exits below sent a status
+# line and returned, skipping the `except` that records every other refusal (#50). Each now
+# raises into that one handler, so the row is written the way #71's refusal already was.
+
+
+def _place_exit(case: str) -> tuple[Any, Any, Any]:
+    """A place core set up to refuse at one of its three pre-gate exits."""
+    ibkr_mod, client = _make_ibkr_mock()
+    order = {"symbol": "F", "action": "BUY", "quantity": 1, "order_type": "LMT"}
+    order |= {"limit_price": 1.0, "tif": "DAY", "sec_type": "STK"}
+    if case == "no_futures":
+        order |= {"symbol": "CL", "sec_type": "FUT"}
+        client.get_futures.return_value = []
+    elif case == "every_future_expired":
+        order |= {"symbol": "CL", "sec_type": "FUT"}
+        client.get_futures.return_value = [
+            {"conid": 1, "expirationDate": _dated(-3), "ltd": _dated(-3)}
+        ]
+    return _make_action(order), ibkr_mod, client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["missing_conid", "no_futures", "every_future_expired"])
+async def test_a_place_refused_before_the_gates_is_recorded(case):
+    """Each place exit before Gate 1 writes `trade_refused`, stage `before_gates`."""
+    action, ibkr_mod, client = _place_exit(case)
+    store = MagicMock()
+    contents = _sent_contents(await _run(action, ibkr_mod, store=store, session_id="s80"))
+    client.place_order_and_confirm.assert_not_called()
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_refused"
+    assert kwargs["metadata"]["stage"] == "before_gates"
+    refusal = [c for c in contents if "Order not placed" in c]
+    assert len(refusal) == 1 and refusal[0].count("Order not placed") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("run", "payload", "noun", "said", "write"),
+    [
+        (
+            _run_cancel,
+            {"symbol": "AAPL", "action": "BUY", "quantity": 1, "order_type": "MKT"},
+            "cancel",
+            "Order not cancelled",
+            "cancel_order",
+        ),
+        (
+            _run_modify,
+            {
+                "conid": 265598,
+                "symbol": "AAPL",
+                "action": "BUY",
+                "quantity": 1,
+                "order_type": "MKT",
+            },
+            "modify",
+            "Order not modified",
+            "modify_order_and_confirm",
+        ),
+        (
+            _run_modify,
+            {
+                "order_id": "1",
+                "symbol": "AAPL",
+                "action": "BUY",
+                "quantity": 1,
+                "order_type": "MKT",
+            },
+            "modify",
+            "Order not modified",
+            "modify_order_and_confirm",
+        ),
+    ],
+    ids=["cancel_missing_order_id", "modify_missing_order_id", "modify_missing_conid"],
+)
+async def test_a_cancel_or_modify_refused_before_the_gates_is_recorded(
+    run, payload, noun, said, write
+):
+    """Each cancel/modify exit before Gate 1 writes `<noun>_refused`, stage `before_gates`,
+    and still refuses before the gates are announced."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    make = _make_cancel_action if noun == "cancel" else _make_modify_action
+    store = MagicMock()
+    contents = _sent_contents(await run(make(payload), ibkr_mod, store=store, session_id="s80"))
+    getattr(client, write).assert_not_called()
+    kwargs = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == f"{noun}_refused"
+    assert kwargs["metadata"]["stage"] == "before_gates"
+    assert len(contents) == 1 and contents[0].count(said) == 1
+    assert "Touch ID" not in contents[0]

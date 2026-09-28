@@ -344,7 +344,10 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   button leaves a decision row** — `trade_refused` / `modify_refused` / `cancel_refused` with
   the stage, the reason and the reply log as far as it got, `*_rejected` with IBKR's payload,
   `*_dispatched_unverified` when the write landed and the reporting failed (gap #50: a DO NOT
-  SEND used to leave only `trade_proposed`, and a declined precaution lost its record).
+  SEND used to leave only `trade_proposed`, and a declined precaution lost its record). A
+  refusal before Gate 1 — no conid, no order id, no tradeable future — is stage `before_gates`
+  (`RefusedBeforeGatesError`, gap #80, 2026-09-28: six such exits reported and returned,
+  so they wrote nothing).
 - **Attached profit taker / bracket orders (2026-09-06, reviewed 2026-09-08): supported by the
   Web API, not yet expressible here.** IBKR takes a bracket as one request — an `orders` array
   where the parent carries `cOID` and each child `parentId` equal to it — and holds the child

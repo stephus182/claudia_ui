@@ -727,11 +727,28 @@ class ContractNotTradeableError(Exception):
         super().__init__(f"Futures contract {name}: {why}.")
 
 
+class RefusedBeforeGatesError(Exception):
+    """A write refused by ClaudIA before Gate 1 because the proposal cannot become one: no
+    conid where one is required, no order id, no futures contract found or none tradeable.
+
+    Raised rather than reported-and-returned so the one `except` in each core records it
+    like every other refusal after the button (gap #80, found live 2026-09-28: two conid-less
+    F clicks left `trade_proposed` alone in the store). The message is the whole reason; the
+    handler's own "**Order not placed:**" (or cancelled / modified) prefix goes in front.
+    """
+
+
 _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
     (
         # Matched by TYPE, first: raised by ClaudIA itself before Gate 1 (gap #71).
         lambda _m, t: "ContractNotTradeable" in t,
         "contract_not_tradeable",
+        "{detail}",
+    ),
+    (
+        # Matched by TYPE: raised by ClaudIA itself before Gate 1 (gap #80).
+        lambda _m, t: "RefusedBeforeGates" in t,
+        "before_gates",
         "{detail}",
     ),
     (
@@ -817,6 +834,8 @@ def _classify_execution_error(exc: Exception) -> str:
 def _refusal_stage(exc: Exception) -> str:
     """Which gate refused, for the decision row a refusal writes (#50, 2026-09-11).
 
+    `contract_not_tradeable` and `before_gates` (ClaudIA refused before Gate 1 — an expired
+    future, gap #71; a proposal that cannot become an order, gap #80),
     `validation` (ibkr_core_mcp refused the write itself — no human and no broker said no),
     `gate2` (DO NOT SEND / KEEP ORDER / LEAVE UNCHANGED — or the dialog's own auto-dismiss,
     which the core reports the same way, register F21), `reply` (a declined precaution),
@@ -1019,7 +1038,7 @@ def _needs_conid_text(sec_type: str, symbol: str) -> str:
         f"identify a contract here — {reason} — so resolving **{symbol}** at this point "
         f"would risk trading the wrong instrument.\n\n"
         f"Ask ClaudIA to look up **{symbol}** with `{tool}`, then re-issue the proposal with "
-        f"the `conid` field set. **Order not placed.**"
+        f"the `conid` field set."
     )
 
 
@@ -1660,11 +1679,7 @@ async def _stage_order(
         elif sec_type == "FUT":
             futures = await asyncio.to_thread(ibkr.get_futures, [symbol])
             if not futures:
-                await send_status(
-                    f"Could not find futures contracts for {symbol}. Order not placed.",
-                    "System",
-                )
-                return
+                raise RefusedBeforeGatesError(f"Could not find futures contracts for {symbol}.")
             # Front month = earliest contract STILL TRADEABLE, not simply the lowest expiry.
             # IBKR keeps returning a contract after its last trade date (measured 2026-09-20,
             # two days after the Sep roll: ESU6, ltd 20260918, still among 22 ES rows), so
@@ -1676,12 +1691,10 @@ async def _stage_order(
             ]
             if not tradeable:
                 latest = max((_last_trade_key(f) for f in futures), default=0)
-                await send_status(
+                raise RefusedBeforeGatesError(
                     f"Every futures contract IBKR returned for {symbol} has passed its last trade "
-                    f"date (latest {latest or 'unknown'}). Order not placed.",
-                    "System",
+                    f"date (latest {latest or 'unknown'})."
                 )
-                return
             try:
                 contract = min(tradeable, key=lambda f: int(f.get("expirationDate") or 0))
             except (ValueError, TypeError):
@@ -1696,8 +1709,7 @@ async def _stage_order(
             # the read that used to sit here had never fired live). It comes from contract
             # info below, on every futures path.
         else:
-            await send_status(_needs_conid_text(sec_type, symbol), "System")
-            return
+            raise RefusedBeforeGatesError(_needs_conid_text(sec_type, symbol))
 
         currency: str | None = None
         if sec_type in ("FUT", "FOP"):
@@ -1832,7 +1844,7 @@ async def _stage_order(
                 ),
                 "System",
             )
-            # No decision logged — matches the other failure paths in this module.
+            # Recorded above by `_record_rejection` (#50), with IBKR's payload.
             return
 
         # Everything below reports only what is known or observed. The dispatch being
@@ -1980,22 +1992,20 @@ async def _cancel_order(
     symbol = proposal.get("symbol", "?")
     dispatched = False  # flips once the IBKR write has returned — see the except block
 
-    if not order_id:
+    try:
+        # Refused inside the `try` so the handler records it (gap #80), and before the gates
+        # are announced, since none will run.
+        if not order_id:
+            raise RefusedBeforeGatesError("Cancel proposal is missing order_id.")
+
         await send_status(
-            "Cancel proposal is missing order_id — order not cancelled.",
+            (
+                f"Initiating cancellation for order **{order_id}** ({symbol})…\n\n"
+                + _gates_notice(GATE2_CANCEL_LABEL, TIMEOUT_LEAVES_CANCEL)
+            ),
             "System",
         )
-        return
 
-    await send_status(
-        (
-            f"Initiating cancellation for order **{order_id}** ({symbol})…\n\n"
-            + _gates_notice(GATE2_CANCEL_LABEL, TIMEOUT_LEAVES_CANCEL)
-        ),
-        "System",
-    )
-
-    try:
         from dotenv import load_dotenv
         from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
 
@@ -2036,7 +2046,7 @@ async def _cancel_order(
                 ),
                 "System",
             )
-            # No decision logged — matches the other failure paths in this module.
+            # Recorded above by `_record_rejection` (#50), with IBKR's payload.
             return
 
         # IBKR is explicit that this response body "indicates our request to cancel
@@ -2200,34 +2210,27 @@ async def _modify_order(
     symbol = proposal.get("symbol", "?")
     dispatched = False  # flips once the IBKR write has returned — see the except block
 
-    if not order_id:
-        await send_status(
-            "Modify proposal is missing order_id — order not modified.",
-            "System",
-        )
-        return
-
-    if conid is None:
-        await send_status(
-            (
+    reply_log: list[dict[str, Any]] = []
+    try:
+        # Refused inside the `try` so the handler records them (gap #80), and before the
+        # gates are announced, since none will run.
+        if not order_id:
+            raise RefusedBeforeGatesError("Modify proposal is missing order_id.")
+        if conid is None:
+            raise RefusedBeforeGatesError(
                 "Modify proposal is missing conid. Ask ClaudIA to call `get_order_status` "
                 f"for order {order_id} first, then re-issue the modify proposal with the "
-                "conid field set. Order not modified."
+                "conid field set."
+            )
+
+        await send_status(
+            (
+                f"Initiating modification for order **{order_id}** ({symbol})…\n\n"
+                + _gates_notice(GATE2_MODIFY_LABEL, TIMEOUT_LEAVES_MODIFY)
             ),
             "System",
         )
-        return
 
-    await send_status(
-        (
-            f"Initiating modification for order **{order_id}** ({symbol})…\n\n"
-            + _gates_notice(GATE2_MODIFY_LABEL, TIMEOUT_LEAVES_MODIFY)
-        ),
-        "System",
-    )
-
-    reply_log: list[dict[str, Any]] = []
-    try:
         from dotenv import load_dotenv
         from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
 
@@ -2319,7 +2322,7 @@ async def _modify_order(
                 ),
                 "System",
             )
-            # No decision logged — matches the other failure paths in this module.
+            # Recorded above by `_record_rejection` (#50), with IBKR's payload.
             return
 
         await send_status(
