@@ -73,7 +73,9 @@ _SECRET_ENV_PREFIXES = (
 # One legitimate trip (seen 2026-09-29 12:44 in the pre-push hook): a RUNNING ClaudIA
 # finalising a browser session during the suite writes a genuine report into the real
 # directory, and the check cannot tell that writer from a test. The failure names the
-# file; a report with no MagicMock text is the app's — re-run the suite.
+# file; a report with no MagicMock text is the app's — re-run the suite. Panel finalises
+# a closed browser session only after its websocket timeout, so the report can land a
+# minute after the tab closed (twice on 2026-09-29): wait for it before a push.
 _REAL_REPORT_DIR = Path(__file__).resolve().parent.parent / "data" / "test-sessions"
 _PROBE_DIR = Path(tempfile.mkdtemp(prefix="claudia-pytest-probe-"))
 _PROBE_ENV: dict[str, str] = {
