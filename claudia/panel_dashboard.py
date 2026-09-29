@@ -85,6 +85,7 @@ from claudia.dashboard_data import (
     realised_ledger_label,
     reconcile,
     weekly_series,
+    with_pending_step,
 )
 from claudia.dashboard_poller import STALE_AFTER
 from claudia.live_realised import execution_time_et
@@ -498,8 +499,18 @@ def realised_frame(points: tuple[RealisedPoint, ...]) -> pd.DataFrame:
     )
 
 
-def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str, unit: str = "day") -> str:
-    """Why the chart is absent, when it is. Empty string when a chart was drawn.
+def realised_chart_note(
+    points: tuple[RealisedPoint, ...],
+    currency: str,
+    unit: str = "day",
+    pending_last: bool = False,
+) -> str:
+    """Why the chart is absent, when it is; and, when it was drawn with a pending point,
+    which point that is. Empty string otherwise.
+
+    `pending_last` says the last point is the part not yet on a statement (operator
+    2026-09-29): it is placed at the window's end because a pending fill has no trade date
+    yet, and the reader is told so in one sentence.
 
     A window can legitimately hold fewer than two trading days — a Monday-start week
     read on a Tuesday, with Flex still T+1, has exactly one. Saying so and printing the
@@ -519,6 +530,13 @@ def realised_chart_note(points: tuple[RealisedPoint, ...], currency: str, unit: 
             f"_Only one trading {unit} in this window — **{opened}{only.day.isoformat()}: "
             f"{fmt_signed(only.realised, currency)}**. A curve needs at least two "
             f"points, so none is drawn._"
+        )
+    if pending_last:
+        last = points[-1]
+        return (
+            f"_The last point ({last.day.isoformat()}) is the part not yet on a statement, "
+            f"**{fmt_signed(last.realised, currency)}** — placed at today because a pending "
+            f"fill has no trade date yet._"
         )
     return ""
 
@@ -2140,14 +2158,19 @@ class DashboardView:
             self._pnl_stats.object = "_No trade data in the local store._"
         else:
             ccy = window.currency_label or account_ccy
-            title = (
-                f"Realised P&L — {label} "
-                f"({window.start.isoformat()} → {window.end.isoformat()}"
-                + (f", {ccy})" if ccy else ")")
+            # The curve ends at the window's to-date figure (operator 2026-09-29): one last
+            # point, at the window's end, carrying the part not yet on a statement — after
+            # the YTD regrouping, so it is never merged into a week bucket.
+            points = with_pending_step(points, wtd, window.end)
+            title = f"Realised P&L — {label} ({window.start.isoformat()} to date" + (
+                f", {ccy})" if ccy else ")"
             )
             self._pnl_chart.object = build_realised_chart(points, title)
             self._pnl_chart_note.object = realised_chart_note(
-                points, ccy, unit="week" if _WINDOW_KEYS.get(label) == "ytd" else "day"
+                points,
+                ccy,
+                unit="week" if key == "ytd" else "day",
+                pending_last=wtd is not None and wtd.pending is not None,
             )
             # Every dated window to date (operator 2026-09-29): settled plus pending, both
             # named. A snapshot carrying the window but no to-date value cannot happen

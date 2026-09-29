@@ -3091,3 +3091,83 @@ def test_the_week_tile_reads_the_weeks_value_not_another_windows():
     v.refresh(snap, now=_NOW)
     assert v._tiles["realised_week"].value == pytest.approx(snap.week.total + 999.0, abs=0.005)
     assert v._tiles["realised_week"].value != pytest.approx(snap.month.total + 999.0, abs=0.005)
+
+
+# -- The graph ends at the window's to-date figure (operator 2026-09-29) --------------------
+
+
+def _to_date_view(pending_net=999.0):
+    """A dashboard on the fixture snapshot with a pending part of `pending_net`."""
+    pending = dd.PendingWindow(
+        rows=(dd.TypeBreakdown("FUT", pending_net, pending_net, 0.0, 1, 0, 0),)
+    )
+    snap = _snapshot(pending=pending)
+    v = pdash.build_dashboard()
+    v.refresh(snap, now=_NOW)
+    return v, snap
+
+
+def test_the_chart_title_reads_start_to_date():
+    """No range end the settled data never reached: the title names the start and \"to date\"."""
+    import holoviews as hv
+
+    v, _ = _to_date_view()
+    v._window.value = "Monthly"
+    fig = hv.render(next(iter(v._pnl_chart.object)), backend="bokeh")
+    assert fig.title.text == "Realised P&L — Monthly (2026-08-01 to date, USD)"
+
+
+def test_the_curve_ends_at_the_windows_to_date_figure():
+    """Operator 2026-09-29: \"make sure the graph actually matches the last number\". The
+    curve is the settled series re-based to the window plus one last point carrying the
+    pending part, so it ends at the settled series' own total plus that part."""
+    v, snap = _to_date_view()
+    v._window.value = "Monthly"
+    layout = v._pnl_chart.object
+    settled_end = sum(
+        p.realised for p in snap.series if snap.month.start <= p.day <= snap.month.end
+    )
+    import holoviews as hv
+
+    overlay = next(iter(layout))
+    curves = [sub for sub in overlay if type(sub) is hv.Curve]
+    ends = [float(vals[-1]) for c in curves for vals in [c.dimension_values("line")] if len(vals)]
+    assert any(e == pytest.approx(settled_end + 999.0, abs=0.005) for e in ends), ends
+    assert "2026-08-06" in v._pnl_chart_note.object
+    assert "+999.00 USD" in v._pnl_chart_note.object
+    assert "not yet on a statement" in v._pnl_chart_note.object
+
+
+def test_the_pending_point_is_drawn_from_a_single_settled_day():
+    """A Monday-start week read on a Tuesday has one settled day; with the pending point it
+    has two, so the curve is drawn instead of the one-day note."""
+    v, _ = _to_date_view()
+    one = (dd.RealisedPoint(date(2026, 8, 3), -3516.98, -3516.98),)
+    snap = _snapshot(
+        series=one,
+        pending=dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),)),
+    )
+    v.refresh(snap, now=_NOW)
+    v._window.value = "Weekly"
+    assert v._pnl_chart.object is not None
+    assert "Only one trading day" not in v._pnl_chart_note.object
+
+
+def test_ytd_appends_the_pending_point_after_the_weekly_regrouping():
+    """The pending part is never merged into a week bucket: it is its own last point, at the
+    window's end, after the YTD series has been regrouped."""
+    import holoviews as hv
+
+    v, _snap = _to_date_view()
+    v._window.value = "YTD"
+    fig = hv.render(list(v._pnl_chart.object)[1], backend="bokeh")
+    days = None
+    for r in fig.renderers:
+        src = getattr(r, "data_source", None)
+        if src is not None and "day" in src.data and "realised" in src.data:
+            days = list(src.data["day"])
+            realised = list(src.data["realised"])
+    assert days is not None
+    assert str(days[-1])[:10] == "2026-08-06"
+    assert realised[-1] == pytest.approx(999.0)
+    assert realised[-2] != pytest.approx(999.0 + 250.25)  # not merged into Aug 6's week

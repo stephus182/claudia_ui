@@ -2559,3 +2559,45 @@ def test_gain_pct_over_rows_is_computed_on_the_summed_gross_figures():
     )
     assert dd.gain_pct_over(rows) == pytest.approx(61.5)
     assert dd.gain_pct_over(()) is None
+
+
+# ── The curve's last point: the part not yet on a statement (operator 2026-09-29) ──────
+
+
+def test_with_pending_step_appends_one_point_at_the_windows_end_carrying_the_pending_part():
+    """The graph must end at the window's to-date figure: one more point, at the window's
+    end, carrying the pending part, in the same shape as every settled point."""
+    settled = (dd.RealisedPoint(date(2026, 9, 28), -3382.55, -3382.55),)
+    wtd = dd.WindowToDate(
+        settled=_wk(-3382.55),
+        breakdown=dd.BreakdownWindow(),
+        pending=_pw(net=3307.92),
+        through=date(2026, 9, 28),
+    )
+    out = dd.with_pending_step(settled, wtd, date(2026, 9, 29))
+    assert out[:-1] == settled
+    last = out[-1]
+    assert (last.day, last.realised) == (date(2026, 9, 29), 3307.92)
+    assert last.cumulative == pytest.approx(-74.63)
+
+
+def test_with_pending_step_leaves_the_settled_points_alone_when_the_pending_part_is_unreadable():
+    """Pending None is \"could not be read\": nothing is appended and the curve ends settled."""
+    settled = (dd.RealisedPoint(date(2026, 9, 28), -3382.55, -3382.55),)
+    wtd = dd.WindowToDate(
+        settled=_wk(-3382.55), breakdown=dd.BreakdownWindow(), pending=None, through=None
+    )
+    assert dd.with_pending_step(settled, wtd, date(2026, 9, 29)) == settled
+    assert dd.with_pending_step(settled, None, date(2026, 9, 29)) == settled
+
+
+def test_with_pending_step_on_an_empty_window_is_the_pending_point_alone():
+    """A window with no settled day yet still has its pending part to show."""
+    wtd = dd.WindowToDate(
+        settled=_wk(0.0, count=0, by_asset={}),
+        breakdown=dd.BreakdownWindow(),
+        pending=_pw(net=108.02),
+        through=date(2026, 9, 28),
+    )
+    out = dd.with_pending_step((), wtd, date(2026, 9, 29))
+    assert [(p.day, p.realised, p.cumulative) for p in out] == [(date(2026, 9, 29), 108.02, 108.02)]

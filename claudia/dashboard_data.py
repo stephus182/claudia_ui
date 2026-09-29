@@ -1932,6 +1932,25 @@ def build_flex_sections(
     }
 
 
+def with_pending_step(
+    points: tuple[RealisedPoint, ...], wtd: WindowToDate | None, end: date
+) -> tuple[RealisedPoint, ...]:
+    """`points` plus one last point at `end` carrying the part not yet on a statement.
+
+    Operator 2026-09-29: "make sure the graph actually matches the last number" — the curve
+    ends at the window's to-date figure, and the pending executions are real, so the point
+    is drawn exactly like every settled one. It sits at `end` (the window's end, today)
+    because a pending fill has no trade date yet; the pane's note says so. Called after any
+    regrouping (`weekly_series`), so the point is never merged into a bucket. When the
+    pending part could not be read, nothing is appended and the curve ends settled.
+    """
+    if wtd is None or wtd.pending is None:
+        return points
+    before = points[-1].cumulative if points else 0.0
+    net = wtd.pending.net
+    return (*points, RealisedPoint(day=end, realised=net, cumulative=round(before + net, 2)))
+
+
 def weekly_series(points: tuple[RealisedPoint, ...]) -> tuple[RealisedPoint, ...]:
     """`points` regrouped into ISO weeks, with the running total rebuilt over the buckets.
 
