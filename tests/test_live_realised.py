@@ -28,6 +28,7 @@ import pytest
 
 from claudia.live_realised import (
     LiveFill,
+    build_book,
     parse_fills,
     reconstruct,
 )
@@ -517,3 +518,58 @@ def test_fetch_fills_survives_an_empty_response():
     client = MagicMock()
     client.get_trades.return_value = []
     assert fetch_fills(client) == ()
+
+
+def _fill(
+    eid, conid, qty, price, trade_time, commission=0.0, multiplier=1.0, symbol="T", asset="FUT"
+):
+    """A LiveFill with only the fields these tests read."""
+    return LiveFill(
+        execution_id=eid,
+        conid=conid,
+        symbol=symbol,
+        asset_class=asset,
+        signed_quantity=qty,
+        price=price,
+        commission=commission,
+        multiplier=multiplier,
+        trade_time=trade_time,
+    )
+
+
+# ── The book: settled first, then pending — an explicit order, never a clock (gap #82) ──
+
+
+def test_presorted_keeps_the_callers_order_instead_of_sorting_by_time():
+    """The caller's order is the book's order; `presorted` says so.
+
+    Flex stamps a local ISO time and IBKR a UTC `YYYYMMDD-` one. A naive string sort of the
+    two happens to put every Flex stamp first, because `-` sorts before any digit — an
+    accident of two formats and a clock the book must not depend on (found writing this
+    test: the first version assumed the opposite). So the check uses two stamps whose
+    natural order is the reverse of the order given, and asserts the given order won.
+    """
+    settled_open = _fill("s.1", 7, 1.0, 100.0, "2026-09-28T15:00:00")
+    pending_close = _fill("p.1", 7, -1.0, 110.0, "2026-09-28T14:00:00")
+
+    sorted_result = reconstruct([settled_open, pending_close], None)
+    kept_result = reconstruct([settled_open, pending_close], None, presorted=True)
+
+    assert "p.1" not in sorted_result.realised  # the close came first and found no lot
+    assert kept_result.realised["p.1"][1] == pytest.approx(10.0)
+
+
+def test_build_book_is_flex_rows_then_the_live_fills_flex_lacks_in_time_order():
+    flex = (_fill("f.1", 7, 1.0, 100.0, "2026-09-28T15:00:00"),)
+    live = (
+        _fill("p.2", 7, -1.0, 111.0, "20260929-02:00:00"),
+        _fill("f.1", 7, 1.0, 100.0, "20260928-19:00:00"),  # Flex already has it: a duplicate
+        _fill("p.1", 7, -1.0, 110.0, "20260928-22:00:00"),
+    )
+    book = build_book(flex, live, settled={"f.1"})
+    assert [f.execution_id for f in book] == ["f.1", "p.1", "p.2"]
+
+
+def test_build_book_with_no_flex_history_is_the_pending_fills_alone():
+    live = (_fill("p.1", 7, -1.0, 110.0, "20260928-22:00:00"),)
+    assert [f.execution_id for f in build_book((), live, settled=set())] == ["p.1"]

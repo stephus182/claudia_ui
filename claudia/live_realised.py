@@ -355,22 +355,30 @@ class Reconstruction:
 
 
 def reconstruct(
-    fills: Iterable[LiveFill], ibkr_positions: Mapping[int, float] | None = None
+    fills: Iterable[LiveFill],
+    ibkr_positions: Mapping[int, float] | None = None,
+    *,
+    presorted: bool = False,
 ) -> Reconstruction:
     """FIFO the fills into realised P&L per closing execution.
 
     Args:
-        fills: Executions, any order: they are sorted by IBKR's UTC `trade_time` here.
+        fills: Executions. Sorted here by IBKR's UTC `trade_time` unless `presorted`.
         ibkr_positions: `{conid: quantity}` as IBKR currently reports it. When supplied,
             any contract whose reconstructed position disagrees is **declined**: its
             realised is removed and every execution it had is marked untrustworthy. Passing
             None skips the check and is intended only for unit tests of the FIFO itself.
+        presorted: The caller's order is the book's order (gap #82: `build_book` puts every
+            statement execution first, then the pending fills — an explicit order, because
+            Flex stamps a local ISO time and IBKR a UTC one, and no clock is compared).
 
     Returns:
         A `Reconstruction`. Never raises on odd data — an unusable fill was already
         dropped by `parse_fills`.
     """
-    ordered = sorted(fills, key=lambda f: (f.trade_time, f.execution_id))
+    ordered = (
+        list(fills) if presorted else sorted(fills, key=lambda f: (f.trade_time, f.execution_id))
+    )
     books: dict[int, deque[_Lot]] = defaultdict(deque)
     realised: dict[str, float] = defaultdict(float)
     asset_of: dict[str, str] = {}
@@ -463,6 +471,23 @@ def reconstruct(
         declined_executions=frozenset(declined_executions),
         fills=tuple(ordered),
     )
+
+
+def build_book(
+    flex: Iterable[LiveFill], live: Iterable[LiveFill], settled: Collection[str]
+) -> tuple[LiveFill, ...]:
+    """The Daily line's book: every statement execution, then the live fills Flex lacks.
+
+    Gap #82 (2026-09-29). Settled rows first, in the order given (`dashboard_data.flex_fills`
+    returns statement order), then the live fills whose id is not a Flex key, by IBKR's
+    `trade_time` then id. A live fill Flex already has is the duplicate it is and is dropped.
+    The order is explicit, so `reconstruct` is told `presorted=True`. Pure: no store here.
+    """
+    pending = sorted(
+        (f for f in live if f.execution_id not in settled),
+        key=lambda f: (f.trade_time, f.execution_id),
+    )
+    return tuple(flex) + tuple(pending)
 
 
 def fetch_fills(client: TradeSource) -> tuple[LiveFill, ...]:
