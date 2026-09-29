@@ -321,8 +321,8 @@ def pending_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> 
     return (
         f"{warn}**Daily realised — non-Flex** · not yet on a statement ({against}) · "
         "reconstructed from your own executions. IBKR states a fill's trade date only in "
-        "its statement (T+1), so these carry no trade date yet and appear in no dated "
-        "window."
+        "its statement (T+1), so these carry no trade date yet: they are shown beside the "
+        "week as week to date and are never bucketed by date."
     )
 
 
