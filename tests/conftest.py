@@ -70,6 +70,10 @@ _SECRET_ENV_PREFIXES = (
 # configured database paths point at PROBE files that must never exist, the reporter is
 # redirected for every test, leftover sessions are cleared, and the run fails at session end
 # if a probe or a new report appears. `tests/security/test_no_real_data_io.py` asserts each.
+# One legitimate trip (seen 2026-09-29 12:44 in the pre-push hook): a RUNNING ClaudIA
+# finalising a browser session during the suite writes a genuine report into the real
+# directory, and the check cannot tell that writer from a test. The failure names the
+# file; a report with no MagicMock text is the app's — re-run the suite.
 _REAL_REPORT_DIR = Path(__file__).resolve().parent.parent / "data" / "test-sessions"
 _PROBE_DIR = Path(tempfile.mkdtemp(prefix="claudia-pytest-probe-"))
 _PROBE_ENV: dict[str, str] = {
