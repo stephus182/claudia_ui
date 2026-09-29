@@ -169,7 +169,7 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (2,052 collected 2026-09-20
+pytest        # full suite — all unit, no IBKR gateway needed (2,366 collected 2026-09-29
               # in the main checkout; `pytest --collect-only -q | tail -1` reports it)
 pytest tests/security   # the structural invariants alone, ~3s (also part of the full run)
 ruff check . && ruff format --check . && mypy   # lint, format, type gates — all must be clean
@@ -180,6 +180,10 @@ ruff check . && ruff format --check . && mypy   # lint, format, type gates — a
 # in pytest_configure and `load_dotenv` is neutralised there too, because importing panel_app
 # loads `.env` at module scope and a fixture would be far too late. Two exemption lists in
 # tests/conftest.py, each with its reason, each held against collection by a staleness test.
+# No unit test writes into the operator's data either (gap #81, 2026-09-29): both DB path
+# variables point at probe files that must never exist, the session reporter is redirected and
+# leftover sessions cleared for every test, and the run FAILS at session end if a probe or a new
+# file in the real data/test-sessions/ appears — for 19 days every run had left one there.
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api

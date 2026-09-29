@@ -15,6 +15,10 @@ the pytest process — is asserted against by tests/security/test_no_live_io.py.
 """
 
 import os
+import shutil
+import tempfile
+from collections.abc import Iterable, Iterator
+from pathlib import Path
 
 import panel as pn
 import pytest
@@ -54,6 +58,52 @@ _SECRET_ENV_PREFIXES = (
     "CRAWL4AI_",
     "TRADINGVIEW_",
 )
+
+# ── No unit test writes into the operator's data (CLA-SEC-009, second half) ─────────────
+#
+# Found 2026-09-29: 369 session reports stamped with a MagicMock document version in the real
+# `data/test-sessions/`, one per pytest run since 2026-09-10 (the `main()` tests fall into
+# `pn.serve`'s `finally`, which finalises every session earlier tests left in
+# `_open_sessions`, with the report path built relative to the working directory), and a
+# false "Drive is older than local" warning caused by the corpus test's read-only open of the
+# real `data/claudia.db` creating an empty `-wal` sidecar. The rule is structural: both
+# configured database paths point at PROBE files that must never exist, the reporter is
+# redirected for every test, leftover sessions are cleared, and the run fails at session end
+# if a probe or a new report appears. `tests/security/test_no_real_data_io.py` asserts each.
+_REAL_REPORT_DIR = Path(__file__).resolve().parent.parent / "data" / "test-sessions"
+_PROBE_DIR = Path(tempfile.mkdtemp(prefix="claudia-pytest-probe-"))
+_PROBE_ENV: dict[str, str] = {
+    # `panel_app._DB_PATH` reads this at import; the default is the real `data/claudia.db`.
+    "CLAUDIA_DB_PATH": str(_PROBE_DIR / "claudia.db"),
+    # The core's `Config.from_env()` reads this at call time; the default is the operator's
+    # trade store at `~/.ibkr_core/store.db` — absolute, so no working directory protects it.
+    "IBKR_SQLITE_PATH": str(_PROBE_DIR / "store.db"),
+}
+_SQLITE_SIDECARS = ("", "-wal", "-shm", "-journal")
+_reports_at_start: set[str] = set()
+
+
+def _real_report_names() -> set[str]:
+    """The files in the real report directory right now (empty set when it does not exist)."""
+    return set(os.listdir(_REAL_REPORT_DIR)) if _REAL_REPORT_DIR.exists() else set()
+
+
+def _real_data_violations(probes: Iterable[Path], before: set[str], after: set[str]) -> list[str]:
+    """Every way the suite touched real data, one line each — empty when it touched none.
+
+    A probe database that exists, or any SQLite sidecar of it (a read-only open in WAL mode
+    creates `-wal` and `-shm` without writing a row), means a test opened a configured store.
+    A report name absent at session start means a test wrote into the real report directory.
+    """
+    violations: list[str] = []
+    for probe in probes:
+        for suffix in _SQLITE_SIDECARS:
+            path = Path(str(probe) + suffix)
+            if path.exists():
+                violations.append(f"a test opened a configured database: {path}")
+    for name in sorted(after - before):
+        violations.append(f"a test wrote into the real report directory: {_REAL_REPORT_DIR / name}")
+    return violations
 
 
 def _neutralise_dotenv() -> None:
@@ -104,11 +154,42 @@ def pytest_configure(config):
         _neutralise_dotenv()
         for name in [k for k in os.environ if k.startswith(_SECRET_ENV_PREFIXES)]:
             del os.environ[name]
+    # After the scrub, never before: `IBKR_SQLITE_PATH` carries the scrubbed prefix. Set here,
+    # before collection, because `panel_app._DB_PATH` is read at import.
+    os.environ.update(_PROBE_ENV)
+    _reports_at_start.clear()
+    _reports_at_start.update(_real_report_names())
     disable_socket(allow_unix_socket=True)
 
 
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Fail the run if any test touched real data — a probe created or a report leaked.
+
+    A hook rather than a test because no test can run last by construction; the check has
+    to see the whole session. `session.exitstatus` is what `pytest.main` returns after this
+    hook, so setting it is what turns the run red.
+    """
+    violations = _real_data_violations(
+        (Path(v) for v in _PROBE_ENV.values()), _reports_at_start, _real_report_names()
+    )
+    if not violations:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    lines = [
+        "",
+        "REAL DATA TOUCHED BY THE TEST SUITE (tests/conftest.py, CLA-SEC-009):",
+        *violations,
+    ]
+    for line in lines:
+        if reporter is not None:
+            reporter.write_line(line, red=True, bold=True)
+        else:  # pragma: no cover - no terminal plugin (e.g. --collect-only under -p no:terminal)
+            print(line)
+    session.exitstatus = 1
+
+
 def pytest_unconfigure(config):
-    """Re-enable sockets.
+    """Re-enable sockets, and remove the probe directory.
 
     Only sockets: the dotenv no-op and the scrubbed variables are left as they are, because
     the process is ending and restoring them would put the operator's key back into an
@@ -119,6 +200,8 @@ def pytest_unconfigure(config):
     from pytest_socket import enable_socket
 
     enable_socket()
+    # The probes were reported by `pytest_sessionfinish` if they existed; nothing to keep.
+    shutil.rmtree(_PROBE_DIR, ignore_errors=True)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -142,6 +225,22 @@ def pytest_collection_modifyitems(config, items):
             or base in _REAL_LOOPBACK_BIND_TESTS
         )
         item.add_marker(pytest.mark.enable_socket if needs_network else pytest.mark.disable_socket)
+
+
+@pytest.fixture(autouse=True)
+def isolate_real_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Every test: reports go under its tmp_path, and no session is inherited or bequeathed.
+
+    `panel_app._open_sessions` is process-wide; a session a test registers and never
+    finalises is exactly what the `main()` tests' shutdown finaliser then reports on. Cleared
+    on both sides, not restored — restoring would re-install a leaked entry.
+    """
+    from claudia import panel_app, session_reporter
+
+    panel_app._open_sessions.clear()
+    monkeypatch.setattr(session_reporter, "REPORT_DIR", tmp_path / "session-reports")
+    yield
+    panel_app._open_sessions.clear()
 
 
 def _find_buttons(chat):

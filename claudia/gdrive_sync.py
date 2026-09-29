@@ -31,6 +31,10 @@ log = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/drive"]
 _DB_FILENAME = "claudia.db"
+# "The WAL header is 32 bytes in size", and "each frame consists of a 24-byte frame-header
+# followed by a page-size bytes of page data" — https://www.sqlite.org/fileformat2.html#walformat
+# (read 2026-09-29). A -wal of at most this size holds no frame, so no data.
+_WAL_HEADER_BYTES = 32
 
 
 class GDriveSync:
@@ -228,12 +232,19 @@ class GDriveSync:
             # modifiedTime (RFC 3339) against the local mtime (including the -wal
             # sidecar: in WAL mode the main file's mtime does not advance on writes).
             # Source: https://developers.google.com/drive/api/reference/rest/v3/files
+            #
+            # Only a -wal that holds a frame counts. A read-only open creates the sidecar
+            # when it is missing (SQLite >= 3.22.0, https://www.sqlite.org/wal.html,
+            # "Read-Only Databases"), and on 2026-09-29 a 0-byte -wal left by a read-only
+            # query made this guard report Drive as "older than local" over a database
+            # nobody had written — had Drive really been newer, its copy would have been
+            # skipped here and overwritten at session end.
             if local_path.exists():
                 meta = svc.files().get(fileId=file_id, fields="modifiedTime").execute()
                 drive_mtime = datetime.fromisoformat(meta["modifiedTime"])
                 local_ts = local_path.stat().st_mtime
                 wal = Path(str(local_path) + "-wal")
-                if wal.exists():
+                if wal.exists() and wal.stat().st_size > _WAL_HEADER_BYTES:
                     local_ts = max(local_ts, wal.stat().st_mtime)
                 local_mtime = datetime.fromtimestamp(local_ts, tz=UTC)
                 if local_mtime > drive_mtime:

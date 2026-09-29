@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Where reports land. A module constant read at call time, so the test suite can point it
+# elsewhere for every test (`tests/conftest.py`): until 2026-09-29 the path was built inside
+# the function, relative to the working directory, and every pytest run since 2026-09-10 had
+# left one MagicMock-stamped report in the real directory — 369 of them when found.
+REPORT_DIR = Path("data/test-sessions")
+
 # Map tool name → readable label for the report.
 # Covers all tools from ibkr_core_mcp.ClaudeToolkit, tradingview-mcp curated subset,
 # and local tools defined in agent.py. Unlabelled tools fall back to raw tool name.
@@ -152,12 +158,12 @@ def generate_session_report(
     connectivity: dict[str, str] | None = None,
     doc_version: str | None = None,
 ) -> Path | None:
-    """Generate a Markdown session report and write it to data/test-sessions/.
+    """Generate a Markdown session report and write it to `REPORT_DIR`.
 
     Called from panel_app.py's _run_session_cleanup. Returns the report path, or None on error.
     """
     try:
-        report_dir = Path("data/test-sessions")
+        report_dir = REPORT_DIR
         report_dir.mkdir(parents=True, exist_ok=True)
         now = datetime.now()
         path = report_dir / now.strftime("%Y-%m-%d-%H%M.md")

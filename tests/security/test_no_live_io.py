@@ -19,6 +19,7 @@ import socket
 import pytest
 
 from tests.conftest import (
+    _PROBE_ENV,
     _REAL_DNS_EXEMPT_TESTS,
     _REAL_LOOPBACK_BIND_TESTS,
     _SECRET_ENV_PREFIXES,
@@ -49,8 +50,15 @@ def test_name_resolution_is_refused():
 
 @pytest.mark.parametrize("prefix", _SECRET_ENV_PREFIXES)
 def test_no_secret_bearing_variable_is_visible(prefix):
-    """Scrubbed by prefix, not by a hand-kept list of names — a list goes stale silently."""
-    leaked = sorted(k for k in os.environ if k.startswith(prefix))
+    """Scrubbed by prefix, not by a hand-kept list of names — a list goes stale silently.
+
+    One variable under a scrubbed prefix is allowed, and only with one value: the conftest's
+    own `IBKR_SQLITE_PATH` probe, a path to a file that must never exist (CLA-SEC-009, second
+    half). The same name carrying any other value — the operator's real store — still fails.
+    """
+    leaked = sorted(
+        k for k in os.environ if k.startswith(prefix) and os.environ[k] != _PROBE_ENV.get(k)
+    )
     assert not leaked, f"secret-bearing variables reached a unit test: {leaked}"
 
 
@@ -63,7 +71,11 @@ def test_importing_the_app_does_not_load_the_operators_env():
     """
     import claudia.panel_app  # noqa: F401
 
-    assert not [k for k in os.environ if k.startswith(_SECRET_ENV_PREFIXES)]
+    assert not [
+        k
+        for k in os.environ
+        if k.startswith(_SECRET_ENV_PREFIXES) and os.environ[k] != _PROBE_ENV.get(k)
+    ]
 
 
 def test_every_exemption_still_names_a_real_test():

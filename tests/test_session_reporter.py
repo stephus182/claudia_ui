@@ -229,3 +229,32 @@ def test_key_tv_tools_have_labels():
     }
     missing = required - _TOOL_LABELS.keys()
     assert missing == set(), f"Missing labels for TradingView tools: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# The output directory is a seam, not the working directory
+# ---------------------------------------------------------------------------
+
+
+def test_report_dir_is_a_module_constant_read_at_call_time(
+    store, session_with_tools, tmp_path, monkeypatch
+):
+    """`REPORT_DIR` decides where a report lands, not the process's working directory.
+
+    Found 2026-09-29: 369 reports stamped with a MagicMock document version sat in the real
+    `data/test-sessions/` — every pytest run since 2026-09-10 wrote one, because the path
+    was `Path("data/test-sessions")` relative to wherever pytest ran. A constant read at
+    call time is what the suite-wide fixture in `tests/conftest.py` redirects.
+    """
+    from claudia import session_reporter
+
+    elsewhere = tmp_path / "cwd"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(session_reporter, "REPORT_DIR", tmp_path / "reports", raising=False)
+
+    path = generate_session_report(session_with_tools, store)
+
+    assert path is not None
+    assert path.parent == tmp_path / "reports"
+    assert not (elsewhere / "data").exists(), "the report was written relative to the cwd"

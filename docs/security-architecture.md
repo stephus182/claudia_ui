@@ -153,7 +153,7 @@ intention with no enforcement yet, and the audit is the record of why.
 | **CLA-SEC-006** | Untrusted content cannot execute in the UI | Four helpers in `panel_markdown`, each with the right number of escapes for its path; they are the only sanctioned construction sites | `test_markup_construction_sites.py`: the banned pane class is **computed from Panel** (every `HTMLBasePane` in `panel.pane.markup`/`alert`, plus `SVG`), matched by AST through every spelling of the call, over `claudia/` **and** `scripts/`, with an empty reviewed-exception list and a staleness test on it; `renderer_options` and direct notification levels banned outside the helper module; plus the existing canaries and guard-on-the-guard | BUILT (2026-09-14) |
 | **CLA-SEC-007** | Stored content never gains authority | Role mapping is closed; withdrawn rows excluded from replay and from search; the store's CHECK refuses `system`; **and the operator channel interpolates only `_operator_identity`-shaped values** (§ 6.5) | `test_stored_content_authority.py`: one file over both halves — every stored kind replayed at its stored role, withdrawal through neither path, the CHECK, and a forgery attempt through each of the four operator-channel payloads | BUILT (2026-09-14) |
 | **CLA-SEC-008** | A claim about an action is checked against evidence, and the evidence is the API | Four detectors keyed on text, ruling from `called_tools` and `_pending_proposal`; withdraw-and-retry | `test_agent.py`, `test_corpus_precision.py` | PARTIAL — detection is four textual shapes; **nothing outside them is prevented**, and the corpus tests skip in CI (§ 9) |
-| **CLA-SEC-009** | Unit tests reach no live system and see no real secret | pytest-socket armed at configure time, markers applied at collection; dotenv neutralised before import | `test_no_live_io.py`, plus a staleness test over both exemption lists | BUILT |
+| **CLA-SEC-009** | Unit tests reach no live system, see no real secret, **and write nothing into the operator's data** | pytest-socket armed at configure time, markers applied at collection; dotenv neutralised before import. Since 2026-09-29: both configured database paths pointed at **probe files that must never exist**, the session reporter redirected and leftover sessions cleared for every test, and `pytest_sessionfinish` fails the run if a probe, a SQLite sidecar of it, or a new file in the real report directory appears | `test_no_live_io.py`, plus a staleness test over both exemption lists; `test_no_real_data_io.py` (the probes, the redirect, the defect replayed, an ordered pair for the clearing, the session-end decision as a pure function) | BUILT |
 | **CLA-SEC-010** | Processes are spawned from two modules, list-form, never through a shell; the sidecar gets an env allowlist | `tradingview.py` (`_SIDECAR_ENV_PASSTHROUGH` → `_sidecar_env`), `gateway_launch.py` | `test_sidecar_child_environment.py`: a **real child process**, spawned through the real MCP stdio client, reports the environment it was given; the library's own floor is measured by a control spawn rather than listed. Proven discriminating by widening `DEFAULT_INHERITED_ENV_VARS` to leak `ANTHROPIC_API_KEY` (goes red). Plus `test_tradingview.py`, `test_security_regressions.py` | BUILT (2026-09-14) |
 | **CLA-SEC-011** | The Panel server is reachable only from loopback, with an exact origin allowlist | `pn.serve(address="127.0.0.1", websocket_origin=_WEBSOCKET_ORIGINS)`, and `main()` pins `bokeh_settings.allowed_ws_origin` to the same list — a *user-set* value, which outranks the environment variable and both config files | `test_pn_serve_binds_loopback_only`, `test_bokeh_env_var_cannot_widen_the_websocket_origin_allowlist` (with `BOKEH_ALLOW_WS_ORIGIN=*` set), `test_bokeh_still_lets_the_setting_replace_the_served_origins` (the premise), `test_panel_app.py` | BUILT (2026-09-14) |
 | **CLA-SEC-012** | The cross-repo contract is pinned in both directions, at a named revision | One import list, three gated entry points, the registry as the only source of tool claims, two core behaviours a ClaudIA invariant rests on, the Gate 1 policy (`LAPolicyDeviceOwnerAuthentication` at both LocalAuthentication calls — the device-password recovery; gap #60, 2026-09-28), and `core-ref.txt` as the single source of the supported core revision | `test_cross_repo_contract.py`, including the pinned release's shape, that the *installed* distribution version equals it, and a rule that no other file in the repository names one | BUILT (§ 7) |
@@ -280,6 +280,24 @@ assertion on "Blocked" would pass for the wrong reason), and one binds a loopbac
 because socket behaviour is what it tests. An opted-in `live_api` run keeps its key and its
 network; every other test in that run stays blocked.
 
+**Real data (2026-09-29).** The suite is kept away from the operator's files structurally, not by
+a per-test discipline, because a per-test discipline had failed silently for 19 days: the three
+tests that call `main()` patch `pn.serve` but not the shutdown finaliser, which ran the real
+session reporter over every session earlier tests had left registered, into a path relative to
+the working directory — 369 MagicMock-stamped reports in the real `data/test-sessions/`, one per
+run since 2026-09-10 — while the corpus test's read-only open of the real conversation database
+created a frameless `-wal` sidecar that the Drive freshness comparison then read as a local edit
+(gap #81). Now `pytest_configure` sets `CLAUDIA_DB_PATH` and `IBKR_SQLITE_PATH` to files under a
+throwaway directory *after* the secret scrub (the second carries a scrubbed prefix, and is the one
+name allowed through it, with that value only); `panel_app._DB_PATH` reads its variable at import
+and the core's `Config.from_env()` at call time, so a test that builds either store lands on a
+probe. An autouse fixture points `session_reporter.REPORT_DIR` at the test's `tmp_path` and clears
+`panel_app._open_sessions` on both sides. `pytest_sessionfinish` — a hook, because no test can run
+last by construction — fails the run naming any probe or sidecar that exists and any file the real
+report directory gained. The corpus test still opens the real conversation database read-only by
+design; the Drive comparison now counts a `-wal` only above its 32-byte header, so that sidecar is
+harmless.
+
 ---
 
 ## 7. CI as a security instrument
@@ -339,6 +357,7 @@ Dated, so a future reader can tell a decision from a default.
 | 2026-09-14 | The gitleaks scanner version is pinned | The action's default asset was returning 504; and a gate whose scanner version floats is not a reproducible control | Bump deliberately |
 | 2026-09-14 | Structural helpers are **not** shared with the core's | A shared helper would make one repository's CI depend on the other's test layout — the coupling this work is making explicit, not deepening | — |
 | 2026-09-28 | A refusal before the gates **raises** into the core's one handler instead of reporting and returning (gap #80) | Six pre-gate exits (no conid, no futures found, none tradeable; a cancel or modify without an order id; a modify without a conid) wrote no decision row, so a click refused there looked like a proposal never clicked — this section had listed three of them as a known limit | Never |
+| 2026-09-29 | The suite's distance from real data is **structural** — probe paths, an autouse redirect, a session-end check — not a per-test patch list (gap #81) | For 19 days every pytest run wrote a MagicMock-stamped report into the real `data/test-sessions/` through a shutdown path three `main()` tests left unpatched, and a read-only open of the real conversation DB created a frameless `-wal` the Drive comparison read as a local edit; no list of patches could have shown either | If the reporter or the stores stop taking their paths from configuration |
 | 2026-09-28 | The forward-compat lane checks out the core's **release branch** while a release window is open (`release/2.2.0`) | Core `main` is frozen at its tag between releases (operator 2026-09-25), so a `main` checkout would see nothing the next release will ship; the branch is where it accumulates | Back to `main` in the commit that moves `core-ref.txt` to the release |
 
 ---

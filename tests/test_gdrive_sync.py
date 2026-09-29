@@ -1,8 +1,10 @@
 """Tests for GDriveSync — Drive download/upload for claudia.db and text files."""
 
+import contextlib
+import logging
 import os
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -616,3 +618,96 @@ def test_reconnect_reports_false_when_the_token_is_gone(sync):
     with patch("claudia.gdrive_sync.load_or_refresh_credentials", return_value=None):
         assert sync.reconnect() is False
     assert sync._service is None
+
+
+# ── A WAL sidecar with no frame is not a local edit (2026-09-29) ──────────────
+
+_OLD = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
+
+
+@contextlib.contextmanager
+def _drive_serving(sync, drive_bytes, modified_time):
+    """Drive holds one file stamped `modified_time` that downloads as `drive_bytes`."""
+
+    class FakeDownloader:
+        """A downloader that yields the prepared Drive bytes in one chunk."""
+
+        def __init__(self, buf, _req):
+            """Write the prepared Drive bytes into the caller's buffer."""
+            buf.write(drive_bytes)
+
+        def next_chunk(self):
+            """Report the single chunk as complete."""
+            return None, True
+
+    svc = MagicMock()
+    svc.files.return_value.get.return_value.execute.return_value = {"modifiedTime": modified_time}
+    with (
+        patch.object(sync, "_find_file", return_value="file-id"),
+        patch.object(sync, "_get_service", return_value=svc),
+        patch("claudia.gdrive_sync.MediaIoBaseDownload", FakeDownloader),
+    ):
+        yield
+
+
+@pytest.mark.parametrize("wal_bytes", [0, 32], ids=["no-bytes", "header-only"])
+def test_download_db_ignores_a_wal_sidecar_that_carries_no_frame(sync, tmp_path, caplog, wal_bytes):
+    """A `-wal` file with no frame is not a local edit, so a newer Drive copy still lands.
+
+    A read-only open of a WAL-mode database creates `-wal` and `-shm` when they do not exist
+    (SQLite >= 3.22.0, https://www.sqlite.org/wal.html, "Read-Only Databases"). Measured
+    2026-09-29 on the real `data/claudia.db`: a 0-byte `-wal` stamped by a read-only query
+    made the start-up comparison report Drive as "older than local" although nothing had been
+    written — and had Drive really been newer, that copy would have been skipped and then
+    overwritten at session end. The WAL header is 32 bytes and every frame adds a 24-byte
+    header plus a page (https://www.sqlite.org/fileformat2.html#walformat), so a file of at
+    most 32 bytes holds no frame and nothing to lose.
+    """
+    target = tmp_path / "claudia.db"
+    target.write_bytes(_valid_db_bytes(tmp_path, "older-local"))
+    os.utime(target, (_OLD, _OLD))
+    wal = tmp_path / "claudia.db-wal"
+    wal.write_bytes(b"\0" * wal_bytes)  # mtime now: newer than Drive, as the real one was
+    drive_bytes = _valid_db_bytes(tmp_path, "newer-drive")
+
+    with (
+        _drive_serving(sync, drive_bytes, "2026-01-01T00:00:00.000Z"),
+        caplog.at_level(logging.WARNING, logger="claudia.gdrive_sync"),
+    ):
+        result = sync.download_db(target)
+
+    assert result is True
+    rows = sqlite3.connect(str(target)).execute("SELECT v FROM m").fetchall()
+    assert rows == [("newer-drive",)]
+    assert not wal.exists(), "the frameless sidecar must be gone with the replaced file"
+    assert "older than local" not in caplog.text
+
+
+def test_download_db_keeps_local_when_the_wal_holds_a_committed_frame(sync, tmp_path, caplog):
+    """The other half of the rule, so the fix can never become "ignore every WAL".
+
+    In WAL mode a write moves the `-wal` file's mtime and not the main file's, so a Drive copy
+    newer than the main file but older than a WAL holding a committed frame must not replace
+    the local database: the frame IS the newest local data.
+    """
+    target = tmp_path / "claudia.db"
+    conn = sqlite3.connect(str(target))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE m (v TEXT)")
+    conn.execute("INSERT INTO m VALUES ('committed-in-the-wal')")
+    conn.commit()  # conn stays open: no close-time checkpoint, the row lives in the WAL
+    wal = tmp_path / "claudia.db-wal"
+    assert wal.stat().st_size > 32, "the setup must leave a frame in the WAL"
+    os.utime(target, (_OLD, _OLD))  # the main file looks old; the edit is in the sidecar
+    drive_bytes = _valid_db_bytes(tmp_path, "newer-than-main-older-than-wal")
+
+    with (
+        _drive_serving(sync, drive_bytes, "2026-01-01T00:00:00.000Z"),
+        caplog.at_level(logging.WARNING, logger="claudia.gdrive_sync"),
+    ):
+        result = sync.download_db(target)
+
+    assert result is False
+    assert "older than local" in caplog.text
+    assert conn.execute("SELECT v FROM m").fetchall() == [("committed-in-the-wal",)]
+    conn.close()
