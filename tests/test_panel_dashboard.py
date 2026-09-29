@@ -1679,21 +1679,78 @@ def test_the_pending_tab_emits_no_html_tags():
         assert "<" not in out and ">" not in out
 
 
-def test_the_week_tile_and_the_pnl_pane_report_the_same_week():
-    """Two totals for one window on one screen is the worst failure available here.
+def _wtd(pending, through=date(2026, 8, 5)):
+    """A week-to-date value over the fixture's week, with the given pending window."""
+    snap = _snapshot()
+    return dd.WeekToDate(
+        settled=snap.week,
+        breakdown=snap.breakdowns.get("week", dd.BreakdownWindow()),
+        stats=snap.stats["week"],
+        pending=pending,
+        through=through,
+    )
 
-    Until 2026-08-06 the KPI tile and the P&L pane read different weeks, ten thousand
-    apart, side by side. Since gap #69 both are Flex alone: the tile shows the settled
-    week and names the statement it runs through, as the pane does.
-    """
+
+def test_the_week_tile_is_the_week_to_date_and_names_both_sources():
+    """Operator rule 2026-09-29: the week is settled plus pending, both visible. Until then
+    the tile was Flex alone (gap #69) and the pending part appeared only under Daily."""
     v = pdash.build_dashboard()
-    # Something IS pending, so a tile that added it back would show a different figure.
     pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
-    snap = _snapshot(pending=pending)
+    snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
     v.refresh(snap, now=_NOW)
-    assert snap.week is not None
-    assert v._tiles["realised_week"].value == pytest.approx(snap.week.total, abs=0.005)
-    assert "2026-08-05" in v._tiles["realised_week"].label
+    tile = v._tiles["realised_week"]
+    assert tile.value == pytest.approx(snap.week.total + 999.0, abs=0.005)
+    assert "to date" in tile.label
+    assert "2026-08-05" in tile.label and "not yet on a statement" in tile.label
+
+
+def test_the_week_tile_without_readable_pending_shows_the_settled_figure_and_says_so():
+    v = pdash.build_dashboard()
+    snap = _snapshot(pending=None, week_to_date=_wtd(None))
+    v.refresh(snap, now=_NOW)
+    tile = v._tiles["realised_week"]
+    assert tile.value == pytest.approx(snap.week.total, abs=0.005)
+    assert "pending unavailable" in tile.label
+
+
+def test_the_week_tile_marks_an_incomplete_pending_part():
+    v = pdash.build_dashboard()
+    pending = dd.PendingWindow(
+        rows=(dd.TypeBreakdown("FUT", 10.0, 10.0, 0.0, 1, 0, 0),), declined=("CL",)
+    )
+    snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
+    v.refresh(snap, now=_NOW)
+    assert "incomplete" in v._tiles["realised_week"].label
+
+
+def test_the_weekly_tab_leads_with_the_week_to_date_and_shows_both_parts():
+    pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
+    snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
+    text = pdash.week_to_date_markdown(snap.week_to_date, "Weekly", currency="USD")
+    assert "Week to date" in text and f"{snap.week.total + 999.0:+,.2f} USD" in text
+    assert "Settled through 2026-08-05" in text and f"{snap.week.total:+,.2f} USD" in text
+    assert "Not yet on a statement" in text and "+999.00 USD" in text
+    assert "Monthly and YTD are Flex-only" in text
+
+
+def test_the_weekly_tab_says_when_the_pending_part_is_unavailable_or_a_floor():
+    unavailable = pdash.week_to_date_markdown(_wtd(None), "Weekly", currency="USD")
+    assert "| Not yet on a statement | unavailable" in unavailable
+    floor = pdash.week_to_date_markdown(
+        _wtd(dd.PendingWindow(rows=(), declined=("CL",))), "Weekly", currency="USD"
+    )
+    assert "incomplete" in floor
+
+
+def test_selecting_weekly_renders_the_week_to_date_block_and_the_combined_breakdown():
+    v = pdash.build_dashboard()
+    pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
+    snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
+    v.refresh(snap, now=_NOW)
+    v._window.value = "Weekly"
+    v._refresh_pnl(snap, now=_NOW)
+    assert "Week to date" in v._pnl_stats.object
+    assert "999.00" in v._pnl_breakdown.object
 
 
 # -- Live quotes on the positions table ---------------------------------------

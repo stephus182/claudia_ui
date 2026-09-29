@@ -70,12 +70,14 @@ import panel as pn
 from bokeh.models.widgets.tables import NumberFormatter
 
 from claudia.dashboard_data import (
+    FUTURES_CLASSES,
     RECONCILE_TOLERANCE,
     DashboardSnapshot,
     RealisedPoint,
     RealisedWindow,
     Reconciliation,
     RoundTripStats,
+    WeekToDate,
     display_symbol,
     fill_display_name,
     order_display_name,
@@ -218,6 +220,12 @@ def short_reason(error: str | None) -> str:
 _FLEX_SOURCE_NOTE = (
     "_Net is `flex_trade` (statement basis); gross and counts are `flex_lot` "
     "(pre-wash-sale lot detail). They are different quantities and need not tie._"
+)
+_WEEK_TO_DATE_NOTE = (
+    "_Settled figures are the Flex statement dataset through the named date; the pending "
+    "part is reconstructed FIFO from your own executions not yet on a statement (no trade "
+    "date, shown beside the week and added to it, never bucketed by date — gap #69). "
+    "Monthly and YTD are Flex-only._"
 )
 _LIVE_SOURCE_NOTE = (
     "_Reconstructed FIFO from your own executions — not `flex_trade`, not `flex_lot`, "
@@ -1541,6 +1549,52 @@ def stats_markdown(
     return "\n".join(lines)
 
 
+def week_to_date_markdown(wtd: WeekToDate | None, label: str, currency: str | None = None) -> str:
+    """The Weekly block: the week to date, then its two parts, then the combined detail.
+
+    Operator rule 2026-09-29 (gap #82): the week is settled plus pending, and a reader must
+    see both. A pending part that could not be read says "unavailable"; one with a declined
+    contract is marked incomplete — a floor labelled a floor. Monthly and YTD keep
+    `stats_markdown`, the settled-only block.
+    """
+    if wtd is None:
+        return "_No trade data in the local store._"
+    ccy = currency if currency is not None else wtd.settled.currency_label
+    through = wtd.through.isoformat() if wtd.through is not None else "no statement yet"
+    if wtd.pending is None:
+        pending_cell = "unavailable — live fill data could not be read"
+    else:
+        pending_cell = fmt_signed(wtd.pending.net, ccy) + (
+            " ⚠ incomplete" if wtd.incomplete else ""
+        )
+    futures = sum(r.net for r in wtd.rows if r.asset_class in FUTURES_CLASSES)
+    others = sum(r.net for r in wtd.rows if r.asset_class in _NON_FUTURES)
+    lines = [
+        f"#### {label} — week to date",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| Week to date | **{fmt_signed(wtd.total, ccy)}** |",
+        f"| Settled through {through} (Flex) | {fmt_signed(wtd.settled.total, ccy)} |",
+        f"| Not yet on a statement | {pending_cell} |",
+        f"| Futures | {fmt_signed(futures, ccy)} |",
+        f"| Equities & options | {fmt_signed(others, ccy)} |",
+        f"| Executions | {wtd.executions} |",
+        f"| Closed round trips (lots) | {wtd.closed_lots} |",
+    ]
+    if wtd.closed_lots:
+        rate = "—" if wtd.win_rate is None else f"{wtd.win_rate:.1f}%"
+        lines += [
+            f"| Winners / losers | {wtd.winners} / {wtd.losers}"
+            + (f" · {wtd.scratches} scratch" if wtd.scratches else "")
+            + f" — **{rate}** win rate |",
+            f"| Gross win / loss (lot basis) | {fmt_signed(wtd.gross_win, ccy)} / "
+            f"{fmt_signed(wtd.gross_loss, ccy)} |",
+        ]
+    lines += ["", _WEEK_TO_DATE_NOTE]
+    return "\n".join(lines)
+
+
 def ledger_markdown(snapshot: DashboardSnapshot) -> str:
     """The ledger detail block, including IBKR's own futures-only split.
 
@@ -1979,19 +2033,34 @@ class DashboardView:
         # by side; from then until 2026-09-24 both were "bridged" with live fills dated by
         # their UTC timestamp, which is not the trade date. Executions not yet on a
         # statement are under the pane's Daily tab, never added to a dated figure.
+        # The week as it stands (operator 2026-09-29, gap #82): settled plus pending, both
+        # named. Until then the tile was Flex alone (gap #69) and the pending part appeared
+        # only under Daily — a flat week read as down by the whole pending amount.
         week = snapshot.week
         week_ccy = (week.currency_label or ccy) if week else ccy
+        wtd = snapshot.week_to_date
+        through = wtd.through.isoformat() if wtd is not None and wtd.through is not None else None
         cov = snapshot.coverage
-        self._tiles["realised_week"].label = (
-            f"Realised this week · through {cov.through.isoformat()}"
-            if cov is not None and cov.through is not None
-            else "Realised this week"
-        )
-        self._set(
-            self._tiles["realised_week"],
-            week.total if week else None,
-            f"{{value:+,.2f}} {week_ccy}".rstrip(),
-        )
+        if wtd is None:
+            # No week-to-date value: the settled week, named as before gap #82.
+            label = (
+                f"Realised this week · through {cov.through.isoformat()}"
+                if cov is not None and cov.through is not None
+                else "Realised this week"
+            )
+            value = week.total if week else None
+        elif wtd.pending is None:
+            label = f"Realised this week · settled through {through} — pending unavailable"
+            value = wtd.total
+        else:
+            label = (
+                f"Realised this week · to date (Flex through {through} + not yet on a statement)"
+            )
+            if wtd.incomplete:
+                label += " ⚠ incomplete"
+            value = wtd.total
+        self._tiles["realised_week"].label = label
+        self._set(self._tiles["realised_week"], value, f"{{value:+,.2f}} {week_ccy}".rstrip())
         self._freshness.object = freshness_line(snapshot, now)
 
     @staticmethod
@@ -2145,13 +2214,26 @@ class DashboardView:
                 if cov is not None and cov.through is not None
                 else ""
             )
-            self._pnl_stats.object = stats_markdown(
-                window, stats, f"{label} — settled by IBKR statement{through}", currency=ccy
-            )
+            # A snapshot without a week-to-date value (before the first poll, or older than
+            # gap #82) renders the settled block, which says it is settled — never a blank.
+            if _WINDOW_KEYS.get(label) == "week" and snapshot.week_to_date is not None:
+                self._pnl_stats.object = week_to_date_markdown(
+                    snapshot.week_to_date, label, currency=ccy
+                )
+            else:
+                self._pnl_stats.object = stats_markdown(
+                    window, stats, f"{label} — settled by IBKR statement{through}", currency=ccy
+                )
         key = _WINDOW_KEYS.get(label)
-        self._pnl_breakdown.object = breakdown_table(
-            snapshot.breakdowns.get(key) if key else None, account_ccy
-        )
+        if key == "week" and snapshot.week_to_date is not None:
+            # Settled lots and pending round trips together (gap #82); the note names both.
+            self._pnl_breakdown.object = breakdown_table(
+                snapshot.week_to_date, account_ccy, note=_WEEK_TO_DATE_NOTE
+            )
+        else:
+            self._pnl_breakdown.object = breakdown_table(
+                snapshot.breakdowns.get(key) if key else None, account_ccy
+            )
         self._pnl_coverage.object = coverage_line(snapshot)
         self._ledger_detail.object = ledger_markdown(snapshot)
 
