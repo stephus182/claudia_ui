@@ -1221,6 +1221,60 @@ def settled_execution_ids(conn: sqlite3.Connection, ids: Iterable[str]) -> froze
     return frozenset(str(r["execution_key"]) for r in rows)
 
 
+def flex_fills(conn: sqlite3.Connection, conids: Iterable[int]) -> tuple[LiveFill, ...]:
+    """Every statement execution of `conids`, in the reconstruction's own row shape (gap #82).
+
+    The Daily line's book is every Flex execution of a contract followed by the live fills
+    Flex does not have yet — the same two sources, with the same boundary (the execution
+    id), as `economic_entries`. Found 2026-09-29: a book built from the seven-day fill
+    window alone declined CL because the window's first fill closed a lot opened before
+    it, and +1,775.84 of pending realised P&L was shown nowhere but the ledger tile.
+
+    Rows come back grouped by contract in statement order (`trade_date`, `date_time`,
+    `execution_key`). `trade_time` carries `date_time_iso` for display only: the caller
+    orders the book explicitly (`live_realised.build_book`) and no clock is compared across
+    the two sources. Commission is made positive (Flex stores it negative; the FIFO charges
+    a cost). A row without a multiplier cannot yield a money figure and is dropped with a
+    warning — the rule `parse_fills` applies to a live row. Only `source = 'flex'` rows are
+    statement rows. Read-only.
+    """
+    from claudia.live_realised import LiveFill as _LiveFill  # runtime, not the typing import
+
+    wanted = sorted({int(c) for c in conids})
+    if not wanted:
+        return ()
+    rows = conn.execute(
+        "SELECT execution_key, conid, symbol, asset_category, quantity, trade_price,"
+        " ib_commission, multiplier, date_time_iso FROM flex_trade"
+        " WHERE source = 'flex'"
+        " AND CAST(conid AS INTEGER) IN (SELECT value FROM json_each(?))"
+        " ORDER BY CAST(conid AS INTEGER), trade_date, date_time, execution_key",
+        (json.dumps(wanted),),
+    )
+    out: list[LiveFill] = []
+    for r in rows:
+        if r["multiplier"] is None:
+            log.warning(
+                "flex_fills: %s has no multiplier — dropped, a money figure needs one",
+                r["execution_key"],
+            )
+            continue
+        out.append(
+            _LiveFill(
+                execution_id=str(r["execution_key"]),
+                conid=int(r["conid"]),
+                symbol=str(r["symbol"] or ""),
+                asset_class=str(r["asset_category"] or ""),
+                signed_quantity=_as_float(r["quantity"]),
+                price=_as_float(r["trade_price"]),
+                commission=abs(_as_float(r["ib_commission"])),
+                multiplier=_as_float(r["multiplier"]),
+                trade_time=str(r["date_time_iso"] or ""),
+            )
+        )
+    return tuple(out)
+
+
 # ── The snapshot the Panel layer reads ────────────────────────────────────────
 
 

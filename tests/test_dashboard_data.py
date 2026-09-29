@@ -2285,3 +2285,141 @@ def test_no_identity_means_no_name_not_the_rows_own_ticker():
     by-conid check, so they are not substituted."""
     assert dd.fill_display_name(_named_fill("F", "STK"), None) == ""
     assert dd.fill_display_name(_named_fill("ES", "FUT", "Dec18 '26"), None) == ""
+
+
+# ── The Daily line's book: Flex executions as the reconstruction's own rows (gap #82) ──
+
+
+@pytest.fixture
+def book_store(tmp_path):
+    """A store whose flex_trade carries the columns the Daily book is built from.
+
+    Rows: CLX6's 09-22 open, its 09-23 close and Monday's two-lot open; one `source='live'`
+    placeholder that is NOT a statement row; one row without a multiplier, which cannot yield
+    a money figure; one ESZ6 row so grouping by contract is visible.
+    """
+    path = tmp_path / "book.db"
+    with sqlite3.connect(path) as w:
+        w.execute(
+            "CREATE TABLE flex_trade (execution_key TEXT, conid INTEGER, symbol TEXT,"
+            " asset_category TEXT, quantity REAL, trade_price REAL, ib_commission REAL,"
+            " multiplier REAL, trade_date TEXT, date_time TEXT, date_time_iso TEXT, source TEXT)"
+        )
+        w.executemany(
+            "INSERT INTO flex_trade VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "a.1",
+                    304037511,
+                    "CLX6",
+                    "FUT",
+                    1.0,
+                    89.69,
+                    -2.36,
+                    1000.0,
+                    "20260922",
+                    "20260922;160323",
+                    "2026-09-22T16:03:23",
+                    "flex",
+                ),
+                (
+                    "a.2",
+                    304037511,
+                    "CLX6",
+                    "FUT",
+                    -1.0,
+                    90.50,
+                    -2.36,
+                    1000.0,
+                    "20260923",
+                    "20260923;043804",
+                    "2026-09-23T04:38:04",
+                    "flex",
+                ),
+                (
+                    "a.3",
+                    304037511,
+                    "CLX6",
+                    "FUT",
+                    2.0,
+                    92.59,
+                    -4.72,
+                    1000.0,
+                    "20260928",
+                    "20260928;150214",
+                    "2026-09-28T15:02:14",
+                    "flex",
+                ),
+                (
+                    "a.4",
+                    304037511,
+                    "CLX6",
+                    "FUT",
+                    1.0,
+                    92.00,
+                    -2.36,
+                    None,
+                    "20260928",
+                    "20260928;160000",
+                    "2026-09-28T16:00:00",
+                    "flex",
+                ),
+                (
+                    "a.9",
+                    304037511,
+                    "CLX6",
+                    "FUT",
+                    1.0,
+                    1.00,
+                    0.0,
+                    1000.0,
+                    "20260928",
+                    "20260928;170000",
+                    "2026-09-28T17:00:00",
+                    "live",
+                ),
+                (
+                    "b.1",
+                    515416632,
+                    "ESZ6",
+                    "FUT",
+                    -1.0,
+                    7772.25,
+                    -2.24,
+                    50.0,
+                    "20260928",
+                    "20260928;123143",
+                    "2026-09-28T12:31:43",
+                    "flex",
+                ),
+            ],
+        )
+    conn = dd.connect(path)
+    yield conn
+    conn.close()
+
+
+def test_flex_fills_reads_a_contracts_statement_rows_as_live_fill_rows(book_store):
+    """Statement order, live placeholder excluded, multiplier-less row dropped, commission positive."""
+    fills = dd.flex_fills(book_store, [304037511])
+    assert [f.execution_id for f in fills] == ["a.1", "a.2", "a.3"]
+    first = fills[0]
+    assert (first.conid, first.symbol, first.asset_class) == (304037511, "CLX6", "FUT")
+    assert (first.signed_quantity, first.price, first.multiplier) == (1.0, 89.69, 1000.0)
+    assert first.commission == 2.36  # Flex stores it negative; the FIFO charges a positive cost
+    assert first.trade_time == "2026-09-22T16:03:23"  # display only — never an ordering key
+
+
+def test_flex_fills_groups_by_contract_in_statement_order(book_store):
+    fills = dd.flex_fills(book_store, [515416632, 304037511])
+    assert [(f.conid, f.execution_id) for f in fills] == [
+        (304037511, "a.1"),
+        (304037511, "a.2"),
+        (304037511, "a.3"),
+        (515416632, "b.1"),
+    ]
+
+
+def test_flex_fills_is_empty_for_an_unknown_contract_and_for_no_contracts(book_store):
+    assert dd.flex_fills(book_store, [1]) == ()
+    assert dd.flex_fills(book_store, []) == ()
