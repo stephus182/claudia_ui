@@ -1682,7 +1682,7 @@ def test_the_pending_tab_emits_no_html_tags():
 def _wtd(pending, through=date(2026, 8, 5)):
     """A week-to-date value over the fixture's week, with the given pending window."""
     snap = _snapshot()
-    return dd.WeekToDate(
+    return dd.WindowToDate(
         settled=snap.week,
         breakdown=snap.breakdowns.get("week", dd.BreakdownWindow()),
         pending=pending,
@@ -1695,7 +1695,7 @@ def test_the_week_tile_is_the_week_to_date_and_names_both_sources():
     the tile was Flex alone (gap #69) and the pending part appeared only under Daily."""
     v = pdash.build_dashboard()
     pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
-    snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
+    snap = _snapshot(pending=pending, to_date={"week": _wtd(pending)})
     v.refresh(snap, now=_NOW)
     tile = v._tiles["realised_week"]
     assert tile.value == pytest.approx(snap.week.total + 999.0, abs=0.005)
@@ -1707,7 +1707,7 @@ def test_the_week_tile_is_the_week_to_date_and_names_both_sources():
 def test_the_week_tile_without_readable_pending_shows_the_settled_figure_and_says_so():
     """Pending unreadable: the tile shows the settled week and its label says pending is unavailable."""
     v = pdash.build_dashboard()
-    snap = _snapshot(pending=None, week_to_date=_wtd(None))
+    snap = _snapshot(pending=None, to_date={"week": _wtd(None)})
     v.refresh(snap, now=_NOW)
     tile = v._tiles["realised_week"]
     assert tile.value == pytest.approx(snap.week.total, abs=0.005)
@@ -1720,7 +1720,7 @@ def test_the_week_tile_marks_an_incomplete_pending_part():
     pending = dd.PendingWindow(
         rows=(dd.TypeBreakdown("FUT", 10.0, 10.0, 0.0, 1, 0, 0),), declined=("CL",)
     )
-    snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
+    snap = _snapshot(pending=pending, to_date={"week": _wtd(pending)})
     v.refresh(snap, now=_NOW)
     assert v._tiles["realised_week"].label == "Realised week to date ⚠ incomplete"
 
@@ -1728,8 +1728,8 @@ def test_the_week_tile_marks_an_incomplete_pending_part():
 def test_the_weekly_tab_leads_with_the_week_to_date_and_shows_both_parts():
     """The block leads with the week to date, then the settled and pending lines, and names Monthly/YTD as Flex-only."""
     pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
-    snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
-    text = pdash.week_to_date_markdown(snap.week_to_date, "Weekly", currency="USD")
+    snap = _snapshot(pending=pending, to_date={"week": _wtd(pending)})
+    text = pdash.week_to_date_markdown(snap.to_date["week"], "Weekly", currency="USD")
     assert "#### Weekly — week to date (Flex through 2026-08-05 + not yet on a statement)" in text
     assert "Week to date" in text and f"{snap.week.total + 999.0:+,.2f} USD" in text
     assert "Settled through 2026-08-05" in text and f"{snap.week.total:+,.2f} USD" in text
@@ -1751,7 +1751,7 @@ def test_selecting_weekly_renders_the_week_to_date_block_and_the_combined_breakd
     """Selecting Weekly renders the week-to-date block and a breakdown that includes the pending part."""
     v = pdash.build_dashboard()
     pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
-    snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
+    snap = _snapshot(pending=pending, to_date={"week": _wtd(pending)})
     v.refresh(snap, now=_NOW)
     v._window.value = "Weekly"
     v._refresh_pnl(snap, now=_NOW)

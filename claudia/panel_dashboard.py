@@ -77,7 +77,7 @@ from claudia.dashboard_data import (
     RealisedWindow,
     Reconciliation,
     RoundTripStats,
-    WeekToDate,
+    WindowToDate,
     display_symbol,
     fill_display_name,
     gain_pct_over,
@@ -1561,7 +1561,7 @@ def stats_markdown(
     return "\n".join(lines)
 
 
-def week_to_date_markdown(wtd: WeekToDate | None, label: str, currency: str | None = None) -> str:
+def week_to_date_markdown(wtd: WindowToDate | None, label: str, currency: str | None = None) -> str:
     """The Weekly block: the week to date, then its two parts, then the combined detail.
 
     Operator rule 2026-09-29 (gap #82): the week is settled plus pending, and a reader must
@@ -2048,7 +2048,7 @@ class DashboardView:
         # only under Daily — so a flat week read as down by the whole pending amount.
         week = snapshot.week
         week_ccy = (week.currency_label or ccy) if week else ccy
-        wtd = snapshot.week_to_date
+        wtd = snapshot.to_date.get("week")
         cov = snapshot.coverage
         if wtd is None:
             # No week-to-date value: the settled week, named as before gap #82.
@@ -2225,19 +2225,19 @@ class DashboardView:
             )
             # A snapshot without a week-to-date value (before the first poll, or older than
             # gap #82) renders the settled block, which says it is settled — never a blank.
-            if _WINDOW_KEYS.get(label) == "week" and snapshot.week_to_date is not None:
+            if _WINDOW_KEYS.get(label) == "week" and snapshot.to_date.get("week") is not None:
                 self._pnl_stats.object = week_to_date_markdown(
-                    snapshot.week_to_date, label, currency=ccy
+                    snapshot.to_date["week"], label, currency=ccy
                 )
             else:
                 self._pnl_stats.object = stats_markdown(
                     window, stats, f"{label} — settled by IBKR statement{through}", currency=ccy
                 )
         key = _WINDOW_KEYS.get(label)
-        if key == "week" and snapshot.week_to_date is not None:
+        if key == "week" and snapshot.to_date.get("week") is not None:
             # Settled lots and pending round trips together (gap #82); the note names both.
             self._pnl_breakdown.object = breakdown_table(
-                snapshot.week_to_date, account_ccy, note=_WEEK_TO_DATE_NOTE
+                snapshot.to_date["week"], account_ccy, note=_WEEK_TO_DATE_NOTE
             )
         else:
             self._pnl_breakdown.object = breakdown_table(

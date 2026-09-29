@@ -1323,8 +1323,9 @@ class DashboardSnapshot:
     # The executions Flex has not settled yet, by execution id, with no day. None when the
     # executions could not be read, which is not the same claim as an empty window.
     pending: PendingWindow | None = None
-    # The week as it stands — settled plus pending (operator rule 2026-09-29, gap #82).
-    week_to_date: WeekToDate | None = None
+    # Every dated window as it stands — settled plus pending, keyed week / month / ytd
+    # (operator rule 2026-09-29, gap #82: one rule for all three).
+    to_date: Mapping[str, WindowToDate] = field(default_factory=dict)
     error: str | None = None
     identities: Mapping[int, ContractIdentity] = field(default_factory=dict)
 
@@ -1917,13 +1918,17 @@ def build_flex_sections(
         "series": realised_series(conn, *bounds["ytd"]),
         "coverage": coverage,
         "pending": pending,
-        # The week as it stands (operator 2026-09-29): settled plus pending, both visible.
-        "week_to_date": WeekToDate(
-            settled=windows["week"],
-            breakdown=breakdowns["week"],
-            pending=pending,
-            through=coverage.through,
-        ),
+        # Every dated window as it stands (operator 2026-09-29): settled plus pending,
+        # both visible, the same pending part and statement date for all three.
+        "to_date": {
+            name: WindowToDate(
+                settled=windows[name],
+                breakdown=breakdowns[name],
+                pending=pending,
+                through=coverage.through,
+            )
+            for name in bounds
+        },
     }
 
 
@@ -2191,17 +2196,19 @@ class PendingWindow:
 
 
 @dataclass(frozen=True)
-class WeekToDate:
-    """The week as it stands: settled by Flex through its statement date, plus what is not
-    on a statement yet (operator rule 2026-09-29: daily and weekly are mark to market;
-    "a correct representation of reality: flex realised + realised new").
+class WindowToDate:
+    """A dated window as it stands: settled by Flex through its statement date, plus what
+    is not on a statement yet — one rule for week, month and YTD (operator 2026-09-29:
+    "a correct representation of reality: flex realised + realised new"; "consistency and
+    one rule is the only way"). Until then month and YTD were Flex-only, so on a trading
+    day Monthly read +4,037.77 while +3,307.92 more had been realised.
 
     `pending` is None when the executions could not be read — then `total` is the settled
     figure alone and the pane's label says so. `incomplete` follows the pending window's
     honesty flag: a floor is labelled a floor. Nothing here buckets a live fill by a date
     (gap #69): the pending part is "since the last statement", and `through` names that
-    statement so a reader sees when the pending part reaches back further than the week.
-    Monthly and YTD have no such value: they stay Flex-only.
+    statement so a reader sees when the pending part reaches back before the window —
+    the first morning of a month before the previous day's statement has landed.
     """
 
     settled: RealisedWindow

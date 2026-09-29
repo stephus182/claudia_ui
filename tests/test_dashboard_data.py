@@ -336,7 +336,7 @@ def test_build_flex_sections_wires_every_window(store):
         "series",
         "coverage",
         "pending",
-        "week_to_date",
+        "to_date",
     }
     assert s["week"].start == date(2026, 8, 3)
     assert s["month"].start == date(2026, 8, 1)
@@ -2466,9 +2466,9 @@ def _pw(net=1868.58, wins=3, losses=0, declined=(), fills=5):
     )
 
 
-def test_week_to_date_is_settled_plus_pending():
+def test_window_to_date_is_settled_plus_pending():
     """The 2026-09-29 morning: −3,382.55 settled + 1,868.58 pending = −1,513.97, rows and counts merged."""
-    w = dd.WeekToDate(
+    w = dd.WindowToDate(
         settled=_wk(-3382.55, count=11, by_asset={"FUT": -3175.90, "STK": -206.65}),
         breakdown=dd.BreakdownWindow(
             rows=(
@@ -2491,9 +2491,9 @@ def test_week_to_date_is_settled_plus_pending():
     assert w.win_rate == pytest.approx(35.7)
 
 
-def test_week_to_date_without_readable_pending_is_the_settled_figure_and_says_so():
+def test_window_to_date_without_readable_pending_is_the_settled_figure_and_says_so():
     """Pending None is "could not be read": the total is the settled figure and pending_net is None."""
-    w = dd.WeekToDate(
+    w = dd.WindowToDate(
         settled=_wk(-3382.55),
         breakdown=dd.BreakdownWindow(),
         pending=None,
@@ -2505,9 +2505,9 @@ def test_week_to_date_without_readable_pending_is_the_settled_figure_and_says_so
     assert w.executions == 3
 
 
-def test_week_to_date_carries_the_pending_windows_incomplete_flag():
+def test_window_to_date_carries_the_pending_windows_incomplete_flag():
     """A declined contract in the pending part makes the week a floor, and it says so."""
-    w = dd.WeekToDate(
+    w = dd.WindowToDate(
         settled=_wk(-3382.55),
         breakdown=dd.BreakdownWindow(),
         pending=_pw(declined=("CL",)),
@@ -2516,14 +2516,19 @@ def test_week_to_date_carries_the_pending_windows_incomplete_flag():
     assert w.incomplete is True
 
 
-def test_build_flex_sections_returns_week_to_date(store):
-    """The sections dict carries the value, built from the same week, breakdown, stats and coverage."""
+def test_build_flex_sections_returns_every_dated_window_to_date(store):
+    """One rule for week, month and YTD (operator 2026-09-29): each carries its settled
+    window and the same pending part, named by the same statement date."""
     sections = dd.build_flex_sections(store, date(2026, 8, 6), reconstruction=None)
-    wtd = sections["week_to_date"]
-    assert isinstance(wtd, dd.WeekToDate)
-    assert wtd.settled == sections["week"]
-    assert wtd.pending is None  # no reconstruction: the executions could not be read
-    assert wtd.through == sections["coverage"].through
+    to_date = sections["to_date"]
+    assert set(to_date) == {"week", "month", "ytd"}
+    for key in ("week", "month", "ytd"):
+        assert isinstance(to_date[key], dd.WindowToDate)
+        assert to_date[key].settled == sections[key]
+        assert to_date[key].breakdown == sections["breakdowns"][key]
+        assert to_date[key].pending is None
+        assert to_date[key].through == sections["coverage"].through
+    assert "week_to_date" not in sections
 
 
 # ── Gain %: gross wins over gross wins plus gross losses (operator 2026-09-29) ─────────
