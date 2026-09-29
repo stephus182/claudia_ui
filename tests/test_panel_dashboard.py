@@ -153,9 +153,35 @@ def _snapshot(**over):
             ]
         ),
         "coverage": dd.FlexCoverage(through=date(2026, 8, 5)),
+        # Lot rows consistent with `stats` above: 4 lots this week (2/2), 42 YTD (20/22).
+        "breakdowns": {
+            "week": dd.BreakdownWindow(
+                rows=(dd.TypeBreakdown("FUT", -3516.98, 1322.0, -4329.38, 2, 2, 0),)
+            ),
+            "month": dd.BreakdownWindow(
+                rows=(dd.TypeBreakdown("FUT", -2294.98, 1322.0, -4329.38, 2, 3, 0),)
+            ),
+            "ytd": dd.BreakdownWindow(
+                rows=(dd.TypeBreakdown("FUT", -4006.18, 9000.0, -13006.18, 20, 22, 0),)
+            ),
+        },
         "error": None,
     }
     fields.update(over)
+    # Every dated window to date (operator 2026-09-29): derived from the fields as they
+    # stand — a test overriding `week` gets a matching value — unless given outright.
+    if "to_date" not in fields:
+        cov = fields.get("coverage")
+        fields["to_date"] = {
+            key: dd.WindowToDate(
+                settled=fields[key],
+                breakdown=fields.get("breakdowns", {}).get(key, dd.BreakdownWindow()),
+                pending=fields.get("pending"),
+                through=cov.through if cov is not None else None,
+            )
+            for key in ("week", "month", "ytd")
+            if fields.get(key) is not None
+        }
     return dd.DashboardSnapshot(**fields)
 
 
@@ -370,9 +396,9 @@ def test_stats_block_labels_the_two_bases_apart(view):
     """Execution-basis P&L and lot-basis counts must never be readable as one figure."""
     view._window.value = "Weekly"
     text = view._pnl_stats.object
-    assert "Settled realised P&L" in text
-    assert "Closed round trips (lots)" in text
-    assert "pre-wash-sale" in text and "must never be read as realised P&L" in text
+    assert "Week to date" in text
+    assert "Closed round trips (lots)" in text and "Gross win / loss (lot basis)" in text
+    assert "Flex statement dataset" in text and "reconstructed FIFO" in text
 
 
 def test_the_settled_block_says_it_is_settled_and_where_the_rest_is(view):
@@ -386,9 +412,9 @@ def test_the_settled_block_says_it_is_settled_and_where_the_rest_is(view):
     """
     view._window.value = "Weekly"
     text = view._pnl_stats.object
-    assert "settled by IBKR statement" in text
-    assert "Settled only" in text
-    assert "under **Daily**" in text
+    assert "Settled through 2026-08-05 (Flex)" in text
+    assert "Not yet on a statement" in text
+    assert "never bucketed by date" in text
     assert "bridged" not in text
 
 
@@ -403,6 +429,9 @@ def test_each_window_shows_its_own_round_trip_counts(view):
     view._window.value = "YTD"
     assert "| Closed round trips (lots) | 42 |" in view._pnl_stats.object
     assert "20 / 22" in view._pnl_stats.object
+    assert "#### YTD — year to date (Flex through 2026-08-05 + not yet on a statement)" in (
+        view._pnl_stats.object
+    )
 
 
 def test_ledger_block_does_not_invent_an_equities_residual(view):
@@ -550,7 +579,7 @@ def test_kpi_strip_holds_five_number_tiles_and_nothing_else(view):
         "Cash",
         "Unrealised P&L",
         dd.realised_ledger_label(),
-        "Realised this week · through 2026-08-05",
+        "Realised week to date — pending unavailable",
     ]
     assert len(row) == len(tiles)
 
@@ -736,7 +765,7 @@ def test_blanking_keeps_the_flex_windows_which_never_needed_the_gateway(view):
     later = _NOW + timedelta(seconds=STALE_AFTER + 1)
     view.refresh(_snapshot(), now=later)
     assert view._tiles["realised_week"].value == pytest.approx(-2194.98)
-    assert "Settled realised P&L" in view._pnl_stats.object
+    assert "Week to date" in view._pnl_stats.object
     assert "today is never in it" in view._pnl_coverage.object
 
 
@@ -1250,7 +1279,7 @@ def test_a_single_point_window_explains_itself_instead_of_drawing_a_broken_axis(
     assert v._pnl_chart.object is None
     assert "Only one trading day" in v._pnl_chart_note.object
     # The stats table must still render — only the curve is suppressed.
-    assert "Settled realised P&L" in v._pnl_stats.object
+    assert "Week to date" in v._pnl_stats.object
 
 
 def test_the_chart_note_is_empty_when_a_chart_was_drawn(view):
@@ -1292,20 +1321,22 @@ def test_refresh_never_raises_and_keeps_the_previous_frame(view, caplog):
     assert "repaint failed" in caplog.text
 
 
-def test_stats_markdown_handles_a_window_with_no_lots():
+def test_to_date_markdown_handles_a_window_with_no_lots():
     """A window with no closed lots omits the win/loss rows rather than printing zeros."""
-    text = pdash.stats_markdown(
-        _window(date(2026, 8, 3), _TODAY, 0.0, 0, {}),
-        _stats(lots=0, wins=0, losses=0, gross_win=0.0, gross_loss=0.0),
-        "Week",
+    wtd = dd.WindowToDate(
+        settled=_window(date(2026, 8, 3), _TODAY, 0.0, 0, {}),
+        breakdown=dd.BreakdownWindow(),
+        pending=None,
+        through=date(2026, 8, 5),
     )
+    text = pdash.to_date_markdown(wtd, "Weekly", "week")
     assert "Closed round trips (lots) | 0" in text
     assert "win rate" not in text
 
 
-def test_stats_markdown_with_no_data():
+def test_to_date_markdown_with_no_data():
     """With no window at all the block says so."""
-    assert "No trade data" in pdash.stats_markdown(None, None, "Week")
+    assert "No trade data" in pdash.to_date_markdown(None, "Weekly", "week")
 
 
 def test_ledger_markdown_with_no_ledger():
@@ -1543,11 +1574,11 @@ def test_the_pending_table_never_claims_a_flex_provenance():
     reconstructed from the account's own executions.
     """
     out = pdash.pending_table(_snap_with(rows=[_bd("FUT", 0, 2, net=-1629.44)]), "USD")
-    assert "statement basis" not in out
+    assert "Flex statement dataset" not in out
     assert "pre-wash-sale" not in out
     assert "Reconstructed FIFO from your own executions" in out
-    # The settled windows keep the note that is true of them.
-    assert "statement basis" in pdash.breakdown_table(
+    # The dated windows keep the note that is true of them: both sources, named.
+    assert "Flex statement dataset" in pdash.breakdown_table(
         dd.BreakdownWindow(rows=(_bd("FUT", 1, 0, net=100.0),)), "USD"
     )
 
@@ -1729,20 +1760,20 @@ def test_the_weekly_tab_leads_with_the_week_to_date_and_shows_both_parts():
     """The block leads with the week to date, then the settled and pending lines, and names Monthly/YTD as Flex-only."""
     pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
     snap = _snapshot(pending=pending, to_date={"week": _wtd(pending)})
-    text = pdash.week_to_date_markdown(snap.to_date["week"], "Weekly", currency="USD")
+    text = pdash.to_date_markdown(snap.to_date["week"], "Weekly", "week", currency="USD")
     assert "#### Weekly — week to date (Flex through 2026-08-05 + not yet on a statement)" in text
     assert "Week to date" in text and f"{snap.week.total + 999.0:+,.2f} USD" in text
     assert "Settled through 2026-08-05" in text and f"{snap.week.total:+,.2f} USD" in text
     assert "Not yet on a statement" in text and "+999.00 USD" in text
-    assert "Monthly and YTD are Flex-only" in text
+    assert "Week, month and YTD alike" in text
 
 
 def test_the_weekly_tab_says_when_the_pending_part_is_unavailable_or_a_floor():
     """The pending line reads "unavailable" when it could not be read and is marked incomplete when a contract was declined."""
-    unavailable = pdash.week_to_date_markdown(_wtd(None), "Weekly", currency="USD")
+    unavailable = pdash.to_date_markdown(_wtd(None), "Weekly", "week", currency="USD")
     assert "| Not yet on a statement | unavailable" in unavailable
-    floor = pdash.week_to_date_markdown(
-        _wtd(dd.PendingWindow(rows=(), declined=("CL",))), "Weekly", currency="USD"
+    floor = pdash.to_date_markdown(
+        _wtd(dd.PendingWindow(rows=(), declined=("CL",))), "Weekly", "week", currency="USD"
     )
     assert "incomplete" in floor
 
@@ -1756,7 +1787,7 @@ def test_selecting_weekly_renders_the_week_to_date_block_and_the_combined_breakd
     v._window.value = "Weekly"
     v._refresh_pnl(snap, now=_NOW)
     assert "Week to date" in v._pnl_stats.object
-    assert "999.00" in v._pnl_breakdown.object
+    assert f"{snap.week.by_asset['FUT'] + 999.0:,.2f}" in v._pnl_breakdown.object
 
 
 # -- Live quotes on the positions table ---------------------------------------
@@ -2878,7 +2909,7 @@ def test_the_fills_status_says_when_no_statement_is_in_the_store():
 
 def test_fills_wait_for_the_first_poll():
     """Before the first poll nothing is known — not "unavailable", not "none"."""
-    line = pdash.fills_status_line(_snapshot(pending=None))
+    line = pdash.fills_status_line(_snapshot(pending=None, breakdowns={}))
     assert "waiting for the first poll" in line
 
 
@@ -3019,3 +3050,44 @@ def test_breakdown_table_gain_pct_is_a_dash_when_nothing_was_traded():
         if line.startswith("| **FUT**")
     )
     assert "| 0.00 | — | 0 | 0 |" in fut
+
+
+# -- Every dated window to date: Monthly and YTD like the week (operator 2026-09-29) ---------
+
+
+def test_monthly_and_ytd_blocks_are_to_date_with_their_own_period_word():
+    """One rule for every dated window: the block's heading names the period, the statement
+    date and the pending part; the figures are settled plus pending for that window."""
+    pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
+    snap = _snapshot(pending=pending)
+    month = pdash.to_date_markdown(snap.to_date["month"], "Monthly", "month", currency="USD")
+    assert (
+        "#### Monthly — month to date (Flex through 2026-08-05 + not yet on a statement)" in month
+    )
+    assert f"| Month to date | **{snap.month.total + 999.0:+,.2f} USD** |" in month
+    ytd = pdash.to_date_markdown(snap.to_date["ytd"], "YTD", "ytd", currency="USD")
+    assert "#### YTD — year to date (Flex through 2026-08-05 + not yet on a statement)" in ytd
+    assert f"| Year to date | **{snap.ytd.total + 999.0:+,.2f} USD** |" in ytd
+
+
+def test_selecting_monthly_renders_the_month_to_date_block_and_the_combined_breakdown():
+    """The Monthly tab no longer shows the settled block: the pending part is in its table."""
+    v = pdash.build_dashboard()
+    pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
+    snap = _snapshot(pending=pending)
+    v.refresh(snap, now=_NOW)
+    v._window.value = "Monthly"
+    v._refresh_pnl(snap, now=_NOW)
+    assert "Month to date" in v._pnl_stats.object
+    assert "settled by IBKR statement" not in v._pnl_stats.object
+    assert f"{snap.month.by_asset['FUT'] + 999.0:,.2f}" in v._pnl_breakdown.object
+
+
+def test_the_week_tile_reads_the_weeks_value_not_another_windows():
+    """Three to-date values ride on the snapshot; the tile is the week's."""
+    v = pdash.build_dashboard()
+    pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
+    snap = _snapshot(pending=pending)
+    v.refresh(snap, now=_NOW)
+    assert v._tiles["realised_week"].value == pytest.approx(snap.week.total + 999.0, abs=0.005)
+    assert v._tiles["realised_week"].value != pytest.approx(snap.month.total + 999.0, abs=0.005)

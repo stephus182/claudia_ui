@@ -76,7 +76,6 @@ from claudia.dashboard_data import (
     RealisedPoint,
     RealisedWindow,
     Reconciliation,
-    RoundTripStats,
     WindowToDate,
     display_symbol,
     fill_display_name,
@@ -218,15 +217,12 @@ def short_reason(error: str | None) -> str:
 # figure there is reconstructed from the account's own executions. Shipped with the wrong
 # note attached on 2026-08-07 and caught in the browser the same hour — the table was right
 # and the sentence under it was a confident lie about where the money came from.
-_FLEX_SOURCE_NOTE = (
-    "_Net is `flex_trade` (statement basis); gross and counts are `flex_lot` "
-    "(pre-wash-sale lot detail). They are different quantities and need not tie._"
-)
-_WEEK_TO_DATE_NOTE = (
-    "_Settled figures are the Flex statement dataset through the named date; the pending "
+_TO_DATE_NOTE = (
+    "_Settled figures are the Flex statement dataset through the named date (net is "
+    "`flex_trade`, gross and counts are `flex_lot`, pre-wash-sale lot detail); the pending "
     "part is reconstructed FIFO from your own executions not yet on a statement (no trade "
-    "date, shown beside the week and added to it, never bucketed by date — gap #69). "
-    "Monthly and YTD are Flex-only._"
+    "date, shown beside the window and added to it, never bucketed by date — gap #69). "
+    "Week, month and YTD alike._"
 )
 _LIVE_SOURCE_NOTE = (
     "_Reconstructed FIFO from your own executions — not `flex_trade`, not `flex_lot`, "
@@ -234,7 +230,7 @@ _LIVE_SOURCE_NOTE = (
 )
 
 
-def breakdown_table(window: Any, currency: str = "", note: str = _FLEX_SOURCE_NOTE) -> str:
+def breakdown_table(window: Any, currency: str = "", note: str = _TO_DATE_NOTE) -> str:
     """Per-asset-class detail for the P&L pane: money, counts and averages together.
 
     Lives in the pane rather than the KPI strip because it answers a different question.
@@ -330,8 +326,8 @@ def pending_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> 
     return (
         f"{warn}**Daily realised — non-Flex** · not yet on a statement ({against}) · "
         "reconstructed from your own executions. IBKR states a fill's trade date only in "
-        "its statement (T+1), so these carry no trade date yet: they are shown beside the "
-        "week as week to date and are never bucketed by date."
+        "its statement (T+1), so these carry no trade date yet: they are shown beside every "
+        "dated window as its to-date figure and are never bucketed by date."
     )
 
 
@@ -446,11 +442,11 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
     if cov is None or cov.through is None:
         return "_Realised windows: no Flex data in the local store._"
     return (
-        f"_Realised month/YTD come from the Flex dataset through "
+        f"_Realised week/month/YTD are **to date**: the Flex dataset through "
         f"**{cov.through.isoformat()}** (IBKR publishes a day's trades T+1, so today is "
-        f"never in it) and are IBKR's **statement** figures; executions not yet on a "
-        f"statement are under **Daily** and, since 2026-09-29, added to the **week** as "
-        f"week to date beside its settled part — never bucketed by date. "
+        f"never in it), IBKR's **statement** figures, plus the executions not yet on a "
+        f"statement — under **Daily**, and added to every dated window beside its settled "
+        f"part, never bucketed by date (operator rule 2026-09-29). "
         f"The **Realised today** tile is today only, on IBKR's "
         f"**real-time average cost**. The two do not add up and are not meant to: they "
         f"cover different periods, and they use different day boundaries — Flex buckets "
@@ -1490,89 +1486,23 @@ def _percent_sign_style(value: Any) -> str:
 # ── Round-trip stats ──────────────────────────────────────────────────────────
 
 
-def stats_markdown(
-    window: RealisedWindow | None,
-    stats: RoundTripStats | None,
-    label: str,
-    currency: str | None = None,
+_PERIOD_WORD = {"week": "week", "month": "month", "ytd": "year"}
+
+
+def to_date_markdown(
+    wtd: WindowToDate | None, label: str, key: str, currency: str | None = None
 ) -> str:
-    """The **settled** statement view: what Flex has confirmed, and nothing newer.
+    """A dated window's block: the window to date, then its two parts, then the detail.
 
-    Flex is T+1 and structurally cannot contain the most recent day(s): on 2026-08-06 it
-    was two days behind, so this block read -6,175.88 for a week whose realised was
-    -16,480.46. Until that date it was titled "realised & round trips" and sat beneath a
-    total that included unsettled fills, two figures for one window that differed by ten
-    thousand. Caught by rendering the page in a browser.
-
-    Since gap #69 (2026-09-24) every dated figure on the pane is settled — the breakdown
-    table above is Flex too — and what is not yet on a statement is the Daily tab,
-    never added to a dated one. Since gap #82 (2026-09-29) the Weekly tab renders
-    `week_to_date_markdown` instead — settled plus pending, both named — so this block
-    serves Monthly and YTD. Here the block and the table agree on their source; the
-    footnote says so and points at Pending for the rest.
-
-    Two different bases appear here on purpose, and are labelled as such:
-
-    * **P&L totals** come from `flex_trade` — the authoritative net figure, wash sales
-      already netted in.
-    * **Round-trip counts** come from `flex_lot` — genuine open→close trips. Executions
-      would inflate the denominator with opening legs and wash-sale-zeroed closes that
-      are neither a win nor a loss (measured 2026-08-04 on 2026 YTD: 636 executions with
-      346 zeros, against 360 closed lots with none).
-
-    Showing lot-derived money as "realised" would silently overstate losses by the
-    disallowed amount, so the gross win/loss figures below are explicitly marked
-    lot-basis and are never presented as the realised total.
-    """
-    if window is None or stats is None:
-        return "_No trade data in the local store._"
-    # `currency` lets the caller substitute the account's base currency for a window
-    # that realised nothing and therefore has no currency of its own.
-    ccy = currency if currency is not None else window.currency_label
-    lines = [
-        f"#### {label}",
-        "",
-        "| | |",
-        "|---|---|",
-        f"| Settled realised P&L | **{fmt_signed(window.total, ccy)}** |",
-        f"| Futures | {fmt_signed(window.asset_total('FUT'), ccy)} |",
-        f"| Equities & options | {fmt_signed(window.asset_total(*_NON_FUTURES), ccy)} |",
-        f"| Executions | {window.trade_count} |",
-        f"| Closed round trips (lots) | {stats.closed_lots} |",
-    ]
-    if stats.closed_lots:
-        rate = "—" if stats.win_rate is None else f"{stats.win_rate:.1f}%"
-        lines += [
-            f"| Winners / losers | {stats.winners} / {stats.losers}"
-            + (f" · {stats.scratches} scratch" if stats.scratches else "")
-            + f" — **{rate}** win rate |",
-            f"| Gross win / loss (lot basis) | {fmt_signed(stats.gross_win, ccy)} / "
-            f"{fmt_signed(stats.gross_loss, ccy)} |",
-        ]
-    lines += [
-        "",
-        "_**Settled only** — every figure here comes from the Flex statement dataset "
-        "(IBKR publishes a day's trades T+1, so today is never in it). Executions not yet "
-        "on a statement are under **Daily**._\n\n"
-        "_Totals are execution-basis (`flex_trade`, the authoritative settled figure). "
-        "Win/loss counts and gross figures are lot-basis (`flex_lot`), pre-wash-sale, "
-        "and must never be read as realised P&L._",
-    ]
-    return "\n".join(lines)
-
-
-def week_to_date_markdown(wtd: WindowToDate | None, label: str, currency: str | None = None) -> str:
-    """The Weekly block: the week to date, then its two parts, then the combined detail.
-
-    Operator rule 2026-09-29 (gap #82): the week is settled plus pending, and a reader must
-    see both. A pending part that could not be read says "unavailable"; one with a declined
-    contract is marked incomplete — a floor labelled a floor. Monthly and YTD keep
-    `stats_markdown`, the settled-only block.
+    One rule for week, month and YTD (operator 2026-09-29, gap #82): settled plus pending,
+    and a reader must see both. A pending part that could not be read says "unavailable";
+    one with a declined contract is marked incomplete — a floor labelled a floor.
     """
     if wtd is None:
         return "_No trade data in the local store._"
     ccy = currency if currency is not None else wtd.settled.currency_label
     through = wtd.through.isoformat() if wtd.through is not None else "no statement yet"
+    period = _PERIOD_WORD.get(key, key)
     if wtd.pending is None:
         pending_cell = "unavailable — live fill data could not be read"
     else:
@@ -1582,11 +1512,11 @@ def week_to_date_markdown(wtd: WindowToDate | None, label: str, currency: str | 
     futures = sum(r.net for r in wtd.rows if r.asset_class in FUTURES_CLASSES)
     others = sum(r.net for r in wtd.rows if r.asset_class in _NON_FUTURES)
     lines = [
-        f"#### {label} — week to date (Flex through {through} + not yet on a statement)",
+        f"#### {label} — {period} to date (Flex through {through} + not yet on a statement)",
         "",
         "| | |",
         "|---|---|",
-        f"| Week to date | **{fmt_signed(wtd.total, ccy)}** |",
+        f"| {period.capitalize()} to date | **{fmt_signed(wtd.total, ccy)}** |",
         f"| Settled through {through} (Flex) | {fmt_signed(wtd.settled.total, ccy)} |",
         f"| Not yet on a statement | {pending_cell} |",
         f"| Futures | {fmt_signed(futures, ccy)} |",
@@ -1603,7 +1533,7 @@ def week_to_date_markdown(wtd: WindowToDate | None, label: str, currency: str | 
             f"| Gross win / loss (lot basis) | {fmt_signed(wtd.gross_win, ccy)} / "
             f"{fmt_signed(wtd.gross_loss, ccy)} |",
         ]
-    lines += ["", _WEEK_TO_DATE_NOTE]
+    lines += ["", _TO_DATE_NOTE]
     return "\n".join(lines)
 
 
@@ -2200,7 +2130,9 @@ class DashboardView:
             self._refresh_pending(snapshot, now)
             return
         self._pnl_source_note.object = ""
-        window, points, stats = self._selected_window(snapshot)
+        window, points = self._selected_window(snapshot)
+        key = _WINDOW_KEYS.get(label) or ""
+        wtd = snapshot.to_date.get(key)
         account_ccy = snapshot.ledger.currency if snapshot.ledger else ""
         if window is None:
             self._pnl_chart.object = None
@@ -2217,49 +2149,31 @@ class DashboardView:
             self._pnl_chart_note.object = realised_chart_note(
                 points, ccy, unit="week" if _WINDOW_KEYS.get(label) == "ytd" else "day"
             )
-            cov = snapshot.coverage
-            through = (
-                f" through {cov.through.isoformat()}"
-                if cov is not None and cov.through is not None
-                else ""
-            )
-            # A snapshot without a week-to-date value (before the first poll, or older than
-            # gap #82) renders the settled block, which says it is settled — never a blank.
-            if _WINDOW_KEYS.get(label) == "week" and snapshot.to_date.get("week") is not None:
-                self._pnl_stats.object = week_to_date_markdown(
-                    snapshot.to_date["week"], label, currency=ccy
-                )
-            else:
-                self._pnl_stats.object = stats_markdown(
-                    window, stats, f"{label} — settled by IBKR statement{through}", currency=ccy
-                )
-        key = _WINDOW_KEYS.get(label)
-        if key == "week" and snapshot.to_date.get("week") is not None:
-            # Settled lots and pending round trips together (gap #82); the note names both.
-            self._pnl_breakdown.object = breakdown_table(
-                snapshot.to_date["week"], account_ccy, note=_WEEK_TO_DATE_NOTE
-            )
-        else:
-            self._pnl_breakdown.object = breakdown_table(
-                snapshot.breakdowns.get(key) if key else None, account_ccy
-            )
+            # Every dated window to date (operator 2026-09-29): settled plus pending, both
+            # named. A snapshot carrying the window but no to-date value cannot happen
+            # after this change (both are built together); it is answered honestly anyway.
+            self._pnl_stats.object = to_date_markdown(wtd, label, key, currency=ccy)
+        # Settled lots and pending round trips together (gap #82); the note names both.
+        self._pnl_breakdown.object = breakdown_table(
+            wtd if wtd is not None else snapshot.breakdowns.get(key), account_ccy
+        )
         self._pnl_coverage.object = coverage_line(snapshot)
         self._ledger_detail.object = ledger_markdown(snapshot)
 
     def _selected_window(
         self, snapshot: DashboardSnapshot
-    ) -> tuple[RealisedWindow | None, tuple[RealisedPoint, ...], RoundTripStats | None]:
-        """The selected window, its slice of the curve, and **its own** round-trip stats.
+    ) -> tuple[RealisedWindow | None, tuple[RealisedPoint, ...]]:
+        """The selected window and its slice of the curve.
 
         The poller computes one YTD series and this slices it, rather than issuing three
-        queries — the week and month curves are suffixes of the same data. Stats are not
-        sliced: they are counts computed per window by the data layer, and picking them
-        by the same key is what stops week figures appearing under a YTD heading.
+        queries — the week and month curves are suffixes of the same data. The counts
+        under the chart come from the window's own to-date value, keyed the same way,
+        which is what stops week figures appearing under a YTD heading.
         """
         key = _WINDOW_KEYS.get(str(self._window.value))
         window = getattr(snapshot, key) if key else None
         if window is None:
-            return None, (), None
+            return None, ()
         points = tuple(p for p in snapshot.series if window.start <= p.day <= window.end)
         if key == "ytd":
             # One resolution per view. A year of daily bars is 131 hairlines in a few
@@ -2268,7 +2182,7 @@ class DashboardView:
             # than either. `weekly_series` regroups without changing the money — its total
             # equals the daily total, which is the invariant that makes this safe.
             points = weekly_series(points)
-        return window, points, snapshot.stats.get(key or "")
+        return window, points
 
     def _on_window_change(self, _event: Any) -> None:
         """Re-render the P&L tab when the window selector changes, without a new poll."""
