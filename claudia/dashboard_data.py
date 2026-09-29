@@ -94,7 +94,11 @@ midnight (18:00-20:00 EDT, 18:00-19:00 EST): such a fill dropped out for a day, 
 winter after-hours stock fill (19:00-20:00 EST) could be counted twice. Now an
 execution is **pending** if and only if its id is not yet a Flex `execution_key`
 (`settled_execution_ids`), and pending realised P&L is its own window (`pending_window`),
-never placed in a dated one.
+never placed in a dated one. Since 2026-09-29 (gap #82) the week is shown **to date** —
+settled plus the pending part, both named, still never bucketed by date (`WeekToDate`) —
+and the pending window's book is every Flex execution of a contract plus the fills not on
+a statement yet (`flex_fills`, `live_realised.build_book`), so a contract is never
+declined by a fill-window edge.
 
 What the convention *does* change is what a reader should be told: after 18:00 ET a
 futures fill already belongs to tomorrow as far as these windows are concerned, while the

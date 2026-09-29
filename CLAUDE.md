@@ -617,8 +617,14 @@ the fix that established this (75,480 → 2,910 tokens/session).
   `execution_id` is not yet a Flex `execution_key`, and pending realised P&L is its own
   "Not yet on a statement" window (the P&L pane's **Daily** tab; its heading says "Not yet
   on a statement · Flex through <date>", which can include an earlier day while a statement
-  is late), never placed in a dated window. Week / month / YTD, their stats, the curve and the
-  "Realised this week" tile are Flex alone and name the statement date they run through.
+  is late), never placed in a dated window. Month / YTD, their stats and the curve are Flex
+  alone and name the statement date they run through; **the week and its tile are week to
+  date — settled plus the pending part, both named** (operator rule 2026-09-29, gap #82:
+  "flex realised + realised new"; a flat week had read as down by the whole pending amount).
+  The Daily line's book is every Flex execution of a contract plus the fills not on a
+  statement yet (`flex_fills` + `build_book`), so a contract is never declined by a
+  fill-window edge — the seven-day window alone had declined CL when its first fill closed a
+  lot opened before it, hiding +1,775.84 (2026-09-29, reconciled to the ledger to the cent).
   Never bucket a live fill by its UTC date, its ET date, or a calendar library: each
   disagrees with IBKR's trade date (evening futures, CME holiday sessions).
   **The two realised figures on that screen are different quantities — never add them or
