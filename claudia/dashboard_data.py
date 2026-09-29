@@ -1319,6 +1319,8 @@ class DashboardSnapshot:
     # The executions Flex has not settled yet, by execution id, with no day. None when the
     # executions could not be read, which is not the same claim as an empty window.
     pending: PendingWindow | None = None
+    # The week as it stands — settled plus pending (operator rule 2026-09-29, gap #82).
+    week_to_date: WeekToDate | None = None
     error: str | None = None
     identities: Mapping[int, ContractIdentity] = field(default_factory=dict)
 
@@ -1893,20 +1895,32 @@ def build_flex_sections(
         "ytd": (year_start(today), today),
     }
     coverage = flex_coverage(conn)
+    windows = {name: realised_window(conn, lo, hi) for name, (lo, hi) in bounds.items()}
+    stats = {name: round_trip_stats(conn, lo, hi) for name, (lo, hi) in bounds.items()}
+    breakdowns = {
+        name: BreakdownWindow(rows=realised_by_type(conn, lo, hi))
+        for name, (lo, hi) in bounds.items()
+    }
+    pending = pending_window(conn, reconstruction)
     return {
-        **{name: realised_window(conn, lo, hi) for name, (lo, hi) in bounds.items()},
-        "stats": {name: round_trip_stats(conn, lo, hi) for name, (lo, hi) in bounds.items()},
-        "breakdowns": {
-            name: BreakdownWindow(rows=realised_by_type(conn, lo, hi))
-            for name, (lo, hi) in bounds.items()
-        },
+        **windows,
+        "stats": stats,
+        "breakdowns": breakdowns,
         # The curve reads the same source as the breakdown table it is drawn beneath:
         # Flex alone. They disagreed on screen 2026-09-23 when the table was bridged and
         # the curve was not; since gap #69 neither is bridged, so they agree by
         # construction.
         "series": realised_series(conn, *bounds["ytd"]),
         "coverage": coverage,
-        "pending": pending_window(conn, reconstruction),
+        "pending": pending,
+        # The week as it stands (operator 2026-09-29): settled plus pending, both visible.
+        "week_to_date": WeekToDate(
+            settled=windows["week"],
+            breakdown=breakdowns["week"],
+            stats=stats["week"],
+            pending=pending,
+            through=coverage.through,
+        ),
     }
 
 
@@ -2148,6 +2162,109 @@ class PendingWindow:
     def for_type(self, asset_class: str) -> TypeBreakdown | None:
         """The row for one asset class, or None when nothing of it is pending."""
         return next((r for r in self.rows if r.asset_class == asset_class), None)
+
+
+@dataclass(frozen=True)
+class WeekToDate:
+    """The week as it stands: settled by Flex through its statement date, plus what is not
+    on a statement yet (operator rule 2026-09-29: daily and weekly are mark to market;
+    "a correct representation of reality: flex realised + realised new").
+
+    `pending` is None when the executions could not be read — then `total` is the settled
+    figure alone and the pane's label says so. `incomplete` follows the pending window's
+    honesty flag: a floor is labelled a floor. Nothing here buckets a live fill by a date
+    (gap #69): the pending part is "since the last statement", and `through` names that
+    statement so a reader sees when the pending part reaches back further than the week.
+    Monthly and YTD have no such value: they stay Flex-only.
+    """
+
+    settled: RealisedWindow
+    breakdown: BreakdownWindow
+    stats: RoundTripStats | None
+    pending: PendingWindow | None
+    through: date | None
+
+    @property
+    def pending_net(self) -> float | None:
+        """The part not yet on a statement, or None when it could not be read."""
+        return None if self.pending is None else self.pending.net
+
+    @property
+    def total(self) -> float:
+        """Settled plus pending — the week to date."""
+        return round(self.settled.total + (self.pending.net if self.pending else 0.0), 2)
+
+    @property
+    def net(self) -> float:
+        """`breakdown_table` reads `net`; it is the same figure as `total`."""
+        return self.total
+
+    @property
+    def incomplete(self) -> bool:
+        """Whether the pending part is a floor (a contract was declined)."""
+        return bool(self.pending is not None and self.pending.incomplete)
+
+    @property
+    def rows(self) -> tuple[TypeBreakdown, ...]:
+        """Per asset class, settled lots and pending round trips added together."""
+        merged: dict[str, TypeBreakdown] = {r.asset_class: r for r in self.breakdown.rows}
+        for p in self.pending.rows if self.pending else ():
+            s = merged.get(p.asset_class)
+            merged[p.asset_class] = (
+                p
+                if s is None
+                else TypeBreakdown(
+                    asset_class=p.asset_class,
+                    net=round(s.net + p.net, 2),
+                    gross_win=round(s.gross_win + p.gross_win, 2),
+                    gross_loss=round(s.gross_loss + p.gross_loss, 2),
+                    winners=s.winners + p.winners,
+                    losers=s.losers + p.losers,
+                    scratches=s.scratches + p.scratches,
+                )
+            )
+        return tuple(sorted(merged.values(), key=lambda r: -abs(r.net)))
+
+    @property
+    def executions(self) -> int:
+        """Settled executions plus the fills not yet on a statement."""
+        return self.settled.trade_count + (len(self.pending.fills) if self.pending else 0)
+
+    @property
+    def closed_lots(self) -> int:
+        """Closed lots, settled and pending together."""
+        return sum(r.closed_lots for r in self.rows)
+
+    @property
+    def winners(self) -> int:
+        """Winning lots, settled and pending together."""
+        return sum(r.winners for r in self.rows)
+
+    @property
+    def losers(self) -> int:
+        """Losing lots, settled and pending together."""
+        return sum(r.losers for r in self.rows)
+
+    @property
+    def scratches(self) -> int:
+        """Flat lots, settled and pending together."""
+        return sum(r.scratches for r in self.rows)
+
+    @property
+    def gross_win(self) -> float:
+        """Gross winning amount, lot basis, settled and pending together."""
+        return round(sum(r.gross_win for r in self.rows), 2)
+
+    @property
+    def gross_loss(self) -> float:
+        """Gross losing amount, lot basis, settled and pending together."""
+        return round(sum(r.gross_loss for r in self.rows), 2)
+
+    @property
+    def win_rate(self) -> float | None:
+        """Winners over decided lots, in percent; None when nothing was decided."""
+        decided = self.winners + self.losers
+        return None if not decided else round(100.0 * self.winners / decided, 1)
 
 
 def pending_window(conn: sqlite3.Connection, reconstruction: Any) -> PendingWindow | None:

@@ -336,6 +336,7 @@ def test_build_flex_sections_wires_every_window(store):
         "series",
         "coverage",
         "pending",
+        "week_to_date",
     }
     assert s["week"].start == date(2026, 8, 3)
     assert s["month"].start == date(2026, 8, 1)
@@ -2423,3 +2424,111 @@ def test_flex_fills_groups_by_contract_in_statement_order(book_store):
 def test_flex_fills_is_empty_for_an_unknown_contract_and_for_no_contracts(book_store):
     assert dd.flex_fills(book_store, [1]) == ()
     assert dd.flex_fills(book_store, []) == ()
+
+
+# ── Week to date: settled plus pending, both parts visible (operator rule 2026-09-29) ──
+
+
+def _wk(total, count=3, by_asset=None):
+    return dd.RealisedWindow(
+        start=date(2026, 9, 28),
+        end=date(2026, 9, 29),
+        total=total,
+        trade_count=count,
+        by_asset=by_asset or {"FUT": total},
+        currencies=("USD",),
+    )
+
+
+def _rts(lots=4, wins=1, losses=3, gross_win=458.02, gross_loss=-3633.92):
+    return dd.RoundTripStats(
+        start=date(2026, 9, 28),
+        end=date(2026, 9, 29),
+        closed_lots=lots,
+        winners=wins,
+        losers=losses,
+        scratches=0,
+        gross_win=gross_win,
+        gross_loss=gross_loss,
+    )
+
+
+def _lf(i):
+    """A pending fill with only an id — the week counts fills, it does not read them."""
+    return LiveFill(
+        execution_id=f"p.{i}",
+        conid=7,
+        symbol="T",
+        asset_class="FUT",
+        signed_quantity=-1.0,
+        price=1.0,
+        commission=0.0,
+        multiplier=1.0,
+        trade_time="20260929-12:00:00",
+    )
+
+
+def _pw(net=1868.58, wins=3, losses=0, declined=(), fills=5):
+    row = dd.TypeBreakdown("FUT", net, net, 0.0, wins, losses, 0)
+    return dd.PendingWindow(
+        rows=(row,), declined=tuple(declined), fills=tuple(_lf(i) for i in range(fills))
+    )
+
+
+def test_week_to_date_is_settled_plus_pending():
+    w = dd.WeekToDate(
+        settled=_wk(-3382.55, count=11, by_asset={"FUT": -3175.90, "STK": -206.65}),
+        breakdown=dd.BreakdownWindow(
+            rows=(
+                dd.TypeBreakdown("FUT", -3175.90, 458.02, -3633.92, 1, 3, 0),
+                dd.TypeBreakdown("STK", -206.65, 32.72, -239.37, 1, 6, 0),
+            )
+        ),
+        stats=_rts(lots=11, wins=2, losses=9, gross_win=490.74, gross_loss=-3873.29),
+        pending=_pw(),
+        through=date(2026, 9, 28),
+    )
+    assert w.total == pytest.approx(-1513.97)
+    assert w.net == w.total
+    assert w.pending_net == pytest.approx(1868.58)
+    assert w.incomplete is False
+    assert [(r.asset_class, r.winners, r.losers) for r in w.rows] == [("FUT", 4, 3), ("STK", 1, 6)]
+    assert w.rows[0].net == pytest.approx(-1307.32)
+    assert (w.executions, w.closed_lots, w.winners, w.losers) == (16, 14, 5, 9)
+    assert w.gross_win == pytest.approx(490.74 + 1868.58)
+    assert w.gross_loss == pytest.approx(-3873.29)
+    assert w.win_rate == pytest.approx(35.7)
+
+
+def test_week_to_date_without_readable_pending_is_the_settled_figure_and_says_so():
+    w = dd.WeekToDate(
+        settled=_wk(-3382.55),
+        breakdown=dd.BreakdownWindow(),
+        stats=_rts(),
+        pending=None,
+        through=date(2026, 9, 28),
+    )
+    assert w.total == pytest.approx(-3382.55)
+    assert w.pending_net is None
+    assert w.incomplete is False
+    assert w.executions == 3
+
+
+def test_week_to_date_carries_the_pending_windows_incomplete_flag():
+    w = dd.WeekToDate(
+        settled=_wk(-3382.55),
+        breakdown=dd.BreakdownWindow(),
+        stats=_rts(),
+        pending=_pw(declined=("CL",)),
+        through=date(2026, 9, 28),
+    )
+    assert w.incomplete is True
+
+
+def test_build_flex_sections_returns_week_to_date(store):
+    sections = dd.build_flex_sections(store, date(2026, 8, 6), reconstruction=None)
+    wtd = sections["week_to_date"]
+    assert isinstance(wtd, dd.WeekToDate)
+    assert wtd.settled == sections["week"]
+    assert wtd.pending is None  # no reconstruction: the executions could not be read
+    assert wtd.through == sections["coverage"].through

@@ -374,6 +374,7 @@ class DashboardPoller:
             "coverage": previous.coverage,
             "breakdowns": previous.breakdowns,
             "pending": previous.pending,
+            "week_to_date": previous.week_to_date,
         }
 
     def _reconstruct(self, positions: tuple[Position, ...], ledger: Any) -> Any:
