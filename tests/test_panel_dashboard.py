@@ -1705,6 +1705,7 @@ def test_the_week_tile_is_the_week_to_date_and_names_both_sources():
 
 
 def test_the_week_tile_without_readable_pending_shows_the_settled_figure_and_says_so():
+    """Pending unreadable: the tile shows the settled week and its label says pending is unavailable."""
     v = pdash.build_dashboard()
     snap = _snapshot(pending=None, week_to_date=_wtd(None))
     v.refresh(snap, now=_NOW)
@@ -1714,6 +1715,7 @@ def test_the_week_tile_without_readable_pending_shows_the_settled_figure_and_say
 
 
 def test_the_week_tile_marks_an_incomplete_pending_part():
+    """A declined contract makes the tile's figure a floor, and the label carries the mark."""
     v = pdash.build_dashboard()
     pending = dd.PendingWindow(
         rows=(dd.TypeBreakdown("FUT", 10.0, 10.0, 0.0, 1, 0, 0),), declined=("CL",)
@@ -1724,6 +1726,7 @@ def test_the_week_tile_marks_an_incomplete_pending_part():
 
 
 def test_the_weekly_tab_leads_with_the_week_to_date_and_shows_both_parts():
+    """The block leads with the week to date, then the settled and pending lines, and names Monthly/YTD as Flex-only."""
     pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
     snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
     text = pdash.week_to_date_markdown(snap.week_to_date, "Weekly", currency="USD")
@@ -1734,6 +1737,7 @@ def test_the_weekly_tab_leads_with_the_week_to_date_and_shows_both_parts():
 
 
 def test_the_weekly_tab_says_when_the_pending_part_is_unavailable_or_a_floor():
+    """The pending line reads "unavailable" when it could not be read and is marked incomplete when a contract was declined."""
     unavailable = pdash.week_to_date_markdown(_wtd(None), "Weekly", currency="USD")
     assert "| Not yet on a statement | unavailable" in unavailable
     floor = pdash.week_to_date_markdown(
@@ -1743,6 +1747,7 @@ def test_the_weekly_tab_says_when_the_pending_part_is_unavailable_or_a_floor():
 
 
 def test_selecting_weekly_renders_the_week_to_date_block_and_the_combined_breakdown():
+    """Selecting Weekly renders the week-to-date block and a breakdown that includes the pending part."""
     v = pdash.build_dashboard()
     pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
     snap = _snapshot(pending=pending, week_to_date=_wtd(pending))

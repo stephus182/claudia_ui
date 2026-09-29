@@ -560,6 +560,7 @@ def test_presorted_keeps_the_callers_order_instead_of_sorting_by_time():
 
 
 def test_build_book_is_flex_rows_then_the_live_fills_flex_lacks_in_time_order():
+    """Statement rows first as given, then the pending fills by time; a live duplicate of a Flex row is dropped."""
     flex = (_fill("f.1", 7, 1.0, 100.0, "2026-09-28T15:00:00"),)
     live = (
         _fill("p.2", 7, -1.0, 111.0, "20260929-02:00:00"),
@@ -571,6 +572,7 @@ def test_build_book_is_flex_rows_then_the_live_fills_flex_lacks_in_time_order():
 
 
 def test_build_book_with_no_flex_history_is_the_pending_fills_alone():
+    """A contract with no statement rows has a book of its pending fills only."""
     live = (_fill("p.1", 7, -1.0, 110.0, "20260928-22:00:00"),)
     assert [f.execution_id for f in build_book((), live, settled=set())] == ["p.1"]
 

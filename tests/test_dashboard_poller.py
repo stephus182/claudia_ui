@@ -1075,6 +1075,7 @@ async def test_pending_realised_is_anchored_on_the_statement_not_the_fill_window
         )
 
     def row(eid, side, size, price, t):
+        """One `/iserver/account/trades` row for contract 7 at a 10x multiplier."""
         return {
             "execution_id": eid,
             "conid": 7,

@@ -2412,6 +2412,7 @@ def test_flex_fills_reads_a_contracts_statement_rows_as_live_fill_rows(book_stor
 
 
 def test_flex_fills_groups_by_contract_in_statement_order(book_store):
+    """Rows come back grouped by contract, each contract in statement order."""
     fills = dd.flex_fills(book_store, [515416632, 304037511])
     assert [(f.conid, f.execution_id) for f in fills] == [
         (304037511, "a.1"),
@@ -2422,6 +2423,7 @@ def test_flex_fills_groups_by_contract_in_statement_order(book_store):
 
 
 def test_flex_fills_is_empty_for_an_unknown_contract_and_for_no_contracts(book_store):
+    """An unknown conid and an empty request both yield nothing, never an error."""
     assert dd.flex_fills(book_store, [1]) == ()
     assert dd.flex_fills(book_store, []) == ()
 
@@ -2430,6 +2432,7 @@ def test_flex_fills_is_empty_for_an_unknown_contract_and_for_no_contracts(book_s
 
 
 def _wk(total, count=3, by_asset=None):
+    """A RealisedWindow over the 2026-09-28 week with the fields these tests pin."""
     return dd.RealisedWindow(
         start=date(2026, 9, 28),
         end=date(2026, 9, 29),
@@ -2441,6 +2444,7 @@ def _wk(total, count=3, by_asset=None):
 
 
 def _rts(lots=4, wins=1, losses=3, gross_win=458.02, gross_loss=-3633.92):
+    """A RoundTripStats over the same week, defaults matching the settled Monday."""
     return dd.RoundTripStats(
         start=date(2026, 9, 28),
         end=date(2026, 9, 29),
@@ -2469,6 +2473,7 @@ def _lf(i):
 
 
 def _pw(net=1868.58, wins=3, losses=0, declined=(), fills=5):
+    """A pending window with one FUT row and `fills` real fill objects, ids only."""
     row = dd.TypeBreakdown("FUT", net, net, 0.0, wins, losses, 0)
     return dd.PendingWindow(
         rows=(row,), declined=tuple(declined), fills=tuple(_lf(i) for i in range(fills))
@@ -2476,6 +2481,7 @@ def _pw(net=1868.58, wins=3, losses=0, declined=(), fills=5):
 
 
 def test_week_to_date_is_settled_plus_pending():
+    """The 2026-09-29 morning: −3,382.55 settled + 1,868.58 pending = −1,513.97, rows and counts merged."""
     w = dd.WeekToDate(
         settled=_wk(-3382.55, count=11, by_asset={"FUT": -3175.90, "STK": -206.65}),
         breakdown=dd.BreakdownWindow(
@@ -2501,6 +2507,7 @@ def test_week_to_date_is_settled_plus_pending():
 
 
 def test_week_to_date_without_readable_pending_is_the_settled_figure_and_says_so():
+    """Pending None is "could not be read": the total is the settled figure and pending_net is None."""
     w = dd.WeekToDate(
         settled=_wk(-3382.55),
         breakdown=dd.BreakdownWindow(),
@@ -2515,6 +2522,7 @@ def test_week_to_date_without_readable_pending_is_the_settled_figure_and_says_so
 
 
 def test_week_to_date_carries_the_pending_windows_incomplete_flag():
+    """A declined contract in the pending part makes the week a floor, and it says so."""
     w = dd.WeekToDate(
         settled=_wk(-3382.55),
         breakdown=dd.BreakdownWindow(),
@@ -2526,6 +2534,7 @@ def test_week_to_date_carries_the_pending_windows_incomplete_flag():
 
 
 def test_build_flex_sections_returns_week_to_date(store):
+    """The sections dict carries the value, built from the same week, breakdown, stats and coverage."""
     sections = dd.build_flex_sections(store, date(2026, 8, 6), reconstruction=None)
     wtd = sections["week_to_date"]
     assert isinstance(wtd, dd.WeekToDate)
