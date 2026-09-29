@@ -297,7 +297,7 @@ def test_coverage_line_states_the_t_plus_one_gap(view):
     assert "2026-08-05" in line
     assert "today is never in it" in line
     assert "not yet on a statement" in line
-    assert "The tile above is today only" in line
+    assert "The **Realised today** tile is today only" in line
 
 
 def test_coverage_line_names_the_session_day_boundary(view):
@@ -1685,7 +1685,6 @@ def _wtd(pending, through=date(2026, 8, 5)):
     return dd.WeekToDate(
         settled=snap.week,
         breakdown=snap.breakdowns.get("week", dd.BreakdownWindow()),
-        stats=snap.stats["week"],
         pending=pending,
         through=through,
     )

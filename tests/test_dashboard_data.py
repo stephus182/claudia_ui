@@ -2443,20 +2443,6 @@ def _wk(total, count=3, by_asset=None):
     )
 
 
-def _rts(lots=4, wins=1, losses=3, gross_win=458.02, gross_loss=-3633.92):
-    """A RoundTripStats over the same week, defaults matching the settled Monday."""
-    return dd.RoundTripStats(
-        start=date(2026, 9, 28),
-        end=date(2026, 9, 29),
-        closed_lots=lots,
-        winners=wins,
-        losers=losses,
-        scratches=0,
-        gross_win=gross_win,
-        gross_loss=gross_loss,
-    )
-
-
 def _lf(i):
     """A pending fill with only an id — the week counts fills, it does not read them."""
     return LiveFill(
@@ -2490,7 +2476,6 @@ def test_week_to_date_is_settled_plus_pending():
                 dd.TypeBreakdown("STK", -206.65, 32.72, -239.37, 1, 6, 0),
             )
         ),
-        stats=_rts(lots=11, wins=2, losses=9, gross_win=490.74, gross_loss=-3873.29),
         pending=_pw(),
         through=date(2026, 9, 28),
     )
@@ -2511,7 +2496,6 @@ def test_week_to_date_without_readable_pending_is_the_settled_figure_and_says_so
     w = dd.WeekToDate(
         settled=_wk(-3382.55),
         breakdown=dd.BreakdownWindow(),
-        stats=_rts(),
         pending=None,
         through=date(2026, 9, 28),
     )
@@ -2526,7 +2510,6 @@ def test_week_to_date_carries_the_pending_windows_incomplete_flag():
     w = dd.WeekToDate(
         settled=_wk(-3382.55),
         breakdown=dd.BreakdownWindow(),
-        stats=_rts(),
         pending=_pw(declined=("CL",)),
         through=date(2026, 9, 28),
     )

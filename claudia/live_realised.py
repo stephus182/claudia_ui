@@ -64,6 +64,8 @@ All three equities were opened *before* the fill window, so their closing fills 
 opening leg to match. Reconstructed STK for 2026-08-04 came out at **0.00 against Flex's
 -3,249.70** — an understatement of the whole position, and exactly the kind of plausible
 number that must never reach a screen. Untrusted contracts are excluded and named.
+Since 2026-09-29 (gap #82) the book handed in carries the statement's executions too, so
+an opening leg older than the fill window no longer declines a contract.
 
 ## ⚠ Two traps measured on the live data
 
@@ -118,9 +120,12 @@ log = logging.getLogger(__name__)
 # returned fell inside seven days anyway, so that measurement does NOT establish whether
 # a wider window is honoured. Treat "7" as what we currently ask for, not as a limit.
 #
-# What follows from it either way: a position opened before the window has no opening leg
-# in view, so its closes are declined rather than half-counted. That is the intended
-# division of labour — this covers recent round trips, Flex owns everything older.
+# What follows from it: the window alone cannot see a lot opened before it. Until
+# 2026-09-29 such a contract was declined; since gap #82 the poller hands `reconstruct`
+# the BOOK — every statement execution of the contract (`dashboard_data.flex_fills`), then
+# the fills not on a statement yet (`build_book`) — so the window's edge decides nothing.
+# A decline now means the account's whole record for a contract does not reproduce IBKR's
+# position: a corporate action, or a missing execution.
 FILL_WINDOW_DAYS = 7
 
 
@@ -317,7 +322,8 @@ class Reconstruction:
     its id (`pending`), and IBKR states no trade date for a live fill.
 
     `declined` names the contracts whose reconstructed position did not reproduce IBKR's,
-    meaning their closing fills had no opening leg inside the window. Their contributions
+    meaning the book handed in — since gap #82 the statement's executions plus the pending
+    fills — does not reproduce IBKR's position for that contract. Their contributions
     are **excluded** from `realised`, and `declined_executions` holds every execution they
     had, so `pending` can say "incomplete" rather than a total that is quietly too small.
     """

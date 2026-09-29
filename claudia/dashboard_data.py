@@ -1921,7 +1921,6 @@ def build_flex_sections(
         "week_to_date": WeekToDate(
             settled=windows["week"],
             breakdown=breakdowns["week"],
-            stats=stats["week"],
             pending=pending,
             through=coverage.through,
         ),
@@ -2137,7 +2136,8 @@ class PendingWindow:
     (`live_realised`), not settled by IBKR.
 
     `incomplete` is the honesty flag: a contract with a pending execution could not be
-    reconstructed (its opening leg was outside the fill window), so its P&L is excluded and
+    reconstructed (the book — the statement's executions plus the pending fills, gap #82 —
+    does not reproduce IBKR's position), so its P&L is excluded and
     the figures are a floor, not a total.
 
     `fills` is the executions themselves — the Fills tab (gap #68, 2026-09-25) — under the
@@ -2184,7 +2184,6 @@ class WeekToDate:
 
     settled: RealisedWindow
     breakdown: BreakdownWindow
-    stats: RoundTripStats | None
     pending: PendingWindow | None
     through: date | None
 

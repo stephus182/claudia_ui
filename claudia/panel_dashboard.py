@@ -437,11 +437,12 @@ def coverage_line(snapshot: DashboardSnapshot) -> str:
     if cov is None or cov.through is None:
         return "_Realised windows: no Flex data in the local store._"
     return (
-        f"_Realised week/month/YTD come from the Flex dataset through "
+        f"_Realised month/YTD come from the Flex dataset through "
         f"**{cov.through.isoformat()}** (IBKR publishes a day's trades T+1, so today is "
-        f"never in it) — executions not yet on a statement are under **Daily**, "
-        f"never in these windows — and are "
-        f"IBKR's **statement** figures. The tile above is today only, on IBKR's "
+        f"never in it) and are IBKR's **statement** figures; executions not yet on a "
+        f"statement are under **Daily** and, since 2026-09-29, added to the **week** as "
+        f"week to date beside its settled part — never bucketed by date. "
+        f"The **Realised today** tile is today only, on IBKR's "
         f"**real-time average cost**. The two do not add up and are not meant to: they "
         f"cover different periods, and they use different day boundaries — Flex buckets "
         f"on IBKR's **session** date, which rolls at 18:00 ET for futures, 20:00 ET for "
@@ -1496,7 +1497,9 @@ def stats_markdown(
 
     Since gap #69 (2026-09-24) every dated figure on the pane is settled — the breakdown
     table above is Flex too — and what is not yet on a statement is the Daily tab,
-    never added to a dated one. So this block and the table agree on their source; the
+    never added to a dated one. Since gap #82 (2026-09-29) the Weekly tab renders
+    `week_to_date_markdown` instead — settled plus pending, both named — so this block
+    serves Monthly and YTD. Here the block and the table agree on their source; the
     footnote says so and points at Pending for the rest.
 
     Two different bases appear here on purpose, and are labelled as such:
@@ -2027,15 +2030,13 @@ class DashboardView:
         # An empty week has no currency of its own (`currency_label` returns ""), so the
         # account's own base currency stands in — known, not assumed.
         #
-        # The figure is the Flex week, `snapshot.week`, the same source as the P&L pane's
-        # Weekly window, and the tile names the statement it runs through (gap #69). Until
-        # 2026-08-06 the tile and the pane read different weeks, ten thousand apart, side
-        # by side; from then until 2026-09-24 both were "bridged" with live fills dated by
-        # their UTC timestamp, which is not the trade date. Executions not yet on a
-        # statement are under the pane's Daily tab, never added to a dated figure.
-        # The week as it stands (operator 2026-09-29, gap #82): settled plus pending, both
-        # named. Until then the tile was Flex alone (gap #69) and the pending part appeared
-        # only under Daily — a flat week read as down by the whole pending amount.
+        # The week as it stands (operator 2026-09-29, gap #82): settled plus the part not
+        # yet on a statement, both named, the same value the P&L pane's Weekly tab renders.
+        # History: until 2026-08-06 the tile and the pane read different weeks, ten thousand
+        # apart, side by side; from then until 2026-09-24 both were "bridged" with live
+        # fills dated by their UTC timestamp, which is not the trade date; from 2026-09-24
+        # (gap #69) the tile was the settled Flex week alone and the pending part appeared
+        # only under Daily — so a flat week read as down by the whole pending amount.
         week = snapshot.week
         week_ccy = (week.currency_label or ccy) if week else ccy
         wtd = snapshot.week_to_date
