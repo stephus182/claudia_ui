@@ -2011,6 +2011,16 @@ class TypeBreakdown:
         return 100.0 * self.winners / decided if decided else None
 
     @property
+    def gain_pct(self) -> float | None:
+        """Gross wins as a percentage of the gross traded either way (operator 2026-09-29).
+
+        The win rate counts lots; this weighs them: nine wins totalling 500 against one
+        loss of 500 is a 90% win rate and a 50% gain rate. None when nothing was gained
+        or lost, so the UI renders an em dash rather than a rate over nothing.
+        """
+        return gain_pct_over((self,))
+
+    @property
     def win_loss_ratio(self) -> float | None:
         """Gross win over gross loss, or None when nothing was lost.
 
@@ -2040,6 +2050,18 @@ class TypeBreakdown:
         averages describe nothing real.
         """
         return self.gross_loss / self.losers if self.losers else None
+
+
+def gain_pct_over(rows: Iterable[TypeBreakdown]) -> float | None:
+    """Gross wins over gross wins plus gross losses across `rows`, in percent, or None.
+
+    Computed on the summed gross figures, not averaged over rows: 800 of gains against
+    500 of losses is 61.5% whatever the split by asset class.
+    """
+    wins = sum(r.gross_win for r in rows)
+    losses = sum(abs(r.gross_loss) for r in rows)
+    traded = wins + losses
+    return round(100.0 * wins / traded, 1) if traded else None
 
 
 def realised_by_type(conn: sqlite3.Connection, start: date, end: date) -> tuple[TypeBreakdown, ...]:

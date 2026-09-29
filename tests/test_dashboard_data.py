@@ -2524,3 +2524,33 @@ def test_build_flex_sections_returns_week_to_date(store):
     assert wtd.settled == sections["week"]
     assert wtd.pending is None  # no reconstruction: the executions could not be read
     assert wtd.through == sections["coverage"].through
+
+
+# ── Gain %: gross wins over gross wins plus gross losses (operator 2026-09-29) ─────────
+
+
+@pytest.mark.parametrize(
+    ("gross_win", "gross_loss", "expected"),
+    [
+        (500.0, -500.0, 50.0),  # 9 wins of 500 against 1 loss of 500: 90% win rate, 50% gain
+        (300.0, 0.0, 100.0),
+        (0.0, -120.0, 0.0),
+        (0.0, 0.0, None),
+    ],
+)
+def test_gain_pct_is_the_share_of_the_gross_traded_amount_that_was_gains(
+    gross_win, gross_loss, expected
+):
+    """The win rate counts lots; this weighs them. Nothing traded either way has no rate."""
+    row = dd.TypeBreakdown("FUT", 0.0, gross_win, gross_loss, 1, 1, 0)
+    assert row.gain_pct == expected
+
+
+def test_gain_pct_over_rows_is_computed_on_the_summed_gross_figures():
+    """The Total row: 800 of gains against 500 of losses is 61.5%, not the mean of the rows."""
+    rows = (
+        dd.TypeBreakdown("FUT", 0.0, 500.0, -500.0, 9, 1, 0),
+        dd.TypeBreakdown("STK", 300.0, 300.0, 0.0, 2, 0, 0),
+    )
+    assert dd.gain_pct_over(rows) == pytest.approx(61.5)
+    assert dd.gain_pct_over(()) is None

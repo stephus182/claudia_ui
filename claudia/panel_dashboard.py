@@ -80,6 +80,7 @@ from claudia.dashboard_data import (
     WeekToDate,
     display_symbol,
     fill_display_name,
+    gain_pct_over,
     order_display_name,
     position_display_name,
     realised_ledger_label,
@@ -262,8 +263,8 @@ def breakdown_table(window: Any, currency: str = "", note: str = _FLEX_SOURCE_NO
     )
     lines = [
         flag,
-        f"| Type | Net{ccy} | Gross win | Gross loss | W | L | Win % | Avg win | Avg loss |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"| Type | Net{ccy} | Gross win | Gross loss | Gain % | W | L | Win % | Avg win | Avg loss |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
 
     def num(v: float | None) -> str:
@@ -274,14 +275,22 @@ def breakdown_table(window: Any, currency: str = "", note: str = _FLEX_SOURCE_NO
         """
         return "—" if v is None else f"{v:,.2f}"
 
+    def pct(v: float | None) -> str:
+        """A rate cell, or an em dash when there is nothing to rate."""
+        return "—" if v is None else f"{v:.0f}%"
+
     for r in window.rows:
-        rate = "—" if r.win_rate is None else f"{r.win_rate:.0f}%"
+        # Gain % (operator 2026-09-29) weighs the lots the win rate only counts: gross
+        # wins over gross wins plus gross losses, so 9 wins of 500 against 1 loss of 500
+        # reads 90% won and 50% gained.
         lines.append(
             f"| **{r.asset_class}** | {r.net:,.2f} | {r.gross_win:,.2f} | "
-            f"{r.gross_loss:,.2f} | {r.winners} | {r.losers} | {rate} | "
-            f"{num(r.average_win)} | {num(r.average_loss)} |"
+            f"{r.gross_loss:,.2f} | {pct(r.gain_pct)} | {r.winners} | {r.losers} | "
+            f"{pct(r.win_rate)} | {num(r.average_win)} | {num(r.average_loss)} |"
         )
-    lines.append(f"| **Total** | **{window.net:,.2f}** | | | | | | | |")
+    lines.append(
+        f"| **Total** | **{window.net:,.2f}** | | | {pct(gain_pct_over(window.rows))} | | | | | |"
+    )
     lines.append("")
     lines.append(note)
     return "\n".join(lines)
@@ -1573,7 +1582,7 @@ def week_to_date_markdown(wtd: WeekToDate | None, label: str, currency: str | No
     futures = sum(r.net for r in wtd.rows if r.asset_class in FUTURES_CLASSES)
     others = sum(r.net for r in wtd.rows if r.asset_class in _NON_FUTURES)
     lines = [
-        f"#### {label} — week to date",
+        f"#### {label} — week to date (Flex through {through} + not yet on a statement)",
         "",
         "| | |",
         "|---|---|",
@@ -2040,7 +2049,6 @@ class DashboardView:
         week = snapshot.week
         week_ccy = (week.currency_label or ccy) if week else ccy
         wtd = snapshot.week_to_date
-        through = wtd.through.isoformat() if wtd is not None and wtd.through is not None else None
         cov = snapshot.coverage
         if wtd is None:
             # No week-to-date value: the settled week, named as before gap #82.
@@ -2051,12 +2059,12 @@ class DashboardView:
             )
             value = week.total if week else None
         elif wtd.pending is None:
-            label = f"Realised this week · settled through {through} — pending unavailable"
+            # Operator 2026-09-29, after the live read: the short label here; the sources
+            # and the statement date are spelt out in the Weekly block's heading.
+            label = "Realised week to date — pending unavailable"
             value = wtd.total
         else:
-            label = (
-                f"Realised this week · to date (Flex through {through} + not yet on a statement)"
-            )
+            label = "Realised week to date"
             if wtd.incomplete:
                 label += " ⚠ incomplete"
             value = wtd.total

@@ -1699,8 +1699,9 @@ def test_the_week_tile_is_the_week_to_date_and_names_both_sources():
     v.refresh(snap, now=_NOW)
     tile = v._tiles["realised_week"]
     assert tile.value == pytest.approx(snap.week.total + 999.0, abs=0.005)
-    assert "to date" in tile.label
-    assert "2026-08-05" in tile.label and "not yet on a statement" in tile.label
+    # Operator 2026-09-29 (after the live read): the tile is the short label; the sources
+    # and the statement date are spelt out in the Weekly block's heading, not here.
+    assert tile.label == "Realised week to date"
 
 
 def test_the_week_tile_without_readable_pending_shows_the_settled_figure_and_says_so():
@@ -1710,7 +1711,7 @@ def test_the_week_tile_without_readable_pending_shows_the_settled_figure_and_say
     v.refresh(snap, now=_NOW)
     tile = v._tiles["realised_week"]
     assert tile.value == pytest.approx(snap.week.total, abs=0.005)
-    assert "pending unavailable" in tile.label
+    assert tile.label == "Realised week to date — pending unavailable"
 
 
 def test_the_week_tile_marks_an_incomplete_pending_part():
@@ -1721,7 +1722,7 @@ def test_the_week_tile_marks_an_incomplete_pending_part():
     )
     snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
     v.refresh(snap, now=_NOW)
-    assert "incomplete" in v._tiles["realised_week"].label
+    assert v._tiles["realised_week"].label == "Realised week to date ⚠ incomplete"
 
 
 def test_the_weekly_tab_leads_with_the_week_to_date_and_shows_both_parts():
@@ -1729,6 +1730,7 @@ def test_the_weekly_tab_leads_with_the_week_to_date_and_shows_both_parts():
     pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
     snap = _snapshot(pending=pending, week_to_date=_wtd(pending))
     text = pdash.week_to_date_markdown(snap.week_to_date, "Weekly", currency="USD")
+    assert "#### Weekly — week to date (Flex through 2026-08-05 + not yet on a statement)" in text
     assert "Week to date" in text and f"{snap.week.total + 999.0:+,.2f} USD" in text
     assert "Settled through 2026-08-05" in text and f"{snap.week.total:+,.2f} USD" in text
     assert "Not yet on a statement" in text and "+999.00 USD" in text
@@ -2983,3 +2985,37 @@ def test_side_colouring_is_bound_to_the_side_column(view):
     assert ("color", palette.DOWN_COLOR) in painted
     side_col = list(view._fills.value.columns).index("Side")
     assert all(col == side_col for (_row, col) in ctx if ctx[(_row, col)])
+
+
+# -- Gain %: the share of the gross traded amount that was gains (operator 2026-09-29) ------
+
+
+def test_breakdown_table_shows_gain_pct_after_gross_loss_per_row_and_for_the_total():
+    """9 wins totalling 500 against 1 loss of 500: a 90% win rate but a 50% gain rate. The
+    column sits after Gross loss; the Total row carries the figure over every type."""
+    window = dd.BreakdownWindow(
+        rows=(
+            dd.TypeBreakdown("FUT", 0.0, 500.0, -500.0, 9, 1, 0),
+            dd.TypeBreakdown("STK", 300.0, 300.0, 0.0, 2, 0, 0),
+        )
+    )
+    text = pdash.breakdown_table(window, "USD")
+    header = next(line for line in text.splitlines() if line.startswith("| Type |"))
+    assert "| Gross loss | Gain % | W |" in header
+    fut = next(line for line in text.splitlines() if line.startswith("| **FUT**"))
+    assert "| -500.00 | 50% | 9 | 1 | 90% |" in fut
+    stk = next(line for line in text.splitlines() if line.startswith("| **STK**"))
+    assert "| 0.00 | 100% | 2 | 0 | 100% |" in stk
+    total = next(line for line in text.splitlines() if line.startswith("| **Total**"))
+    assert "| **300.00** | | | 62% |" in total  # 800 / (800 + 500)
+
+
+def test_breakdown_table_gain_pct_is_a_dash_when_nothing_was_traded():
+    """No gross either way: a scratch-only row has no gain rate, and says so."""
+    window = dd.BreakdownWindow(rows=(dd.TypeBreakdown("FUT", 0.0, 0.0, 0.0, 0, 0, 2),))
+    fut = next(
+        line
+        for line in pdash.breakdown_table(window, "USD").splitlines()
+        if line.startswith("| **FUT**")
+    )
+    assert "| 0.00 | — | 0 | 0 |" in fut
