@@ -188,19 +188,21 @@ summarized in [`CLAUDE.md`](CLAUDE.md) § Order Staging.
 ## Live Dashboard — and the two realised figures
 
 A polling dashboard sits beside the chat: a KPI strip over tabs for Chart, Positions,
-working Orders and P&L, refreshed every 15s. Every table is read-only with no click
+working Orders, Fills and P&L, refreshed every 15s. Every table is read-only with no click
 handler bound — cancelling an order stays behind `propose_cancel` and both gates.
 
-The P&L tab shows **two realised numbers that will not reconcile, and are not meant to.**
-They are different quantities; never add them or "fix" one to match the other. The
-dashboard states all three reasons on the surface itself rather than leaving you to
-discover them by subtraction:
+Every dated window on the P&L tab — week, month, YTD — is shown **to date**: the part IBKR
+has settled on a Flex statement plus the part not yet on one, both named, and the curve ends
+at that figure (operator rule 2026-09-29: one rule for all three, "flex realised + realised
+new"). The tab still shows **two realised figures that will not reconcile, and are not meant
+to** — the **Realised today** tile and the windows are different quantities; never add them
+or "fix" one to match the other. The dashboard states the reasons on the surface itself:
 
-| | **Realised today** (tile) | **Week / month / YTD** |
+| | **Realised today** (tile) | **Week / month / YTD** (to date) |
 |---|---|---|
-| Source | IBKR ledger `realizedpnl` — live | Flex statements — **T+1, never includes today** |
-| Cost basis | IBKR's real-time `avgCost` | the statement basis |
-| Day boundary | IBKR's **accounting** roll — see below | IBKR's **session** date (18:00 ET futures, 20:00 ET stock, 17:00 ET FX) |
+| Source | IBKR ledger `realizedpnl` — live | Flex statements (**T+1**) for the settled part, plus the executions not yet on a statement, reconstructed FIFO from the account's own fills, for the pending part — each part named on the tab |
+| Cost basis | IBKR's real-time `avgCost` | the statement basis for the settled part; the traded prices for the pending part |
+| Day boundary | IBKR's **accounting** roll — see below | IBKR's **session** date for the settled part (18:00 ET futures, 20:00 ET stock, 17:00 ET FX); the pending part is "since the last statement" and is never bucketed by a date |
 
 ### The "today" on that tile ends in the late evening, not at midnight
 

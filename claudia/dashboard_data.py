@@ -80,9 +80,10 @@ statement's `dateTime` is ET. One apparent `FUT` exception — 2026-05-25 00:06:
 05-26 — is Memorial Day: the session rolled to the next *trading* day, not the next
 calendar day, which is the same rule.
 
-**Nothing here needs replicating, and that is the point.** Every dated window in this
-module is Flex alone and buckets on `trade_date`, so it inherits IBKR's session convention
-by construction. Re-deriving a roll rule in Python would be a second, drifting definition
+**Nothing here needs replicating, and that is the point.** The settled part of every dated
+window in this module is Flex alone and buckets on `trade_date`, so it inherits IBKR's
+session convention by construction; the pending part is shown beside it and never bucketed
+(`WindowToDate`, gap #82). Re-deriving a roll rule in Python would be a second, drifting definition
 of "day" sitting next to the authoritative one — the class of mistake the realised-P&L
 rule above already cost this project once.
 
@@ -1316,7 +1317,8 @@ class DashboardSnapshot:
     # rather than singular.
     stats: Mapping[str, RoundTripStats] = field(default_factory=dict)
     # Per-asset-class breakdowns keyed "week"/"month"/"ytd": Flex alone, like `stats`
-    # above, because Flex is the only source of a trade date (gap #69).
+    # above, because Flex is the only source of a trade date (gap #69). The combined
+    # view — settled plus pending — is `to_date` below (gap #82).
     breakdowns: Mapping[str, BreakdownWindow] = field(default_factory=dict)
     series: tuple[RealisedPoint, ...] = ()
     coverage: FlexCoverage | None = None
@@ -1888,11 +1890,12 @@ def build_flex_sections(
     YTD heading puts a right number under a wrong label, which is the failure this
     project treats as worse than a missing number.
 
-    `reconstruction` is an optional `live_realised.Reconstruction`. It feeds `pending`
-    only: the executions Flex has not settled, decided by id (gap #69). Every dated
-    section — windows, stats, breakdowns, series — is Flex alone, because Flex is the only
-    source of a trade date. Without a reconstruction `pending` is None ("could not look"),
-    never an empty window.
+    `reconstruction` is an optional `live_realised.Reconstruction`. It feeds `pending`:
+    the executions Flex has not settled, decided by id (gap #69). Every dated section —
+    windows, stats, breakdowns, series — is Flex alone, because Flex is the only source of
+    a trade date; `to_date` then pairs each window with `pending` (gap #82), and the pane
+    appends the pending part to the curve after slicing (`with_pending_step`). Without a
+    reconstruction `pending` is None ("could not look"), never an empty window.
     """
     bounds = {
         "week": (week_start(today), today),
@@ -1911,10 +1914,10 @@ def build_flex_sections(
         **windows,
         "stats": stats,
         "breakdowns": breakdowns,
-        # The curve reads the same source as the breakdown table it is drawn beneath:
-        # Flex alone. They disagreed on screen 2026-09-23 when the table was bridged and
-        # the curve was not; since gap #69 neither is bridged, so they agree by
-        # construction.
+        # The series is Flex alone, like the settled part of the table it is drawn
+        # beneath. They disagreed on screen 2026-09-23 when the table was bridged and the
+        # curve was not; since gap #69 neither is bridged, and since gap #82 both carry the
+        # same pending part — the pane appends it to the sliced series (`with_pending_step`).
         "series": realised_series(conn, *bounds["ytd"]),
         "coverage": coverage,
         "pending": pending,

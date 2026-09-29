@@ -212,8 +212,9 @@ def short_reason(error: str | None) -> str:
 
 # Where the numbers in a breakdown table came from, stated under the table itself.
 #
-# `_FLEX_SOURCE_NOTE` is true of the settled windows and FALSE of the pending window,
-# which is why it is a parameter rather than a constant baked into the renderer. Nothing
+# `_TO_DATE_NOTE` is true of the dated windows (both sources named) and FALSE of the
+# pending window, which is why it is a parameter rather than a constant baked into the
+# renderer. Nothing
 # pending comes from either table: no statement covers those executions yet, so every
 # figure there is reconstructed from the account's own executions. Shipped with the wrong
 # note attached on 2026-08-07 and caught in the browser the same hour — the table was right
@@ -1656,7 +1657,7 @@ class DashboardView:
             "cash": self._tile("Cash"),
             "unrealised": self._tile("Unrealised P&L", signed=True),
             "realised_ledger": self._tile(realised_ledger_label(), signed=True),
-            "realised_week": self._tile("Realised this week", signed=True),
+            "realised_week": self._tile("Realised week to date", signed=True),
         }
         # Tiles only. A win-rate grid lived at the right end of this row until 2026-08-07
         # and was removed as clutter (user): a small table wedged beside five Number
@@ -1997,14 +1998,10 @@ class DashboardView:
         week = snapshot.week
         week_ccy = (week.currency_label or ccy) if week else ccy
         wtd = snapshot.to_date.get("week")
-        cov = snapshot.coverage
         if wtd is None:
-            # No week-to-date value: the settled week, named as before gap #82.
-            label = (
-                f"Realised this week · through {cov.through.isoformat()}"
-                if cov is not None and cov.through is not None
-                else "Realised this week"
-            )
+            # No to-date value yet (before the first poll): the label stays, the settled
+            # week if there is one, else nothing.
+            label = "Realised week to date"
             value = week.total if week else None
         elif wtd.pending is None:
             # Operator 2026-09-29, after the live read: the short label here; the sources
