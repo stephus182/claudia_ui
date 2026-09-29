@@ -49,7 +49,7 @@ def db(tmp_path):
     with sqlite3.connect(path) as w:
         w.execute(
             "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
-            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, execution_key TEXT)"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, execution_key TEXT, conid INTEGER, symbol TEXT, quantity REAL, trade_price REAL, ib_commission REAL, multiplier REAL, trade_date TEXT, date_time TEXT, date_time_iso TEXT)"
         )
         # `asset_category` is present on the REAL flex_lot (verified against the live
         # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
@@ -369,7 +369,7 @@ async def test_an_empty_store_is_not_treated_as_a_failed_read(tmp_path):
     with sqlite3.connect(path) as w:
         w.execute(
             "CREATE TABLE flex_trade (trade_date_iso TEXT, source TEXT,"
-            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, execution_key TEXT)"
+            " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, execution_key TEXT, conid INTEGER, symbol TEXT, quantity REAL, trade_price REAL, ib_commission REAL, multiplier REAL, trade_date TEXT, date_time TEXT, date_time_iso TEXT)"
         )
         # `asset_category` is present on the REAL flex_lot (verified against the live
         # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
@@ -568,7 +568,7 @@ async def test_entries_are_attached_when_the_store_can_answer(tmp_path):
             "CREATE TABLE flex_trade (trade_date_iso TEXT, trade_date TEXT, source TEXT,"
             " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, conid TEXT,"
             " symbol TEXT, underlying_symbol TEXT, date_time TEXT, quantity REAL,"
-            " trade_price REAL, execution_key TEXT)"
+            " trade_price REAL, execution_key TEXT, ib_commission REAL, multiplier REAL, date_time_iso TEXT)"
         )
         # `asset_category` is present on the REAL flex_lot (verified against the live
         # store 2026-08-06: FUT 296, STK 405, OPT 4, FUND 2). A fixture without it is a
@@ -600,7 +600,7 @@ def _replaced_intraday_store(tmp_path):
             "CREATE TABLE flex_trade (trade_date_iso TEXT, trade_date TEXT, source TEXT,"
             " asset_category TEXT, currency TEXT, fifo_pnl_realized REAL, conid TEXT,"
             " symbol TEXT, underlying_symbol TEXT, date_time TEXT, quantity REAL,"
-            " trade_price REAL, execution_key TEXT)"
+            " trade_price REAL, execution_key TEXT, ib_commission REAL, multiplier REAL, date_time_iso TEXT)"
         )
         w.execute(
             "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
@@ -1006,3 +1006,99 @@ async def test_poll_names_every_pending_fills_contract_stocks_included(db):
     assert 9599491 in snap.identities
     assert client.contract_info_calls == 1
     ci.clear_cache()
+
+
+@pytest.mark.asyncio
+async def test_pending_realised_is_anchored_on_the_statement_not_the_fill_window(db):
+    """Gap #82 (2026-09-29): a contract whose pending closes hit lots on the statement is
+    reconstructed even when the fill window's first fill closed a lot opened before it.
+    Invented figures in the 2026-09-29 shape; the real record is in test_live_realised."""
+    with sqlite3.connect(db) as w:
+        w.executemany(
+            "INSERT INTO flex_trade (trade_date_iso, source, asset_category, currency,"
+            " fifo_pnl_realized, execution_key, conid, symbol, quantity, trade_price,"
+            " ib_commission, multiplier, trade_date, date_time, date_time_iso)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "2026-07-30",
+                    "flex",
+                    "FUT",
+                    "USD",
+                    0.0,
+                    "f.1",
+                    7,
+                    "T",
+                    1.0,
+                    80.0,
+                    -2.0,
+                    10.0,
+                    "20260730",
+                    "20260730;160000",
+                    "2026-07-30T16:00:00",
+                ),
+                (
+                    "2026-07-31",
+                    "flex",
+                    "FUT",
+                    "USD",
+                    8.0,
+                    "f.2",
+                    7,
+                    "T",
+                    -1.0,
+                    81.0,
+                    -2.0,
+                    10.0,
+                    "20260731",
+                    "20260731;040000",
+                    "2026-07-31T04:00:00",
+                ),
+                (
+                    "2026-08-05",
+                    "flex",
+                    "FUT",
+                    "USD",
+                    0.0,
+                    "f.3",
+                    7,
+                    "T",
+                    2.0,
+                    90.0,
+                    -4.0,
+                    10.0,
+                    "20260805",
+                    "20260805;150000",
+                    "2026-08-05T15:00:00",
+                ),
+            ],
+        )
+
+    def row(eid, side, size, price, t):
+        return {
+            "execution_id": eid,
+            "conid": 7,
+            "symbol": "T",
+            "sec_type": "FUT",
+            "side": side,
+            "size": size,
+            "price": price,
+            "net_amount": price * size * 10,
+            "trade_time": t,
+            "commission": 2.0,
+        }
+
+    trades = [
+        row("f.2", "S", 1, 81.0, "20260731-08:00:00"),  # in the window, already on Flex
+        row("f.3", "B", 2, 90.0, "20260805-19:00:00"),
+        row("p.1", "S", 1, 91.0, "20260805-22:00:00"),
+        row("p.2", "S", 1, 92.0, "20260806-02:00:00"),
+    ]
+    poller = _poller(db, FakeClient(positions=[], trades=trades))  # T is flat now
+    await poller._poll_once()
+    snap = poller.snapshot()
+
+    assert snap.pending is not None
+    assert snap.pending.declined == ()
+    assert [(r.asset_class, r.net) for r in snap.pending.rows] == [("FUT", 22.0)]
+    assert [f.execution_id for f in snap.pending.fills] == ["p.2", "p.1"]

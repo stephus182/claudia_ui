@@ -82,6 +82,8 @@ from claudia.dashboard_data import (
     fetch_orders,
     fetch_positions,
     fetch_quotes,
+    flex_fills,
+    settled_execution_ids,
     with_economic_entries,
     with_quotes,
 )
@@ -375,7 +377,8 @@ class DashboardPoller:
         }
 
     def _reconstruct(self, positions: tuple[Position, ...], ledger: Any) -> Any:
-        """FIFO the recent fills into realised P&L, refetching only when something closed.
+        """FIFO the book — every Flex execution of a contract with a pending fill, then its
+        pending fills (gap #82) — into realised P&L, refetching only when something closed.
 
         ## Why this is not fetched every poll
 
@@ -419,10 +422,17 @@ class DashboardPoller:
         if self._fill_cache is not None and key == self._fill_cache_key:
             return self._fill_cache
         try:
-            from claudia.live_realised import fetch_fills, reconstruct
+            from claudia.live_realised import build_book, fetch_fills, reconstruct
 
             fills = fetch_fills(self._client)
-            result = reconstruct(fills, {p.conid: p.quantity for p in positions})
+            # The book (gap #82): every statement execution of a contract that has a fill
+            # not yet on a statement, then those fills. Read-only, one open per rebuild —
+            # rebuilds happen only when something filled (the cache key above).
+            with closing(connect(self._db_path)) as conn:
+                settled = settled_execution_ids(conn, (f.execution_id for f in fills))
+                flex = flex_fills(conn, {f.conid for f in fills if f.execution_id not in settled})
+            book = build_book(flex, fills, settled)
+            result = reconstruct(book, {p.conid: p.quantity for p in positions}, presorted=True)
         except Exception as exc:
             log.warning("Dashboard fill reconstruction failed: %s", exc)
             return self._fill_cache
