@@ -573,3 +573,135 @@ def test_build_book_is_flex_rows_then_the_live_fills_flex_lacks_in_time_order():
 def test_build_book_with_no_flex_history_is_the_pending_fills_alone():
     live = (_fill("p.1", 7, -1.0, 110.0, "20260928-22:00:00"),)
     assert [f.execution_id for f in build_book((), live, settled=set())] == ["p.1"]
+
+
+def _window_edge_case():
+    """The 2026-09-29 shape with invented figures: a round trip completed before the fill
+    window; a lot opened before the window and closed by its first fill; a two-lot open on
+    the statement; two pending closes."""
+    flex = (
+        _fill("f.0a", 7, 1.0, 70.0, "2026-09-15T10:00:00", commission=2.0, multiplier=10),
+        _fill("f.0b", 7, -1.0, 75.0, "2026-09-15T11:00:00", commission=2.0, multiplier=10),
+        _fill("f.1", 7, 1.0, 80.0, "2026-09-22T16:00:00", commission=2.0, multiplier=10),
+        _fill("f.2", 7, -1.0, 81.0, "2026-09-23T04:00:00", commission=2.0, multiplier=10),
+        _fill("f.3", 7, 2.0, 90.0, "2026-09-28T15:00:00", commission=4.0, multiplier=10),
+    )
+    live = (
+        _fill("f.2", 7, -1.0, 81.0, "20260923-08:00:00", commission=2.0, multiplier=10),
+        _fill("f.3", 7, 2.0, 90.0, "20260928-19:00:00", commission=4.0, multiplier=10),
+        _fill("p.1", 7, -1.0, 91.0, "20260928-22:00:00", commission=2.0, multiplier=10),
+        _fill("p.2", 7, -1.0, 92.0, "20260929-02:00:00", commission=2.0, multiplier=10),
+    )
+    return flex, live, {"f.0a", "f.0b", "f.1", "f.2", "f.3"}
+
+
+def test_a_window_edge_no_longer_declines_a_contract_whose_pending_lots_are_on_the_statement():
+    """p.1: (91−90)·10 − 2 (half the 4.00 opening commission) − 2 = 6.00; p.2: 20 − 2 − 2 = 16.00."""
+    flex, live, settled = _window_edge_case()
+    book = build_book(flex, live, settled)
+    result = reconstruct(book, {7: 0.0}, presorted=True).pending(settled)
+    assert result.declined == ()
+    assert result.realised == {"FUT": 22.0}
+    assert sorted(t.pnl for t in result.round_trips) == [6.0, 16.0]
+
+
+def test_the_live_window_alone_declined_that_contract_which_is_why_the_book_exists():
+    """The pre-2026-09-29 book: f.2 closes a lot the window never saw, the net is −1 against
+    IBKR's 0, and everything the contract had is withdrawn — +22.00 shown nowhere."""
+    _flex, live, settled = _window_edge_case()
+    result = reconstruct(live, {7: 0.0}).pending(settled)
+    assert result.declined == ("T",)
+    assert result.realised == {}
+
+
+def test_a_statement_row_older_than_the_window_is_never_counted_as_pending():
+    """The settled set handed to `pending` must cover every execution in the book. With the
+    live window's ids alone, the round trip closed by f.0b (older than the window) reads
+    as pending and leaks into the figure — the prototype found exactly that, three CL trips
+    summing to −1,175.94."""
+    flex, live, settled = _window_edge_case()
+    book = build_book(flex, live, settled)
+    reconstruction = reconstruct(book, {7: 0.0}, presorted=True)
+    leaked = reconstruction.pending({"f.2", "f.3"})  # the live window's settled ids only
+    assert "f.0b" in {t.execution_id for t in leaked.round_trips}  # the leak, demonstrated
+    right = reconstruction.pending(settled)
+    assert {t.execution_id for t in right.round_trips} == {"p.1", "p.2"}
+
+
+_FIXTURE_0929 = Path(__file__).parent / "fixtures" / "live_fills_2026-09-29.json"
+_FLEX_0929 = Path(__file__).parent / "fixtures" / "live_fills_flex_2026-09-29.json"
+_0929 = pytest.mark.skipif(
+    not (_FIXTURE_0929.exists() and _FLEX_0929.exists()),
+    reason="tests/fixtures/live_fills_*2026-09-29.json are git-ignored account data",
+)
+
+
+def _book_0929(tmp_path, cutoff, positions):
+    """The 2026-09-29 record as the real loader and builder see it, up to `cutoff` (UTC)."""
+    import sqlite3
+
+    from claudia import dashboard_data as dd
+
+    live = tuple(
+        f for f in parse_fills(json.loads(_FIXTURE_0929.read_text())) if f.trade_time <= cutoff
+    )
+    data = json.loads(_FLEX_0929.read_text())
+    cols = [
+        "execution_key",
+        "conid",
+        "symbol",
+        "asset_category",
+        "quantity",
+        "trade_price",
+        "ib_commission",
+        "multiplier",
+        "trade_date",
+        "date_time",
+        "date_time_iso",
+        "source",
+    ]
+    path = tmp_path / "store.db"
+    with sqlite3.connect(path) as w:
+        w.execute(
+            "CREATE TABLE flex_trade (execution_key, conid, symbol, asset_category, quantity,"
+            " trade_price, ib_commission, multiplier, trade_date, date_time, date_time_iso,"
+            " source)"
+        )
+        w.executemany(
+            "INSERT INTO flex_trade VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [[r[c] for c in cols] for r in data["flex_trade"]],
+        )
+    conn = dd.connect(path)
+    settled_live = dd.settled_execution_ids(conn, [f.execution_id for f in live])
+    pending_conids = {f.conid for f in live if f.execution_id not in settled_live}
+    flex = dd.flex_fills(conn, pending_conids)
+    book = build_book(flex, live, settled_live)
+    settled_all = dd.settled_execution_ids(conn, [f.execution_id for f in book])
+    conn.close()
+    return reconstruct(book, positions, presorted=True).pending(settled_all)
+
+
+@_0929
+def test_the_2026_09_29_morning_reconciles_to_the_ledger_to_the_cent(tmp_path):
+    """09:50 ET: 37 fills, CL flat, ES short one; the ledger read +1,868.58."""
+    result = _book_0929(tmp_path, "20260929-12:44:31", {304037511: 0.0, 515416632: -1.0})
+    assert result.declined == ()
+    assert result.realised == {"FUT": 1868.58}
+    assert sorted(t.pnl for t in result.round_trips) == [108.02, 855.28, 905.28]
+
+
+@_0929
+def test_the_2026_09_29_capture_reconciles_to_the_ledger_to_the_cent(tmp_path):
+    """11:40 ET: 44 fills, everything flat; the ledger read +3,307.92 at the same instant."""
+    result = _book_0929(tmp_path, "99999999-99:99:99", {304037511: 0.0, 515416632: 0.0})
+    assert result.declined == ()
+    assert result.realised == {"FUT": 3307.92}
+    assert sorted(t.pnl for t in result.round_trips) == [
+        15.28,
+        108.02,
+        133.02,
+        483.02,
+        808.02,
+        855.28,
+        905.28,
+    ]
