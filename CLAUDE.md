@@ -40,6 +40,8 @@ claudia/flex_sync.py        — session-start dataset validation, the "did this 
                               no clock, no staleness definition (operator 2026-09-28, gap #79)
 claudia/context_loader.py   — docs/context.md + docs/principles.md → system prompt
 claudia/conversation_store.py — SQLite: sessions, messages, decisions, doc_versions
+claudia/sqlite_read_only.py  — the one read-only SQLite opener: path escaped into the URI,
+                              mode=ro, a NUL refused (gaps #83, #89); nothing else opens by URI
 claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger fallback; since
                               2026-09-04 also the fill subscription: every execution reaches each
                               session as an IBKR-authored chat message + log toast + operator note
@@ -178,7 +180,7 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (2,476 collected 2026-09-30
+pytest        # full suite — all unit, no IBKR gateway needed (2,536 collected 2026-09-30
               # in the main checkout; `pytest --collect-only -q | tail -1` reports it)
 pytest tests/security   # the structural invariants alone, ~3s (also part of the full run)
 ruff check . && ruff format --check . && mypy   # lint, format, type gates — all must be clean
@@ -193,8 +195,12 @@ ruff check . && ruff format --check . && mypy   # lint, format, type gates — a
 # variables point at probe files that must never exist, the session reporter is redirected and
 # leftover sessions cleared for every test, and the run FAILS at session end if a probe or a new
 # file in the real data/test-sessions/ appears — for 19 days every run had left one there.
-# Nor can a test open a database under ~/.ibkr_core, however the path is spelled (gap #85,
-# 2026-09-30): sqlite3.connect refuses it before opening anything.
+# Nor can test code reach anything under ~/.ibkr_core — the trade store, the Drive token and
+# credentials — from collection to the end of the run (gaps #85, #89, 2026-09-30): an audit
+# hook refuses every SQLite open there and every file opened, created, changed or removed
+# there, before it happens, however the path is spelled, and the run fails if a refusal was
+# swallowed. It catches accidents, not intent, and sees only what Python audits: SQL-level
+# ATTACH and dir_fd-relative calls are out of its sight (docs/security-architecture.md § 9).
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
