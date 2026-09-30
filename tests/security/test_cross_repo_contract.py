@@ -38,6 +38,12 @@ Three ways that happens, each with a test here:
    leaves no recovery. The core's LocalAuthentication test double cannot see a switch, so the
    installed core is held to it here (gap #60, 2026-09-28; docs/code agreement is core F2).
 
+6. **An attribute ClaudIA reads on the toolkit moves.** It reaches past `ClaudeToolkit` to
+   the store, the config and the Drive cache (`_store`, `_config`, `_cache`), and every test
+   here drives a MagicMock toolkit, which answers to any name. A real toolkit is built and
+   each attribute read is checked on it; the three private ones are pinned by identity
+   (gap #87, 2026-09-30).
+
 These assertions run against the *installed* core, so they check what this machine and CI
 actually resolve rather than what a document claims.
 """
@@ -46,6 +52,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from typing import Any
 
 import pytest
 
@@ -645,6 +652,123 @@ def test_the_gate2_button_names_claudia_prints_are_the_ones_the_core_draws():
     for label in (GATE2_SEND_LABEL, GATE2_MODIFY_LABEL, GATE2_CANCEL_LABEL):
         assert f'confirm_label="{label}"' in source, f"the core no longer draws a {label} button"
     assert isinstance(order_confirm._DIALOG_TIMEOUT_S, int)
+
+
+# ── The toolkit's collaborators, which ClaudIA reaches past it (gap #87, 2026-09-30) ───────
+#
+# ClaudIA reads three of `ClaudeToolkit`'s private attributes — the store, the config and the
+# Drive cache it was built with — at 12 sites, because the toolkit exposes only `client`
+# publicly. A private name carries no compatibility promise from the core, and this repository's
+# tests drive MagicMock toolkits, which answer to any attribute: a rename in the core would pass
+# the whole suite and break the running app at startup. So a real toolkit is built here.
+# Public properties for the three are the lasting fix, and belong to the core (gap #87).
+TOOLKIT_REACH_INS = ("_cache", "_config", "_store")
+
+
+def _toolkit_attributes(source: str) -> set[str]:
+    """Every attribute read through a receiver named `…toolkit`: `toolkit.x`,
+    `self._toolkit.x`, `agent.toolkit.x`.
+
+    Matched on the receiver's name, as `notification_call_sites` is: the toolkit reaches a
+    read site as a parameter or an attribute, never through an import there. An alias under
+    another name would not be seen; none existed when this was written (2026-09-30).
+    """
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute):
+            receiver = node.value
+            name = (
+                receiver.id
+                if isinstance(receiver, ast.Name)
+                else receiver.attr
+                if isinstance(receiver, ast.Attribute)
+                else ""
+            )
+            if name.endswith("toolkit"):
+                names.add(node.attr)
+    return names
+
+
+def _claudia_toolkit_attributes() -> set[str]:
+    """Every toolkit attribute read anywhere in the package and its scripts."""
+    read: set[str] = set()
+    for _path, source in package_sources():
+        read |= _toolkit_attributes(source)
+    return read
+
+
+def _reach_ins(names: set[str]) -> set[str]:
+    """The toolkit's private names among `names`: one leading underscore. A dunder is
+    Python's, not the toolkit's, and has no collaborator to be compared with."""
+    return {name for name in names if name.startswith("_") and not name.startswith("__")}
+
+
+def _collaborator_mismatches(toolkit_cls: type) -> list[str]:
+    """Build `toolkit_cls` from four distinct sentinels, by keyword as ClaudIA does, and name
+    each reach-in that does not hold the collaborator passed under its own name."""
+    passed: dict[str, Any] = {role: object() for role in ("client", "cache", "store", "config")}
+    toolkit = toolkit_cls(**passed)
+    return [
+        attribute
+        for attribute in TOOLKIT_REACH_INS
+        if getattr(toolkit, attribute, None) is not passed[attribute.removeprefix("_")]
+    ]
+
+
+def test_the_toolkit_holds_the_collaborators_claudia_reaches_past_it():
+    """`toolkit._store` is the store `ClaudeToolkit` was built with, and so on — what
+    `opening_status`, `panel_app`, `panel_chart` and `execution_listener` rely on."""
+    from ibkr_core_mcp import ClaudeToolkit
+
+    assert _collaborator_mismatches(ClaudeToolkit) == []
+
+
+def test_claudia_reaches_past_the_toolkit_only_where_it_is_pinned():
+    """The private toolkit attributes ClaudIA reads equal `TOOLKIT_REACH_INS`: a fourth
+    reach-in is a decision made here, and a pin no longer read must go."""
+    private = _reach_ins(_claudia_toolkit_attributes())
+    assert private == set(TOOLKIT_REACH_INS), sorted(private)
+
+
+def test_every_toolkit_attribute_claudia_reads_exists_on_a_real_toolkit():
+    """Public or private. The tests drive MagicMock toolkits, which answer to any name, so
+    this is the one place a renamed attribute can be seen before the app starts."""
+    from ibkr_core_mcp import ClaudeToolkit
+
+    passed: dict[str, Any] = {role: object() for role in ("client", "cache", "store", "config")}
+    toolkit = ClaudeToolkit(**passed)
+    read = _claudia_toolkit_attributes()
+    missing = sorted(name for name in read if not hasattr(toolkit, name))
+    assert read and not missing, missing
+
+
+def test_the_collaborator_check_sees_a_swap():
+    """The identity check, against a toolkit that files two collaborators under each
+    other's names."""
+    from ibkr_core_mcp import ClaudeToolkit
+
+    class Swapped(ClaudeToolkit):
+        """Keeps the cache as `_config` and the config as `_cache`."""
+
+        def __init__(self, client: Any, cache: Any, store: Any, config: Any) -> None:
+            """Pass the cache and the config to the real constructor crossed over."""
+            super().__init__(client=client, cache=config, store=store, config=cache)
+
+    assert _collaborator_mismatches(Swapped) == ["_cache", "_config"]
+
+
+def test_the_attribute_probe_reads_every_receiver_shape():
+    """The collector above, against each way the toolkit is reached — and two it must skip."""
+    source = (
+        "toolkit._store.get_latest_pnl()\n"
+        "self._toolkit.execute(name, inputs)\n"
+        "_toolkit.tools\n"
+        "agent.toolkit.client\n"
+        "other._store\n"
+        "self._toolkit = toolkit\n"
+    )
+    assert _toolkit_attributes(source) == {"_store", "execute", "tools", "client"}
+    assert _reach_ins({"_store", "client", "__class__"}) == {"_store"}
 
 
 # ── Gate 1's policy (gap #60, 2026-09-28) ─────────────────────────────────────────────────
