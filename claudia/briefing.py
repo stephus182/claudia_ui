@@ -142,6 +142,14 @@ def build_closures(mkt: Mapping[str, object] | None, today: date) -> ClosureSect
     **A weekend is decided before any of that** (gap #78): the weekly schedule is known from
     the date alone, so a Saturday or Sunday is a `Weekend` even when the calendar could not
     be read — an unreadable calendar then costs the Globex hours line, not the verdict.
+
+    **The core now answers the per-exchange question itself** (register F24, `release/2.2.0`,
+    2026-09-29): `get_market_calendar_context()` carries `sessions_today`, one verdict per
+    exchange from its own calendar (`None` on the failure marker). ClaudIA runs the released
+    2.1.0 until `core-ref.txt` moves, so the weekday rule and the holiday scan above stay;
+    when the pin reaches the release that carries it, read `sessions_today` here and delete
+    the weekday rule — keeping only the weekend verdict for an unreadable calendar, which no
+    dict can supply.
     """
     day = _DAY_NAMES.get(today.weekday())
     if day is not None:
