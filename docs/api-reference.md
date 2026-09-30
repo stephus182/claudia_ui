@@ -37,6 +37,10 @@ guessing paths.
 | `POST /iserver/auth/ssodh/init` — current brokerage-session init | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/initialize-brokerage-session.md> |
 | Ping / `tickle` | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md> |
 | Authentication status | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/authentication-status.md> |
+| WebSocket `sts` — "Authentication Status", relayed "when initially connecting" and on every change (competing sessions); `{"topic":"sts","args":{"authenticated":bool}}` is all IBKR documents. **A topic sent before it is dropped in silence** (measured 2026-09-24, gap #68 / core F5) | <https://www.interactivebrokers.com/docs/web-api/v1/ws/unsolicited-messages/authentication-status.md> |
+| WebSocket `system` — the username on connect (`success`), then a heartbeat every 10 s (unix ms); `act` — the account properties on connect, `sessionId` included. Neither is ever logged in full | <https://www.interactivebrokers.com/docs/web-api/v1/ws/unsolicited-messages/system-connection-messages.md> and <https://www.interactivebrokers.com/docs/web-api/v1/ws/unsolicited-messages/account-updates.md> |
+| WebSocket topics that need a brokerage session (`smd`, `smh`, `sbd`, `sor`, `str`, `act`, `sts`, `blt`, `ntf`) and those that do not (`spl`, `ssd`, `sld`, `system`) | <https://www.interactivebrokers.com/docs/web-api/v1/ws/introduction.md> |
+| WebSocket — send a topic (IBKR's example sleeps 3 s after the open before its first topic) and the `api=<session>` upgrade cookie | <https://www.interactivebrokers.com/docs/web-api/v1/ws/connection-guide/send-a-websocket-topic.md> and <https://www.interactivebrokers.com/docs/web-api/v1/ws/connection-guide/establishing-the-websocket-with-client-portal-gateway.md> |
 | Orders / modify (two-call pattern) | <https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/> |
 | Orders / place — Web API lesson (`STP` uses `price`) | <https://www.interactivebrokers.com/campus/trading-lessons/placing-orders/> |
 | Stop orders on US futures — simulated, RTH-only unless `outsideRTH` | <https://www.interactivebrokers.com/en/trading/us-futures-stop-order.php> |
@@ -129,6 +133,7 @@ session-resilience work:
 |---|---|
 | Flex Web Service setup (endpoints, headers) | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3.htm |
 | Flex error codes (20 codes) | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm |
+| Statement cutoff times — what a day's statement *includes* (commodities 5:15 PM EST, securities 8:20 PM EST, IB-JP ~6:00 AM ET); no retrieval time is published anywhere (scraped 2026-09-25 and 2026-09-29 via Firecrawl) | https://www.ibkrguides.com/clientportal/performanceandstatements/statements.htm |
 
 **Scraped 2026-07-21 (Firecrawl keyless tier).** Verbatim findings:
 

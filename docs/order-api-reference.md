@@ -878,6 +878,24 @@ unknown one may be guessed); a stock's description equal to its ticker is not jo
 (IBKR's documented STK shape is `"AMD" / "AMD"`); the System log captures the session's
 notifications area when it is built, because the listener task keeps the document of whichever
 session started it; the fill is never handled as a user turn (`respond=False`, pinned).
+
+**It never delivered in production until the core's F5 fix (found 2026-09-24, gap #68; fixed on
+core `release/2.2.0` `ebca521`, 2026-09-29).** `_run_once` sends the `str` subscription the
+instant `connect()` returns, and the gateway drops a topic sent before its own handshake is done
+— without a word: the socket stays open, heartbeats flow, no frame answers. Proven by a read-only
+probe the same minute: 0 `str` frames when sent right after the open (twice, with and without a
+cookie), 37 executions with the exact `/iserver/account/trades` ids when sent after the `sts`
+frame reporting `authenticated: true`. What IBKR documents (scraped 2026-09-29, the pages in
+`docs/api-reference.md`): `sts` is relayed "when initially connecting" and on every change,
+`system` carries the username on connect and then a heartbeat every 10 s, `act` the account
+properties with the `sessionId`, `str` needs a brokerage session, and IBKR's own example sleeps
+3 s before its first topic. The core fixed it where it is: `IBKRWebSocket.connect()` now returns
+only after `sts authenticated: true`, so the subscribe-straight-after-connect above becomes
+correct with no change here once `core-ref.txt` moves; until then, on the released 2.1.0, this
+section describes surfaces that have never fired. The remaining ClaudIA half (a socket double as
+strict as the gateway, the "not confirmed" silence guard, replay-and-seed against
+`realtimeUpdatesOnly`) is spec Part 3 and follows the pin; the Fills tab (gap #68's other half,
+built 2026-09-25) is the independent check meanwhile.
 Only the FUT event shape has been observed live; STK/OPT shapes rest on IBKR's documentation
 until a stock fills through the listener. Not done: a P&L-after-fill line (the realised tile refreshes
 within 15 s), a poller-based fallback. Live status: **code-verified 2026-09-04; the first

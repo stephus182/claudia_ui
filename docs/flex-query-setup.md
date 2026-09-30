@@ -66,6 +66,8 @@ request and changes nothing. A statement that is not finished is answered with a
 (1004 *incomplete*, 1005–1008 settlement / P&L data not ready, 1019 in progress — IBKR's
 error-code table), which the core raises on before anything is written.
 
+**Re-read 2026-09-29 through the Firecrawl API** (`.firecrawl/flex-availability/ibkrguides-clientportal-statements-2026-09-29.md`): the two cutoff sentences stand verbatim, and the page adds one the 09-25 read did not record — *"IB-JP clients have a statement cutoff time of around 6:00 AM ET."* **The rule now lives in the core** (`release/2.2.0`, register F19, 2026-09-29): `ibkr_core_mcp.store.newest_statement_day(now)` is the same function as `flex_sync.newest_statement_day`, and the core's `get_trade_date_coverage()["stale"]` reads the archive's `toDate` against it — the flag that called a two-trading-day-old store current on 09-24 is corrected at its source. ClaudIA keeps its own copy, and its own decision, until `core-ref.txt` moves to the release that carries it; then the copy is deleted (its docstring will name the condition). The core's own record of the measurement is `ibkr_core_mcp/docs/flex-query-reference.md` § When a day's statement exists.
+
 **Consequence — the startup rule needs no clock** (operator 2026-09-28): the newest statement
 that can exist is the one for the weekday before today (ET), and the store knows which one it
 holds. The exact publication time is irrelevant to the rule and is not looked for.

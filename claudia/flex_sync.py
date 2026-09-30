@@ -470,6 +470,13 @@ def newest_statement_day(now: datetime) -> date:
     2026-06-26 → 09-28, at any hour, came back through the previous weekday and never the
     same day; weekdays, not exchange days (the 07-06 pull came back through the 07-03 US
     holiday).
+
+    **A duplicate, on purpose, until the pin moves.** The core carries the same function as
+    `ibkr_core_mcp.store.newest_statement_day` since its `release/2.2.0` branch (register F19,
+    2026-09-29), where `get_trade_date_coverage()["stale"]` applies it to IBKR's `toDate`.
+    ClaudIA runs the released 2.1.0 until `core-ref.txt` moves, so this copy stays; when the
+    pin reaches the release that carries it, import the core's and delete this one — the
+    condition `order_flow._last_trade_key` names for the front-month rule.
     """
     if now.tzinfo is None:
         raise ValueError("newest_statement_day needs an aware datetime; a naive one has no ET date")
