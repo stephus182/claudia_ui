@@ -114,7 +114,12 @@ def cut_store(src: Path, turn_id: int, workdir: Path) -> tuple[Path, str, str | 
     dst = workdir / f"claudia-cut-{turn_id}.db"
     if dst.exists():
         dst.unlink()
-    with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as ro, sqlite3.connect(dst) as rw:
+    # `as_uri()` escapes the path: a hand-formatted `file:{src}?mode=ro` over a path holding
+    # `?` or `#` opened a different, empty file read-write (gap #83,
+    # https://www.sqlite.org/uri.html § 3.1). No `expanduser()`: the app opens
+    # CLAUDIA_DB_PATH literally, and this must read the file the app wrote.
+    source = f"{src.absolute().as_uri()}?mode=ro"
+    with sqlite3.connect(source, uri=True) as ro, sqlite3.connect(dst) as rw:
         ro.backup(rw)
     with sqlite3.connect(dst) as c:
         row = c.execute(

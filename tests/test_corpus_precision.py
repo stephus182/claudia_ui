@@ -72,7 +72,7 @@ pytestmark = pytest.mark.skipif(
 @functools.lru_cache(maxsize=1)
 def _frozen_turns() -> tuple[tuple[int, str, int], ...]:
     """(message_id, assistant_text, tools_run_that_turn) for the frozen window."""
-    conn = sqlite3.connect(f"file:{_DB}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"{_DB.as_uri()}?mode=ro", uri=True)  # escaped path (gap #83)
     try:
         rows = conn.execute(
             "SELECT id, role, content FROM messages WHERE id <= ? ORDER BY id",

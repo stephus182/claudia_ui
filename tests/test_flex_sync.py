@@ -492,3 +492,123 @@ def test_pull_due_refuses_a_naive_now():
 
     with pytest.raises(ValueError):
         pull_due(datetime(2026, 9, 28, 10, 44), None)
+
+
+# ---------------------------------------------------------------------------
+# The read-only opens (gap #83, 2026-09-30). SQLite reads a URI's query after the first `?`,
+# its fragment after `#`, and decodes `%HH` in the path (https://www.sqlite.org/uri.html
+# § 3.1). A hand-formatted `file:{path}?mode=ro` over a path holding `#` or `?` opened — and
+# created — a different file beside the directory, read-write; `%41` failed to open
+# (measured 2026-09-30). The URI is built by `Path.as_uri()` now, and building it can raise
+# what formatting a string never did, so the never-raise contract is pinned here too.
+# ---------------------------------------------------------------------------
+
+import os  # noqa: E402
+from datetime import date  # noqa: E402
+
+from claudia.flex_sync import statement_through  # noqa: E402
+
+
+def _full_store(path) -> None:
+    """`_make_db` plus the two tables `last_import` and `statement_through` read."""
+    _make_db(path)
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE flex_import_log (
+            id INTEGER PRIMARY KEY, filename TEXT, imported_at TEXT, trade_id_count INTEGER,
+            source TEXT
+        );
+        INSERT INTO flex_import_log (filename, imported_at, trade_id_count, source)
+            VALUES ('statement-20260804.xml', '2026-08-05T12:18:00+00:00', 1, 'auto');
+        CREATE TABLE flex_change_in_nav (stmt_to_date TEXT);
+        INSERT INTO flex_change_in_nav VALUES ('20260804');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+# Each reader, with what a real answer from `_full_store` looks like — so the comparison
+# below cannot pass by both sides being "unreadable".
+_READERS = [
+    pytest.param(validate_dataset, lambda v: v.ok and not v.empty, id="validate_dataset"),
+    pytest.param(
+        dataset_fingerprint, lambda v: v == (1, 1, "2026-08-04"), id="dataset_fingerprint"
+    ),
+    pytest.param(last_import, lambda v: v.filename == "statement-20260804.xml", id="last_import"),
+    pytest.param(statement_through, lambda v: v == date(2026, 8, 4), id="statement_through"),
+]
+
+
+@pytest.mark.parametrize(("read", "is_real"), _READERS)
+def test_a_path_holding_uri_metacharacters_is_read_like_any_other(read, is_real, tmp_path):
+    """The same store under `odd dir #1 ?x %41` gives the answer it gives on a plain path,
+    and nothing appears beside the directory."""
+    plain = tmp_path / "plain" / "store.db"
+    odd = tmp_path / "odd dir #1 ?x %41" / "store.db"
+    for path in (plain, odd):
+        path.parent.mkdir()
+        _full_store(path)
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    expected = read(plain)
+    assert expected is not None and is_real(expected)
+    assert read(odd) == expected
+    assert sorted(p.name for p in tmp_path.iterdir()) == before, "an open created a file"
+
+
+# Each reader, with its own "unreadable" answer.
+_UNREADABLE = [
+    pytest.param(
+        validate_dataset,
+        lambda v: [c.name for c in v.failures] == ["dataset unreadable"],
+        id="validate_dataset",
+    ),
+    pytest.param(dataset_fingerprint, lambda v: v is None, id="dataset_fingerprint"),
+    pytest.param(last_import, lambda v: v is None, id="last_import"),
+    pytest.param(statement_through, lambda v: v is None, id="statement_through"),
+]
+
+
+@pytest.mark.parametrize(("read", "unreadable"), _UNREADABLE)
+def test_a_value_that_is_no_path_is_unreadable_not_an_exception(read, unreadable):
+    """Never raises: a test double or any other non-path value is an unreadable dataset.
+    `Path(value)` raises `TypeError` for it, which `except sqlite3.Error` does not catch."""
+    assert unreadable(read(object()))
+
+
+@pytest.mark.parametrize(("read", "unreadable"), _UNREADABLE)
+def test_a_relative_path_whose_working_directory_is_gone_is_unreadable(read, unreadable, tmp_path):
+    """A relative path is made absolute from the working directory; once that directory is
+    deleted, `os.getcwd()` raises `FileNotFoundError` — an unreadable dataset, not an error."""
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    home = os.getcwd()
+    os.chdir(gone)
+    try:
+        gone.rmdir()
+        result = read("store.db")
+    finally:
+        os.chdir(home)
+    assert unreadable(result)
+
+
+@pytest.mark.parametrize(("read", "is_real"), _READERS)
+def test_a_relative_path_is_read_against_the_working_directory(
+    read, is_real, tmp_path, monkeypatch
+):
+    """`absolute()` keeps what the hand-formatted form did with a relative path — SQLite
+    resolved it against the working directory — so a relative `IBKR_SQLITE_PATH` still reads."""
+    _full_store(tmp_path / "store.db")
+    monkeypatch.chdir(tmp_path)
+    assert is_real(read("store.db"))
+
+
+@pytest.mark.parametrize(("read", "unreadable"), _UNREADABLE)
+@pytest.mark.parametrize("name", ["store\x00.db", "store\ud800.db"], ids=["nul", "lone-surrogate"])
+def test_a_path_sqlite_cannot_take_is_unreadable_not_an_exception(read, unreadable, name, tmp_path):
+    """A NUL or a lone surrogate in the path. Until 2026-09-30 each escaped these functions as
+    a `ValueError` — `sqlite3.connect` refuses an embedded NUL, and neither URI form can encode
+    a lone surrogate — breaking their promise never to raise (measured; gap #83)."""
+    assert unreadable(read(tmp_path / name))

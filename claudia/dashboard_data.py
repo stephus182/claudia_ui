@@ -922,10 +922,14 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     cannot corrupt it and cannot be turned into a write path by a later edit. Verified
     2026-08-04 against the live WAL database — a read-only URI connection reads it fine.
 
+    The URI is built by `Path.as_uri()`, which escapes the path: a hand-formatted
+    `file:{path}?mode=ro` over a path holding `?` or `#` opened — and created — a different
+    file, read-write (gap #83, https://www.sqlite.org/uri.html § 3.1).
+
     `row_factory` is `sqlite3.Row` so the query helpers below can address columns by
     name, matching `SQLiteStore._connect`'s convention.
     """
-    conn = sqlite3.connect(f"file:{Path(db_path)}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"{Path(db_path).absolute().as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 

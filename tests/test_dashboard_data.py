@@ -324,6 +324,46 @@ def test_connect_is_read_only(store):
         store.execute("INSERT INTO flex_trade (source) VALUES ('flex')")
 
 
+def test_connect_reads_a_path_holding_uri_metacharacters_read_only(tmp_path):
+    """`#`, `?` and `%HH` in the store's path (https://www.sqlite.org/uri.html § 3.1): the
+    handle reads that store, cannot write, and nothing appears beside the directory. A
+    hand-formatted `file:{path}?mode=ro` opened a new file there, read-write (gap #83)."""
+    path = tmp_path / "odd dir #1 ?x %41" / "store.db"
+    path.parent.mkdir()
+    writer = sqlite3.connect(path)
+    writer.execute("CREATE TABLE marker (v)")
+    writer.execute("INSERT INTO marker VALUES ('the store')")
+    writer.commit()
+    writer.close()
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    conn = dd.connect(path)
+    try:
+        assert conn.execute("SELECT v FROM marker").fetchone()[0] == "the store"
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("CREATE TABLE written (x)")
+    finally:
+        conn.close()
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_connect_reads_a_relative_path_against_the_working_directory(tmp_path, monkeypatch):
+    """The escaped URI names what the hand-formatted one named for a relative path: the file
+    under the working directory, as SQLite resolved it."""
+    writer = sqlite3.connect(tmp_path / "store.db")
+    writer.execute("CREATE TABLE marker (v)")
+    writer.execute("INSERT INTO marker VALUES ('relative')")
+    writer.commit()
+    writer.close()
+    monkeypatch.chdir(tmp_path)
+
+    conn = dd.connect("store.db")
+    try:
+        assert conn.execute("SELECT v FROM marker").fetchone()[0] == "relative"
+    finally:
+        conn.close()
+
+
 def test_build_flex_sections_wires_every_window(store):
     """One threaded hop produces every section, all consistent."""
     s = dd.build_flex_sections(store, _TODAY)

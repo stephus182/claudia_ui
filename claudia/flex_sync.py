@@ -130,6 +130,30 @@ def _has_flex_tables(conn: sqlite3.Connection) -> bool:
     return {"flex_trade", "flex_lot", "flex_wash_sale"} <= names
 
 
+# What opening the store can raise, for the four readers below that promise never to:
+# SQLite's own errors, and those of building the URI from the path — `TypeError` for a value
+# that is no path (a test double), `OSError` when a relative path meets a deleted working
+# directory, `ValueError` for a path that cannot be encoded (a lone surrogate raises
+# `UnicodeEncodeError`). Until 2026-09-30 a NUL or a lone surrogate in the path escaped
+# `except sqlite3.Error` as a `ValueError` (measured, gap #83).
+_UNOPENABLE = (sqlite3.Error, OSError, TypeError, ValueError)
+
+
+def _connect_read_only(sqlite_path: str | Path) -> sqlite3.Connection:
+    """Open the store read-only, the path escaped into the URI by `Path.as_uri()`.
+
+    A hand-formatted `file:{path}?mode=ro` over a path holding `?` or `#` opened — and
+    created — a different file, read-write, and a `%HH` in the path was decoded (gap #83,
+    https://www.sqlite.org/uri.html § 3.1). `absolute()`, not `resolve()` or `expanduser()`:
+    it names the file the old form named for every path that form handled, since SQLite
+    resolves a relative path against the working directory and never expands `~`.
+
+    Raises:
+        Any of `_UNOPENABLE`, when the store cannot be opened.
+    """
+    return sqlite3.connect(f"{Path(sqlite_path).absolute().as_uri()}?mode=ro", uri=True)
+
+
 def validate_dataset(sqlite_path: str | Path) -> DatasetValidity:
     """Validate the local Flex dataset. Never raises — a failure to check is a failure.
 
@@ -137,8 +161,8 @@ def validate_dataset(sqlite_path: str | Path) -> DatasetValidity:
     database open, and validation must not be able to write, checkpoint or lock.
     """
     try:
-        conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
-    except sqlite3.Error as exc:
+        conn = _connect_read_only(sqlite_path)
+    except _UNOPENABLE as exc:
         return DatasetValidity((DatasetCheck("dataset unreadable", False, str(exc)),))
 
     try:
@@ -211,8 +235,8 @@ def dataset_fingerprint(sqlite_path: str | Path) -> tuple[int, int, str | None] 
     statement figures the pull was for. The source mix moved even though the count did not.
     """
     try:
-        conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
-    except sqlite3.Error:
+        conn = _connect_read_only(sqlite_path)
+    except _UNOPENABLE:
         return None
     try:
         if not _has_flex_tables(conn):
@@ -280,8 +304,8 @@ def last_import(sqlite_path: str | Path) -> LastImport | None:
     screen is better than a wrong one.
     """
     try:
-        conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
-    except sqlite3.Error:
+        conn = _connect_read_only(sqlite_path)
+    except _UNOPENABLE:
         return None
     try:
         row = conn.execute(
@@ -447,8 +471,8 @@ def statement_through(sqlite_path: str | Path) -> date | None:
     Anything unreadable is None, never a guess; the caller treats None as "pull".
     """
     try:
-        conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
-    except sqlite3.Error:
+        conn = _connect_read_only(sqlite_path)
+    except _UNOPENABLE:
         return None
     try:
         row = conn.execute("SELECT MAX(stmt_to_date) FROM flex_change_in_nav").fetchone()
