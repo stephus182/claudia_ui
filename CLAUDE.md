@@ -184,6 +184,8 @@ ruff check . && ruff format --check . && mypy   # lint, format, type gates — a
 # variables point at probe files that must never exist, the session reporter is redirected and
 # leftover sessions cleared for every test, and the run FAILS at session end if a probe or a new
 # file in the real data/test-sessions/ appears — for 19 days every run had left one there.
+# Nor can a test open a database under ~/.ibkr_core, however the path is spelled (gap #85,
+# 2026-09-30): sqlite3.connect refuses it before opening anything.
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api

@@ -16,9 +16,11 @@ the pytest process — is asserted against by tests/security/test_no_live_io.py.
 
 import os
 import shutil
+import sqlite3
 import tempfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import panel as pn
 import pytest
@@ -110,6 +112,48 @@ def _real_data_violations(probes: Iterable[Path], before: set[str], after: set[s
     for name in sorted(after - before):
         violations.append(f"a test wrote into the real report directory: {_REAL_REPORT_DIR / name}")
     return violations
+
+
+# ── …and opens no database in the core's data directory (CLA-SEC-009, 2026-09-30) ─────────
+#
+# The probes above keep the CONFIGURED core store out of reach. They cannot see a test that
+# names the real one: `~/.ibkr_core/store.db` written out, or a `Config` rebuilt after
+# `IBKR_SQLITE_PATH` was removed — whose default is that absolute path, so no working
+# directory and no tmp_path convention protects it. No test did either when this was written
+# (checked 2026-09-30). So `sqlite3.connect` refuses any database under that directory for
+# the length of every test, read-only opens included: a `mode=ro` open of a WAL database can
+# still create `-shm`/`-wal` beside it (https://www.sqlite.org/wal.html § 5, "Read-Only
+# Databases"). `tests/security/test_no_real_data_io.py` is what fails when this stops working.
+_OPERATOR_DATA_DIR = Path.home().resolve() / ".ibkr_core"
+
+
+def _operator_database(database: object) -> Path | None:
+    """The file under the operator's data directory that `database` names, or None.
+
+    Accepts every spelling `sqlite3.connect` does: `str`, `bytes`, a path object, and the
+    `file:` URI form, whose path is percent-decoded and cut at `?`/`#` as SQLite reads it
+    (https://www.sqlite.org/uri.html § 3). `~` is expanded, which SQLite itself would not do:
+    a test that spells the store that way meant the operator's, and is refused as if it had
+    reached it. Symlinks are resolved, so `/var/...` and `/private/var/...` are one place.
+    Anything that cannot name a file there — `:memory:`, an empty name, a path elsewhere, a
+    value that is no path — is None.
+    """
+    if isinstance(database, bytes):
+        database = database.decode("utf-8", "surrogateescape")
+    if not isinstance(database, str | os.PathLike):
+        return None
+    text = os.fspath(database)
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "surrogateescape")
+    if text.startswith("file:"):
+        text = unquote(urlsplit(text).path)
+    if not text or text == ":memory:":
+        return None
+    try:
+        resolved = Path(text).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):  # ValueError: a NUL or unencodable character
+        return None  # not judgeable here; `connect` refuses such a path in its own words
+    return resolved if resolved.is_relative_to(_OPERATOR_DATA_DIR) else None
 
 
 def _neutralise_dotenv() -> None:
@@ -247,6 +291,35 @@ def isolate_real_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterat
     monkeypatch.setattr(session_reporter, "REPORT_DIR", tmp_path / "session-reports")
     yield
     panel_app._open_sessions.clear()
+
+
+@pytest.fixture(autouse=True)
+def refuse_operator_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Every test: `sqlite3.connect` refuses a database in the operator's data directory.
+
+    The refusal is `pytest.fail`, whose exception derives from `BaseException`: code under
+    test that catches `Exception` or `sqlite3.Error` around an open — `flex_sync`'s
+    never-raise functions do exactly that — cannot swallow it and turn the touch into a quiet
+    "unreadable". Nothing is opened first: the path is judged before the real `connect` is
+    called. No marker is exempt: the probes above apply to every test as well, and no test
+    here carries `integration` (CLAUDE.md § Testing).
+    """
+    real_connect = sqlite3.connect
+
+    def guarded_connect(database, *args, **kwargs):  # forwards whatever `connect` returns
+        """`sqlite3.connect`, after refusing any database under the operator's directory."""
+        target = _operator_database(database)
+        if target is not None:
+            pytest.fail(
+                f"a unit test tried to open the operator's data ({target.name} under "
+                "~/.ibkr_core) — build the database under tmp_path",
+                pytrace=True,
+            )
+        return real_connect(database, *args, **kwargs)
+
+    guarded_connect.guards_operator_data = True  # type: ignore[attr-defined]
+    monkeypatch.setattr(sqlite3, "connect", guarded_connect)
+    yield
 
 
 def _find_buttons(chat):
