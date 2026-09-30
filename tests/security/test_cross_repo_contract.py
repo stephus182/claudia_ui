@@ -13,7 +13,9 @@ Three ways that happens, each with a test here:
    there leaves core CI green and breaks ClaudIA at import time, in a session. Since
    2026-09-14 the blocking lane resolves the core at the SHA in `core-ref.txt`, so this is
    caught by the informational forward-compatibility lane days before it is caught by an
-   upgrade — which is the point of having two lanes rather than one floating `main`.
+   upgrade — which is the point of having two lanes rather than one floating `main`. Since
+   2026-09-30 the list is held equal to what ClaudIA actually imports, in both directions
+   (gap #84: two runtime imports had been missing from it).
 
 2. **An entry point changes shape.** ClaudIA calls exactly three gated methods, by name,
    with two keyword arguments. A signature change is a silent behaviour change at the one
@@ -42,15 +44,18 @@ actually resolve rather than what a document claims.
 
 from __future__ import annotations
 
+import ast
 import inspect
 
 import pytest
 
 from tests.security.structural import package_sources, referenced_names
 
-# What ClaudIA imports from the core, and from where. Every entry is a name this repository
-# would fail to start without. Kept explicit rather than derived from the imports, so that
-# adding one is a decision someone makes here and not a diff nobody reads.
+# What ClaudIA imports from the core, and from where — every entry a name this repository
+# would fail to start, or to type-check, without. Kept explicit rather than derived from the
+# imports, so that adding one is a decision someone makes here and not a diff nobody reads;
+# held EQUAL to the imports by `test_every_core_name_claudia_imports_is_pinned` since
+# 2026-09-30, when two runtime imports were found outside it (gap #84).
 IMPORTED_API: dict[str, tuple[str, ...]] = {
     "ibkr_core_mcp": (
         "ClaudeToolkit",
@@ -64,6 +69,11 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
     "ibkr_core_mcp.streaming": ("IBKRWebSocket", "PnLUpdate", "TradeExecution"),
     "ibkr_core_mcp.gateway": ("GatewayManager",),
     "ibkr_core_mcp.auth": ("BrowserCookieAuth",),
+    # Both imported at module level by `gdrive_sync`. `load_or_refresh_credentials` is in
+    # neither the core's `__init__` nor its README or consumers guide (checked 2026-09-30):
+    # an unexported seam, which is what this list exists to hold.
+    "ibkr_core_mcp.config": ("Config",),
+    "ibkr_core_mcp.gdrive_auth": ("load_or_refresh_credentials",),
 }
 
 # The three gated entry points, and the keyword arguments ClaudIA passes to each. The gates
@@ -84,6 +94,75 @@ def test_every_imported_core_symbol_still_exists(module_name):
     module = importlib.import_module(module_name)
     missing = [name for name in IMPORTED_API[module_name] if not hasattr(module, name)]
     assert not missing, f"{module_name} no longer provides {missing}"
+
+
+def _core_imports(source: str) -> tuple[set[tuple[str, str]], set[str]]:
+    """What `source` imports from ibkr_core_mcp, at any depth.
+
+    Returns the `(module, name)` pairs of every `from … import …` — the name the core
+    defines, not a local alias — and the modules named by a plain `import …`. Imports
+    inside functions and under `TYPE_CHECKING` count: the first fail at call time, the
+    second fail the type gate.
+    """
+    pairs: set[tuple[str, str]] = set()
+    modules: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module.split(".")[0] == "ibkr_core_mcp":
+                pairs.update((node.module, alias.name) for alias in node.names)
+        elif isinstance(node, ast.Import):
+            modules.update(
+                alias.name for alias in node.names if alias.name.split(".")[0] == "ibkr_core_mcp"
+            )
+    return pairs, modules
+
+
+def test_every_core_name_claudia_imports_is_pinned():
+    """The reverse direction: the import list is what ClaudIA imports, not a snapshot of it.
+
+    Two runtime imports sat outside the list until 2026-09-30 (gap #84) —
+    `ibkr_core_mcp.config.Config` and `ibkr_core_mcp.gdrive_auth.load_or_refresh_credentials`,
+    both at module level in `gdrive_sync` — so a rename in the core would have stopped
+    ClaudIA starting with every test here green. Equality, as for the gated entry points: an
+    import added must be pinned, and a pin no longer imported must go. A module imported
+    whole must be a pinned module.
+    """
+    imported: set[tuple[str, str]] = set()
+    whole: set[str] = set()
+    for _path, source in package_sources():
+        pairs, modules = _core_imports(source)
+        imported |= pairs
+        whole |= modules
+    pinned = {(module, name) for module, names in IMPORTED_API.items() for name in names}
+    assert imported == pinned, (
+        f"imported but not pinned: {sorted(imported - pinned)}; "
+        f"pinned but no longer imported: {sorted(pinned - imported)}"
+    )
+    assert whole <= set(IMPORTED_API), (
+        f"imported whole, not pinned: {sorted(whole - set(IMPORTED_API))}"
+    )
+
+
+def test_the_import_probe_reads_every_form():
+    """The collector above, against each shape an import of the core can take."""
+    source = (
+        "from ibkr_core_mcp import ClaudeToolkit as Toolkit\n"
+        "import ibkr_core_mcp.streaming\n"
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from ibkr_core_mcp.store import SQLiteStore\n"
+        "def f():\n"
+        "    from ibkr_core_mcp.gateway import GatewayManager\n"
+        "from ibkr_core_mcp_elsewhere import Lookalike\n"
+        "from . import sibling\n"
+    )
+    pairs, modules = _core_imports(source)
+    assert pairs == {
+        ("ibkr_core_mcp", "ClaudeToolkit"),
+        ("ibkr_core_mcp.store", "SQLiteStore"),
+        ("ibkr_core_mcp.gateway", "GatewayManager"),
+    }
+    assert modules == {"ibkr_core_mcp.streaming"}
 
 
 def test_the_three_gated_entry_points_keep_their_shape():
