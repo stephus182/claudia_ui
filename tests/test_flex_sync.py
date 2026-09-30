@@ -378,6 +378,37 @@ def test_last_import_survives_an_unparseable_timestamp(good_db):
     assert last_import(good_db) is None  # no time is better than a wrong time on screen
 
 
+def test_last_import_reads_the_count_and_a_null_count_is_zero(good_db):
+    """The count is what the pull recorded; a row with no count (NULL) recorded none."""
+    _import_log(good_db, datetime(2026, 8, 5, 12, 18, tzinfo=UTC), "counted.xml")
+    record = last_import(good_db)
+    assert record is not None and record.trade_count == 105
+
+    conn = sqlite3.connect(good_db)
+    conn.execute("UPDATE flex_import_log SET trade_id_count = NULL")
+    conn.commit()
+    conn.close()
+    record = last_import(good_db)
+    assert record is not None and record.trade_count == 0
+
+
+@pytest.mark.parametrize("count", ["n/a", 9e999, 12.5], ids=["text", "infinite", "fraction"])
+def test_last_import_is_none_rather_than_a_guess_when_the_count_is_not_an_integer(
+    good_db, count, caplog
+):
+    """`int()` raised on the first two (`ValueError`, `OverflowError`) — out of a reader that
+    promises never to — and truncated the third to 12. None rather than a guess, as for the
+    timestamp (measured 2026-09-30, gap #89)."""
+    _import_log(good_db, datetime(2026, 8, 5, 12, 18, tzinfo=UTC))
+    conn = sqlite3.connect(good_db)
+    conn.execute("UPDATE flex_import_log SET trade_id_count = ?", (count,))
+    conn.commit()
+    conn.close()
+
+    assert last_import(good_db) is None
+    assert "trade_id_count" in caplog.text
+
+
 def test_an_unreadable_path_writes_no_sidecar_at_all(tmp_path, monkeypatch):
     """Regression, 2026-08-05: it used to write one anyway.
 

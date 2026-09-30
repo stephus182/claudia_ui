@@ -287,8 +287,8 @@ def last_import(sqlite_path: str | Path) -> LastImport | None:
     under the label "last refreshed": on 2026-08-05 those were 08-05 12:18 UTC and
     2026-08-04 respectively, a full day apart, because Flex is T+1.
 
-    Returns None rather than a guess when the timestamp cannot be parsed: no time on
-    screen is better than a wrong one.
+    Returns None rather than a guess when the timestamp cannot be parsed or the count is not
+    an integer: no time on screen is better than a wrong one. Never raises.
     """
     try:
         conn = connect_read_only(sqlite_path)
@@ -313,7 +313,12 @@ def last_import(sqlite_path: str | Path) -> LastImport | None:
         return None
     if at.tzinfo is None:
         at = at.replace(tzinfo=UTC)
-    return LastImport(at=at, filename=str(row[0]), trade_count=int(row[2] or 0))
+    count = 0 if row[2] is None else row[2]
+    if not isinstance(count, int):
+        # `int()` here raised on text and on an infinite REAL, and cut 12.5 to 12 (gap #89).
+        log.warning("last_import: unparseable trade_id_count %r", row[2])
+        return None
+    return LastImport(at=at, filename=str(row[0]), trade_count=count)
 
 
 def validate_dataset_daily(
