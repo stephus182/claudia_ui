@@ -364,6 +364,18 @@ def test_connect_reads_a_relative_path_against_the_working_directory(tmp_path, m
         conn.close()
 
 
+def test_connect_refuses_a_nul_even_when_its_prefix_is_a_database(tmp_path):
+    """A NUL names no file. Carried into the URI as `%00` it would end the path, and the
+    database at the prefix — a real one here — would open in its place (gap #89)."""
+    writer = sqlite3.connect(tmp_path / "store")
+    writer.execute("CREATE TABLE marker (v)")
+    writer.commit()
+    writer.close()
+
+    with pytest.raises(ValueError, match="NUL"):
+        dd.connect(tmp_path / "store\x00.db")
+
+
 def test_build_flex_sections_wires_every_window(store):
     """One threaded hop produces every section, all consistent."""
     s = dd.build_flex_sections(store, _TODAY)

@@ -148,6 +148,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from claudia.contract_identity import ContractIdentity
+from claudia.sqlite_read_only import connect_read_only
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from claudia.live_realised import LiveFill
@@ -922,14 +923,14 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     cannot corrupt it and cannot be turned into a write path by a later edit. Verified
     2026-08-04 against the live WAL database — a read-only URI connection reads it fine.
 
-    The URI is built by `Path.as_uri()`, which escapes the path: a hand-formatted
-    `file:{path}?mode=ro` over a path holding `?` or `#` opened — and created — a different
-    file, read-write (gap #83, https://www.sqlite.org/uri.html § 3.1).
+    Opened by `connect_read_only`, the one read-only opener: the path's characters cannot
+    change which file opens — `?`, `#` and `%HH` once did (gap #83), and a NUL did through
+    that fix's first form (gap #89).
 
     `row_factory` is `sqlite3.Row` so the query helpers below can address columns by
     name, matching `SQLiteStore._connect`'s convention.
     """
-    conn = sqlite3.connect(f"{Path(db_path).absolute().as_uri()}?mode=ro", uri=True)
+    conn = connect_read_only(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 

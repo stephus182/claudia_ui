@@ -499,8 +499,9 @@ def test_pull_due_refuses_a_naive_now():
 # its fragment after `#`, and decodes `%HH` in the path (https://www.sqlite.org/uri.html
 # § 3.1). A hand-formatted `file:{path}?mode=ro` over a path holding `#` or `?` opened — and
 # created — a different file beside the directory, read-write; `%41` failed to open
-# (measured 2026-09-30). The URI is built by `Path.as_uri()` now, and building it can raise
-# what formatting a string never did, so the never-raise contract is pinned here too.
+# (measured 2026-09-30). The readers open through `claudia.sqlite_read_only.connect_read_only`
+# now (gap #89), and building a URI from a path can raise what formatting a string never did,
+# so the never-raise contract is pinned here too.
 # ---------------------------------------------------------------------------
 
 import os  # noqa: E402
@@ -606,9 +607,41 @@ def test_a_relative_path_is_read_against_the_working_directory(
 
 
 @pytest.mark.parametrize(("read", "unreadable"), _UNREADABLE)
-@pytest.mark.parametrize("name", ["store\x00.db", "store\ud800.db"], ids=["nul", "lone-surrogate"])
-def test_a_path_sqlite_cannot_take_is_unreadable_not_an_exception(read, unreadable, name, tmp_path):
-    """A NUL or a lone surrogate in the path. Until 2026-09-30 each escaped these functions as
-    a `ValueError` — `sqlite3.connect` refuses an embedded NUL, and neither URI form can encode
-    a lone surrogate — breaking their promise never to raise (measured; gap #83)."""
-    assert unreadable(read(tmp_path / name))
+def test_an_unencodable_path_is_unreadable_not_an_exception(read, unreadable, tmp_path):
+    """A lone surrogate cannot be encoded for the file system. Until 2026-09-30 it escaped these
+    functions as a `ValueError`, breaking their promise never to raise (measured; gap #83)."""
+    assert unreadable(read(tmp_path / "store\ud800.db"))
+
+
+@pytest.mark.parametrize(("read", "unreadable"), _UNREADABLE)
+def test_a_nul_in_the_path_is_unreadable_even_when_its_prefix_is_a_store(
+    read, unreadable, tmp_path
+):
+    """A NUL names no file. The URI would carry it as `%00`, where SQLite ends the path — so the
+    store built at the prefix here would be read in its place (measured 2026-09-30, gap #89).
+    Before, this case passed only because nothing existed at the prefix."""
+    _full_store(tmp_path / "store")
+    assert unreadable(read(tmp_path / "store\x00.db"))
+
+
+@pytest.mark.parametrize(("read", "is_real"), _READERS)
+def test_every_reader_opens_through_the_one_read_only_opener(read, is_real, tmp_path, monkeypatch):
+    """`mode=ro` is tested once, on `connect_read_only`; this holds each reader to it. A reader
+    never writes, so a read-write open would show in no answer — a `mode=rw` mutant of the old
+    per-module opener survived every test (2026-09-30, gap #89)."""
+    from claudia import flex_sync
+    from claudia.sqlite_read_only import connect_read_only
+
+    opened = []
+
+    def spy(path):
+        """Record the path, then open it with the real opener."""
+        opened.append(path)
+        return connect_read_only(path)
+
+    monkeypatch.setattr(flex_sync, "connect_read_only", spy)
+    store = tmp_path / "store.db"
+    _full_store(store)
+
+    assert is_real(read(store))
+    assert opened == [store]

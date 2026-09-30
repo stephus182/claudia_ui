@@ -61,6 +61,7 @@ from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.message_sink import ToolStepHandle
 from claudia.opening_status import build_trade_lines
+from claudia.sqlite_read_only import connect_read_only
 
 VARIANTS = ("v0", "v1", "v1a", "v1c", "v2", "v3", "v4", "v5")
 _GLUE = re.compile(r"([a-z0-9)][.!?:])([A-Z])")
@@ -114,12 +115,10 @@ def cut_store(src: Path, turn_id: int, workdir: Path) -> tuple[Path, str, str | 
     dst = workdir / f"claudia-cut-{turn_id}.db"
     if dst.exists():
         dst.unlink()
-    # `as_uri()` escapes the path: a hand-formatted `file:{src}?mode=ro` over a path holding
-    # `?` or `#` opened a different, empty file read-write (gap #83,
-    # https://www.sqlite.org/uri.html § 3.1). No `expanduser()`: the app opens
-    # CLAUDIA_DB_PATH literally, and this must read the file the app wrote.
-    source = f"{src.absolute().as_uri()}?mode=ro"
-    with sqlite3.connect(source, uri=True) as ro, sqlite3.connect(dst) as rw:
+    # The one read-only opener: a hand-formatted `file:{src}?mode=ro` over a path holding `?`
+    # or `#` opened a different, empty file read-write (gap #83). Like the app, it opens the
+    # path literally — no `~` expansion — so this reads the file the app wrote.
+    with connect_read_only(src) as ro, sqlite3.connect(dst) as rw:
         ro.backup(rw)
     with sqlite3.connect(dst) as c:
         row = c.execute(

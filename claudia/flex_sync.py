@@ -58,6 +58,8 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from claudia.sqlite_read_only import connect_read_only
+
 log = logging.getLogger(__name__)
 
 # IBKR publishes a day's statement overnight, on the ET clock (its statement cutoffs are
@@ -130,28 +132,13 @@ def _has_flex_tables(conn: sqlite3.Connection) -> bool:
     return {"flex_trade", "flex_lot", "flex_wash_sale"} <= names
 
 
-# What opening the store can raise, for the four readers below that promise never to:
-# SQLite's own errors, and those of building the URI from the path — `TypeError` for a value
-# that is no path (a test double), `OSError` when a relative path meets a deleted working
-# directory, `ValueError` for a path that cannot be encoded (a lone surrogate raises
-# `UnicodeEncodeError`). Until 2026-09-30 a NUL or a lone surrogate in the path escaped
-# `except sqlite3.Error` as a `ValueError` (measured, gap #83).
+# What opening the store can raise, for the four readers below that promise never to: every
+# error `connect_read_only` documents — SQLite's own, `TypeError` for a value that is no path
+# (a test double), `OSError` when a relative path meets a deleted working directory, and
+# `ValueError` for a NUL or a path that cannot be encoded. Until 2026-09-30 a lone surrogate
+# escaped `except sqlite3.Error` as a `ValueError` (measured, gap #83), and a NUL was read as
+# the file named by what precedes it (gap #89).
 _UNOPENABLE = (sqlite3.Error, OSError, TypeError, ValueError)
-
-
-def _connect_read_only(sqlite_path: str | Path) -> sqlite3.Connection:
-    """Open the store read-only, the path escaped into the URI by `Path.as_uri()`.
-
-    A hand-formatted `file:{path}?mode=ro` over a path holding `?` or `#` opened — and
-    created — a different file, read-write, and a `%HH` in the path was decoded (gap #83,
-    https://www.sqlite.org/uri.html § 3.1). `absolute()`, not `resolve()` or `expanduser()`:
-    it names the file the old form named for every path that form handled, since SQLite
-    resolves a relative path against the working directory and never expands `~`.
-
-    Raises:
-        Any of `_UNOPENABLE`, when the store cannot be opened.
-    """
-    return sqlite3.connect(f"{Path(sqlite_path).absolute().as_uri()}?mode=ro", uri=True)
 
 
 def validate_dataset(sqlite_path: str | Path) -> DatasetValidity:
@@ -161,7 +148,7 @@ def validate_dataset(sqlite_path: str | Path) -> DatasetValidity:
     database open, and validation must not be able to write, checkpoint or lock.
     """
     try:
-        conn = _connect_read_only(sqlite_path)
+        conn = connect_read_only(sqlite_path)
     except _UNOPENABLE as exc:
         return DatasetValidity((DatasetCheck("dataset unreadable", False, str(exc)),))
 
@@ -235,7 +222,7 @@ def dataset_fingerprint(sqlite_path: str | Path) -> tuple[int, int, str | None] 
     statement figures the pull was for. The source mix moved even though the count did not.
     """
     try:
-        conn = _connect_read_only(sqlite_path)
+        conn = connect_read_only(sqlite_path)
     except _UNOPENABLE:
         return None
     try:
@@ -304,7 +291,7 @@ def last_import(sqlite_path: str | Path) -> LastImport | None:
     screen is better than a wrong one.
     """
     try:
-        conn = _connect_read_only(sqlite_path)
+        conn = connect_read_only(sqlite_path)
     except _UNOPENABLE:
         return None
     try:
@@ -471,7 +458,7 @@ def statement_through(sqlite_path: str | Path) -> date | None:
     Anything unreadable is None, never a guess; the caller treats None as "pull".
     """
     try:
-        conn = _connect_read_only(sqlite_path)
+        conn = connect_read_only(sqlite_path)
     except _UNOPENABLE:
         return None
     try:

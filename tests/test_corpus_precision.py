@@ -18,10 +18,11 @@ sessions extend the corpus without invalidating them.
 from __future__ import annotations
 
 import functools
-import sqlite3
 from pathlib import Path
 
 import pytest
+
+from claudia.sqlite_read_only import connect_read_only
 
 _DB = Path(__file__).resolve().parent.parent / "data" / "claudia.db"
 _FROZEN_LAST_ID = 768
@@ -72,7 +73,7 @@ pytestmark = pytest.mark.skipif(
 @functools.lru_cache(maxsize=1)
 def _frozen_turns() -> tuple[tuple[int, str, int], ...]:
     """(message_id, assistant_text, tools_run_that_turn) for the frozen window."""
-    conn = sqlite3.connect(f"{_DB.as_uri()}?mode=ro", uri=True)  # escaped path (gap #83)
+    conn = connect_read_only(_DB)  # the one read-only opener (gaps #83, #89)
     try:
         rows = conn.execute(
             "SELECT id, role, content FROM messages WHERE id <= ? ORDER BY id",
