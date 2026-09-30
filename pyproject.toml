@@ -90,7 +90,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.12",
-    # Session-wide socket/DNS block (CLA-SEC-008). Its own markers are applied at
+    # Session-wide socket/DNS block (CLA-SEC-009). Its own markers are applied at
     # collection so the block lands before any fixture — see tests/conftest.py.
     "pytest-socket>=0.7",
     "mypy>=1.8",

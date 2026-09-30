@@ -1,4 +1,4 @@
-"""CLA-SEC-008 — a unit test reaches no live system and sees no real secret.
+"""CLA-SEC-009, first half — a unit test reaches no live system and sees no real secret.
 
 Audit 2026-09-13, finding A-5. Measured before this suite existed: four tests resolved
 `example.com` through the SSRF guard's `gethostbyname`, four more opened a TCP connection to

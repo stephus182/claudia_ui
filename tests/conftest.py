@@ -1,4 +1,4 @@
-"""Shared test helpers, and the session-wide live-I/O block (CLA-SEC-008).
+"""Shared test helpers, and the session-wide live-I/O block (CLA-SEC-009).
 
 Two jobs. The Panel helpers were moved here from tests/test_panel_order_flow.py
 (_get_click_callback) and tests/test_panel_app.py (_find_buttons) during the Task 5.6b
