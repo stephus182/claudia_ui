@@ -283,8 +283,9 @@ def test_the_installed_cores_own_store_is_refused_there_too(operator_dir):
 
 
 def test_the_refusal_cannot_be_swallowed_by_code_that_catches_exception(operator_dir):
-    """`flex_sync`'s never-raise functions wrap their opens in `except sqlite3.Error`; a
-    refusal they could catch would read as "dataset unreadable" instead of failing the test."""
+    """`flex_sync`'s never-raise readers catch `_UNOPENABLE` around their opens — every member
+    an `Exception` subclass; a refusal they could catch would read as "dataset unreadable"
+    instead of failing the test."""
     assert not issubclass(pytest.fail.Exception, Exception)
     with pytest.raises(pytest.fail.Exception):
         try:

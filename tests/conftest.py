@@ -298,8 +298,8 @@ def refuse_operator_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Every test: `sqlite3.connect` refuses a database in the operator's data directory.
 
     The refusal is `pytest.fail`, whose exception derives from `BaseException`: code under
-    test that catches `Exception` or `sqlite3.Error` around an open — `flex_sync`'s
-    never-raise functions do exactly that — cannot swallow it and turn the touch into a quiet
+    test that catches an `Exception` subclass around an open — `flex_sync`'s never-raise
+    readers catch `_UNOPENABLE` — cannot swallow it and turn the touch into a quiet
     "unreadable". Nothing is opened first: the path is judged before the real `connect` is
     called. No marker is exempt: the probes above apply to every test as well, and no test
     here carries `integration` (CLAUDE.md § Testing).
