@@ -139,6 +139,15 @@ git config core.hooksPath .githooks   # the four CI gates as a pre-push hook (se
 # `--require-editable` to make it exit non-zero on anything but the override; that is what
 # CI's forward-compat lane runs, so a silently failed override cannot leave it testing the
 # released core while reporting forward compatibility.
+#
+# ANOTHER CHECKOUT — a worktree, a scratch clone — needs its OWN venv. This venv's editable
+# install of claudia_ui (step 3's default mode) is an import finder mapped to THIS checkout,
+# consulted after sys.path. Put another checkout first on PYTHONPATH and every module it has
+# comes from it, but a `claudia.*` module it LACKS — one its change deleted — is imported
+# from this checkout instead of failing (setuptools 83.0.0, measured 2026-09-30: with
+# `claudia/briefing.py` deleted in a clone, `import claudia.briefing` still succeeded, from
+# here). A run meant to show the module gone shows the old one working. Run another
+# checkout's code with its own venv (`pip install -e ".[dev]"` inside it), never this one.
 
 # 4. Copy and fill in env vars
 cp .env.example .env
@@ -169,7 +178,7 @@ python -m claudia.panel_app   # ClaudIA only (the IBKR button under the chat sta
 ```bash
 source .venv/bin/activate   # every command below needs it — a bare `pytest` resolves to
                             # system Python and dies on `ModuleNotFoundError: panel`
-pytest        # full suite — all unit, no IBKR gateway needed (2,404 collected 2026-09-29
+pytest        # full suite — all unit, no IBKR gateway needed (2,476 collected 2026-09-30
               # in the main checkout; `pytest --collect-only -q | tail -1` reports it)
 pytest tests/security   # the structural invariants alone, ~3s (also part of the full run)
 ruff check . && ruff format --check . && mypy   # lint, format, type gates — all must be clean
