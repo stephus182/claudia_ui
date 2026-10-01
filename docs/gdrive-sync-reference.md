@@ -23,8 +23,8 @@ transfer in flight. Never raises; a copy that cannot be removed is logged and th
 goes on. Six such copies, written 2026-08-10 → 09-25, were found in `data/` on 2026-09-30;
 every content row in them was already in `claudia.db` (read-only comparison, 2026-10-01 — only
 the full-text index's internal segments differed). The core's
-`GDriveCache.upload_account_sqlite` writes the same kind of snapshot beside `store.db` and does
-not sweep yet.
+`GDriveCache.upload_account_sqlite` writes the same kind of snapshot beside `store.db`; it sweeps
+by the same rule from core 2.2.0 (the released 2.1.0 this repository runs does not).
 
 **Shared credentials, independent implementations:** `GDriveSync` (this file's module) and
 `ibkr_core_mcp`'s `GDriveCache` both read `GDRIVE_TOKEN_FILE`/`GDRIVE_CREDENTIALS_FILE` from
