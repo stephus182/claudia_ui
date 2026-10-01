@@ -711,7 +711,7 @@ and Futures Options contracts to remain in compliance with CME Group Rule 536-B"
 The evidence answers whether a bare cancel is rejected, not whether it meets the rule. Do not
 add the params on the page's word alone — a query param IBKR rejects on `DELETE` would break a
 cancel that works; if they are ever added, probe the live endpoint first, the same rule as the
-strict-schema keywords (and `extOperator` stays out: IBKR rejects it on place as field 808).
+strict-schema keywords (and `extOperator` stays out: IBKR rejects it on place as field 8089).
 Tracked as Known Gaps #7 in `docs/project-status.md`, open on the compliance question. The
 bracket plan inherits this path: a parent cancel is the same `DELETE`.
 Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/cancel-order.md
