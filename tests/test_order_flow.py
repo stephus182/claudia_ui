@@ -4345,6 +4345,65 @@ async def test_a_declined_cancel_dialog_says_the_order_was_kept():
     )
 
 
+class ReplyNotConfirmedError(HumanAuthError):
+    """The type ibkr_core_mcp raises from 2.2.0 when a question IBKR asked after the write was
+    posted is not confirmed (register F34). A stand-in by name, like the class above, for the
+    same reason and with the same end: the core's own class once `core-ref.txt` moves."""
+
+
+_REPLY_ASKED = "IBKR asked for a confirmation before accepting the request, and "
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        _REPLY_ASKED + "it was declined at the dialog — IBKR was answered no. "
+        'IBKR\'s question: "You are about to submit a stop order. Are you sure?"',
+        _REPLY_ASKED + "nobody answered the dialog in time — IBKR was answered no.",
+        # IBKR's own words can be anything; the type decides, not a word inside the question.
+        _REPLY_ASKED + "it was declined at the dialog — IBKR was answered no. "
+        'IBKR\'s question: "Your session timed out; authentication 403. Order cancelled by user?"',
+    ],
+    ids=["declined", "not-answered", "question-full-of-other-rows-words"],
+)
+def test_an_unconfirmed_reply_is_recognised_by_its_type_and_reads_as_the_core_wrote_it(sentence):
+    """From core 2.2.0 the reply chain says what happened and why — declined, or nobody
+    answered — and quotes IBKR's question (operator 2026-10-01: a clear message, easier to
+    show if there is an issue). It is the `reply` stage, never the Gate 2 timeout whose
+    sentence says nothing was sent, and the core's sentence is shown whole."""
+    from claudia.order_flow import _classify_execution_error, _refusal_stage
+
+    unconfirmed = ReplyNotConfirmedError(sentence)
+
+    assert _refusal_stage(unconfirmed) == "reply"
+    assert _classify_execution_error(unconfirmed) == sentence
+
+
+@pytest.mark.asyncio
+async def test_a_reply_nobody_answered_reaches_the_chat_as_what_happened_and_why():
+    """Through the placement core: the chat line is the path's own prefix and then the core's
+    sentence, whole — not "declined", and not the Gate 2 timeout's "nothing was sent"."""
+    import claudia.order_flow as order_flow
+
+    sentence = (
+        _REPLY_ASKED + "nobody answered the dialog in time — IBKR was answered no. "
+        'IBKR\'s question: "You are about to submit a stop order. Are you sure?"'
+    )
+    ibkr_mod, client = _make_ibkr_mock()
+    client.place_order_and_confirm.side_effect = ReplyNotConfirmedError(sentence)
+    send_status, calls = _make_send_status_recorder()
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        await order_flow._execute_staged_order_core(
+            _pre_gate_place_proposal(), send_status, session_id="s1", store=None
+        )
+
+    outcome = next(text for text, _author in calls if text.startswith("**Order not placed:**"))
+    assert outcome == f"**Order not placed:** {sentence}"
+
+
 def test_the_timeout_sentence_reads_the_core_timeout_at_call_time():
     """The subprocess-overrun timeout sentence used to carry a typed "60 seconds". The number
     is the core's, so it is read from the core's constant when the sentence is built — a

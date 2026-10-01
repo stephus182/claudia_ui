@@ -784,6 +784,19 @@ _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
         "Declined at the confirmation dialog. {detail}",
     ),
     (
+        # By TYPE, and before every row that reads the message: from ibkr_core_mcp 2.2.0 a
+        # question IBKR asked AFTER the write was posted, and that was not confirmed, raises
+        # `ReplyNotConfirmedError`. Its sentence says what happened and why — declined, or
+        # nobody answered — and quotes IBKR's question, whose words can be anything, so no
+        # substring row below may see it; least of all the Gate 2 timeout, whose sentence
+        # says nothing was sent (register F34, operator 2026-10-01: a clear message, easier
+        # to show if there is an issue). Shown whole. Matched on the type's name: inert on
+        # the pinned release, where the "declined ibkr order reply" row below still applies.
+        lambda _m, t: "ReplyNotConfirmed" in t,
+        "reply",
+        "{detail}",
+    ),
+    (
         # The core raises "Order cancelled by user" for BOTH the abandon button and the
         # AppKit auto-dismiss: `_order_dialog.py` prints CANCELLED for either (its docstring
         # says the timeout "counts as cancel") and `order_confirm` maps anything but
