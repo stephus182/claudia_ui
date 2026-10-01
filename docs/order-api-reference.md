@@ -696,16 +696,24 @@ observed (see § Post-dispatch read-back) — `CANCELLED:` in the summary only w
 disposable AAPL order (orderId `567317535`), confirmed gone from `get_live_orders` on the next
 check. STK cancellation works end to end.
 
-**Documented but not enforced (FUT/FOP) — measured twice:** IBKR's Cancel Order page lists
+**Documented but not enforced (FUT/FOP) — measured five times:** IBKR's Cancel Order page lists
 `manualIndicator`/`extOperator` **query params** for FUT/FOP (CME Rule 536-B), and
 `ibkr_core_mcp.IBKRClient.cancel_order()` sends the bare `DELETE` with neither. That bare call
 cancelled a live ES order on 2026-07-28 (T2, Live Test Log) and again on 2026-09-10
 (`975324503`: `{"msg": "Request was submitted"}`, read back `Cancelled`, confirmed gone from
-`/iserver/account/orders`). So the requirement is documented and, on both days, unenforced. Do not
+`/iserver/account/orders`), then three more futures orders on 2026-09-24 — two ES on CME and one
+CL on NYMEX, each read back `Cancelled` out of band (Live Test Log, 09:01–09:45 and 12:41–12:51).
+Five acceptances on two exchanges, none rejected: IBKR does not enforce the params on cancel.
+**Acceptance is not compliance.** The page states each param is "required when trading Futures
+and Futures Options contracts to remain in compliance with CME Group Rule 536-B", and that
+"Regardless of original submission, the cancellation must also include the manualIndicator tag"
+(captured 2026-09-08; a re-scrape on 2026-10-01 returned a Cloudflare error page, not the doc).
+The evidence answers whether a bare cancel is rejected, not whether it meets the rule. Do not
 add the params on the page's word alone — a query param IBKR rejects on `DELETE` would break a
 cancel that works; if they are ever added, probe the live endpoint first, the same rule as the
-strict-schema keywords. Tracked as Known Gaps #7 in `docs/project-status.md`. The bracket plan
-inherits this path: a parent cancel is the same `DELETE`.
+strict-schema keywords (and `extOperator` stays out: IBKR rejects it on place as field 808).
+Tracked as Known Gaps #7 in `docs/project-status.md`, open on the compliance question. The
+bracket plan inherits this path: a parent cancel is the same `DELETE`.
 Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/cancel-order.md
 
 **Since 2026-09-10 (gap #40, same commits):** the cancel core reads the order status once before

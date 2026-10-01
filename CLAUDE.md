@@ -601,7 +601,7 @@ the fix that established this (75,480 → 2,910 tokens/session).
   the four interactivity APIs and how they rank, and the four routes to building a component
   of our own): `docs/panel/component-model-reference.md`
 - Panel data surfaces — Tabulator/Number/ECharts, the `pn.extension()` gate, side windows,
-  stream/patch + connectivity, and 27 measured gotchas (16 onwards found live against the
+  stream/patch + connectivity, and 28 measured gotchas (16 onwards found live against the
   account): `docs/panel/data-surfaces-reference.md`
 - **Live dashboard** (KPI strip · Positions · P&L, shipped 2026-08-04): the three modules in
   the diagram above. Read `claudia/dashboard_data.py`'s module docstring first — it carries the
