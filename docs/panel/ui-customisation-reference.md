@@ -356,7 +356,7 @@ Cost: **S** = one parameter or line, **M** = one function plus a test, **L** = i
 | Change | Cost | How | Note |
 |---|---|---|---|
 | ~~Label the three status dots~~ | — | **Superseded 2026-09-03:** the dots became labelled buttons (§2.6) | — |
-| Faster first IBKR light | S | the checker's first poll runs at start, before the session owner's first read, so the IBKR button starts red for up to 60 s on a healthy gateway (§1.2). Either delay the first poll until `GatewaySession` has read once, or poll at 5 s until the first `LIVE` | pre-existing with the dots; visible now that the log records the false "disconnected" |
+| ~~Faster first IBKR light~~ **DONE 2026-09-23** (gap #26, `b24909f`) | S | the session owner starts `UNREAD`, not `DOWN`, and the checker maps an unread session to `UNKNOWN`, so the IBKR button opens neutral and no "disconnected" entry is logged before the first read; a gateway read and found down still alerts. Live-verified 2026-09-23 (`unread -> live`, no alert), seen again in the Terminal 2026-10-01 | was: the checker's first poll ran before the session owner's first read, so the button started red for up to 60 s on a healthy gateway (§1.2, §1.3) |
 | System log feed height | S | `panel_system_log._FEED_HEIGHT` (240 px) — at a 680 px window an expanded log leaves one chat bubble visible | §1.2 |
 | Hide timestamp / copy icon | S | `message_params` (§2.5) | copy icon is arguably useful; decide by use |
 | Icon-only footer, tooltips | S | `show_button_name=False`, `show_button_tooltips=True` | moot with Send only |
