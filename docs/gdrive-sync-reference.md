@@ -12,6 +12,20 @@ set. No new env vars required.
 | `context.md` | Drive → memory | Every session start (overrides local file if present on Drive) |
 | `principles.md` | Drive → memory | Every session start (overrides local file if present on Drive) |
 
+**Temporary copies, and the ones a dead process leaves (gap #90, 2026-10-01).** Both
+transfers write a temporary copy of `claudia.db` beside it and remove it on the way out: the
+download lands Drive's copy in `tmp….db.tmp` before it replaces the database, and the upload
+sends the snapshot from `tmp….upload.tmp`. A process that dies mid-transfer cannot remove its
+copy, so **each transfer first removes the copies an earlier process left** — and any SQLite
+`-journal`, `-wal` or `-shm` beside one — logging a WARNING that names them. Only a copy older
+than the running process goes: two sessions can close at once, so a newer one may be a
+transfer in flight. Never raises; a copy that cannot be removed is logged and the transfer
+goes on. Six such copies, written 2026-08-10 → 09-25, were found in `data/` on 2026-09-30;
+every content row in them was already in `claudia.db` (read-only comparison, 2026-10-01 — only
+the full-text index's internal segments differed). The core's
+`GDriveCache.upload_account_sqlite` writes the same kind of snapshot beside `store.db` and does
+not sweep yet.
+
 **Shared credentials, independent implementations:** `GDriveSync` (this file's module) and
 `ibkr_core_mcp`'s `GDriveCache` both read `GDRIVE_TOKEN_FILE`/`GDRIVE_CREDENTIALS_FILE` from
 the same `Config`/env vars — one Drive OAuth client, shared because both run in the same

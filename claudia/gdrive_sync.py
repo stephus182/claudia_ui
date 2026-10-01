@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +38,69 @@ _DB_FILENAME = "claudia.db"
 # followed by a page-size bytes of page data" — https://www.sqlite.org/fileformat2.html#walformat
 # (read 2026-09-29). A -wal of at most this size holds no frame, so no data.
 _WAL_HEADER_BYTES = 32
+
+# The temporary copies of claudia.db this module writes beside it: `download_db` lands Drive's
+# copy in one before it replaces the database, `upload_db` uploads a consistent snapshot from
+# another. One definition for writing them and for sweeping them (`_sweep_stranded_copies`).
+_TEMP_PREFIX = "tmp"
+_DOWNLOAD_SUFFIX = ".db.tmp"
+_UPLOAD_SUFFIX = ".upload.tmp"
+# Such a copy, or a sidecar SQLite left beside one: the prefix, `tempfile`'s random part
+# (lower-case letters, digits, `_` — `tempfile._RandomNameSequence`), one of the two suffixes,
+# then at most one of SQLite's own.
+_TEMP_COPY = re.compile(
+    rf"{re.escape(_TEMP_PREFIX)}[a-z0-9_]+"
+    rf"(?:{re.escape(_DOWNLOAD_SUFFIX)}|{re.escape(_UPLOAD_SUFFIX)})(?:-journal|-wal|-shm)?"
+)
+# When this module was imported. Every copy this process writes is newer; every copy an
+# earlier process left is older.
+_STARTED = time.time()
+
+
+def _sweep_stranded_copies(directory: Path) -> None:
+    """Remove the temporary copies of claudia.db an earlier process left in `directory`.
+
+    **Never raises** — this is housekeeping before a transfer, never a reason to fail one.
+
+    Both transfers write a copy beside the database and remove it on the way out, in a
+    `finally` (upload) or an `except` (download). A process that dies mid-transfer runs
+    neither, so the copy stays: six were found in `data/` on 2026-09-30, written between
+    2026-08-10 and 09-25 (gap #90) — private data accumulating where nothing reads it. SQLite
+    opens both copies, so a death can strand a `-journal`, `-wal` or `-shm` beside one too.
+
+    **Only a copy older than this process is removed.** Two sessions can close at once and
+    the upload lock covers only the Drive call, so a copy written since this process started
+    may be another transfer in flight; an earlier process's copy predates this one. Ownership
+    by process id would need a liveness check, and `os.kill(pid, 0)` terminates the process
+    on Windows. Not covered: a second ClaudIA process on the same `data/`, which is not a
+    supported setup — its copy in flight could predate this process.
+    """
+    try:
+        candidates = [p for p in directory.iterdir() if _TEMP_COPY.fullmatch(p.name)]
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        log.warning("Could not list %s for leftover copies of claudia.db: %s", directory, exc)
+        return
+    removed: list[str] = []
+    for path in candidates:
+        try:
+            st = path.lstat()
+            if not stat.S_ISREG(st.st_mode) or st.st_mtime >= _STARTED:
+                continue
+            path.unlink()
+        except OSError as exc:
+            log.warning("Could not remove %s, a leftover copy of claudia.db: %s", path.name, exc)
+            continue
+        removed.append(path.name)
+    if removed:
+        log.warning(
+            "Removed %d leftover temporary file(s) of claudia.db transfers from %s — an "
+            "earlier process stopped mid-transfer: %s",
+            len(removed),
+            directory,
+            ", ".join(sorted(removed)),
+        )
 
 
 class GDriveSync:
@@ -215,9 +281,13 @@ class GDriveSync:
         A temp file is used so a failed download never overwrites a good local copy.
         PRAGMA integrity_check validates the downloaded file before it replaces local.
 
+        Copies an earlier process left beside the database are swept first, before any early
+        return (`_sweep_stranded_copies`, gap #90).
+
         Source (files.get_media): https://developers.google.com/drive/api/reference/rest/v3/files/get
         Source (MediaIoBaseDownload): https://developers.google.com/drive/api/guides/manage-downloads
         """
+        _sweep_stranded_copies(local_path.parent)
         try:
             svc = self._get_service()
             db_folder = self._resolve_db_folder()
@@ -261,7 +331,7 @@ class GDriveSync:
             # closing (sqlite3.connect, then shutil.move) — a `with` block would keep the fd
             # open across that. try/except below unlinks it on any failure.
             tmp_fd = tempfile.NamedTemporaryFile(  # noqa: SIM115
-                dir=local_path.parent, suffix=".db.tmp", delete=False
+                dir=local_path.parent, prefix=_TEMP_PREFIX, suffix=_DOWNLOAD_SUFFIX, delete=False
             )
             tmp_path = Path(tmp_fd.name)
             try:
@@ -321,8 +391,13 @@ class GDriveSync:
 
         Source (files.update): https://developers.google.com/drive/api/reference/rest/v3/files/update
         Source (files.create): https://developers.google.com/drive/api/reference/rest/v3/files/create
+        Copies an earlier process left beside the database are swept first, even when there
+        is nothing to upload (`_sweep_stranded_copies`, gap #90): this `finally` cannot run in a
+        process that dies mid-upload.
+
         Source (MediaFileUpload): https://developers.google.com/drive/api/guides/manage-uploads
         """
+        _sweep_stranded_copies(local_path.parent)
         if not local_path.exists():
             log.warning("GDriveSync.upload_db: %s not found — nothing to upload", local_path)
             return False
@@ -339,7 +414,7 @@ class GDriveSync:
             # delete=False + explicit close() below is deliberate — same reused-path pattern
             # as download_db(); the outer finally unlinks the snapshot unconditionally.
             tmp_fd = tempfile.NamedTemporaryFile(  # noqa: SIM115
-                dir=local_path.parent, suffix=".upload.tmp", delete=False
+                dir=local_path.parent, prefix=_TEMP_PREFIX, suffix=_UPLOAD_SUFFIX, delete=False
             )
             tmp_fd.close()
             snapshot = Path(tmp_fd.name)

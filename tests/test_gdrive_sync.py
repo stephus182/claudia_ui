@@ -711,3 +711,244 @@ def test_download_db_keeps_local_when_the_wal_holds_a_committed_frame(sync, tmp_
     assert "older than local" in caplog.text
     assert conn.execute("SELECT v FROM m").fetchall() == [("committed-in-the-wal",)]
     conn.close()
+
+
+# ── Copies an earlier process left behind are swept (gap #90, 2026-10-01) ─────
+#
+# Both transfers write a temporary copy of claudia.db beside it and remove it on the way out
+# (`finally` on upload, `except` on download). A process that dies mid-transfer runs neither,
+# so the copy stays — six were found in data/, 2026-08-10 → 09-25. SQLite opens both copies,
+# so a death can strand a `-journal`, `-wal` or `-shm` beside one as well.
+
+_LEFT = (
+    "tmpab12cd34.upload.tmp",
+    "tmpab12cd34.upload.tmp-journal",
+    "tmpzz99yy88.db.tmp",
+    "tmpzz99yy88.db.tmp-wal",
+    "tmpzz99yy88.db.tmp-shm",
+)
+
+
+def _plant(directory, names, mtime=_OLD):
+    """Write a small file for each name, stamped `mtime` (default: long before this process)."""
+    for name in names:
+        path = directory / name
+        path.write_bytes(b"private copy")
+        os.utime(path, (mtime, mtime))
+
+
+def _empty_db(path):
+    """A real, empty SQLite database at `path`."""
+    sqlite3.connect(str(path)).close()
+
+
+@contextlib.contextmanager
+def _drive_accepting(sync):
+    """Drive answers an upload as if it succeeded."""
+    with (
+        patch.object(sync, "_find_file", return_value="existing-id"),
+        patch.object(sync, "_get_service", return_value=MagicMock()),
+        patch.object(sync, "_resolve_db_folder", return_value="folder-id"),
+        patch("claudia.gdrive_sync.MediaFileUpload"),
+    ):
+        yield
+
+
+def test_upload_db_removes_the_copies_an_earlier_process_left(sync, tmp_path, caplog):
+    """Every stranded copy and sidecar goes, the database stays, and the log says so."""
+    db = tmp_path / "claudia.db"
+    _empty_db(db)
+    _plant(tmp_path, _LEFT)
+
+    with _drive_accepting(sync), caplog.at_level(logging.WARNING, logger="claudia.gdrive_sync"):
+        assert sync.upload_db(db) is True
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["claudia.db"]
+    assert "Removed 5 leftover temporary file(s) of claudia.db transfers" in caplog.text
+
+
+def test_download_db_removes_them_even_when_drive_has_nothing(sync, tmp_path):
+    """The sweep runs before any early return: a first run with no Drive copy still cleans up."""
+    _plant(tmp_path, _LEFT)
+
+    with (
+        patch.object(sync, "_get_service", return_value=MagicMock()),
+        patch.object(sync, "_resolve_db_folder", return_value="folder-id"),
+        patch.object(sync, "_find_file", return_value=None),
+    ):
+        assert sync.download_db(tmp_path / "claudia.db") is False
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_upload_db_sweeps_even_when_there_is_no_database_to_upload(sync, tmp_path):
+    """A missing claudia.db is no reason to keep its stranded copies."""
+    _plant(tmp_path, _LEFT)
+
+    assert sync.upload_db(tmp_path / "claudia.db") is False
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_copy_newer_than_this_process_is_left_alone(sync, tmp_path):
+    """A copy written since this process started may be another session's transfer in flight:
+    two sessions can close at once, and the lock covers only the Drive call."""
+    db = tmp_path / "claudia.db"
+    _empty_db(db)
+    in_flight = "tmpinflight.upload.tmp"
+    _plant(tmp_path, [in_flight], mtime=datetime.now(UTC).timestamp())
+
+    with _drive_accepting(sync):
+        assert sync.upload_db(db) is True
+
+    assert (tmp_path / in_flight).exists()
+
+
+def test_only_the_copies_this_module_writes_are_swept(sync, tmp_path, caplog):
+    """Old files that are not its temporaries are never touched — above all the database's own
+    live WAL, which holds committed rows — nor other `.tmp` names, a directory, or anything in a
+    subdirectory."""
+    db = tmp_path / "claudia.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t (v TEXT)")
+    conn.execute("INSERT INTO t VALUES ('only-in-the-wal')")
+    conn.commit()  # conn stays open: the row lives in claudia.db-wal
+    for own in ("claudia.db", "claudia.db-wal", "claudia.db-shm"):
+        os.utime(tmp_path / own, (_OLD, _OLD))
+    others = [
+        "notes.tmp",
+        "tmp.upload.tmp",
+        "tmpab12cd34.upload.tmp.bak",
+        "copy.db.tmp",
+        "tmpab12cd34.upload.tmp-other",
+    ]
+    _plant(tmp_path, others)
+    (tmp_path / "tmpdirectory.upload.tmp").mkdir()
+    os.utime(
+        tmp_path / "tmpdirectory.upload.tmp", (_OLD, _OLD)
+    )  # old, so age alone cannot spare it
+    (tmp_path / "sub").mkdir()
+    _plant(tmp_path / "sub", ["tmpab12cd34.upload.tmp"])
+
+    try:
+        with _drive_accepting(sync), caplog.at_level(logging.WARNING, logger="claudia.gdrive_sync"):
+            assert sync.upload_db(db) is True
+        assert "Could not remove" not in caplog.text, "a directory is not a copy to remove"
+        left = {p.name for p in tmp_path.iterdir()}
+        assert left == {
+            "claudia.db",
+            "claudia.db-wal",
+            "claudia.db-shm",
+            *others,
+            "tmpdirectory.upload.tmp",
+            "sub",
+        }
+        assert (tmp_path / "sub" / "tmpab12cd34.upload.tmp").exists()
+        assert conn.execute("SELECT v FROM t").fetchall() == [("only-in-the-wal",)]
+    finally:
+        conn.close()
+
+
+def test_a_copy_that_cannot_be_removed_never_fails_the_transfer(sync, tmp_path, caplog):
+    """The sweep is housekeeping: an unlink that raises is logged and the upload goes on."""
+    db = tmp_path / "claudia.db"
+    _empty_db(db)
+    _plant(tmp_path, ["tmpab12cd34.upload.tmp"])
+    real_unlink = Path.unlink
+
+    def refusing_unlink(self, missing_ok=False):
+        """Refuse to remove the planted copy, as a permission error would; allow the rest."""
+        if self.name == "tmpab12cd34.upload.tmp":
+            raise PermissionError("not permitted")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with (
+        _drive_accepting(sync),
+        patch.object(Path, "unlink", refusing_unlink),
+        caplog.at_level(logging.WARNING, logger="claudia.gdrive_sync"),
+    ):
+        assert sync.upload_db(db) is True
+
+    assert "tmpab12cd34.upload.tmp" in caplog.text and "not permitted" in caplog.text
+
+
+def test_a_directory_that_cannot_be_listed_never_fails_the_transfer(sync, tmp_path, caplog):
+    """The other way the sweep can meet the filesystem's refusal: the listing itself."""
+    db = tmp_path / "claudia.db"
+    _empty_db(db)
+
+    def refusing_iterdir(self):
+        """Refuse to list, as an unreadable directory would."""
+        raise PermissionError("not permitted")
+
+    with (
+        _drive_accepting(sync),
+        patch.object(Path, "iterdir", refusing_iterdir),
+        caplog.at_level(logging.WARNING, logger="claudia.gdrive_sync"),
+    ):
+        assert sync.upload_db(db) is True
+
+    assert "Could not list" in caplog.text and "not permitted" in caplog.text
+
+
+def test_a_directory_that_does_not_exist_yet_is_not_a_warning(sync, tmp_path, caplog):
+    """A first run has no `data/` yet: nothing to sweep, and nothing to warn about."""
+    with caplog.at_level(logging.WARNING, logger="claudia.gdrive_sync"):
+        assert sync.upload_db(tmp_path / "data" / "claudia.db") is False
+
+    assert "Could not list" not in caplog.text
+
+
+def test_the_sweep_recognises_the_names_the_transfers_actually_write(sync, tmp_path):
+    """One definition for writing and sweeping: the names a real upload and a real download
+    give their copies, stranded, are what the sweep removes."""
+    db = tmp_path / "claudia.db"
+    _empty_db(db)
+    written = []
+
+    class RecordingUpload:
+        """Record the snapshot's path, as Drive would be handed it."""
+
+        def __init__(self, filename, mimetype=None):
+            """Keep the path."""
+            written.append(Path(filename).name)
+
+    class RecordingDownloader:
+        """Record the download's temporary path and yield a valid database."""
+
+        def __init__(self, buf, _req):
+            """Keep the buffer's path and fill it."""
+            written.append(Path(buf.name).name)
+            buf.write(_valid_db_bytes(tmp_path / "src", "x"))
+
+        def next_chunk(self):
+            """Report the single chunk as complete."""
+            return None, True
+
+    (tmp_path / "src").mkdir()
+    with _drive_accepting(sync), patch("claudia.gdrive_sync.MediaFileUpload", RecordingUpload):
+        assert sync.upload_db(db) is True
+    with (
+        _drive_serving(sync, b"", "2099-01-01T00:00:00.000Z"),
+        patch("claudia.gdrive_sync.MediaIoBaseDownload", RecordingDownloader),
+    ):
+        assert sync.download_db(tmp_path / "fresh" / "claudia.db") is True
+    assert len(written) == 2
+
+    _plant(tmp_path, [written[0], written[0] + "-journal"])
+    _plant(tmp_path / "fresh", [written[1], written[1] + "-wal"])
+    with _drive_accepting(sync):
+        assert sync.upload_db(db) is True
+    with (
+        patch.object(sync, "_find_file", return_value=None),
+        patch.object(sync, "_get_service", return_value=MagicMock()),
+        patch.object(sync, "_resolve_db_folder", return_value="folder-id"),
+    ):
+        sync.download_db(tmp_path / "fresh" / "claudia.db")
+
+    assert (
+        not (tmp_path / written[0]).exists() and not (tmp_path / (written[0] + "-journal")).exists()
+    )
+    assert not (tmp_path / "fresh" / written[1]).exists()
+    assert not (tmp_path / "fresh" / (written[1] + "-wal")).exists()
