@@ -4285,6 +4285,66 @@ async def test_an_abandoned_or_timed_out_dialog_never_reads_as_the_order_being_c
     assert "cancel" not in after_prefix.lower(), outcome
 
 
+class ConfirmationDeclinedError(HumanAuthError):
+    """The type ibkr_core_mcp raises for a dialog's abandon button from 2.2.0 (register F6).
+
+    Declared here because the pinned release does not export it. ClaudIA's table matches on
+    the type's NAME, which is what this stand-in carries; when `core-ref.txt` moves to a
+    release that has the class, import the core's own and delete this one.
+    """
+
+
+@pytest.mark.parametrize(
+    "left_in_place",
+    [
+        "Not sent — nothing reached IBKR.",
+        "Left unchanged — the order is as it was.",
+        "Kept — the order is still working.",
+    ],
+    ids=["place", "modify", "cancel"],
+)
+def test_a_declined_dialog_is_recognised_by_its_type_and_reads_as_the_core_wrote_it(left_in_place):
+    """From core 2.2.0 an abandoned dialog has its own type and a sentence per dialog saying
+    what the click left in place; the words "cancelled by user" are gone. Recognised by type,
+    it is a Gate 2 refusal — never the catch-all row, never a Touch ID failure — and the
+    core's sentence is shown as written, not paraphrased."""
+    from claudia.order_flow import _classify_execution_error, _refusal_stage
+
+    declined = ConfirmationDeclinedError(left_in_place)
+
+    assert _refusal_stage(declined) == "gate2"
+    assert (
+        _classify_execution_error(declined)
+        == f"Declined at the confirmation dialog. {left_in_place}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_declined_cancel_dialog_says_the_order_was_kept():
+    """The path where the old sentence misled: the operator presses the cancel dialog's
+    abandon button, and the chat says the order was not cancelled and is still working."""
+    import claudia.order_flow as order_flow
+
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.cancel_order.side_effect = ConfirmationDeclinedError(
+        "Kept — the order is still working."
+    )
+    send_status, calls = _make_send_status_recorder()
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        await order_flow._execute_cancel_order_core(
+            _pre_gate_cancel_proposal(), send_status, session_id="s1", store=None
+        )
+
+    outcome = next(text for text, _author in calls if text.startswith("**Order not cancelled:**"))
+    assert outcome == (
+        "**Order not cancelled:** Declined at the confirmation dialog. "
+        "Kept — the order is still working."
+    )
+
+
 def test_the_timeout_sentence_reads_the_core_timeout_at_call_time():
     """The subprocess-overrun timeout sentence used to carry a typed "60 seconds". The number
     is the core's, so it is read from the core's constant when the sentence is built — a

@@ -773,6 +773,17 @@ _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
         "confirmation-dialog failure. {detail}",
     ),
     (
+        # By TYPE: from ibkr_core_mcp 2.2.0 a dialog's abandon button raises
+        # `ConfirmationDeclinedError` — never the timeout's type — with a sentence per dialog
+        # saying what the click left in place ("Kept — the order is still working."). The
+        # sentence is the core's and is shown as written. Matched on the type's name, as
+        # every type row here is, so it holds on the pinned release too, where the class
+        # does not exist and the row below still does the job (register F6, 2026-10-01).
+        lambda _m, t: "ConfirmationDeclined" in t,
+        "gate2",
+        "Declined at the confirmation dialog. {detail}",
+    ),
+    (
         # The core raises "Order cancelled by user" for BOTH the abandon button and the
         # AppKit auto-dismiss: `_order_dialog.py` prints CANCELLED for either (its docstring
         # says the timeout "counts as cancel") and `order_confirm` maps anything but
