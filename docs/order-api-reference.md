@@ -696,25 +696,38 @@ observed (see § Post-dispatch read-back) — `CANCELLED:` in the summary only w
 disposable AAPL order (orderId `567317535`), confirmed gone from `get_live_orders` on the next
 check. STK cancellation works end to end.
 
-**Documented but not enforced (FUT/FOP) — measured five times:** IBKR's Cancel Order page lists
-`manualIndicator`/`extOperator` **query params** for FUT/FOP (CME Rule 536-B), and
-`ibkr_core_mcp.IBKRClient.cancel_order()` sends the bare `DELETE` with neither. That bare call
-cancelled a live ES order on 2026-07-28 (T2, Live Test Log) and again on 2026-09-10
-(`975324503`: `{"msg": "Request was submitted"}`, read back `Cancelled`, confirmed gone from
-`/iserver/account/orders`), then three more futures orders on 2026-09-24 — two ES on CME and one
-CL on NYMEX, each read back `Cancelled` out of band (Live Test Log, 09:01–09:45 and 12:41–12:51).
-Five acceptances on two exchanges, none rejected: IBKR does not enforce the params on cancel.
-**Acceptance is not compliance.** The page states each param is "required when trading Futures
-and Futures Options contracts to remain in compliance with CME Group Rule 536-B", and that
-"Regardless of original submission, the cancellation must also include the manualIndicator tag"
-(captured 2026-09-08; a re-scrape on 2026-10-01 returned a Cloudflare error page, not the doc).
-The evidence answers whether a bare cancel is rejected, not whether it meets the rule. Do not
-add the params on the page's word alone — a query param IBKR rejects on `DELETE` would break a
-cancel that works; if they are ever added, probe the live endpoint first, the same rule as the
-strict-schema keywords (and `extOperator` stays out: IBKR rejects it on place as field 8089).
-Tracked as Known Gaps #7 in `docs/project-status.md`, open on the compliance question. The
-bracket plan inherits this path: a parent cancel is the same `DELETE`.
-Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/cancel-order.md
+**The CME Rule 536-B tag on a futures cancel — documented, not enforced, and not yet sent
+(gap #7).** IBKR's Cancel Order page lists `manualIndicator`/`extOperator` as **query params**
+for FUT/FOP: each is "required when trading Futures and Futures Options contracts to remain in
+compliance with CME Group Rule 536-B", and "Regardless of original submission, the cancellation
+must also include the manualIndicator tag" (read 2026-10-01, byte-identical to the 2026-09-08
+capture). ClaudIA's place and modify bodies carry `manualIndicator: True`; **its cancel does
+not**: the released core's `cancel_order()` sends the bare `DELETE`.
+
+What was measured:
+
+- **IBKR accepts the bare cancel** — seventeen futures orders, ES on CME and CL on NYMEX,
+  2026-07-28 to 2026-09-24, each read back `Cancelled`, none rejected (counted from the
+  `trade_cancelled` decision rows; this paragraph said "twice", then "five", from the Live Test
+  Log's narrower record). **Acceptance is not compliance:** it shows a bare cancel is not
+  rejected, not that it meets the rule.
+- **IBKR accepts the tagged cancel** — 2026-10-01, a resting ES limit order placed for the
+  purpose, cancelled through both gates by the core's `release/2.2.0` code with
+  `?manualIndicator=true`: HTTP 200, read back `Cancelled`, and the gateway's own request log
+  shows the `DELETE` with the query string (Live Test Log). The response body is the bare
+  cancel's — `{"msg": "Request was submitted", "order_id": …, "conid": -1, "account": null}` —
+  so the response cannot tell which was sent.
+- **Not probed:** `extOperator` on a cancel (IBKR rejects it on place as field 8089, so it stays
+  out everywhere), and the tag on an equity cancel.
+
+**From core 2.2.0** `cancel_order(..., manual_indicator=True)` sends the tag; ClaudIA passes it
+for a FUT or FOP cancel — known from the status read it already makes before Touch ID, omitted
+when that read fails, since a cancel is never blocked by a read — once `core-ref.txt` moves to
+that release. Until then every futures cancel here is the bare one. Tracked as Known Gaps #7 in
+`docs/project-status.md`. The bracket plan inherits this path: a parent cancel is the same
+`DELETE`.
+Source: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/cancel-order.md
+(`ibkrcampus.com`, the earlier host, answered a Cloudflare error on 2026-10-01)
 
 **Since 2026-09-10 (gap #40, same commits):** the cancel core reads the order status once before
 Touch ID and hands the dialog an IBKR-shaped display dict — side, size, type, prices, TIF,
