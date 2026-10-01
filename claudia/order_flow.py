@@ -163,8 +163,10 @@ def _last_trade_key(row: Mapping[str, Any]) -> int:
     `ltd` is the first day of the contract month, and trading stopped on the expiration date
     (CME CL: "Trading terminates 3 business day before the 25th calendar day of the month prior
     to the contract month" = 2026-09-22). NG has the same shape; DX reports them equal. Trusting
-    `ltd` kept the expired October CL as the front month for ~9 days a month; ClaudIA's model
-    caught it from the stale `C94.59` quote before any code did. The earlier date is right for
+    `ltd` kept the expired October CL as the front month after the roll, for as long as IBKR still
+    listed it — two days after expiry it did, by day seven it no longer did (2026-09-24, 09-29) —
+    where `ltd` alone would have allowed nine days; it recurs at every monthly roll. ClaudIA's
+    model caught it from the stale `C94.59` quote before any code did. The earlier date is right for
     every root this account trades (ES, CL, NG, DX, all measured that day) and, by
     construction, can never keep a contract past either date. Sources: IBKR
     https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/security-future-by-symbol.md ,

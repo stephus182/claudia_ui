@@ -1256,8 +1256,10 @@ async def test_execute_staged_order_fut_skips_a_cl_shaped_contract_whose_ltd_is_
     the first day of the contract month, while trading stopped on the expiration date (CME:
     "Trading terminates 3 business day before the 25th calendar day of the month prior to the
     contract month" = 2026-09-22). NG has the same shape. Trusting `ltd` kept the expired
-    October contract as the front month for ~9 days. Dates are relative to today, the shape
-    is the measured one: expiry two days ago, `ltd` a week ahead.
+    October contract as the front month for as long as IBKR still listed it — two days after
+    expiry it did, by day seven it no longer did — where `ltd` alone would have allowed nine.
+    Dates are relative to today, the shape is the measured one: expiry two days ago, `ltd` a
+    week ahead.
     """
     ibkr_mod, client = _make_ibkr_mock()
     client.get_futures.return_value = [
