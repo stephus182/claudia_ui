@@ -62,12 +62,44 @@ calculations. It never assigns a fill's trade date: that comes from the Flex sta
   other products had their settlements "copy/pasted from April 2nd". A single CME calendar
   cannot express a closure that varies by product.
 - `pandas_market_calendars` 5.4.0 (a superset: it mirrors every `exchange_calendars` calendar
-  and adds per-product CME calendars) gets the Good Friday split right, but it too dates
-  the tested holiday sessions on the holiday. A possible future move to it is logged,
-  **deferred**, in the core register (F18).
+  and adds per-product CME calendars) gets the Good Friday 2026 split right, but it too dates
+  the tested holiday sessions on the holiday. **Measured again on 2026-10-02 against CME's own
+  holiday calendar, and not adopted (core register F18):** for Good Friday 2027 CME writes "No
+  trading for Friday March 26th trade date", and its product calendars show equity, FX and
+  rates open; for Friday 2026-11-27 four of its six closing times differ from CME's own table
+  (energy and metals 12:45 against 13:45 CT, FX 12:15 against 13:45, grains 13:20 against
+  12:05); and its documentation lists no futures calendar at all. Neither library is reliable
+  for CME holiday hours by product — the authority is CME's page.
 
 So "CME open when NYSE is closed" in the market context means Globex trades on that day, and,
 per CME's holiday notices, those trades belong to the next trade date.
+
+## Half days — from core 2.2.0 (measured and agreed 2026-10-02)
+
+The calendar library already held each stock exchange's half days; the core did not pass them
+on, so nothing said "NYSE closes at 13:00 today". From core 2.2.0 the context carries
+`early_closes_today` — each exchange whose session ends early today, with the closing time in
+the exchange's own zone — and ClaudIA will say it in the briefing once the pin moves.
+
+**The library is the data; each exchange's own page is the witness** (operator, 2026-10-02:
+"keep our setup with official sources"). Compared that day, eight exchanges scraped:
+
+| Checked | Result |
+|---|---|
+| Open, closed or half day — the date (17 checks: New York, London, Frankfurt, Paris, Milan, Sydney, Toronto, Istanbul) | 17 of 17 agree |
+| Closing time — New York 13:00, London 12:30, Sydney 14:10, Toronto 13:00 | agree |
+| Closing time — Istanbul, 2026-10-28 | library 12:30, the exchange "Until 13:00" |
+| Closing time — Frankfurt, 2026-12-30 | library 14:00; the exchange: "deviating trading hours may apply", circular to come |
+| Paris (hours in a PDF), Hong Kong (a JavaScript calendar), Eurex, eleven exchanges with no half day listed | not checked |
+
+The exchanges publish in a table, a footnote, a PDF, a circular and a JavaScript widget, so their
+pages serve as a yearly comparison by reading — the core ships a script that lists the library's
+half days beside each page — and not as a run-time source.
+
+**CME is flagged and never given a time.** The library holds one closing time for every CME
+product (12:00 CT, the equity halt); on Friday 2026-11-27 CME's own table closes equities and
+rates at 12:15, energy, metals and FX at 13:45, grains at 12:05. The core says only that Globex
+runs a holiday schedule today (`futures.holiday_schedule_today`) and points at CME's calendar.
 
 ## CME product group schedule (`_FUTURES_SCHEDULE` in `store.py`)
 
