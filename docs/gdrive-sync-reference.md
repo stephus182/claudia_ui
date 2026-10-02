@@ -115,8 +115,9 @@ Reproduced on demand on 2026-09-24 against real Drive, with 8 threads sharing on
   survived failed 90 of 120 calls.
 - **With the pattern:** 3 of 3 runs completed, 360 of 360 calls succeeded, and there were no crashes.
 
-The core's `GDriveCache` (`ibkr_core_mcp/cache.py`) still builds with `credentials=` and shares
-one connection. It is logged for the next core release (register F17).
+The core's `GDriveCache` (`ibkr_core_mcp/cache.py`) shares one connection in the released 2.1.0
+this repository runs; from core 2.2.0 it and the web scraper's Drive client build through one
+function with the same pattern (register F17).
 
 **Upload lock:** `upload_db` uses `threading.RLock` (reentrant) because `_find_file`
 calls `_get_service()`, which also acquires the same lock. A plain `Lock` would deadlock
