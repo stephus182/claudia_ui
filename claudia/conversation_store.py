@@ -17,7 +17,7 @@ import json
 import logging
 import re
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -859,6 +859,28 @@ class ConversationStore:
             record["metadata"] = parsed if isinstance(parsed, dict) else {}
             out.append(record)
         return out
+
+    def reported_execution_ids(self, ids: Iterable[str]) -> frozenset[str]:
+        """The subset of `ids` some session already reported as a fill (gap #68).
+
+        Read from the `execution_reported` rows, any session, any process: the execution
+        listener's own memory ends with its process, and IBKR can deliver an execution
+        again after a restart (measured 2026-10-02). Raises on an unreadable store or a row
+        whose metadata is not JSON — the caller treats that as "cannot tell", never as
+        "not reported".
+        """
+        wanted = sorted(set(ids))
+        if not wanted:
+            return frozenset()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT json_extract(metadata_json, '$.execution.execution_id') AS id"
+                " FROM decisions WHERE decision_type = 'execution_reported'"
+                " AND json_extract(metadata_json, '$.execution.execution_id')"
+                " IN (SELECT value FROM json_each(?))",
+                (json.dumps(wanted),),
+            ).fetchall()
+        return frozenset(str(row["id"]) for row in rows)
 
     def get_decisions_for_symbol(self, symbol: str, limit: int = 10) -> list[dict[str, Any]]:
         """Return decisions for a symbol ordered newest first, joined with the doc_version active at the time."""

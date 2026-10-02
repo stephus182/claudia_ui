@@ -794,7 +794,7 @@ async def test_init_starts_connectivity_and_execution_singletons(monkeypatch, ba
     # pinned the ABSENCE of per-session subscription; Phase 6 delivers it.
     backend_singletons.checker_cls.return_value.subscribe.assert_called_once()
     backend_singletons.listener_cls.assert_called_once_with(
-        mock_toolkit._config.gateway_url, mock_toolkit._store
+        mock_toolkit._config.gateway_url, mock_toolkit._store, is_news=ANY
     )
     backend_singletons.listener_cls.return_value.start.assert_called_once()
 
@@ -3413,6 +3413,20 @@ async def test_fill_subscriber_posts_an_ibkr_authored_message_a_log_line_and_an_
     assert kwargs["decision_type"] == "execution_reported"
     assert kwargs["session_id"] == "s1" and kwargs["symbol"] == "ES"
     assert kwargs["metadata"]["execution"]["execution_id"] == "00010181.6a9a4b19.01.01"
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_fill_report_is_an_error_in_the_system_log():
+    """Fill reporting stopped because a store could not be read: an ERROR line, which is the
+    level that raises the toast — a silent stop would look like "no fills"."""
+    from claudia.panel_app import _make_fill_blocked_subscriber
+    from claudia.panel_system_log import SystemLog
+
+    syslog = SystemLog()
+    with patch.object(syslog, "say", wraps=syslog.say) as say:
+        await _make_fill_blocked_subscriber(syslog)("**Fill reporting stopped.** unreadable")
+
+    say.assert_called_once_with("Fill reporting stopped. unreadable", "error")
 
 
 @pytest.mark.asyncio

@@ -45,6 +45,9 @@ claudia/sqlite_read_only.py  — the one read-only SQLite opener: path escaped i
 claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger fallback; since
                               2026-09-04 also the fill subscription: every execution reaches each
                               session as an IBKR-authored chat message + log toast + operator note
+                              — once: only if it is neither on a statement nor already reported
+                              (`news_rule`, gap #68, 2026-10-02); if that cannot be checked,
+                              nothing is reported or recorded and the System log says so
 claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / upload at stop
 claudia/session_reporter.py — auto-generated Markdown session report (tool calls, decisions)
 claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health

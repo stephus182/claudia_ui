@@ -880,7 +880,7 @@ Per session, `panel_app._make_fill_subscriber` puts it on four surfaces:
 
 | Surface | What | Why |
 |---|---|---|
-| Chat message authored **IBKR** | `**FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00** · 12:47:05 ET · CME` + provenance line | The broker's record, not the assistant's claim — the one documented exception to "session events go to the System log": a fill must not be missed |
+| Chat message authored **IBKR** | `**FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00** · 2026-09-04 12:47:05 ET · CME` + provenance line | The broker's record, not the assistant's claim — the one documented exception to "session events go to the System log": a fill must not be missed |
 | System log, `warning` | the headline, with the 8 s toast | Noticed while reading something else; on record |
 | Operator note (`agent.note_execution`) | the same text, prefixed "IBKR reported an execution … not your action" | The next turn already knows; the channel cannot be spoofed by model output |
 | Decision row `execution_reported` | headline, symbol, the report's fields | The session report carries it; in no allowlist (it is not a ClaudIA action) |
@@ -928,8 +928,24 @@ message and received no trades frame at all — one on a new gateway container a
 one with the gateway left up — so neither a fresh session nor a restart is by itself the
 cause, and what made the first start different is **not established**. What IBKR documents for the two arguments, and
 the six measurements, are in `ibkr_core_mcp/docs/ibkr-api-behaviors-reference.md` (WebSocket
-`str`). Until the listener can tell an execution that is news from one that is not, it must not
-ship on a core that delivers the subscription.
+`str`).
+
+**An execution is reported once (2026-10-02, gap #68).** What IBKR delivers no longer decides
+what is reported. An execution is news only if its id is **neither** on a statement (a
+`source='flex'` `execution_key` — the Fills tab's rule) **nor** already recorded as reported
+(an `execution_reported` row, from any session or any earlier process):
+`execution_listener.news_rule`. Run over that morning's 46 executions against the real trade
+store, read-only: none is news, by the statement alone. An execution that is not news produces
+no message, no decision row and no P&L snapshot. **When the two records cannot be read — no
+store, no Flex table, an unreadable `claudia.db` — nothing is reported and nothing is
+recorded** (operator rule, 2026-10-02: the most restrictive approach, "nothing moves"): the
+System log takes one **error** line with its toast, "Fill reporting stopped…", once per
+interruption; the Terminal logs every such execution; and the execution is not remembered, so
+it is reported if it arrives again once the stores can be read. A ClaudIA with no Flex data
+therefore reports no fills and says so. The fill line carries its date
+(`2026-09-04 12:47:05 ET` — a clock reading in New York, not a trade date). Not yet seen live:
+one real fill reported once and not again after a restart — it needs ClaudIA on a core that
+delivers the subscription.
 Only the FUT event shape has been observed live; STK/OPT shapes rest on IBKR's documentation
 until a stock fills through the listener. Not done: a P&L-after-fill line (the realised tile refreshes
 within 15 s), a poller-based fallback. Live status: **code-verified 2026-09-04; the first

@@ -11,7 +11,7 @@ import asyncio
 import contextlib
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -25,16 +25,19 @@ def _live_session(live: bool = True):
     return owner
 
 
-def _make_listener(live: bool = True):
+def _make_listener(live: bool = True, is_news: Any = None):
     """An ExecutionListener wired to a mock store, returned alongside that store.
 
     Defaults to a LIVE session: most tests here exercise what the listener does once
     connected, and without an injected owner they would spin in the idle loop waiting for
-    a session that never comes up.
+    a session that never comes up. Every execution is news unless a test passes its own rule.
     """
     store = MagicMock()
     listener = ExecutionListener(
-        "https://localhost:5055/v1/api", store, session=_live_session(live)
+        "https://localhost:5055/v1/api",
+        store,
+        session=_live_session(live),
+        is_news=is_news or (lambda _execution_id: True),
     )
     return listener, store
 
@@ -699,7 +702,7 @@ def test_execution_report_from_todays_real_fill():
     assert report.size == "1"
     assert report.contract == "ES Sep18 '26"
     assert report.price == "7,732.00"
-    assert report.time_et == "12:47:05 ET"
+    assert report.time_et == "2026-09-04 12:47:05 ET"
     assert report.exchange == "CME"
     assert report.origin == "via ClaudIA (CLAUDIA-1788538622110)"
     assert report.execution_id == "00010181.6a9a4b19.01.01"
@@ -725,7 +728,9 @@ def test_format_execution_report_is_one_bold_line_plus_provenance():
     from claudia.execution_listener import ExecutionReport, format_execution_report
 
     text = format_execution_report(ExecutionReport.from_event(TradeExecution(**_TODAYS_FILL)))
-    assert text.startswith("**FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00** · 12:47:05 ET · CME")
+    assert text.startswith(
+        "**FILLED: BOUGHT 1 ES Sep18 '26 @ 7,732.00** · 2026-09-04 12:47:05 ET · CME"
+    )
     assert "via ClaudIA (CLAUDIA-1788538622110)" in text
     assert "00010181.6a9a4b19.01.01" in text
     assert "$" not in text and "USD" not in text  # the event carries no currency
@@ -748,7 +753,7 @@ async def test_subscribers_are_told_of_each_fill_before_the_pnl_capture():
 
     capture = AsyncMock(side_effect=lambda *a, **k: order.capture())
     fake_ws = _fake_ws([TradeExecution(**_TODAYS_FILL), TradeExecution(execution_id="E2")])
-    unsubscribe = listener.subscribe(subscriber)
+    unsubscribe = listener.subscribe(subscriber, AsyncMock())
     with (
         patch("claudia.execution_listener.BrowserCookieAuth"),
         patch("claudia.execution_listener.IBKRWebSocket", return_value=fake_ws),
@@ -771,8 +776,8 @@ async def test_a_raising_subscriber_is_logged_and_does_not_stop_the_others(caplo
     listener, _ = _make_listener()
     good = AsyncMock()
     bad = AsyncMock(side_effect=RuntimeError("session gone"))
-    listener.subscribe(bad)
-    listener.subscribe(good)
+    listener.subscribe(bad, AsyncMock())
+    listener.subscribe(good, AsyncMock())
     fake_ws = _fake_ws([TradeExecution(**_TODAYS_FILL)])
     with (
         patch("claudia.execution_listener.BrowserCookieAuth"),
@@ -802,7 +807,7 @@ async def test_fills_arriving_during_a_pnl_capture_round_are_reported_too():
         """Collect every report."""
         received.append(report.execution_id)
 
-    listener.subscribe(subscriber)
+    listener.subscribe(subscriber, AsyncMock())
     pnl = PnLUpdate(account="U1", row_type=None, dpl=1.0, nl=2.0, upl=3.0, uel=4.0, mv=5.0)
     fake_ws = _fake_ws(
         [TradeExecution(execution_id="E1"), TradeExecution(execution_id="E2"), pnl, pnl]
@@ -828,7 +833,7 @@ async def test_the_same_execution_id_is_reported_once():
         """Collect every report."""
         received.append(report.execution_id)
 
-    listener.subscribe(subscriber)
+    listener.subscribe(subscriber, AsyncMock())
     fake_ws = _fake_ws(
         [
             TradeExecution(execution_id="E1"),
@@ -891,7 +896,7 @@ async def test_a_report_that_cannot_be_built_is_logged_not_fatal(caplog):
 
     listener, _ = _make_listener()
     good = AsyncMock()
-    listener.subscribe(good)
+    listener.subscribe(good, AsyncMock())
     fake_ws = _fake_ws([TradeExecution(execution_id="E1")])
     with (
         patch("claudia.execution_listener.BrowserCookieAuth"),
@@ -905,3 +910,118 @@ async def test_a_report_that_cannot_be_built_is_logged_not_fatal(caplog):
         await listener._run_once()
     good.assert_not_awaited()
     assert any("execution report" in r.message.lower() for r in caplog.records)
+
+
+# ── A fill is news once (gap #68, found live 2026-10-02) ──────────────────────
+#
+# IBKR answered one trades subscription with every execution of the week, each three times,
+# and each was reported as a new fill: the only memory was this process's. An execution is
+# news only if it is neither on a statement nor already reported — and when that cannot be
+# checked, nothing is reported or recorded, and the operator is told (operator, 2026-10-02:
+# "the most restrictive careful approach … nothing moves").
+
+
+async def _run_with(listener, items, capture):
+    """Run one connection whose socket replays `items`, with the P&L capture replaced."""
+    with (
+        patch("claudia.execution_listener.BrowserCookieAuth"),
+        patch("claudia.execution_listener.IBKRWebSocket", return_value=_fake_ws(items)),
+        patch.object(listener, "_capture_pnl_until_settled", new=capture),
+    ):
+        await listener._run_once()
+
+
+@pytest.mark.asyncio
+async def test_an_execution_that_is_not_news_is_not_reported_and_captures_no_pnl():
+    """Already on a statement, or already reported: no message, no decision row, no P&L
+    snapshot — the 46 old fills of 2026-10-02 also wrote two snapshot rows."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    listener, _ = _make_listener(is_news=lambda execution_id: execution_id == "NEW")
+    subscriber, capture = AsyncMock(), AsyncMock()
+    listener.subscribe(subscriber, AsyncMock())
+
+    await _run_with(
+        listener, [TradeExecution(execution_id="OLD"), TradeExecution(execution_id="NEW")], capture
+    )
+
+    assert [c.args[0].execution_id for c in subscriber.await_args_list] == ["NEW"]
+    capture.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_execution_that_cannot_be_checked_is_not_reported_and_is_said_once():
+    """The stores cannot be read: nothing is shown as a fill and nothing is captured; the
+    operator is told once, not once per execution; and the same execution is still reported
+    when it arrives again after the stores can be read."""
+    from ibkr_core_mcp.streaming import TradeExecution
+
+    answers: list[Any] = [OSError("unable to open database file"), OSError("still"), True]
+
+    def is_news(_execution_id: str) -> bool:
+        """Raise twice, then answer."""
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return bool(answer)
+
+    listener, _ = _make_listener(is_news=is_news)
+    subscriber, blocked, capture = AsyncMock(), AsyncMock(), AsyncMock()
+    listener.subscribe(subscriber, blocked)
+
+    events = [TradeExecution(execution_id=i) for i in ("A", "B", "A")]
+    await _run_with(listener, events, capture)
+
+    assert [c.args[0] for c in blocked.await_args_list] == [ANY]
+    assert "unable to open database file" in blocked.await_args_list[0].args[0]
+    assert [c.args[0].execution_id for c in subscriber.await_args_list] == ["A"]
+    capture.assert_awaited_once()
+
+
+def test_the_news_rule_is_neither_on_a_statement_nor_already_reported(tmp_path):
+    """The two records, read for real: the Flex table and the `execution_reported` rows. A
+    live placeholder row settles nothing (the Fills tab's rule)."""
+    import sqlite3
+
+    from claudia.conversation_store import ConversationStore
+    from claudia.execution_listener import news_rule
+
+    trades = tmp_path / "store.db"
+    conn = sqlite3.connect(trades)
+    conn.execute("CREATE TABLE flex_trade (execution_key TEXT PRIMARY KEY, source TEXT)")
+    conn.execute("INSERT INTO flex_trade VALUES ('settled', 'flex'), ('placeholder', 'live')")
+    conn.commit()
+    conn.close()
+    conversations = ConversationStore(str(tmp_path / "claudia.db"))
+    conversations.create_session("s1")
+    conversations.add_decision(
+        session_id="s1",
+        decision_type="execution_reported",
+        summary_text="FILLED",
+        metadata={"execution": {"execution_id": "reported"}},
+    )
+
+    is_news = news_rule(trades, conversations)
+
+    assert [is_news(i) for i in ("settled", "reported", "placeholder", "fresh")] == [
+        False,
+        False,
+        True,
+        True,
+    ]
+
+
+def test_the_news_rule_raises_when_the_statement_record_cannot_be_read(tmp_path):
+    """No store, or a store with no Flex table: unknown, never "not on a statement"."""
+    import sqlite3
+
+    from claudia.conversation_store import ConversationStore
+    from claudia.execution_listener import news_rule
+
+    conversations = ConversationStore(str(tmp_path / "claudia.db"))
+    bare = tmp_path / "bare.db"
+    sqlite3.connect(bare).close()
+
+    for unreadable in (tmp_path / "absent.db", bare):
+        with pytest.raises(sqlite3.Error):
+            news_rule(unreadable, conversations)("fresh")

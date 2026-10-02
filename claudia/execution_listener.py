@@ -42,8 +42,10 @@ import os
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import requests
@@ -51,10 +53,13 @@ from ibkr_core_mcp.auth import BrowserCookieAuth
 from ibkr_core_mcp.order_confirm import price_text_safe
 from ibkr_core_mcp.streaming import IBKRWebSocket, PnLUpdate, TradeExecution
 
+from claudia.dashboard_data import connect, settled_execution_ids
 from claudia.live_realised import execution_time_et
 
 if TYPE_CHECKING:
     from ibkr_core_mcp import ClaudeToolkit, SQLiteStore
+
+    from claudia.conversation_store import ConversationStore
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +79,7 @@ _CLOSED = object()  # sentinel: the pump task signals a clean WebSocket close
 # promise a resubscribe after a reconnect never re-sends one, so a replayed id must not
 # become a second FILLED message and a second decision row (review 2026-09-04, #7).
 # This bound is per process: it does not know what an earlier process reported, nor what
-# is already on a statement (measured 2026-10-02, see `_run_once`).
+# is already on a statement (measured 2026-10-02, see `_run_once`) — `news_rule` does.
 _SEEN_EXECUTIONS_MAX = 500
 
 
@@ -118,7 +123,7 @@ class ExecutionReport:
     size: str  # "1", "1,234,567", "0.5", or "?" — IBKR's digits, never rounded
     contract: str  # "ES Sep18 '26" (FUT, measured live); "AMD" (STK, IBKR's doc shape)
     price: str  # "7,732.00", "1.08345" — IBKR's digits, two decimals at least, or "?"
-    time_et: str  # "12:47:05 ET" from the UTC trade_time, or ""
+    time_et: str  # "2026-09-04 12:47:05 ET" from the UTC trade_time, or ""
     exchange: str
     origin: str  # "via ClaudIA (CLAUDIA-…)" or "external (TWS / mobile / web portal)"
 
@@ -126,7 +131,7 @@ class ExecutionReport:
     def from_event(cls, event: TradeExecution) -> ExecutionReport:
         """Map IBKR's event verbatim. Today's real fill: `B 1 ES Sep18 '26 @ 7732.0`,
         `20260904-16:47:05`, ref `CLAUDIA-1788538622110`, CME → BOUGHT 1 ES Sep18 '26 @
-        7,732.00 · 12:47:05 ET · CME · via ClaudIA."""
+        7,732.00 · 2026-09-04 12:47:05 ET · CME · via ClaudIA."""
         side = (event.side or "").strip().upper()
         verb = {"B": "BOUGHT", "BUY": "BOUGHT", "S": "SOLD", "SELL": "SOLD"}.get(side, side or "?")
         size = _plain_number(event.size) if isinstance(event.size, (int, float)) else "?"
@@ -142,7 +147,9 @@ class ExecutionReport:
             contract = " ".join(p for p in (symbol, desc) if p) or "?"
         # One clock rule with the Fills tab (`live_realised.execution_time_et`, gap #68):
         # IBKR's documented format is YYYYMMDD-HH:mm:ss UTC; anything else is left blank.
-        time_et = execution_time_et(event.trade_time or "")
+        # With its date since 2026-10-02: a fill of an earlier day, reported late, read as
+        # today's. A clock reading in New York, not a trade date (gap #69).
+        time_et = execution_time_et(event.trade_time or "", with_date=True)
         ref = (event.order_ref or "").strip()
         origin = (
             f"via ClaudIA ({ref})"
@@ -179,6 +186,31 @@ def format_execution_report(report: ExecutionReport) -> str:
 
 
 FillSubscriber = Callable[[ExecutionReport], Awaitable[None]]
+BlockedSubscriber = Callable[[str], Awaitable[None]]
+
+
+def news_rule(sqlite_path: str | Path, conversations: ConversationStore) -> Callable[[str], bool]:
+    """The rule for "is this execution a fill nobody has been told of" (gap #68).
+
+    News if and only if its id is **neither** on a statement — a `source='flex'`
+    `execution_key`, the Fills tab's rule (`dashboard_data.settled_execution_ids`) — **nor**
+    already recorded as reported (`ConversationStore.reported_execution_ids`, which an
+    earlier process wrote and this one did not). Exact, by execution id: no clock, no
+    trade date.
+
+    The returned function **raises** when either record cannot be read — no store, no Flex
+    table, an unreadable `claudia.db`. Unknown is not "not on a statement": the listener
+    then reports nothing and says so (operator, 2026-10-02).
+    """
+
+    def is_news(execution_id: str) -> bool:
+        """Read both records for one execution id."""
+        with closing(connect(sqlite_path)) as conn:
+            if settled_execution_ids(conn, [execution_id]):
+                return False
+        return not conversations.reported_execution_ids([execution_id])
+
+    return is_news
 
 
 def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:
@@ -255,7 +287,14 @@ class ExecutionListener:
       await listener.stop()  — cancel the task cleanly
     """
 
-    def __init__(self, gateway_url: str, store: SQLiteStore, session: Any = None) -> None:
+    def __init__(
+        self,
+        gateway_url: str,
+        store: SQLiteStore,
+        session: Any = None,
+        *,
+        is_news: Callable[[str], bool],
+    ) -> None:
         """Configure the listener. No connection is opened until `start()`.
 
         Args:
@@ -263,31 +302,54 @@ class ExecutionListener:
             store: Store that executions and P&L snapshots are written to.
             session: The `GatewaySession` that owns IBKR connectivity. Defaults to the
                 process-wide one; injected in tests.
+            is_news: Whether an execution id is a fill nobody has been told of
+                (`news_rule`). Required — a listener without it would report whatever
+                IBKR replays. It raises when it cannot tell, and then nothing is reported.
         """
         self._gateway_url = gateway_url
         self._store = store
         self._task: asyncio.Task[None] | None = None
         self._session_override = session
+        self._is_news = is_news
+        self._blocked = False  # True from a failed check until the next one that answers
         self._subscribers: list[FillSubscriber] = []
+        self._blocked_subscribers: list[BlockedSubscriber] = []
         self._seen_executions: deque[str] = deque(maxlen=_SEEN_EXECUTIONS_MAX)
 
-    def subscribe(self, callback: FillSubscriber) -> Callable[[], None]:
+    def subscribe(
+        self, callback: FillSubscriber, on_blocked: BlockedSubscriber
+    ) -> Callable[[], None]:
         """Register an async callback for every fill (any origin). Returns an unsubscribe.
 
         Same shape as `ConnectivityChecker.subscribe`: one process-wide listener, one
         callback per browser session, detached on End Session and on the destroy hook.
+        `on_blocked` is required: it is told, in a sentence, when fill reporting stops
+        because an execution could not be checked — a session that could not be told would
+        simply see no fills.
         """
         self._subscribers.append(callback)
+        self._blocked_subscribers.append(on_blocked)
 
         def _unsubscribe() -> None:
-            """Detach this callback. Safe to call twice — a missing entry is ignored."""
+            """Detach both callbacks. Safe to call twice — a missing entry is ignored."""
             with contextlib.suppress(ValueError):
                 self._subscribers.remove(callback)
+            with contextlib.suppress(ValueError):
+                self._blocked_subscribers.remove(on_blocked)
 
         return _unsubscribe
 
-    async def _notify_fill(self, event: TradeExecution) -> None:
-        """Deliver one fill to every subscriber; a raising subscriber is logged, not fatal.
+    async def _notify_fill(self, event: TradeExecution) -> bool:
+        """Deliver one fill to every subscriber, if it is news. True when it was reported.
+
+        An execution is news once (gap #68, 2026-10-02): not when this process already
+        reported it, not when it is on a statement, not when an earlier process recorded it
+        as reported (`news_rule`). **When that cannot be checked, nothing is reported and
+        nothing is recorded** — no message, no decision row, no P&L snapshot — the operator
+        is told once per interruption, and the execution is not remembered, so it is
+        reported if it arrives again once the stores can be read (operator, 2026-10-02).
+
+        A raising subscriber is logged, not fatal.
 
         Called from BOTH places an execution can surface — the outer loop and the P&L
         capture round, which drains the same queue (review 2026-09-04, #1: a bracket's second
@@ -301,8 +363,23 @@ class ExecutionListener:
             log.info(
                 "ExecutionListener: execution %s already reported — skipped", event.execution_id
             )
-            return
+            return False
+        try:
+            news = await asyncio.to_thread(self._is_news, event.execution_id)
+        except Exception as exc:
+            await self._say_blocked(event.execution_id, exc)
+            return False
+        if self._blocked:
+            self._blocked = False
+            log.warning("ExecutionListener: executions can be checked again — reporting resumed")
         self._seen_executions.append(event.execution_id)
+        if not news:
+            log.info(
+                "ExecutionListener: execution %s is on a statement or was already reported"
+                " — not news",
+                event.execution_id,
+            )
+            return False
         try:
             report = ExecutionReport.from_event(event)
         except Exception as exc:
@@ -312,7 +389,7 @@ class ExecutionListener:
                 exc,
                 exc_info=True,
             )
-            return
+            return False
         for subscriber in list(self._subscribers):
             try:
                 await subscriber(report)
@@ -320,6 +397,30 @@ class ExecutionListener:
                 log.warning(
                     "Could not deliver an execution report to a subscriber: %s", exc, exc_info=True
                 )
+        return True
+
+    async def _say_blocked(self, execution_id: str, exc: Exception) -> None:
+        """Fill reporting cannot run: log every execution, tell the sessions once."""
+        log.error(
+            "ExecutionListener: execution %s could not be checked (%s) — NOT reported,"
+            " nothing recorded",
+            execution_id,
+            exc,
+        )
+        if self._blocked:
+            return
+        self._blocked = True
+        text = (
+            "**Fill reporting stopped.** IBKR sent an execution and it could not be checked "
+            f"against the statement and the record of reported fills ({type(exc).__name__}: "
+            f"{exc}). Nothing was shown as a fill and nothing was recorded. Check IBKR for "
+            "executions; reporting resumes when the stores can be read."
+        )
+        for subscriber in list(self._blocked_subscribers):
+            try:
+                await subscriber(text)
+            except Exception as told:
+                log.warning("Could not tell a session fill reporting stopped: %s", told)
 
     @property
     def _session(self) -> Any:
@@ -397,8 +498,9 @@ class ExecutionListener:
         later starts the same day, same message — one on a fresh session, one with the
         gateway left up — were answered by nothing. Why they differ is not established
         (`ibkr_core_mcp/docs/ibkr-api-behaviors-reference.md`, WebSocket `str`).
-        `_notify_fill` de-duplicates within this process only, so that start reported 46
-        old executions as new fills (gap #68, open).
+        That start reported 46 old executions as new fills, because the only memory was
+        this process's. Since 2026-10-02 `_notify_fill` asks `news_rule` first, so what
+        IBKR replays no longer decides what is reported (gap #68).
 
         A clean close surfaces as `StopAsyncIteration` and **returns normally** — the
         caller treats that as "reconnect in 5s", not as an error. Genuine failures
@@ -421,10 +523,11 @@ class ExecutionListener:
                 try:
                     while True:
                         item = await _next_item(queue)
-                        if isinstance(item, TradeExecution):
-                            # Report FIRST: the capture below can block up to 10 s per
-                            # round, and a fill must not wait on a P&L tick (2026-09-04).
-                            await self._notify_fill(item)
+                        # Report FIRST: the capture below can block up to 10 s per round,
+                        # and a fill must not wait on a P&L tick (2026-09-04). Capture only
+                        # for news: a replayed old execution moved no P&L (2026-10-02: 46 of
+                        # them wrote two snapshot rows).
+                        if isinstance(item, TradeExecution) and await self._notify_fill(item):
                             await self._capture_pnl_until_settled(ws, queue)
                 except StopAsyncIteration:
                     return  # WebSocket closed cleanly — _run_with_retry treats
@@ -501,8 +604,8 @@ class ExecutionListener:
                         mv=item.mv,
                     )
                     return saw_extra_execution
-                if isinstance(item, TradeExecution):
-                    await self._notify_fill(item)  # every fill is reported, mid-round too
+                # Every fill is reported, mid-round too; only news asks for a fresher round.
+                if isinstance(item, TradeExecution) and await self._notify_fill(item):
                     saw_extra_execution = True
         finally:
             # suppress() is equivalent to try/except/pass here — does not mask an

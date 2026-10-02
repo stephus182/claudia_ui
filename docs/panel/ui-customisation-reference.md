@@ -264,6 +264,9 @@ WebSocket goes to the **chat**, authored **IBKR** (not ClaudIA, not System), *an
 with a toast, *and* into the agent's operator channel. A fill is the event a trader must not
 miss, and the author label says whose record it is: the broker's, not the assistant's. Details
 and the four surfaces: `docs/order-api-reference.md` § Automatic execution reports.
+"Fill reporting stopped" — an execution that could not be checked against the statement and
+the record of reported fills — is **not** a fill and follows the rule: an error line in the
+log, with its toast (2026-10-02).
 
 **Why the log card is below the input, not between feed and input:** the feed and the input
 row are one `ChatInterface`; putting anything between them means reaching into its internals.

@@ -63,7 +63,12 @@ from claudia.briefing import (
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
 from claudia.dashboard_poller import DashboardPoller
-from claudia.execution_listener import ExecutionListener, ExecutionReport, format_execution_report
+from claudia.execution_listener import (
+    ExecutionListener,
+    ExecutionReport,
+    format_execution_report,
+    news_rule,
+)
 from claudia.flex_sync import (
     dataset_fingerprint,
     newest_statement_day,
@@ -694,6 +699,23 @@ def _make_fill_subscriber(
                 )
 
     return _on_fill
+
+
+def _make_fill_blocked_subscriber(syslog: SystemLog) -> Callable[[str], Awaitable[None]]:
+    """Async subscriber for "fill reporting stopped" — an execution could not be checked.
+
+    An **error** line in the System log, which raises the toast: it announces that fills are
+    NOT being shown. Not a chat message — it is a session-level event, and the fill itself
+    is the one documented exception to that routing (`ui-customisation-reference.md` §2.6).
+    Nothing is recorded and the agent is not told: the listener reported nothing, so there
+    is nothing to note (operator, 2026-10-02).
+    """
+
+    async def _on_blocked(text: str) -> None:
+        """Say the listener's sentence as an error."""
+        syslog.say(text.replace("**", ""), "error")
+
+    return _on_blocked
 
 
 def _build_action_bar(
@@ -1449,10 +1471,15 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
                 _make_alert_subscriber(syslog)
             )
             if _execution_listener is None:
-                _execution_listener = ExecutionListener(cfg.gateway_url, toolkit._store)
+                _execution_listener = ExecutionListener(
+                    cfg.gateway_url,
+                    toolkit._store,
+                    is_news=news_rule(cfg.sqlite_path, _get_store()),
+                )
             _execution_listener.start()
             _session["unsubscribe_fills"] = _execution_listener.subscribe(
-                _make_fill_subscriber(chat, syslog, _session, session_id, store)
+                _make_fill_subscriber(chat, syslog, _session, session_id, store),
+                _make_fill_blocked_subscriber(syslog),
             )
             if _session["closed"]:
                 # Session was destroyed while init was still running — undo the
