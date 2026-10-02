@@ -73,6 +73,8 @@ _CLOSED = object()  # sentinel: the pump task signals a clean WebSocket close
 # `realtimeUpdatesOnly` decides whether historical executions are *displayed*; it does not
 # promise a resubscribe after a reconnect never re-sends one, so a replayed id must not
 # become a second FILLED message and a second decision row (review 2026-09-04, #7).
+# This bound is per process: it does not know what an earlier process reported, nor what
+# is already on a statement (measured 2026-10-02, see `_run_once`).
 _SEEN_EXECUTIONS_MAX = 500
 
 
@@ -385,9 +387,18 @@ class ExecutionListener:
     async def _run_once(self) -> None:
         """Run one full WebSocket lifecycle: authenticate, subscribe, pump until close.
 
-        Extracts the browser session cookie, subscribes with
-        `realtime_updates_only=True` (historical replay would re-record executions already
-        in the store), and pumps messages until the stream ends.
+        Extracts the browser session cookie, subscribes with `realtime_updates_only=True`,
+        and pumps messages until the stream ends.
+
+        **`True` does not mean only new executions arrive.** It was chosen on the assumption
+        that it keeps history out. Measured 2026-10-02 in the gateway's own log: on a
+        brokerage session one minute old this subscription was answered by every execution
+        of the current seven-day window, each three times, as single-execution frames. Two
+        later starts the same day, same message — one on a fresh session, one with the
+        gateway left up — were answered by nothing. Why they differ is not established
+        (`ibkr_core_mcp/docs/ibkr-api-behaviors-reference.md`, WebSocket `str`).
+        `_notify_fill` de-duplicates within this process only, so that start reported 46
+        old executions as new fills (gap #68, open).
 
         A clean close surfaces as `StopAsyncIteration` and **returns normally** — the
         caller treats that as "reconnect in 5s", not as an error. Genuine failures

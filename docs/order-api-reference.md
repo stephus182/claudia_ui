@@ -917,6 +917,19 @@ section describes surfaces that have never fired. The remaining ClaudIA half (a 
 strict as the gateway, the "not confirmed" silence guard, replay-and-seed against
 `realtimeUpdatesOnly`) is spec Part 3 and follows the pin; the Fills tab (gap #68's other half,
 built 2026-09-25) is the independent check meanwhile.
+**First start on the core's release branch, 2026-10-02 (a local override, not the pin):** the
+subscription landed, and within half a second the gateway relayed every execution of the
+current seven-day window — 46 of them, each three times, as single-execution frames — although
+the listener asks for `realtimeUpdatesOnly: true`. Each was reported as a new fill: 46 System-log
+warnings and 46 `execution_reported` rows, with a time and no date (no chat message row was
+written). Read from the gateway's own log. A second subscription from another socket twelve minutes later
+received nothing, with the flag either way. Two later starts the same day sent the same
+message and received no trades frame at all — one on a new gateway container and a new login,
+one with the gateway left up — so neither a fresh session nor a restart is by itself the
+cause, and what made the first start different is **not established**. What IBKR documents for the two arguments, and
+the six measurements, are in `ibkr_core_mcp/docs/ibkr-api-behaviors-reference.md` (WebSocket
+`str`). Until the listener can tell an execution that is news from one that is not, it must not
+ship on a core that delivers the subscription.
 Only the FUT event shape has been observed live; STK/OPT shapes rest on IBKR's documentation
 until a stock fills through the listener. Not done: a P&L-after-fill line (the realised tile refreshes
 within 15 s), a poller-based fallback. Live status: **code-verified 2026-09-04; the first
