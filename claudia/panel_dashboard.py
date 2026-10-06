@@ -224,9 +224,11 @@ _TO_DATE_NOTE = (
     "`flex_trade` (IBKR's realised, after wash-sale deferral), gross win/loss and the counts "
     "are `flex_lot` (tax lots, pre-wash-sale), Wash sales is `flex_wash_sale` (the losses IBKR "
     "deferred into replacement shares) — Net = Gross win + Gross loss + Wash sales on every "
-    "row; the pending part is reconstructed FIFO from your own executions not yet on a "
-    "statement (no trade date, shown beside the window and added to it, never bucketed by "
-    "date — gap #69). Week, month and YTD alike._"
+    "row, exact in the data (IBKR's values carry six decimals) while each figure here is "
+    "rounded to the cent on its own, so a row can show a 0.01 difference; the pending part is "
+    "reconstructed FIFO from your own executions not yet on a statement (no trade date, shown "
+    "beside the window and added to it, never bucketed by date — gap #69). Week, month and "
+    "YTD alike._"
 )
 _LIVE_SOURCE_NOTE = (
     "_Reconstructed FIFO from your own executions — not `flex_trade`, not `flex_lot`, "
