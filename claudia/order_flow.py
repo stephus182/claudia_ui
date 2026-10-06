@@ -40,6 +40,7 @@ import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from ibkr_core_mcp.order_confirm import _DIALOG_TIMEOUT_S, change_value_text, price_text_safe
@@ -738,6 +739,69 @@ class RefusedBeforeGatesError(Exception):
     F clicks left `trade_proposed` alone in the store). The message is the whole reason; the
     handler's own "**Order not placed:**" (or cancelled / modified) prefix goes in front.
     """
+
+
+def _whole_or_exact(qty: Any) -> Any:
+    """A whole quantity as an int (`50.0` → `50`); anything else exactly as proposed.
+
+    The value never changes — `50.0 == 50` — only its spelling: IBKR's examples write whole
+    quantities as integers, and nothing here prints "50.0 shares". A fractional quantity is
+    returned untouched (gap #18); the two `int(qty)` casts this replaces truncated it.
+    """
+    if isinstance(qty, float) and qty.is_integer():
+        return int(qty)
+    return qty
+
+
+def _fractional_quantity_problem(
+    qty: Any, order_type: str, rules: Mapping[str, Any] | None, label: str
+) -> str | None:
+    """Why a fractional quantity is refused for this contract, or None when its rules permit it.
+
+    Gap #18 (operator 2026-09-28: "follow the IB rules and NO special cases"). IBKR decides
+    per contract: `/iserver/contract/rules` returns `fraqTypes` — "permitted order types for
+    use with fractional trading" — and `fraqInt` — "decimal places for fractional order size"
+    (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/contract/search-contract-rules).
+    Measured 2026-09-28: EUR.USD and EUR.CHF permit two decimals on every order type, CHF.USD
+    permits none. No asset-class rule here, no pair list — the endpoint is the authority, and
+    `sizeIncrement` is deliberately not enforced (this account's own fills of 10,689.5 against
+    `sizeIncrement 1000` show it is not an acceptance constraint). A whole quantity is never a
+    question for this function: the caller does not read the rules for one.
+
+    `rules` is None when the read failed: refused, because a permission that cannot be
+    confirmed is not assumed (the expiry rule fails closed the same way, gap #71).
+    """
+    if rules is None:
+        return (
+            f"{label}: the contract's trading rules could not be read from IBKR, so a fractional "
+            f"quantity of {qty} cannot be confirmed permitted. Retry once IBKR answers, or propose a whole quantity."
+        )
+    permitted_types = [str(t) for t in (rules.get("fraqTypes") or [])]
+    decimals_allowed = int(rules.get("fraqInt") or 0)
+    if not permitted_types:
+        return f"{label}: IBKR permits no fractional quantity for this contract (fraqTypes is empty); {qty} was proposed."
+    if order_type.upper() not in permitted_types:
+        return (
+            f"{label}: IBKR permits a fractional quantity for {', '.join(permitted_types)} orders, "
+            f"not for {order_type.upper()}; {qty} was proposed."
+        )
+    decimals = max(0, -Decimal(str(qty)).normalize().as_tuple().exponent)  # type: ignore[operator]
+    if decimals > decimals_allowed:
+        return (
+            f"{label}: IBKR permits {decimals_allowed} decimal place{'s' if decimals_allowed != 1 else ''} "
+            f"in a fractional quantity for this contract (fraqInt); {qty} has {decimals}."
+        )
+    return None
+
+
+def _contract_rules(ibkr: Any, conid: int, is_buy: bool) -> Mapping[str, Any] | None:
+    """The contract's rules for this side, or None when IBKR could not be read (POST, read-only)."""
+    try:
+        rules = ibkr.get_contract_rules(int(conid), is_buy)
+    except Exception as exc:  # the caller refuses; the reason is logged, never shown raw
+        log.warning("contract rules read failed for conid %s: %s", conid, type(exc).__name__)
+        return None
+    return rules if isinstance(rules, Mapping) else None
 
 
 _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
@@ -1662,7 +1726,7 @@ async def _stage_order(
     """The staged-order flow itself; reached only through `_execute_staged_order_core`."""
     symbol = proposal.get("symbol", "?")
     action_str = proposal.get("action", "?")
-    qty = proposal.get("quantity", 0)
+    qty = _whole_or_exact(proposal.get("quantity", 0))
     otype = proposal.get("order_type", "MKT")
     limit_price = proposal.get("limit_price")
     sec_type = proposal.get("sec_type", "STK").upper()
@@ -1763,6 +1827,13 @@ async def _stage_order(
             if name and not company_name:
                 company_name = name
 
+        # A fractional quantity is staged only where this contract's own rules permit it,
+        # read now, before Gate 1 (gap #18). A whole quantity reads nothing.
+        if not isinstance(qty, int):
+            rules = await asyncio.to_thread(_contract_rules, ibkr, conid, action_str == "BUY")
+            if problem := _fractional_quantity_problem(qty, otype, rules, company_name or symbol):
+                raise RefusedBeforeGatesError(problem)
+
         claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"
         tif = (
             proposal.get("tif")
@@ -1783,7 +1854,8 @@ async def _stage_order(
         # tif            str      yes        DAY | GTC | OPG | IOC (proposal enum); per-contract
         #                                     set in /iserver/contract/rules — docs/order-api-reference.md
         #                                     § Time in force
-        # quantity       float*   yes*       *docs say float; example uses int; whole shares only
+        # quantity       double   yes        exactly as proposed; whole → int; a fraction only where
+        #                                    the contract's fraqTypes / fraqInt permit it (gap #18)
         # price          float    LMT/STOP_LIMIT  limit price
         # auxPrice       float    STOP_LIMIT/TRAILLMT  stop price
         # acctId         str      no         defaults to first account if omitted
@@ -1805,7 +1877,7 @@ async def _stage_order(
             "orderType": otype,  # str
             "side": action_str,  # str: BUY | SELL
             "tif": tif,  # str: the proposal enum, DAY | GTC | OPG | IOC
-            "quantity": int(qty),  # int (docs say float, example uses int)
+            "quantity": qty,  # exactly as proposed; a whole one is an int (IBKR types it double)
             "ticker": symbol,  # str — display + valid IBKR field
             "acctId": "",  # filled below after account lookup
             "cOID": claudia_ref,  # str — max 64 chars
@@ -2272,7 +2344,7 @@ async def _modify_order(
         )
 
         action_str = proposal.get("action", "?")
-        qty = proposal.get("quantity", 0)
+        qty = _whole_or_exact(proposal.get("quantity", 0))
         otype = proposal.get("order_type", "MKT")
         tif = (proposal.get("tif") or "DAY").upper()
         sec_type = proposal.get("sec_type", "STK").upper()
@@ -2287,12 +2359,18 @@ async def _modify_order(
         # `_companyName`, `_multiplier`, `_currency`, `_changes` and `_current_description`;
         # it would have steered a reader away from the Gate 2 facts this dialog needs.
         # Corrected 2026-09-21 against `client.modify_order`.
+        # The replacement quantity follows the same contract rule as a new order (gap #18).
+        if not isinstance(qty, int):
+            rules = await asyncio.to_thread(_contract_rules, ibkr, int(conid), action_str == "BUY")
+            if problem := _fractional_quantity_problem(qty, otype, rules, symbol):
+                raise RefusedBeforeGatesError(problem)
+
         order_body: dict[str, Any] = {
             "conid": int(conid),
             "orderType": otype,
             "side": action_str,
             "tif": tif,
-            "quantity": int(qty),
+            "quantity": qty,  # exactly as proposed; a whole one is an int
             "ticker": symbol,
         }
         if sec_type in ("FUT", "FOP"):

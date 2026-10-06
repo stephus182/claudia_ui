@@ -1346,13 +1346,25 @@ def test_locally_handled_tools_exclude_order_write_tools():
 # ── The four guarantees strict mode cannot express (proposal_tools.py) ───────
 
 
-@pytest.mark.parametrize("quantity", [0, -5])
-def test_non_positive_quantity_is_rejected(agent, quantity):
-    """exclusiveMinimum is a hard 400 on the tools endpoint, so the bound lives here."""
+@pytest.mark.parametrize("quantity", [0, -5, 0.0, -0.5, float("nan"), float("inf"), True, "5"])
+def test_a_quantity_that_is_not_a_positive_finite_number_is_rejected(agent, quantity):
+    """exclusiveMinimum is a hard 400 on the tools endpoint, so the bound lives here. Since
+    gap #18 the schema says `number`, which admits NaN and Infinity — not quantities — and
+    a bool is an int to Python."""
     result = agent._handle_local_tool("propose_order", {**VALID_ORDER, "quantity": quantity})
     assert agent._pending_proposal is None
     assert "rejected" in result.lower()
     assert "no staging button" in result.lower()
+
+
+def test_a_fractional_quantity_is_a_proposal_not_a_defect(agent):
+    """Gap #18 (operator 2026-09-28: fractions "as long as IB allows it"): whether 0.5 is
+    permitted is the contract's own rule, read on the order path before Gate 1 — not the
+    schema's business, which until now refused it as "whole number"."""
+    result = agent._handle_local_tool("propose_order", {**VALID_ORDER, "quantity": 0.5})
+    assert agent._pending_proposal is not None, result
+    kind, inputs = agent._pending_proposal
+    assert kind == "order" and inputs["quantity"] == 0.5
 
 
 @pytest.mark.parametrize("symbol", ["", "   "])

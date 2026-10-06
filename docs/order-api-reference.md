@@ -72,9 +72,24 @@ Known Gaps #8 in `docs/project-status.md`, and
 `tif` values: `DAY`, `GTC`, `IOC`, `OPG` — what ClaudIA can propose. IBKR accepts more for some
 contracts (`GTD`; the stock overnight TIFs `OVT`/`OND`), and a TIF valid for one instrument is not
 valid for every other: see § Time in force, extended hours and auction orders.
-`quantity` is `"type": "integer"` — a fractional value is rejected at the API boundary rather
-than silently truncated by `int(qty)` in `order_flow.py`. Positivity is *not* schema-enforced
-(`exclusiveMinimum` is a 400); `_proposal_defect()` carries it.
+`quantity` is `"type": "number"` since 2026-10-06 (gap #18; operator 2026-09-28: fractional
+quantities "as long as IB allows it", "follow the IB rules and NO special cases"). Whether a
+fraction is permitted is **the contract's own rule**: `/iserver/contract/rules` returns
+`fraqTypes` ("permitted order types for use with fractional trading") and `fraqInt` ("decimal
+places for fractional order size"), per contract — measured 2026-09-28, EUR.USD and EUR.CHF
+permit two decimals on all nine order types, CHF.USD permits none. `order_flow` reads that rule
+**only for a fractional quantity**, before Gate 1, and refuses what the contract refuses
+(stage `before_gates`), quoting it: no fractions at all, too many decimals, not for this order
+type, or the rule could not be read (fail-closed). A whole quantity adds no request and is sent
+as an int (`50.0` → `50`); a fractional one reaches the body, the approval text and Gate 2
+**exactly as proposed** — the `int(qty)` that truncated `1000.5` to `1000` from 2026-07 is gone.
+`sizeIncrement` is deliberately not enforced: this account's own fills of 10,689.5 against
+`sizeIncrement 1000` show it is not an acceptance constraint, so enforcing it would be our rule.
+Fractional **stocks** also need the account permission "Global (Trade in Fractions)" under
+Stocks (ibkrguides, *Trade in Fractions*); whether the rules endpoint reflects it is unprobed.
+IBKR's own page on minimum FX order sizes is to be read before the live FX test. Positivity is
+*not* schema-enforced (`exclusiveMinimum` is a 400); `_proposal_defect()` carries it, and
+refuses NaN, Infinity and `true`, which `number` admits.
 `conid`: a pre-resolved IBKR contract ID, nullable here. **Required non-null** for `FOP`
 (options-chain conid resolution isn't inferable from symbol alone) — enforced by
 `order_flow.py`, not by the schema; accepted as an override for any `sec_type`, and when set
@@ -91,7 +106,7 @@ Bracket fields (`parentId`, `isSingleGroup`, verbatim rules): https://www.intera
 | `orderType` | str | yes | `LMT` \| `MKT` \| `STP` \| `STOP_LIMIT` \| `MIDPRICE` \| `TRAIL` \| `TRAILLMT` |
 | `side` | str | yes | `"BUY"` \| `"SELL"` |
 | `tif` | str | yes | Four of the five values of IBKR's order-body enum: `DAY` \| `IOC` \| `GTC` \| `OPG`; the fifth, `PAX`, IBKR lists and defines nowhere (not proposable here, by decision 2026-10-05). Contract rules also return `GTD`, and for US stocks `OVT` / `OND` (overnight) — see § Time in force |
-| `quantity` | int | yes | whole shares/contracts only |
+| `quantity` | number (IBKR: double) | yes | exactly as proposed; a whole quantity as an int. A fraction only where the contract's `fraqTypes` / `fraqInt` permit it, checked before Gate 1 (gap #18) |
 | `price` | float | LMT / STOP_LIMIT | limit price |
 | `auxPrice` | float | STOP_LIMIT / TRAILLMT | stop price |
 | `trailingAmt` | float | TRAIL / TRAILLMT | trail offset; `0`–`100` when `trailingType` is `%` (scraped 2026-09-20) |

@@ -93,21 +93,30 @@ _PRICE: dict[str, object] = {"anyOf": [{"type": "number"}, {"type": "null"}]}
 # fallback symbol-based resolution, so modify cannot accept null.
 _CONID: dict[str, object] = {"anyOf": [{"type": "integer"}, {"type": "null"}]}
 
-# `integer`, not `number`: order_flow.py:310 does int(qty) ("whole shares only", per its
-# own field table at :288), so a fractional 1.7 would be SILENTLY truncated to 1 — a
-# mutation of a user-specified order parameter, which order-parameter immutability
-# forbids, and the same shape as crash vector 4 (wrong outcome, no exception). `integer`
-# is a type keyword, not a numeric constraint, so it registers fine (conid already proves
-# integers do). It also rejects inf/NaN/True for free, which `number` admits. If
-# fractional quantities are ever supported, widen this deliberately — never incidentally.
+# `number`, since gap #18 (operator 2026-09-28: fractional quantities "as long as IB allows
+# it"; built 2026-10-06). IBKR's order body types `quantity` as a double, and whether a
+# fraction is permitted is the CONTRACT's own rule — `/iserver/contract/rules` returns
+# `fraqTypes` (the order types that may be fractional) and `fraqInt` (the decimals allowed),
+# per contract: two EUR pairs permit two decimals on every order type, CHF.USD permits none
+# (measured 2026-09-28). `order_flow` reads that rule before Gate 1 and refuses what the
+# contract refuses, quoting it; a whole quantity reads nothing. It was `integer` from
+# 2026-07-27 to 2026-10-06 because `order_flow` did `int(qty)` and a fractional 1.7 would
+# have been SILENTLY truncated to 1 — a mutation of a user-specified parameter; that
+# truncation is gone with this change, the body carries the proposed value exactly.
+# `number` admits inf, NaN and True, which `integer` refused for free: `_proposal_defect`
+# refuses them now, as it already did for every price. No new keyword: `number` is what
+# every price field in these schemas already uses, so the strict grammar needs no probe.
 #
 # Positivity is still NOT enforced: `exclusiveMinimum` is a 400 (see the probe record), so
 # the bound lives in the description — which mirrors what the SDK's transform_schema does
 # on the parse path, so the model at least sees it. A description is not enforcement; see
 # "Handler obligations" above.
 _QUANTITY: dict[str, object] = {
-    "type": "integer",
-    "description": "Number of units/contracts. Whole units only, and must be greater than 0.",
+    "type": "number",
+    "description": (
+        "Number of units/contracts, greater than 0. A fractional quantity (0.5 shares, 1000.5 EUR) "
+        "is accepted only where IBKR's rules for that contract permit it, checked before staging."
+    ),
 }
 
 # The plan specified two parallel properties on propose_modify — `changed_fields` (array)

@@ -1912,8 +1912,9 @@ async def test_execute_modify_order_builds_fresh_body_not_raw_proposal():
 
 
 @pytest.mark.asyncio
-async def test_execute_modify_order_quantity_is_int():
-    """Quantity is sent as a whole number, matching the placement path."""
+async def test_execute_modify_order_sends_a_whole_quantity_as_an_int():
+    """A whole quantity is sent as an int — `5`, never `5.0` — matching the placement path,
+    and needs no contract-rules read (gap #18)."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     action = _make_modify_action(
         {
@@ -1921,13 +1922,14 @@ async def test_execute_modify_order_quantity_is_int():
             "conid": 1,
             "symbol": "AAPL",
             "action": "BUY",
-            "quantity": 5,
+            "quantity": 5.0,
             "order_type": "MKT",
         }
     )
     await _run_modify(action, ibkr_mod)
     _, _, order_body = client.modify_order_and_confirm.call_args.args
-    assert isinstance(order_body.get("quantity"), int)
+    assert order_body.get("quantity") == 5 and isinstance(order_body.get("quantity"), int)
+    client.get_contract_rules.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -4772,3 +4774,162 @@ async def test_a_cancel_or_modify_refused_before_the_gates_is_recorded(
     assert kwargs["metadata"]["stage"] == "before_gates"
     assert len(contents) == 1 and contents[0].count(said) == 1
     assert "Touch ID" not in contents[0]
+
+
+# ── Gap #18 — fractional quantities follow the contract's own rules (operator 2026-09-28:
+# "follow the IB rules and NO special cases") ──────────────────────────────────────────────
+
+# The raw `/iserver/contract/rules` reads of 2026-09-28 (live, read-only): two EUR pairs permit
+# two decimals on every order type, the CHF pair permits none. Synthetic order ids only.
+_EUR_USD_RULES = {
+    "fraqTypes": ["LMT", "MKT", "STP", "STOP_LIMIT", "MIT", "LIT", "TRAIL", "TRAILLMT", "REL"],
+    "fraqInt": 2,
+    "sizeIncrement": 1000,
+}
+_CHF_USD_RULES = {"fraqTypes": [], "fraqInt": 0, "sizeIncrement": 1000}
+
+
+def _fx_proposal(quantity, order_type="LMT", conid=12087792, symbol="EUR.USD"):
+    """An FX proposal with a pre-resolved conid (EUR.USD's own) and a limit far from any market."""
+    return _make_action(
+        {
+            "symbol": symbol,
+            "action": "SELL",
+            "quantity": quantity,
+            "conid": conid,
+            "sec_type": "CASH",
+            "order_type": order_type,
+            "limit_price": 1.9000,  # far from any market
+            "tif": "DAY",
+        }
+    )
+
+
+async def _refused_before_gates(action, ibkr_mod, client) -> dict[str, Any]:
+    """Run the place core; nothing reaches Gate 1; return the `before_gates` refusal row."""
+    store = MagicMock()
+    recorded = await _run(action, ibkr_mod, store=store, session_id="s1")
+    client.place_order_and_confirm.assert_not_called()
+    assert any("Order not placed" in c for c in _sent_contents(recorded))
+    kwargs: dict[str, Any] = store.add_decision.call_args.kwargs
+    assert kwargs["decision_type"] == "trade_refused"
+    assert kwargs["metadata"]["stage"] == "before_gates"
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_fractional_quantity_the_contract_permits_reaches_ibkr_exactly():
+    """EUR.USD SELL 1000.5 LMT: `int(qty)` used to send 1000 — a silent change of a
+    user-specified parameter. The body carries 1000.5, and the rule was read for this
+    contract and side."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_contract_rules.return_value = _EUR_USD_RULES
+    await _run(_fx_proposal(1000.5), ibkr_mod)
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert order_body["quantity"] == 1000.5
+    client.get_contract_rules.assert_called_once_with(12087792, False)  # SELL → isBuy False
+
+
+@pytest.mark.asyncio
+async def test_a_fractional_quantity_at_exactly_the_permitted_decimals_is_accepted():
+    """`fraqInt 2` admits two decimals, not one: 1000.25 is staged (the boundary a `>=` would refuse)."""
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_contract_rules.return_value = _EUR_USD_RULES
+    await _run(_fx_proposal(1000.25), ibkr_mod)
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert order_body["quantity"] == 1000.25
+
+
+@pytest.mark.asyncio
+async def test_a_whole_quantity_reads_no_contract_rules_and_is_sent_as_an_int():
+    """Nothing changes on today's flows: a whole quantity — 50, or 50.0 as a number schema
+    may deliver it — adds no request and reaches IBKR as `50`."""
+    ibkr_mod, client = _make_ibkr_mock()
+    await _run(
+        _make_action({**json.loads(_make_action().payload["order"]), "quantity": 50.0}), ibkr_mod
+    )
+    _, order_body = client.place_order_and_confirm.call_args.args
+    assert order_body["quantity"] == 50 and isinstance(order_body["quantity"], int)
+    client.get_contract_rules.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("quantity", "order_type", "rules", "said"),
+    [
+        (1000.5, "LMT", _CHF_USD_RULES, "permits no fractional quantity"),
+        (1000.125, "LMT", _EUR_USD_RULES, "2 decimal place"),
+        (1000.5, "LMT", {"fraqTypes": ["MKT"], "fraqInt": 2}, "not for LMT"),
+        (1000.5, "LMT", ConnectionError("HTTP 503"), "could not be read"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_fractional_quantity_the_contract_does_not_permit_is_refused_before_gate_1(
+    quantity, order_type, rules, said
+):
+    """IBKR's rule for the contract, quoted: no fractions at all (CHF.USD), too many decimals,
+    not for this order type — and a rule that cannot be read refuses too (fail-closed, as the
+    expiry rule does)."""
+    ibkr_mod, client = _make_ibkr_mock()
+    if isinstance(rules, Exception):
+        client.get_contract_rules.side_effect = rules
+    else:
+        client.get_contract_rules.return_value = rules
+    kwargs = await _refused_before_gates(_fx_proposal(quantity, order_type), ibkr_mod, client)
+    assert said in kwargs["summary_text"], kwargs["summary_text"]
+
+
+@pytest.mark.asyncio
+async def test_a_fractional_replacement_quantity_follows_the_same_rule_on_modify():
+    """The modify path carried the second `int(qty)`; the replacement quantity is checked
+    against the same contract rule and sent exactly."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.get_contract_rules.return_value = _EUR_USD_RULES
+    action = _make_modify_action(
+        {
+            "order_id": "1",
+            "conid": 12087792,
+            "symbol": "EUR.USD",
+            "action": "BUY",
+            "quantity": 1000.5,
+            "order_type": "LMT",
+            "limit_price": 0.9,
+            "tif": "DAY",
+            "sec_type": "CASH",
+            "changes": [{"field": "quantity", "previous_value": 1000}],
+        }
+    )
+    await _run_modify(action, ibkr_mod)
+    _, _, order_body = client.modify_order_and_confirm.call_args.args
+    assert order_body["quantity"] == 1000.5
+    client.get_contract_rules.assert_called_once_with(12087792, True)
+
+
+@pytest.mark.asyncio
+async def test_a_fractional_replacement_quantity_the_contract_refuses_is_refused_before_gate_1():
+    """CHF.USD permits no fraction: the replacement is refused before Gate 1 with IBKR's rule, as a
+    `modify_refused` row at stage `before_gates`."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    client.get_contract_rules.return_value = _CHF_USD_RULES
+    store = MagicMock()
+    action = _make_modify_action(
+        {
+            "order_id": "1",
+            "conid": 12087802,
+            "symbol": "CHF.USD",
+            "action": "BUY",
+            "quantity": 1000.5,
+            "order_type": "LMT",
+            "limit_price": 0.9,
+            "tif": "DAY",
+            "sec_type": "CASH",
+            "changes": [{"field": "quantity", "previous_value": 1000}],
+        }
+    )
+    await _run_modify(action, ibkr_mod, store=store)
+    client.modify_order_and_confirm.assert_not_called()
+    kwargs = store.add_decision.call_args.kwargs
+    assert (
+        kwargs["decision_type"] == "modify_refused"
+        and kwargs["metadata"]["stage"] == "before_gates"
+    )
+    assert "permits no fractional quantity" in kwargs["summary_text"], kwargs["summary_text"]

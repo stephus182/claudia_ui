@@ -1353,9 +1353,10 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     otherwise drop each guarantee silently. Each applies to every proposal kind that
     declares the field — the schemas share `_QUANTITY` across all three tools:
 
-    1. `quantity > 0` — `exclusiveMinimum` is a hard 400 on the tools endpoint (probed
-       2026-07-27), so the bound lives only in the field's description: guidance, not
-       enforcement.
+    1. `quantity` is a finite number > 0 — `exclusiveMinimum` is a hard 400 on the tools
+       endpoint (probed 2026-07-27), so the bound lives only in the field's description:
+       guidance, not enforcement. Whole or fractional is not decided here (gap #18): the
+       contract's own rule is read on the order path, before Gate 1.
     2. `symbol` non-blank — `minLength` is deliberately unused (see that module's
        "Deliberate omissions"), and `"   "` would satisfy it anyway.
     3. `order_id` non-blank on cancel/modify — same, and acting on the wrong or no order is
@@ -1392,9 +1393,16 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     Returns:
         A one-line reason suitable for a tool_result, or None if the proposal is acceptable.
     """
+    # A finite number greater than 0 — whole or not (gap #18: fractions are the contract's
+    # rule, read on the order path before Gate 1). `number` admits NaN, Infinity and True.
     quantity = inputs.get("quantity")
-    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
-        return f"quantity={quantity!r} must be a whole number greater than 0"
+    if (
+        isinstance(quantity, bool)
+        or not isinstance(quantity, int | float)
+        or not isfinite(quantity)
+        or quantity <= 0
+    ):
+        return f"quantity={quantity!r} must be a number greater than 0"
 
     symbol = inputs.get("symbol")
     if not isinstance(symbol, str) or not symbol.strip():

@@ -171,6 +171,9 @@ def test_nullable_fields_use_documented_anyOf_form() -> None:
     props = _schema("propose_order")["properties"]
     assert props["limit_price"] == {"anyOf": [{"type": "number"}, {"type": "null"}]}
     assert props["conid"] == {"anyOf": [{"type": "integer"}, {"type": "null"}]}
+    # Gap #18: a quantity is a number — IBKR's order body types it `double` — and whether a
+    # fraction is permitted is the contract's rule, checked on the order path.
+    assert props["quantity"]["type"] == "number"
     # 2026-09-04: the outside-RTH attribute, same nullable form (null = "the user did not say").
     assert props["outside_rth"]["anyOf"] == [{"type": "boolean"}, {"type": "null"}]
 
