@@ -741,6 +741,17 @@ class RefusedBeforeGatesError(Exception):
     """
 
 
+# The proposal's order-type codes (`proposal_tools._ORDER_TYPE`, IBKR's order-body enum) and the
+# names `/iserver/contract/rules` uses for the same types in `orderTypes`, `fraqTypes` and
+# `cqtTypes` — the page's example and three live reads (2026-10-06) agree. Four codes, four names.
+_RULES_NAME_OF_ORDER_TYPE: dict[str, str] = {
+    "MKT": "market",
+    "LMT": "limit",
+    "STP": "stop",
+    "STOP_LIMIT": "stop_limit",
+}
+
+
 def _whole_or_exact(qty: Any) -> Any:
     """A whole quantity as an int (`50.0` → `50`); anything else exactly as proposed.
 
@@ -780,7 +791,13 @@ def _fractional_quantity_problem(
     decimals_allowed = int(rules.get("fraqInt") or 0)
     if not permitted_types:
         return f"{label}: IBKR permits no fractional quantity for this contract (fraqTypes is empty); {qty} was proposed."
-    if order_type.upper() not in permitted_types:
+    # IBKR's rules speak in order-type NAMES (`limit`, `market`, `stop`, `stop_limit`, the same
+    # words as its `orderTypes`), not in the body's codes (`LMT`, `MKT`, `STP`, `STOP_LIMIT`).
+    # Measured live 2026-10-06 (EUR.USD, CHF.USD, AAPL) and on the page's example; a first
+    # version compared the codes and would have refused every fractional order as "not for LMT".
+    # A code this table does not know is refused (fail-closed), never assumed permitted.
+    rules_name = _RULES_NAME_OF_ORDER_TYPE.get(order_type.upper())
+    if rules_name is None or rules_name not in permitted_types:
         return (
             f"{label}: IBKR permits a fractional quantity for {', '.join(permitted_types)} orders, "
             f"not for {order_type.upper()}; {qty} was proposed."

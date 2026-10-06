@@ -4779,10 +4779,24 @@ async def test_a_cancel_or_modify_refused_before_the_gates_is_recorded(
 # ── Gap #18 — fractional quantities follow the contract's own rules (operator 2026-09-28:
 # "follow the IB rules and NO special cases") ──────────────────────────────────────────────
 
-# The raw `/iserver/contract/rules` reads of 2026-09-28 (live, read-only): two EUR pairs permit
-# two decimals on every order type, the CHF pair permits none. Synthetic order ids only.
+# The raw `/iserver/contract/rules` reads of 2026-09-28 and 2026-10-06 (live, read-only), in
+# IBKR's OWN vocabulary — lowercase order-type names, the same words its `orderTypes` uses
+# (`limit`, `market`, `stop`, `stop_limit`, …; search-contract-rules page example and live): two
+# EUR pairs permit two decimals on nine types, the CHF pair permits none. A first fixture here
+# used ClaudIA's codes (`LMT`, `MKT`) and kept a rule green that would have refused every
+# fractional order live. Synthetic order ids only.
 _EUR_USD_RULES = {
-    "fraqTypes": ["LMT", "MKT", "STP", "STOP_LIMIT", "MIT", "LIT", "TRAIL", "TRAILLMT", "REL"],
+    "fraqTypes": [
+        "limit",
+        "market",
+        "stop",
+        "stop_limit",
+        "mit",
+        "lit",
+        "trailing_stop",
+        "trailing_stop_limit",
+        "relative",
+    ],
     "fraqInt": 2,
     "sizeIncrement": 1000,
 }
@@ -4830,6 +4844,16 @@ async def test_a_fractional_quantity_the_contract_permits_reaches_ibkr_exactly()
     client.get_contract_rules.assert_called_once_with(12087792, False)  # SELL → isBuy False
 
 
+def test_every_proposable_order_type_has_a_name_in_ibkrs_rules_vocabulary():
+    """A code added to `_ORDER_TYPE` without its rules name would make every fractional order
+    of that type refused as "not for X" (fail-closed, but for the wrong reason)."""
+    from claudia.proposal_tools import _ORDER_TYPE
+
+    codes = _ORDER_TYPE["enum"]
+    assert isinstance(codes, list)
+    assert set(codes) == set(order_flow._RULES_NAME_OF_ORDER_TYPE)
+
+
 @pytest.mark.asyncio
 async def test_a_fractional_quantity_at_exactly_the_permitted_decimals_is_accepted():
     """`fraqInt 2` admits two decimals, not one: 1000.25 is staged (the boundary a `>=` would refuse)."""
@@ -4858,7 +4882,13 @@ async def test_a_whole_quantity_reads_no_contract_rules_and_is_sent_as_an_int():
     [
         (1000.5, "LMT", _CHF_USD_RULES, "permits no fractional quantity"),
         (1000.125, "LMT", _EUR_USD_RULES, "2 decimal place"),
-        (1000.5, "LMT", {"fraqTypes": ["MKT"], "fraqInt": 2}, "not for LMT"),
+        (1000.5, "LMT", {"fraqTypes": ["market"], "fraqInt": 2}, "not for LMT"),
+        (
+            1000.5,
+            "STOP_LIMIT",
+            {"fraqTypes": ["limit", "stop"], "fraqInt": 2},
+            "not for STOP_LIMIT",
+        ),
         (1000.5, "LMT", ConnectionError("HTTP 503"), "could not be read"),
     ],
 )

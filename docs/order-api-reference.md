@@ -85,11 +85,24 @@ as an int (`50.0` → `50`); a fractional one reaches the body, the approval tex
 **exactly as proposed** — the `int(qty)` that truncated `1000.5` to `1000` from 2026-07 is gone.
 `sizeIncrement` is deliberately not enforced: this account's own fills of 10,689.5 against
 `sizeIncrement 1000` show it is not an acceptance constraint, so enforcing it would be our rule.
-Fractional **stocks** also need the account permission "Global (Trade in Fractions)" under
-Stocks (ibkrguides, *Trade in Fractions*); whether the rules endpoint reflects it is unprobed.
-IBKR's own page on minimum FX order sizes is to be read before the live FX test. Positivity is
-*not* schema-enforced (`exclusiveMinimum` is a 400); `_proposal_defect()` carries it, and
-refuses NaN, Infinity and `true`, which `number` admits.
+**IBKR's rules speak in order-type names, not codes** — `fraqTypes` (and `orderTypes`,
+`cqtTypes`) list `limit`, `market`, `stop`, `stop_limit`, `mit`, `lit`, `trailing_stop`,
+`trailing_stop_limit`, `relative`…, the page's example and three live reads agree (2026-10-06);
+`order_flow._RULES_NAME_OF_ORDER_TYPE` maps the proposal's four codes to them, and a test holds
+the map to the enum. **Probed live 2026-10-06, read-only whatif** (`docs/plans/2026-10-06-fractional-probe/`):
+EUR.USD SELL 1000.5 LMT previews with IBKR's own arithmetic on the fraction (1,900.95 USD) and a
+*warning*, not an error — "Your order size is below the EUR 20000 IdealPro minimum … route as an
+odd lot order" (IBKR's [spot currency minimums](https://www.interactivebrokers.com/en/trading/forexOrderSize.php):
+EUR 20,000, USD/CHF 25,000) — a precaution IBKR asks about, which the core's reply chain puts
+to the operator; at 20,000.5 the warning is the market-data one instead. CHF.USD 1000.5 →
+IBKR's own HTTP 500 *"This financial instrument does not support fractional shares trading"*,
+the answer our rule gives before any request. AAPL 0.5 → *"doesn't have permission to trade
+fractional shares"* while AAPL's rules list eight `fraqTypes` and `fraqInt 4`: **the rules
+endpoint does not reflect the account permission** ("Global (Trade in Fractions)" under Stocks,
+ibkrguides *Trade in Fractions*), so a fractional stock order the rules permit still fails at
+IBKR until the permission is on — IBKR's message is shown as written; nothing here guesses at
+permissions. Positivity is *not* schema-enforced (`exclusiveMinimum` is a 400);
+`_proposal_defect()` carries it, and refuses NaN, Infinity and `true`, which `number` admits.
 `conid`: a pre-resolved IBKR contract ID, nullable here. **Required non-null** for `FOP`
 (options-chain conid resolution isn't inferable from symbol alone) — enforced by
 `order_flow.py`, not by the schema; accepted as an override for any `sec_type`, and when set
