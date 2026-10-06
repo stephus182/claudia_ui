@@ -214,6 +214,16 @@ The failure mode is silence, so nothing in the startup log will tell you.
   no hardcoded schema; what the sidecar reports is what Claude receives in `tools=`
 - Schema drift (a tool exists but its parameters changed) is not auto-detected — check the
   sidecar changelog (https://github.com/tradesdontlie/tradingview-mcp) after any `git pull`
+- **The sidecar runs in its own directory (gap #31, 2026-10-06).** Its `tv_health_check`
+  update block (`src/core/health.js`, `checkForUpdate()`) runs `git rev-parse HEAD` and reads
+  `remote.origin.url` with no `cwd`, so the subprocess's working directory decides which
+  repository answers. Spawned without one it inherited ClaudIA's, and the tool reported
+  ClaudIA's own commit as the sidecar's — "up to date" by construction (measured 2026-08-13:
+  `e13affe3`, claudia_ui's HEAD). `TradingViewBridge.start()` now passes
+  `cwd=<sidecar directory>` (the parent of the directory holding the entry point, the same
+  directory the commit log line reads), so the check compares the sidecar's commit with
+  upstream. From the archived `vendor/` copy, which has no `.git`, it reports that it cannot
+  tell. The vendored clone is not edited. Live validation with TradingView: pending.
 
 ## Break recovery
 

@@ -347,6 +347,57 @@ async def test_start_env_excludes_secrets(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_sidecar_runs_in_its_own_directory_so_its_health_check_reads_its_own_repository(
+    tmp_path, monkeypatch
+):
+    """Gap #31: the sidecar's `checkForUpdate()` runs `git rev-parse HEAD` with no `cwd`, so it
+    inherits the subprocess's working directory — ClaudIA's checkout when nothing is passed,
+    and `tv_health_check` then reported ClaudIA's own commit as the sidecar's (measured
+    2026-08-13: `e13affe3`, claudia_ui's HEAD, "up to date"). The spawn names the sidecar's
+    directory — the parent of the directory holding its entry point — and the vendored clone
+    is left untouched."""
+    repo = tmp_path / "tradingview-mcp"
+    fake_bin = repo / "src" / "index.js"
+    fake_bin.parent.mkdir(parents=True)
+    fake_bin.write_text("// fake")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    captured: dict[str, Any] = {}
+
+    def fake_params(**kwargs):
+        """Capture every spawn parameter."""
+        captured.update(kwargs)
+        return MagicMock()
+
+    class FakeCM:
+        """A stand-in for the sidecar's stdio context manager."""
+
+        async def __aenter__(self):
+            """Hand back a read/write pair, as the real stdio client does."""
+            return (AsyncMock(), AsyncMock())
+
+        async def __aexit__(self, *a):
+            """Nothing to tear down for the stub."""
+            pass
+
+    fake_session = AsyncMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+    fake_session.initialize = AsyncMock()
+    fake_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
+
+    with (
+        patch("claudia.tradingview.StdioServerParameters", side_effect=fake_params),
+        patch("claudia.tradingview.stdio_client", return_value=FakeCM()),
+        patch("claudia.tradingview.ClientSession", return_value=fake_session),
+        patch("claudia.tradingview._TV_MCP_BIN", str(fake_bin)),
+    ):
+        await TradingViewBridge().start()
+
+    assert captured.get("cwd") == str(repo), captured
+
+
+@pytest.mark.asyncio
 async def test_start_sets_every_cdp_port_name(tmp_path, monkeypatch):
     """A non-default CDP port must reach the sidecar under all three variable names.
 

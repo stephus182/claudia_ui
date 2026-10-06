@@ -755,14 +755,21 @@ class TradingViewBridge:
             cmd = bin_path
             args = []
 
+        # The sidecar runs in its own directory (gap #31). Its `checkForUpdate()` calls
+        # `git rev-parse HEAD` with no `cwd`, so the subprocess's working directory decides
+        # which repository answers: inherited from ClaudIA, `tv_health_check` reported
+        # ClaudIA's own commit as the sidecar's and could never see a sidecar update
+        # (measured 2026-08-13). In the archived `vendor/` copy there is no `.git`, and the
+        # check then says it cannot tell — the honest answer. The vendored clone is not edited.
+        sidecar_dir = str(Path(bin_path).parent.parent)
         server_params = StdioServerParameters(
             command=cmd,
             args=args,
             env=env,
+            cwd=sidecar_dir,
         )
 
         # Log sidecar git commit for version diagnostics (best-effort — vendor/ has no .git)
-        sidecar_dir = str(Path(bin_path).parent.parent)
         try:
             result = subprocess.run(
                 ["git", "-C", sidecar_dir, "rev-parse", "--short", "HEAD"],
