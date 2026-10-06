@@ -188,6 +188,15 @@ no-op reported as success. The rest of the question stands. The ceiling on the s
 deliberate: every curated tool costs a schema in every request, so an addition needs evidence of
 a specific failure, not plausibility.
 
+**Checked 2026-10-06 (`git fetch` only, the clone untouched):** `tv_health_check` — reading the
+sidecar's own repository since gap #31 — reported `local 55534aab → latest c05b8f57`. The four
+upstream commits are a README badge and a tool-count reconciliation in the docs plus one string
+in `src/server.js` (`78 tools` → `84 tools`); `src/connection.js`, `health.js`, every tool and
+`package.json` are unchanged. Nothing to gain, so not upgraded (operator: "real upgrade the next
+time upstream ships a code change"). The procedure below is the whole of an upgrade — never a
+bare `git pull`, and never the sidecar's own `tv_update` (not curated; it would move a vendored
+clone unreviewed).
+
 ```bash
 git -C ~/.tradingview-mcp pull
 npm -C ~/.tradingview-mcp install
@@ -223,7 +232,10 @@ The failure mode is silence, so nothing in the startup log will tell you.
   `cwd=<sidecar directory>` (the parent of the directory holding the entry point, the same
   directory the commit log line reads), so the check compares the sidecar's commit with
   upstream. From the archived `vendor/` copy, which has no `.git`, it reports that it cannot
-  tell. The vendored clone is not edited. Live validation with TradingView: pending.
+  tell. The vendored clone is not edited. Validated live 2026-10-06: `tv_health_check` read `local
+  55534aab → latest c05b8f57`, the sidecar's own HEAD, where it used to read ClaudIA's. An
+  upgrade stays the manual procedure of § Upgrading the sidecar — not the sidecar's own
+  `tv_update` (not a curated tool), which would move a vendored clone unreviewed.
 
 ## Break recovery
 
