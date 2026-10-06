@@ -1848,7 +1848,11 @@ async def _stage_order(
         # read now, before Gate 1 (gap #18). A whole quantity reads nothing.
         if not isinstance(qty, int):
             rules = await asyncio.to_thread(_contract_rules, ibkr, conid, action_str == "BUY")
-            if problem := _fractional_quantity_problem(qty, otype, rules, company_name or symbol):
+            # Named by its symbol AND IBKR's contract name: live, the name alone read "Swiss franc".
+            named = (
+                f"{symbol} ({company_name})" if company_name and company_name != symbol else symbol
+            )
+            if problem := _fractional_quantity_problem(qty, otype, rules, named):
                 raise RefusedBeforeGatesError(problem)
 
         claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"

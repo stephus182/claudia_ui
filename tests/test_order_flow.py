@@ -4906,6 +4906,8 @@ async def test_a_fractional_quantity_the_contract_does_not_permit_is_refused_bef
         client.get_contract_rules.return_value = rules
     kwargs = await _refused_before_gates(_fx_proposal(quantity, order_type), ibkr_mod, client)
     assert said in kwargs["summary_text"], kwargs["summary_text"]
+    # Live 2026-10-06 the line read "Swiss franc: …" — IBKR's contract name alone; the symbol leads.
+    assert "EUR.USD" in kwargs["summary_text"], kwargs["summary_text"]
 
 
 @pytest.mark.asyncio
