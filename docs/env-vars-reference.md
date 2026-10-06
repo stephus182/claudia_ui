@@ -14,7 +14,7 @@
 | `IBKR_SQLITE_PATH` | optional | ibkr_core_mcp SQLite store path (default: `~/.ibkr_core/store.db`) |
 | `IBKR_FLEX_TOKEN` | optional | For full trade history sync |
 | `IBKR_FLEX_QUERY_ID` | optional | For full trade history sync |
-| `CLAUDIA_MODEL` | optional | Claude model (default: `claude-opus-4-8`). **Two independent requirements — see the note below.** Known-good: `claude-opus-4-8`, `claude-opus-5`, `claude-fable-5`, `claude-mythos-5`. |
+| `CLAUDIA_MODEL` | optional | Claude model (default: `claude-opus-4-8`). **Three independent requirements — see the note below.** Known-good: `claude-opus-4-8`, `claude-opus-5`, `claude-fable-5`, `claude-mythos-5`. |
 | `CLAUDIA_DOCS_PATH` | optional | Path to context.md / principles.md (default: `docs/`) |
 | `CLAUDIA_DB_PATH` | optional | ClaudIA SQLite DB path (default: `data/claudia.db`) |
 | `CLAUDIA_VOICE_ENABLED` | optional | Reserved — TTS output not yet implemented |
@@ -26,10 +26,10 @@
 | `TRADINGVIEW_MCP_PATH` | optional | Path to `tradingview-mcp` entry point (`src/server.js`); auto-discovered if unset |
 | `TRADINGVIEW_DEBUG_PORT` | optional | Chrome debugging port (default: `9222`). Forwarded to the sidecar under **three** names — `TV_CDP_PORT`, `CDP_PORT` (current sidecar) and `CHROME_REMOTE_DEBUG_PORT` (older builds + the `vendor/` fallback). The sidecar renamed this once and a rename fails silently at 9222; see `docs/tradingview-reference.md` § Upgrading the sidecar |
 
-## `CLAUDIA_MODEL` — both requirements must hold
+## `CLAUDIA_MODEL` — all three requirements must hold
 
-A model has to satisfy **two independent** constraints, and meeting one says nothing about
-the other. Checking only the first is how `claude-sonnet-4-6` came to be recommended here:
+A model has to satisfy **three independent** constraints, and meeting one says nothing about
+the others. Checking only the first is how `claude-sonnet-4-6` came to be recommended here:
 it satisfies requirement 1, fails requirement 2, and was named as "the supported
 alternative" from 2026-07-24 until this was corrected on 2026-08-05.
 
@@ -57,6 +57,25 @@ alternative" from 2026-07-24 until this was corrected on 2026-08-05.
 **Requirement 2 fails partway through a session, not at startup.** The operator message is
 appended only when there is something to deliver, so an unsupported model behaves perfectly
 until the channel first carries a payload — and returns a 400 on every turn thereafter.
+
+3. **Prefix-bound thinking blocks (the 5.x line).** On Claude Fable 5.1, Claude Opus 5.5 and
+   Claude Sonnet 5.5 a replayed `thinking` block is accepted *only while the system prompt,
+   the tools list and the messages that preceded it are unchanged* — otherwise a 400
+   ``Invalid `signature` in `thinking` block. The block is bound to a different conversation``
+   ([thinking-troubleshooting](https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting),
+   read 2026-10-06). ClaudIA replays thinking blocks **only inside one turn's tool loop**
+   (across user turns the history is text, `_history_to_messages`), and since 2026-10-06 the
+   loop reads the system blocks *and the tools list once per turn* (`handle_message` →
+   `_stream_turn(messages, system_blocks, tools)`), so the prefix is constant by construction:
+   a TradingView bridge attached mid-turn (`set_tv_bridge`) joins the **next** turn's list.
+   Not yet measured on a 5.x model — ClaudIA runs Opus 4.8, where the rule is not in force.
+   **Before the knob moves to a 5.x model:** probe all three requirements with the production
+   message shape, switch the assistant turn to the SDK's `get_final_message()` echo (gap #19,
+   the documented form; today the turn is rebuilt from the streamed blocks, which Anthropic's
+   page says not to do), and re-run the narration battery in that shape. The API's opt-in
+   `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` (beta header
+   `thinking-binding-controls-2026-08-01`) exists as a safety net; the structural rule above
+   is preferred — it makes the mismatch impossible rather than tolerated.
 
 **When that happens moved on 2026-08-11, and it is now much earlier.** It used to be "the
 first rendered order proposal", which made the failure rare and late. The **called-tool

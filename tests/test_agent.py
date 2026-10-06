@@ -1046,6 +1046,54 @@ def agent_with_thinking_then_tool():
     return SimpleNamespace(agent=agent, messages_sent=stream.call_args_list[-1].kwargs["messages"])
 
 
+def test_every_pass_of_one_turn_sends_the_tools_list_the_turn_started_with():
+    """Gap #19, closed 2026-10-06 as an accepted residual with this one structural fix.
+
+    Anthropic's current page: on Fable 5.1 / Opus 5.5 / Sonnet 5.5 a replayed thinking block
+    is accepted only while the system prompt, the tools list and the preceding messages are
+    unchanged — it is bound to that prefix. Inside one turn the system blocks and messages
+    cannot change; the tools list could, because `set_tv_bridge` (the TradingView launch and
+    reconnect button) merges the sidecar's tools mid-session and the loop used to read
+    `self._all_tools` on every pass. Snapshotting it once per turn makes the prefix constant
+    by construction, on any model. The bridge attached here between the two passes must
+    show up in the NEXT turn, not in this one's second request."""
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    tv_tools = [
+        {
+            "name": "tv_get_chart",
+            "description": "x",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+    ]
+
+    def attach_tv_mid_turn(*_a, **_k):
+        """The tool handler of pass 1 attaches the sidecar — the button pressed mid-turn."""
+        agent.set_tv_bridge(MagicMock(), tv_tools)
+        return ("100 AAPL", None)
+
+    agent._toolkit.execute = MagicMock(side_effect=attach_tv_mid_turn)
+    stream = MagicMock(
+        side_effect=[
+            _FakeStream(_thinking_then_tool_events("Check positions first.", "sig-abc", "t1")),
+            _FakeStream(_text_response_events("You hold 100 AAPL.")),
+            _FakeStream(_text_response_events("Chart shown.")),
+        ]
+    )
+    agent._client.messages.stream = stream
+    asyncio.run(agent.handle_message("What are my positions?"))
+    first, second = (c.kwargs["tools"] for c in stream.call_args_list[:2])
+    assert [t["name"] for t in first] == [t["name"] for t in second], (
+        "the tools list changed inside one turn"
+    )
+    assert "tv_get_chart" not in {t["name"] for t in second}
+
+    asyncio.run(agent.handle_message("Show the chart"))
+    assert "tv_get_chart" in {t["name"] for t in stream.call_args_list[2].kwargs["tools"]}, (
+        "the next turn carries it"
+    )
+
+
 def test_stream_call_enables_adaptive_thinking(agent_with_fake_client):
     """Opus 4.8 runs WITHOUT thinking when the param is omitted — it must be explicit."""
     kwargs = agent_with_fake_client.last_stream_kwargs
@@ -4317,6 +4365,7 @@ async def test_first_pass_tool_choice_is_sent_on_the_first_request_only():
     text, called = await agent._stream_turn(
         [{"role": "user", "content": "buy 1 AAPL at 250"}],
         agent._get_system_blocks(),
+        list(agent._all_tools),
         first_pass_tool_choice={"type": "any"},
     )
     assert stream.call_args_list[0].kwargs["tool_choice"] == {"type": "any"}

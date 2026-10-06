@@ -2078,9 +2078,17 @@ class ClaudIAAgent:
         self._append_operator_message(messages)
 
         system_blocks = self._get_system_blocks()
+        # The tools list is read ONCE per turn, like the system blocks, and every pass of the
+        # tool loop sends this same list. On Fable 5.1 / Opus 5.5 / Sonnet 5.5 a replayed
+        # thinking block is bound to its prefix — system, tools, preceding messages — and a
+        # tools list that changed between two passes (the TradingView button attaching the
+        # sidecar's tools mid-turn, `set_tv_bridge`) would be a 400 on every tool turn.
+        # Constant by construction; a bridge attached mid-turn is in the NEXT turn's list.
+        # https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+        tools = list(self._all_tools)
 
         # The stream → tool → stream loop, to `end_turn` (`_stream_turn`).
-        full_response_text, called_tools = await self._stream_turn(messages, system_blocks)
+        full_response_text, called_tools = await self._stream_turn(messages, system_blocks, tools)
         display_text = full_response_text.strip()
 
         # One silent retry, before anything is displayed, when the turn's text claims a
@@ -2118,7 +2126,7 @@ class ClaudIAAgent:
                 choice["type"] if choice else "auto",
             )
             full_response_text, called_tools = await self._stream_turn(
-                messages, system_blocks, first_pass_tool_choice=choice
+                messages, system_blocks, tools, first_pass_tool_choice=choice
             )
             display_text = full_response_text.strip()
 
@@ -2194,6 +2202,7 @@ class ClaudIAAgent:
         self,
         messages: list[dict[str, Any]],
         system_blocks: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
         *,
         first_pass_tool_choice: dict[str, str] | None = None,
     ) -> tuple[str, set[str]]:
@@ -2207,6 +2216,8 @@ class ClaudIAAgent:
             messages: The request messages, ending in the user turn (plus the operator
                 message when one was appended).
             system_blocks: The cached system blocks for this session.
+            tools: The `tools=` list for every pass of this turn, read once by the caller —
+                a bound thinking block requires the prefix to stay as it was.
             first_pass_tool_choice: Sent as `tool_choice` on the **first** request only, or
                 omitted (`auto`). A retry must produce a tool call; the passes after it must
                 be free to reason and to write — measured 2026-09-11, a forced choice yields
@@ -2271,7 +2282,7 @@ class ClaudIAAgent:
                 # so this is the one place they meet the SDK's parameter types.
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=_with_history_cache_marker(messages),  # type: ignore[arg-type]
-                tools=self._all_tools,  # type: ignore[arg-type]
+                tools=tools,  # type: ignore[arg-type]
                 **extra,
             ) as stream:
                 async for event in stream:
