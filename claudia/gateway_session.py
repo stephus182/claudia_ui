@@ -46,7 +46,7 @@ container it was inspecting had already been destroyed.
 
 > "If the gateway has not received **any requests** for several minutes an open session
 > will automatically timeout."
-> — https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md
+> — https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/ping-the-server.md
 
 Renewal is not the ticklers' job. *Every* request renews the session — `DashboardPoller`
 alone, at 15s, keeps one alive indefinitely without a single `/tickle`. So "run fewer
@@ -94,7 +94,7 @@ failure.)
 
 What justifies the state is the documentation plus the direction of the observed split:
 IBKR says *"Market Data and Trading is not possible if not authenticated"*
-(https://ibkrcampus.com/docs/web-api/v1/endpoints/session/authentication-status.md) while
+(https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/authentication-status.md) while
 the portfolio endpoints declare a *different* prerequisite entirely (see below), so
 "authenticated but the data half is dark" is reachable by construction. When it is
 observed directly, record it here and delete this paragraph's hedge.
@@ -104,7 +104,7 @@ observed directly, record it here and delete this paragraph's hedge.
 `authStatus.authenticated` describes the **brokerage** session. The portfolio endpoints
 are a different subsystem with a different prerequisite — IBKR documents it as
 *"/portfolio/accounts or /portfolio/subaccounts must be called prior to this endpoint"*
-(https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md) — and
+(https://www.interactivebrokers.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md) — and
 the two have been observed disagreeing in both directions on this machine. So `LIVE` is
 only reachable with positive confirmation from a real data call, which is also that
 documented prerequisite: one call discharges both obligations.
@@ -187,7 +187,7 @@ POLL_INTERVAL = 60.0
 """Seconds between session reads.
 
 Matches IBKR's *"It is expected to call this endpoint approximately every 60 seconds"*
-(https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md). The read
+(https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/ping-the-server.md). The read
 is a `/tickle`, so polling and renewing are the same act — which is the whole reason the
 suspend lock has to cover this loop too.
 
@@ -696,7 +696,7 @@ def confirm_session(url: str, timeout: float = 10.0) -> tuple[bool, str]:
 
         "/portfolio/accounts or /portfolio/subaccounts must be called prior to this
         endpoint."
-        — https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md
+        — https://www.interactivebrokers.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md
 
     So this one GET does double duty: it is the evidence that a login produced something
     usable rather than merely an authenticated flag, and it is that prerequisite call,
@@ -735,7 +735,7 @@ def release_session(gateway_url_: str, timeout: float = 10.0) -> tuple[bool, str
     ⚠ **Scope is NOT documented, and an earlier version of this docstring said it was.**
     IBKR's page says exactly one thing about it — *"Logs the user out of the gateway
     session. Any further activity requires re-authentication."*
-    (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/logout-of-the-current-session.md).
+    (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/logout-of-the-current-session.md).
     It says nothing about whether that cascades to a session held by TWS or IBKR Mobile.
     This docstring used to assert "it ends the gateway's local session, not the SSO
     session globally — so releasing a borrowed IBKR Mobile session does not log the phone
@@ -744,7 +744,7 @@ def release_session(gateway_url_: str, timeout: float = 10.0) -> tuple[bool, str
     worst half to get wrong.
 
     Only one brokerage session exists per username across Client Portal, TWS and IBKR
-    Mobile (https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md), so
+    Mobile (https://www.interactivebrokers.com/docs/web-api/authentication/multiple-sessions.md), so
     the *a priori* case for a cascade is real rather than paranoid. Until someone
     deliberately tests it — with nothing at risk on the phone — treat `--release` as
     **potentially ending an IBKR Mobile session too**, and never run it while another app
@@ -954,7 +954,7 @@ def _recover(
     2. **Its scope is undocumented.** IBKR's page says only *"Logs the user out of the
        gateway session. Any further activity requires re-authentication."* — nothing about
        whether that cascades to TWS or IBKR Mobile
-       (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/logout-of-the-current-session.md).
+       (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/logout-of-the-current-session.md).
        Since only one brokerage session exists per username, a cascade is plausible, and
        logging a user out of the phone they are managing a live position on is not a risk
        worth taking for a call that did not work anyway.
@@ -1035,7 +1035,7 @@ def attempt_soft_recovery(url: str, timeout: float = 5.0) -> bool:
     HTTP 200 and `authenticated: false` in the body rather than an error status, so the
     body is checked, not merely the status code.
 
-    Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/session/initialize-brokerage-session.md
+    Source: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/initialize-brokerage-session.md
     """
     try:
         with warnings.catch_warnings():

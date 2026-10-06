@@ -38,7 +38,7 @@ other by a test over all 512 readings rather than by a comment promising they ag
 ## Actors — who can touch the session, and from where
 
 The single most useful table in this file. IBKR renews a session on **any** request, not just
-`/tickle` (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md), so
+`/tickle` (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/ping-the-server.md), so
 every row is a renewer whether or not that is its purpose. Verified 2026-08-06.
 
 | Actor | Runtime | Interval | Silenced during a login by |
@@ -114,7 +114,7 @@ parsed: both `iserver.authStatus.authenticated` and `.connected` must be true.
 
 ### Session lifecycle (verified against official docs, 2026-07-17)
 
-Source: [IBKR Client Portal API — session lifecycle FAQ](https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md)
+Source: [IBKR Client Portal API — session lifecycle FAQ](https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/ping-the-server.md)
 (scraped via Firecrawl — `interactivebrokers.com` 403s a direct `WebFetch`).
 
 Two independent, non-overlapping timeout mechanisms:
@@ -177,7 +177,7 @@ RESULT     : True
 ```
 
 Only one brokerage session exists per username across Client Portal, TWS and IBKR Mobile
-([multiple sessions](https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md)).
+([multiple sessions](https://www.interactivebrokers.com/docs/web-api/authentication/multiple-sessions.md)).
 The gateway was holding a session **issued to the phone**, which it cannot authenticate as
 — so the login page rejected a correct code however often it was retried.
 

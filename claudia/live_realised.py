@@ -115,7 +115,7 @@ log = logging.getLogger(__name__)
 # "Returns a list of trades for the currently selected account for current day and six
 # previous days" and shows an example passing `days=3`; it documents **no maximum**
 # (read 2026-08-06,
-# https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/trades.md).
+# https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/trades.md).
 # A `days=30` request on this account was accepted and returned rows, but every fill it
 # returned fell inside seven days anyway, so that measurement does NOT establish whether
 # a wider window is honoured. Treat "7" as what we currently ask for, not as a limit.
@@ -176,7 +176,7 @@ def execution_time_et(trade_time: str, with_date: bool = False) -> str:
     The one conversion behind every surface that shows a fill's time — the chat report and
     the Fills tab — so the two cannot disagree by a rule. IBKR documents the field as "the
     UTC format of the trade time"
-    (https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/trades.md). With
+    (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/trades.md). With
     `with_date` the Eastern date is included, and it is the date in that zone: 01:10Z on
     15 January is 20:10 ET on the 14th. Anything but the documented format renders blank,
     never a guess. This is a clock reading, not a trade date (gap #69): IBKR states the

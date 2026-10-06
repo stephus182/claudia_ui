@@ -384,7 +384,7 @@ class DashboardPoller:
         ## Why this is not fetched every poll
 
         IBKR advises calling `/iserver/account/trades` **"once per session"**
-        (https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/trades.md, read
+        (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/trades.md, read
         2026-08-06), and the endpoint is separately rate-limited to 1 request per 5
         seconds. A 15-second poll fetching it unconditionally would issue roughly 240
         calls an hour against explicit advice to issue one — which an earlier version of

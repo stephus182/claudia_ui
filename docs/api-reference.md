@@ -16,27 +16,38 @@ official docs — and had gone undetected for months because nobody checked:
 
 ⚠ **`campus/ibkr-api-page/cpapi-v1/` is DEAD — 404, checked 2026-08-03.** It was cited four
 times in this table, including for every session-lifecycle page. IBKR moved the reference to
-`ibkrcampus.com/docs/web-api/`. Verify a URL resolves before citing it; "API Docs First" is
-worth nothing if the doc it points at has moved.
+`…/docs/web-api/`. Verify a URL resolves before citing it; "API Docs First" is worth nothing if
+the doc it points at has moved.
+
+**Which host to cite (2026-10-06): `www.interactivebrokers.com/docs/…`.** IBKR serves the same
+documentation paths on two hosts. On 2026-10-05 `ibkrcampus.com/docs/…` answered HTTP 403 with
+a Cloudflare error 1000 on every page tried, while `www.interactivebrokers.com/docs/…` served
+them; the 80 links in this repository's tracked files that used the first host were repointed
+by path on 2026-10-06, each of the 38 distinct targets fetched and read — 36 are real pages,
+and two (`web-api/web-api-v-1-0-documentation/…/order-status*.md`, in `order_flow.py` and its
+test) were "Page Not Found" stubs that the host returns **with HTTP 200**, so a status code
+alone proves nothing: compare the body with a fabricated path's (the 2026-08-05 audit had
+already mapped those two to `web-api/v1/endpoints/order-monitoring/…`, and they now point
+there). The core records the same rule in `ibkr_core_mcp/docs/external-docs-reference.md`.
 
 **Use the machine-readable index.** IBKR publishes one, and its own 404 page advertises it:
 *"a documentation index is available at the root level at /llms.txt. Append /llms.txt to any
 URL for a page-level index, or .md for the markdown version of any page."* So
-<https://ibkrcampus.com/docs/llms.txt> enumerates every page (484 lines, 2026-08-03) and any
+<https://www.interactivebrokers.com/docs/llms.txt> enumerates every page (484 lines, 2026-08-03) and any
 page + `.md` gives clean markdown with no scraping heuristics. Start there rather than
 guessing paths.
 
 | Topic | Official source |
 |---|---|
-| **Documentation index (start here)** | <https://ibkrcampus.com/docs/llms.txt> |
+| **Documentation index (start here)** | <https://www.interactivebrokers.com/docs/llms.txt> |
 | Web API reference | <https://www.interactivebrokers.com/docs/web-api/> |
-| `GET /iserver/account/pnl/partitioned` — account P&L | <https://ibkrcampus.com/docs/web-api/v1/endpoints/accounts/account-profit-and-loss.md> |
-| `GET /portfolio/{accountId}/ledger` — per-currency ledger | <https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md> |
-| Positions | <https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/positions.md> |
-| Session authentication | <https://ibkrcampus.com/docs/web-api/authentication/sessions.md> |
-| `POST /iserver/auth/ssodh/init` — current brokerage-session init | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/initialize-brokerage-session.md> |
-| Ping / `tickle` | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md> |
-| Authentication status | <https://ibkrcampus.com/docs/web-api/v1/endpoints/session/authentication-status.md> |
+| `GET /iserver/account/pnl/partitioned` — account P&L | <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/accounts/account-profit-and-loss.md> |
+| `GET /portfolio/{accountId}/ledger` — per-currency ledger | <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md> |
+| Positions | <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/portfolio/positions.md> |
+| Session authentication | <https://www.interactivebrokers.com/docs/web-api/authentication/sessions.md> |
+| `POST /iserver/auth/ssodh/init` — current brokerage-session init | <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/initialize-brokerage-session.md> |
+| Ping / `tickle` | <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/ping-the-server.md> |
+| Authentication status | <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/authentication-status.md> |
 | WebSocket `sts` — "Authentication Status", relayed "when initially connecting" and on every change (competing sessions); `{"topic":"sts","args":{"authenticated":bool}}` is all IBKR documents. **A topic sent before it is dropped in silence** (measured 2026-09-24, gap #68 / core F5) | <https://www.interactivebrokers.com/docs/web-api/v1/ws/unsolicited-messages/authentication-status.md> |
 | WebSocket `system` — the username on connect (`success`), then a heartbeat every 10 s (unix ms); `act` — the account properties on connect, `sessionId` included. Neither is ever logged in full | <https://www.interactivebrokers.com/docs/web-api/v1/ws/unsolicited-messages/system-connection-messages.md> and <https://www.interactivebrokers.com/docs/web-api/v1/ws/unsolicited-messages/account-updates.md> |
 | WebSocket topics that need a brokerage session (`smd`, `smh`, `sbd`, `sor`, `str`, `act`, `sts`, `blt`, `ntf`) and those that do not (`spl`, `ssd`, `sld`, `system`) | <https://www.interactivebrokers.com/docs/web-api/v1/ws/introduction.md> |
@@ -48,9 +59,9 @@ guessing paths.
 | Orders / modify (two-call pattern) | <https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/> |
 | Orders / place — Web API lesson (`STP` uses `price`) | <https://www.interactivebrokers.com/campus/trading-lessons/placing-orders/> |
 | Stop orders on US futures — simulated, RTH-only unless `outsideRTH` | <https://www.interactivebrokers.com/en/trading/us-futures-stop-order.php> |
-| `POST /iserver/account/{accountId}/orders` — the `orders` array, `cOID` / `parentId` / `isSingleGroup` (bracket rules verbatim) | <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md> |
-| Bracket / OCA request bodies (parent `cOID`, child `parentId`) | <https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/bracket-orders-oca-groups.md> and <https://ibkrcampus.com/docs/web-api/trading/orders/submitting-bracket-orders.md> |
-| `POST …/orders/whatif` — previews "an order ticket or bracket of orders" | <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/preview-margin-impact.md> |
+| `POST /iserver/account/{accountId}/orders` — the `orders` array, `cOID` / `parentId` / `isSingleGroup` (bracket rules verbatim) | <https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md> |
+| Bracket / OCA request bodies (parent `cOID`, child `parentId`) | <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/bracket-orders-oca-groups.md> and <https://www.interactivebrokers.com/docs/web-api/trading/orders/submitting-bracket-orders.md> |
+| `POST …/orders/whatif` — previews "an order ticket or bracket of orders" | <https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/preview-margin-impact.md> |
 | Profit Taker / Stop Loss / Bracket — IBKR's product definitions (held until the parent fills) | <https://www.ibkrguides.com/ipad/attached.htm> and <https://www.ibkrguides.com/traderworkstation/advanced-button.htm> |
 | Outside-RTH attribute — eligibility by product (CME MKT/LMT need none, stops do) | <https://www.interactivebrokers.com/campus/trading-lessons/trading-outside-regular-trading-hours-rth/> |
 | IBKR Campus (general) | <https://www.interactivebrokers.com/campus/ibkr-api-page/> |

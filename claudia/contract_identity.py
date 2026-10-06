@@ -11,7 +11,7 @@ yields None and the caller shows what it showed before, never a guessed name.
 The dashboard polls every 15 s and a contract's identity never changes, so identities are
 cached for the process, keyed by conid. Failures are not cached: the gateway may be back.
 
-Source: https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-contracts/get-instrument-info.md
+Source: https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-contracts/get-instrument-info.md
 """
 
 from __future__ import annotations

@@ -107,7 +107,7 @@ and graded on **body content**, not status code.
 | `…/web-api-v-1-0-documentation/…/order-status-value.md` | `order-api-reference.md` | `…/v1/endpoints/order-monitoring/order-status-value.md` |
 | `…/web-api-v-1-0-documentation/…/order-status.md` | `order-api-reference.md` | `…/v1/endpoints/order-monitoring/order-status.md` |
 | `…/cpapi-v1/#tickle` | `connectivity.md` | `…/v1/endpoints/session/ping-the-server.md` |
-| `…/cpapi-v1/` | `README.md` | `https://ibkrcampus.com/docs/web-api/` |
+| `…/cpapi-v1/` | `README.md` | `https://www.interactivebrokers.com/docs/web-api/` |
 
 Two things about this finding are worth stating rather than glossing:
 

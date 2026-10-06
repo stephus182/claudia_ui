@@ -29,7 +29,7 @@
 #
 # Why that matters: IBKR's own docs say "if the gateway has not received ANY
 # requests for several minutes an open session will automatically timeout"
-# (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md).
+# (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/ping-the-server.md).
 # Renewal is therefore a side effect of every request, not a job this script uniquely
 # performs — and on 2026-08-05 three ticklers renewing in the background made
 # `POST /logout` unable to clear an unusable session at all. A session being

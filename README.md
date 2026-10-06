@@ -380,7 +380,7 @@ Any contribution touching API behavior, error codes, endpoint paths, or field na
 
 | API | Used in | Official reference |
 |---|---|---|
-| IBKR Client Portal API | `ibkr_core_mcp` | https://ibkrcampus.com/docs/web-api/ |
+| IBKR Client Portal API | `ibkr_core_mcp` | https://www.interactivebrokers.com/docs/web-api/ |
 | IBKR Flex Web Service | `ibkr_core_mcp/flex_query.py` | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3.htm |
 | IBKR Flex error codes | `ibkr_core_mcp/flex_query.py` | https://www.ibkrguides.com/clientportal/performanceandstatements/flex3error.htm |
 | Anthropic Messages API | `claudia/agent.py` | https://docs.anthropic.com/en/api/messages |

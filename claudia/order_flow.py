@@ -169,7 +169,7 @@ def _last_trade_key(row: Mapping[str, Any]) -> int:
     model caught it from the stale `C94.59` quote before any code did. The earlier date is right for
     every root this account trades (ES, CL, NG, DX, all measured that day) and, by
     construction, can never keep a contract past either date. Sources: IBKR
-    https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/security-future-by-symbol.md ,
+    https://www.interactivebrokers.com/docs/web-api/v1/endpoints/contract/security-future-by-symbol.md ,
     CME https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.contractSpecs.html
 
     **This duplicates `ibkr_core_mcp.claude_tools`'s rule by necessity, not by choice.** The
@@ -1151,9 +1151,9 @@ def _is_ibkr_rejection(result: object) -> bool:
 # order ticket itself has been canceled".
 #
 # Sources (verified 2026-07-27):
-#   https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md
-#   https://ibkrcampus.com/docs/web-api/web-api-v-1-0-documentation/endpoints/order-monitoring/order-status-value.md
-#   https://ibkrcampus.com/docs/web-api/web-api-v-1-0-documentation/endpoints/order-monitoring/order-status.md
+#   https://www.interactivebrokers.com/docs/web-api/trading/orders/canceling-orders.md
+#   https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status-value.md
+#   https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md
 
 _READBACK_DELAY_S = 2.0
 """Single fixed delay before the confirming read. Above client.py's 1 s subscription
@@ -1319,7 +1319,7 @@ async def _live_book_presence(ibkr: Any, order_id: str) -> tuple[str, dict[str, 
     (?force=true, a 1 s sleep, then the data call), so this costs ~1 s plus two round
     trips on top of the caller's settle delay. Synchronous client, hence to_thread.
 
-    Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/live-orders.md
+    Source: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/live-orders.md
     """
     try:
         orders = await asyncio.to_thread(ibkr.get_live_orders)
@@ -1773,7 +1773,7 @@ async def _stage_order(
 
         # ----------------------------------------------------------------
         # Order body — field spec from IBKR CP API docs (2026-07-02)
-        # Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md
+        # Source: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/place-order.md
         #
         # Field          Type     Req?       Notes
         # -------------- -------- ---------- ---------------------------------
@@ -2079,7 +2079,7 @@ async def _cancel_order(
         # order 987654 was received, but not that the order ticket itself has been
         # canceled" — so it is reported as exactly that, and nothing more, until the
         # read-back observes the order's real state.
-        # Source: https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md
+        # Source: https://www.interactivebrokers.com/docs/web-api/trading/orders/canceling-orders.md
         await send_status(
             (
                 f"**Cancel request accepted by IBKR — order {order_id}** ({symbol}). "

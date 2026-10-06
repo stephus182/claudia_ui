@@ -271,7 +271,7 @@ class LedgerSnapshot:
     its published description is "Returns the realized profit and loss for positions in
     the given currency" and `futuresonlypnl` carries no description at all (scraped
     2026-08-04,
-    https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md).
+    https://www.interactivebrokers.com/docs/web-api/v1/endpoints/portfolio/portfolio-ledger.md).
 
     The window came from the *positions* endpoint instead, because `realizedpnl` is
     exactly the sum of the per-position `realizedPnl` — see `REALISED_LEDGER_WINDOW`
@@ -319,7 +319,7 @@ class LedgerSnapshot:
 #
 # (2) IBKR'S OWN WORDS for that field: "Returns the total profit made today through
 #     trades" (scraped 2026-08-04,
-#     https://ibkrcampus.com/docs/web-api/v1/endpoints/portfolio/positions.md, and
+#     https://www.interactivebrokers.com/docs/web-api/v1/endpoints/portfolio/positions.md, and
 #     identically on .../positions-new.md).
 #
 # (3) NEGATIVE CONTROL. IGV realised -154.44 on 2026-07-30 and has never been flat, yet
@@ -1487,7 +1487,7 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
 #   83   Change %   — the same difference as a percentage
 #   6509 Availability — first char R=RealTime, D=Delayed, N=NotSubscribed, Z=Frozen,
 #        Y=FrozenDelayed, O=API agreement incomplete
-# Source: https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-market-data/get-md-snapshot.md
+# Source: https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-market-data/get-md-snapshot.md
 _QUOTE_FIELDS = ("31", "82", "83", "6509")
 
 # Prefixes IBKR may put on field 31. Stripped to recover the number, and each one is
@@ -1692,7 +1692,7 @@ class TifCache:
     `/iserver/account/order/status` `tif` read `DAY`. `CLOSE` is in no IBKR enum and defined
     nowhere, so it is neither shown nor translated: mapping it to DAY would be an undocumented
     rule presented as fact. Order status's `tif` is documented — *"Returns the time in force of
-    the order"* (https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md)
+    the order"* (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md)
     — and it is the only source used, for every instrument, so the fix does not depend on how
     the row reports futures (unmeasured on 2026-09-24: every futures order seen was GTC).
 

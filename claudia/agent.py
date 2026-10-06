@@ -1547,7 +1547,7 @@ def _ibkr_unavailable() -> str | None:
 
     The reason is not tidiness. IBKR documents that *"if the gateway has not received any
     requests for several minutes an open session will automatically timeout"*
-    (https://ibkrcampus.com/docs/web-api/v1/endpoints/session/ping-the-server.md), so every
+    (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/session/ping-the-server.md), so every
     request renews the session — which means an exception carved out for "just the agent"
     reintroduces exactly the traffic that made `POST /logout` unable to clear a borrowed
     session on 2026-08-05. One rule with no exceptions is the mechanism.

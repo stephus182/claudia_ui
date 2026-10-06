@@ -82,15 +82,15 @@ it skips `search_contract()`/`get_futures()` resolution entirely.
 
 ## Order body field spec (from IBKR CP API docs, verified 2026-07-02; bracket rows 2026-09-06)
 
-Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md
-Bracket fields (`parentId`, `isSingleGroup`, verbatim rules): https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md
+Source: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/place-order.md
+Bracket fields (`parentId`, `isSingleGroup`, verbatim rules): https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md
 
 | Field | Type | Required? | Notes |
 |---|---|---|---|
 | `conid` | int | yes* | *or `conidex`; SMART-routes when set. `order_flow.py` resolves it from `symbol` per instrument (below) unless the proposal's own `conid` field overrides resolution |
 | `orderType` | str | yes | `LMT` \| `MKT` \| `STP` \| `STOP_LIMIT` \| `MIDPRICE` \| `TRAIL` \| `TRAILLMT` |
 | `side` | str | yes | `"BUY"` \| `"SELL"` |
-| `tif` | str | yes | IBKR's place-order enum: `DAY` \| `IOC` \| `GTC` \| `OPG`. Contract rules also return `GTD`, and for US stocks `OVT` / `OND` (overnight) — see § Time in force |
+| `tif` | str | yes | Four of the five values of IBKR's order-body enum: `DAY` \| `IOC` \| `GTC` \| `OPG`; the fifth, `PAX`, IBKR lists and defines nowhere (not proposable here, by decision 2026-10-05). Contract rules also return `GTD`, and for US stocks `OVT` / `OND` (overnight) — see § Time in force |
 | `quantity` | int | yes | whole shares/contracts only |
 | `price` | float | LMT / STOP_LIMIT | limit price |
 | `auxPrice` | float | STOP_LIMIT / TRAILLMT | stop price |
@@ -116,8 +116,8 @@ research below is recorded so the future build starts from evidence rather than 
 
 Sources, scraped 2026-09-20 into `.firecrawl/ibkr/` (git-ignored):
 - https://www.interactivebrokers.com/docs/general/order-types/trailing-stop/cp-api-trailing-stop
-- https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md (TRAILLMT example body)
-- https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md
+- https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/place-order.md (TRAILLMT example body)
+- https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md
 
 **`price` does not mean the same thing on the two trailing types.** This is the whole hazard:
 
@@ -156,8 +156,8 @@ quotes and the read-only captures: `docs/plans/2026-09-24-tif-and-close-orders-r
 
 | Surface | Field | What it says |
 |---|---|---|
-| Place / modify body | `tif` | IBKR's enum: `DAY`, `IOC`, `GTC`, `OPG` ([submit-new-order](https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md)). The enum is **not** the whole story: `/iserver/contract/rules` returns more per contract |
-| `/iserver/contract/rules` (POST, read-only: *"Returns trading related rules for a specific contract and side"*) | `tifTypes`, `orderTypes` | The TIFs and order types **this contract** accepts — the authority for what may be proposed ([search-contract-rules](https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/search-contract-rules.md)) |
+| Place / modify body | `tif` | IBKR's enum has **five** values: `DAY`, `IOC`, `GTC`, `OPG`, `PAX` ([submit-new-order](https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md); the same five on get-order-status and in the OpenAPI document v2.40.0). `PAX` is listed and **defined nowhere** IBKR publishes — not in the legacy Client Portal reference (which defines the other four), not on any Campus page, not in the TWS API order reference, not in the F/ES contract rules (research 2026-10-05, in `ibkr_core_mcp/docs/order-management-examples.md` § Time in force). Operator's decision 2026-10-05: not offered — ClaudIA proposes the four IBKR defines. The enum is **not** the whole story: `/iserver/contract/rules` returns more per contract |
+| `/iserver/contract/rules` (POST, read-only: *"Returns trading related rules for a specific contract and side"*) | `tifTypes`, `orderTypes` | The TIFs and order types **this contract** accepts — the authority for what may be proposed ([search-contract-rules](https://www.interactivebrokers.com/docs/web-api/v1/endpoints/contract/search-contract-rules.md)) |
 | `/iserver/account/order/status/{id}` | `tif` | *"Returns the time in force of the order."* — reported `DAY` for a DAY stock order, measured |
 | `/iserver/account/orders` (live orders) | `timeInForce` | *"Returns the time in force (tif) of the order."* — but reports **`CLOSE`** for a DAY stock order (gap #70). `CLOSE` is in no enum and defined nowhere; IBKR's own example response carries it (on an FX order). **Do not map it to `DAY`**: that would be an undocumented rule presented as fact. **The dashboard's Orders tab no longer reads this field (gap #70, fixed 2026-09-24):** each order's TIF comes from order status's `tif`, read once per order and again only when `orderDesc` changes, and shows `—` until known (`dashboard_data.TifCache`). The core's `get_live_orders` tool still shows the model the raw value (core register F8) |
 | same | `orderDesc` | IBKR's own text for the order, e.g. `Buy 1 F Limit 5.10, Day` |
@@ -172,7 +172,7 @@ quotes and the read-only captures: `docs/plans/2026-09-24-tif-and-close-orders-r
   available for IOC, OPG (MOO and LOO), FOK, MOC or LOC orders"*
   ([TWS order ticket](https://www.ibkrguides.com/traderworkstation/classic-order-ticket.htm)).
 - **Overnight (`OVT`, `OND`)** — documented on the Web API's
-  [overnight order submission](https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/overnight-order-submission.md)
+  [overnight order submission](https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/overnight-order-submission.md)
   page and absent from the place-order enum. Overnight session 8:00 pm – 3:50 am ET. `OVT` works
   only overnight; `OND` (Overnight + Day) continues into the next day — **IBKR's own pages disagree
   on when it ends** ("4pm the next day" in a lesson, "through 8:00 PM the next day" on the overnight
@@ -190,10 +190,10 @@ quotes and the read-only captures: `docs/plans/2026-09-24-tif-and-close-orders-r
 | Market-on-open (MOO) | `orderType: "MKT"`, `tif: "OPG"` | expressible (`order_type: MKT`, `tif: OPG`); the operator does not use market orders (a trading rule in `principles.md`, not a code check) |
 | Limit-on-open (LOO) | `orderType: "LMT"` + `price`, `tif: "OPG"` | expressible |
 
-Sources: IBKR order-types pages for [MOC](https://ibkrcampus.com/docs/general/order-types/market-orders/market-on-close.md),
-[LOC](https://ibkrcampus.com/docs/general/order-types/basic-orders/limit-orders/limit-on-close.md),
-[MOO](https://ibkrcampus.com/docs/general/order-types/market-orders/market-on-open.md),
-[LOO](https://ibkrcampus.com/docs/general/order-types/basic-orders/limit-orders/limit-on-open.md).
+Sources: IBKR order-types pages for [MOC](https://www.interactivebrokers.com/docs/general/order-types/market-orders/market-on-close.md),
+[LOC](https://www.interactivebrokers.com/docs/general/order-types/basic-orders/limit-orders/limit-on-close.md),
+[MOO](https://www.interactivebrokers.com/docs/general/order-types/market-orders/market-on-open.md),
+[LOO](https://www.interactivebrokers.com/docs/general/order-types/basic-orders/limit-orders/limit-on-open.md).
 `MOC`/`LOC` are missing from the OpenAPI `orderType` enum but documented there and present in F's
 live `orderTypes` (`marketonclose`, `limitonclose`). **Whether the gateway accepts them on place is
 unmeasured** (a `whatif` would settle it without a write). IBKR: *"Smart routed Market on close
@@ -251,7 +251,7 @@ routing depends on `sec_type`:
   corrected 2026-09-24 by gap #71: for CL and NG, IBKR's `ltd` is the first day of the contract
   month, after trading stopped — CLV6 `expirationDate` 20260922 = CME's termination date, `ltd`
   20261001; for ES `ltd` is the earlier one, 20261217 vs 20261218; DX reports them equal. Sources:
-  [IBKR `/trsrv/futures`](https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/security-future-by-symbol.md),
+  [IBKR `/trsrv/futures`](https://www.interactivebrokers.com/docs/web-api/v1/endpoints/contract/security-future-by-symbol.md),
   [CME CL specs](https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.contractSpecs.html)).
   **Hard rule on top (gap #71 part 2):** whatever conid a FUT proposal carries — the model's
   usually comes from the core's resolver, which still has the old rule — the order is refused
@@ -281,7 +281,7 @@ routing depends on `sec_type`:
   `symbol` and `underlyingConid` (measured), the tests had invented a `multiplier` key, and
   on the conid-supplied path the lookup was skipped entirely. Found live the same day: Gate 2
   printed `Total (est.): 7,735.00` for one ES contract standing for 386,750 USD.
-  Source: <https://ibkrcampus.com/docs/web-api/v1/endpoints/contract/contract-information-by-contract-id.md>
+  Source: <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/contract/contract-information-by-contract-id.md>
 - Gate 2 dialog shows the notional as `price × qty × multiplier` with the ISO currency; when the
   multiplier could not be learned it prints `— (contract multiplier unknown; not price × quantity)`
   rather than a number wrong by the multiplier (`_multiplier_unknown`, ibkr_core_mcp `e12b6fd`).
@@ -330,7 +330,7 @@ Established before a live ES buy-stop test, from IBKR's own pages (local copies 
    attribute is not applicable it is *"grayed out"*. Source (article + the staff replies in the
    comments): <https://www.interactivebrokers.com/campus/trading-lessons/trading-outside-regular-trading-hours-rth/>.
    The Web API field is `outsideRTH: bool` (place-order example shows it on a GTC TRAILLMT):
-   <https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/place-order.md>
+   <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/place-order.md>
 4. **ClaudIA can set it since 2026-09-04** (`outside_rth`, above; gap #33). Until then
    `propose_order` had no such field and the body never sent `outsideRTH`, so a GTC stop on ES
    placed through ClaudIA rested overnight but could trigger only in the RTH session. The
@@ -410,10 +410,10 @@ orders can be submitted sequentially using the default order_id created by Inter
 with no example; the one-request form is the documented one. The whatif endpoint accepts the
 same array (*"Preview the projected effects of an order ticket or bracket of orders"*), so a
 bracket can be margin-previewed before the gates.
-Sources: <https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md>,
-<https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/bracket-orders-oca-groups.md>,
-<https://ibkrcampus.com/docs/web-api/trading/orders/submitting-bracket-orders.md>,
-<https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/preview-margin-impact.md>.
+Sources: <https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md>,
+<https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/bracket-orders-oca-groups.md>,
+<https://www.interactivebrokers.com/docs/web-api/trading/orders/submitting-bracket-orders.md>,
+<https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/preview-margin-impact.md>.
 
 The user's example, in IBKR's documented shape (ES Sep-2026 conid 649180671 as measured
 2026-09-04 — pick the contract deliberately, § Instrument-specific paths rule 5):
@@ -472,7 +472,7 @@ An expectation is confirmed live before it is relied on; it is not re-derived.
   system (simulated orders) or an exchange (native orders) and that this order has yet to be
   elected"*. `_CONFIRMED["place"]` in `order_flow.py` counts `PreSubmitted` as a working order;
   for a bracket child it means *held*, and a read-back must say so rather than "working".
-  Source: <https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status-value.md>.
+  Source: <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status-value.md>.
 - **The mechanism, in IBKR's words:** *"When an order is attached to another, the system will keep
   the child order 'on hold' until its parent fills. Once the parent order is completely filled, its
   children will automatically become active."* (TWS API page; same order model.) The sequential
@@ -481,15 +481,15 @@ An expectation is confirmed live before it is relied on; it is not re-derived.
   placing the child order. Otherwise the error '10006: Missing parent order' will be triggered."*
   Decision D3 (one request) stands on that.
   Sources: <https://interactivebrokers.github.io/tws-api/order_submission.html#order_attach>,
-  <https://ibkrcampus.com/docs/general/order-types/complex-orders/hedging.md>.
+  <https://www.interactivebrokers.com/docs/general/order-types/complex-orders/hedging.md>.
 - **Read side: two candidates the 09-06 pass missed.** The Live Orders *guide* example carries
   `"order_ref": "Order123"`, a key absent from the reference's field list; if it echoes `cOID`, a
   parent is findable in the book by its `CLAUDIA-<ms>` reference. And the two `child_order_type`
   pages disagree: the reference says hedges (*"A = Attached child hedge order"*), the v1 page
   says *"A=attached, B=beta-hedge, 0=No Child"*. Whether a bracket child reads `A` is a
   measurement.
-  Sources: <https://ibkrcampus.com/docs/web-api/trading/orders/monitoring-live-orders.md>,
-  <https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md>.
+  Sources: <https://www.interactivebrokers.com/docs/web-api/trading/orders/monitoring-live-orders.md>,
+  <https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md>.
 - **The parent need not be a limit order.** IBKR staff, in the Mosaic lesson's comments: *"the
   primary order does not necessarily need to be a Limit order"*; IBKR's Web API bracket example
   uses a `MKT` parent. Each child sets `outsideRTH` for itself in every IBKR UI (the Desktop
@@ -777,7 +777,7 @@ full original order, not a partial diff** — verified directly against the prim
 (fetched live 2026-07-08, matches an existing 2026-07-02 scrape word-for-word): the body
 content of the modify order endpoint follows the same structure as the standard
 `/iserver/account/{accountId}/orders` endpoint, mirroring the original order's content.
-Source: https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/modify-order.md
+Source: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/modify-order.md
 
 ```json
 {
@@ -840,8 +840,8 @@ therefore builds a **fresh** order body from the proposal's typed fields (mirror
 whitelist — `conid`, `orderType`, `side`, `tif`, `quantity`, `ticker`, plus `price`/`auxPrice` by
 order type and `manualIndicator` for FUT/FOP. The display-only proposal fields (`changes`,
 `reason`) are never copied in, so they cannot reach the request body.
-Sources: https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md ,
-https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/live-orders.md
+Sources: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md ,
+https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/live-orders.md
 
 `get_order_status` also returns `order_not_editable`/`cannot_cancel_order` booleans — ClaudIA's
 system prompt requires checking these before proposing a modify/cancel and explaining to the
@@ -1036,7 +1036,7 @@ Added 2026-07-27 (`_read_back` in `claudia/order_flow.py`).
 IBKR says this itself for cancels: the `{"msg": "Request was submitted"}` body "indicates our
 request to cancel order 987654 was received, **but not that the order ticket itself has been
 canceled**"
-(<https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md>). Before this change
+(<https://www.interactivebrokers.com/docs/web-api/trading/orders/canceling-orders.md>). Before this change
 `_execute_cancel_order_core` printed `**Order cancelled:** order {id}` having observed nothing
 about the order's actual state.
 
@@ -1049,7 +1049,7 @@ Each core now emits two separate things:
    retry state machine is complexity that can itself fail.
 
 Confirmation sets, from IBKR's documented `order_status` values
-(<https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status-value.md>):
+(<https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status-value.md>):
 
 | Action | Confirms on | Notably excluded |
 |---|---|---|
@@ -1066,7 +1066,7 @@ Absence from `get_live_orders` is not usable as evidence either: `_TERMINAL_STAT
 **A failed read is an absence of evidence, never a confirmation.** `get_order_status` returns
 **503 by design** for orders cancelled or filled before the active session, and for FA/linked
 accounts without an account switch
-(<https://ibkrcampus.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md>).
+(<https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md>).
 That path reports "could not be verified … do not assume this order is working", and so does a
 placement whose response carries no order id.
 

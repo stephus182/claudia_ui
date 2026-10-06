@@ -8,7 +8,7 @@ Run before touching the Client Portal login page::
 
 Only **one** brokerage session exists per username across all IBKR services — Client
 Portal, TWS and IBKR Mobile all claim the same one
-(https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md). Repeated logins
+(https://www.interactivebrokers.com/docs/web-api/authentication/multiple-sessions.md). Repeated logins
 are what escalate into the IB Key challenge/response, so the cheapest fix is to stop
 logging in when you do not have to.
 
@@ -55,7 +55,7 @@ serious misreading:
 So `EXIT_FREE` means "the gateway holds nothing", never "a login will succeed" — the
 wording of its guidance says exactly that, and must keep saying it. Only one brokerage
 session exists per username across Client Portal, TWS and IBKR Mobile
-(https://ibkrcampus.com/docs/web-api/authentication/multiple-sessions.md), and IBKR's own
+(https://www.interactivebrokers.com/docs/web-api/authentication/multiple-sessions.md), and IBKR's own
 advice for the collision is to log out of the other app first — which is a step this
 check can recommend but can never verify in advance.
 

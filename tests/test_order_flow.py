@@ -623,7 +623,7 @@ def _set_readback(client, **fields):
     comparison out of the box; cancel tests that assert on output override
     `order_status="Cancelled"`. Synthetic order ids only — never live account data.
     Field names are IBKR's own, from
-    https://ibkrcampus.com/docs/web-api/web-api-v-1-0-documentation/endpoints/order-monitoring/order-status.md
+    https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md
     """
     payload = {
         "order_status": "Submitted",
@@ -765,7 +765,7 @@ def _make_cancel_modify_ibkr_mock():
     mod.Config.from_env.return_value = MagicMock()
     client.get_accounts.return_value = [{"accountId": "U12345"}]
     # Documented successful-cancel body, verbatim shape (order_id is an int there):
-    # https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md
+    # https://www.interactivebrokers.com/docs/web-api/trading/orders/canceling-orders.md
     client.cancel_order.return_value = {
         "msg": "Request was submitted",
         "order_id": 242538143,
@@ -2181,7 +2181,7 @@ def test_execute_modify_order_core_never_touches_action_or_removes_anything():
 # response only proves the request was received. IBKR is explicit about this for
 # cancels: the {"msg": "Request was submitted"} body "indicates our request to
 # cancel order 987654 was received, but not that the order ticket itself has been
-# canceled" — https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md
+# canceled" — https://www.interactivebrokers.com/docs/web-api/trading/orders/canceling-orders.md
 # Status semantics below are quoted from IBKR's own order-status-value page:
 # .../endpoints/order-monitoring/order-status-value.md
 
@@ -2836,7 +2836,7 @@ def test_documented_cancel_success_body_is_not_classified_a_rejection():
     """The documented successful-cancel body carries no order_status — it must not trip
     _is_ibkr_rejection's no-status/zero-id marker, or a real cancel would be reported as
     FAILED and never reach the read-back at all. Shape verbatim from
-    https://ibkrcampus.com/docs/web-api/trading/orders/canceling-orders.md"""
+    https://www.interactivebrokers.com/docs/web-api/trading/orders/canceling-orders.md"""
     body = {
         "msg": "Request was submitted",
         "order_id": 987654,
