@@ -2007,10 +2007,16 @@ class TypeBreakdown:
     * `gross_win` / `gross_loss` / the counts come from `flex_lot`, which is
       **pre-wash-sale** tax-lot detail (`Trade == Lot + WashSale`). Summing lots as the
       money figure overstates losses by the disallowed amount.
+    * `wash_sale` is that amount: `flex_wash_sale.fifo_pnl_realized`, the losses IBKR
+      deferred into the basis of replacement shares, windowed by the row's `trade_date`
+      like the lots (gap #92, 2026-10-06). With it, **`net == gross_win + gross_loss +
+      wash_sale` on every row** — measured on this account's 2026 to the cent, month by
+      month (STK: trades −3,432.25, lots −16,041.50, deferred +12,609.25; FUT and OPT 0).
 
-    So `gross_win + gross_loss` will not always equal `net`, and that is correct rather
-    than a bug. A UI showing both must say which is which — the same rule
-    `RoundTripStats` already carries.
+    So `gross_win + gross_loss` alone will not equal `net` where a wash sale occurred, and
+    the table shows the third term rather than leaving a reader to find it by subtraction
+    (operator 2026-10-06: "otherwise it looks broken and inaccurate"). A UI showing these
+    must say which is which — the same rule `RoundTripStats` already carries.
 
     A lot is the right unit for a *count*: it is a genuine round trip (open -> close),
     whereas an execution list includes opening legs and wash-sale-zeroed closes that are
@@ -2024,6 +2030,7 @@ class TypeBreakdown:
     winners: int
     losers: int
     scratches: int
+    wash_sale: float = 0.0  # 0.0 where nothing was deferred, or where the store has no such table
 
     @property
     def closed_lots(self) -> int:
@@ -2144,6 +2151,22 @@ def realised_by_type(conn: sqlite3.Connection, start: date, end: date) -> tuple[
         )
     }
 
+    # The deferred losses that make the row add up (gap #92). `flex_wash_sale` shares
+    # `flex_lot`'s compact `trade_date`, so the same bounds window both; a store written
+    # before the table existed has none, and then no deferral is claimed.
+    washes: dict[str, float] = {}
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'flex_wash_sale'"
+    ).fetchone():
+        washes = {
+            str(r["asset_category"] or "?"): float(r["deferred"] or 0.0)
+            for r in conn.execute(
+                "SELECT asset_category, SUM(fifo_pnl_realized) AS deferred FROM flex_wash_sale "
+                "WHERE trade_date BETWEEN ? AND ? GROUP BY asset_category",
+                (lo_c, hi_c),
+            )
+        }
+
     out = [
         TypeBreakdown(
             asset_class=asset,
@@ -2153,6 +2176,7 @@ def realised_by_type(conn: sqlite3.Connection, start: date, end: date) -> tuple[
             winners=int(lot["wins"] or 0) if lot is not None else 0,
             losers=int(lot["losses"] or 0) if lot is not None else 0,
             scratches=int(lot["flat"] or 0) if lot is not None else 0,
+            wash_sale=round(washes.get(asset, 0.0), 2),
         )
         for asset in sorted(set(nets) | set(lots))
         if (lot := lots.get(asset)) is not None or nets.get(asset)

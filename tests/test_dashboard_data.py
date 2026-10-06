@@ -1425,8 +1425,14 @@ def test_the_multiplier_falls_back_to_the_cost_price_ratio():
 # -- realised_by_type: the FUT/STK breakdown ----------------------------------
 
 
-def _breakdown_db(tmp_path):
-    """A store with FUT and STK activity, plus an OPT lot that realised nothing."""
+def _breakdown_db(tmp_path, with_wash_sales=True):
+    """A store with FUT and STK activity, plus an OPT lot that realised nothing.
+
+    The STK figures carry a wash sale, as this account's 2026 does (measured read-only
+    2026-10-06: trades −3,432.25, lots −16,041.50, `flex_wash_sale` +12,609.25 — to the
+    cent, month by month): the trade is the lot plus the deferred loss. A store written
+    before the wash-sale table existed has no such table (`with_wash_sales=False`).
+    """
     path = tmp_path / "bd.db"
     with sqlite3.connect(path) as w:
         w.execute(
@@ -1436,12 +1442,33 @@ def _breakdown_db(tmp_path):
         w.execute(
             "CREATE TABLE flex_lot (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
         )
+        if with_wash_sales:
+            w.execute(
+                "CREATE TABLE flex_wash_sale (trade_date TEXT, asset_category TEXT, fifo_pnl_realized REAL)"
+            )
+            w.executemany(
+                "INSERT INTO flex_wash_sale VALUES (?,?,?)",
+                [
+                    (
+                        "20260804",
+                        "STK",
+                        1000.0,
+                    ),  # the deferred loss: lot −3,249.70 → trade −2,249.70
+                    ("20260701", "STK", 777.0),  # outside the window
+                ],
+            )
         w.executemany(
             "INSERT INTO flex_trade VALUES (?,?,?,?,?)",
             [
                 ("2026-08-03", "flex", "FUT", "USD", -3516.98),
                 ("2026-08-04", "flex", "FUT", "USD", 590.80),
-                ("2026-08-04", "flex", "STK", "USD", -3249.70),
+                (
+                    "2026-08-04",
+                    "flex",
+                    "STK",
+                    "USD",
+                    -2249.70,
+                ),  # the lot's −3,249.70 after the wash sale
                 ("2026-08-04", "live", "FUT", "USD", 999999.0),  # live rows are excluded
                 ("2026-07-01", "flex", "FUT", "USD", 111.0),  # outside the window
             ],
@@ -1464,7 +1491,7 @@ def test_breakdown_splits_by_asset_class(tmp_path):
     rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
     by = {r.asset_class: r for r in rows}
     assert by["FUT"].net == pytest.approx(-2926.18, abs=0.005)
-    assert by["STK"].net == pytest.approx(-3249.70, abs=0.005)
+    assert by["STK"].net == pytest.approx(-2249.70, abs=0.005)
 
 
 def test_breakdown_takes_money_from_trades_and_counts_from_lots(tmp_path):
@@ -1483,6 +1510,30 @@ def test_breakdown_takes_money_from_trades_and_counts_from_lots(tmp_path):
     assert fut.gross_win == pytest.approx(1945.28, abs=0.005)  # flex_lot
     assert fut.gross_loss == pytest.approx(-4871.46, abs=0.005)  # flex_lot
     assert fut.winners == 1 and fut.losers == 2
+
+
+def test_breakdown_reconciles_net_to_lots_plus_wash_sales_on_every_row(tmp_path):
+    """Gap #92 (operator 2026-10-06: "a transparent and correct calculation is the
+    requirement"). The 2026 YTD table read STK Net −3,432.25 against Gross win + Gross loss
+    = −16,041.49, and the 12,609.24 between them looked broken. It is IBKR's wash-sale
+    deferral, `flex_wash_sale`, windowed by its `trade_date` like the lots: with it on the
+    row, Net = Gross win + Gross loss + Wash sales holds for every asset class — STK with a
+    deferral, FUT with none (Section 1256), OPT with none."""
+    rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
+    by = {r.asset_class: r for r in rows}
+    assert by["STK"].wash_sale == pytest.approx(1000.0, abs=0.005)
+    assert by["FUT"].wash_sale == 0.0
+    for r in rows:
+        assert r.net == pytest.approx(r.gross_win + r.gross_loss + r.wash_sale, abs=0.005), r
+
+
+def test_breakdown_without_a_wash_sale_table_reports_no_deferral(tmp_path):
+    """A store from before the wash-sale table existed: the column is 0.0, nothing fails, and
+    the identity is simply not claimed for it."""
+    rows = dd.realised_by_type(
+        _breakdown_db(tmp_path, with_wash_sales=False), date(2026, 8, 3), date(2026, 8, 6)
+    )
+    assert all(r.wash_sale == 0.0 for r in rows)
 
 
 def test_breakdown_excludes_live_rows_and_other_windows(tmp_path):
@@ -1536,7 +1587,8 @@ def test_win_loss_ratio_is_none_rather_than_infinite(tmp_path):
 def test_rows_are_ordered_by_how_much_money_moved(tmp_path):
     """The class that moved the account most is read first, sign-independent."""
     rows = dd.realised_by_type(_breakdown_db(tmp_path), date(2026, 8, 3), date(2026, 8, 6))
-    assert [r.asset_class for r in rows][:2] == ["STK", "FUT"]
+    # FUT net −2,926.18 against STK −2,249.70 (the STK trade is the lot after its wash sale).
+    assert [r.asset_class for r in rows][:2] == ["FUT", "STK"]
 
 
 def test_an_empty_window_returns_nothing(tmp_path):

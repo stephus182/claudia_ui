@@ -220,11 +220,13 @@ def short_reason(error: str | None) -> str:
 # note attached on 2026-08-07 and caught in the browser the same hour — the table was right
 # and the sentence under it was a confident lie about where the money came from.
 _TO_DATE_NOTE = (
-    "_Settled figures are the Flex statement dataset through the named date (net is "
-    "`flex_trade`, gross and counts are `flex_lot`, pre-wash-sale lot detail); the pending "
-    "part is reconstructed FIFO from your own executions not yet on a statement (no trade "
-    "date, shown beside the window and added to it, never bucketed by date — gap #69). "
-    "Week, month and YTD alike._"
+    "_Settled figures are the Flex statement dataset through the named date: Net is "
+    "`flex_trade` (IBKR's realised, after wash-sale deferral), gross win/loss and the counts "
+    "are `flex_lot` (tax lots, pre-wash-sale), Wash sales is `flex_wash_sale` (the losses IBKR "
+    "deferred into replacement shares) — Net = Gross win + Gross loss + Wash sales on every "
+    "row; the pending part is reconstructed FIFO from your own executions not yet on a "
+    "statement (no trade date, shown beside the window and added to it, never bucketed by "
+    "date — gap #69). Week, month and YTD alike._"
 )
 _LIVE_SOURCE_NOTE = (
     "_Reconstructed FIFO from your own executions — not `flex_trade`, not `flex_lot`, "
@@ -246,10 +248,13 @@ def breakdown_table(window: Any, currency: str = "", note: str = _TO_DATE_NOTE) 
     order of magnitude larger. A surface showing only the rate, or only the net, reports
     the opposite of what happened in both cases.
 
-    `Net` and the lot-derived columns come from **different tables** and will not always
-    reconcile: `net` is `flex_trade` (the figure that ties to IBKR's annual statements),
-    while gross win/loss and the counts are `flex_lot`, which is pre-wash-sale detail.
-    The header says so rather than leaving a reader to discover it by subtraction.
+    `Net` and the lot-derived columns come from **different tables**: `net` is `flex_trade`
+    (the figure that ties to IBKR's annual statements), gross win/loss and the counts are
+    `flex_lot`, pre-wash-sale detail, and the difference between them is the **Wash sales**
+    column, `flex_wash_sale` (gap #92, 2026-10-06: the 2026 YTD table read STK −3,432.25
+    against −16,041.49 of gross and looked broken; the 12,609.24 between them was the
+    deferral). Net = Gross win + Gross loss + Wash sales on every row, and the footnote says
+    so rather than leaving a reader to discover it by subtraction.
     """
     if window is None or not window.rows:
         return "_No closed trades in this window._"
@@ -261,8 +266,8 @@ def breakdown_table(window: Any, currency: str = "", note: str = _TO_DATE_NOTE) 
     )
     lines = [
         flag,
-        f"| Type | Net{ccy} | Gross win | Gross loss | Gain % | W | L | Win % | Avg win | Avg loss |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"| Type | Net{ccy} | Gross win | Gross loss | Wash sales | Gain % | W | L | Win % | Avg win | Avg loss |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
 
     def num(v: float | None) -> str:
@@ -281,13 +286,17 @@ def breakdown_table(window: Any, currency: str = "", note: str = _TO_DATE_NOTE) 
         # Gain % (operator 2026-09-29) weighs the lots the win rate only counts: gross
         # wins over gross wins plus gross losses, so 9 wins of 500 against 1 loss of 500
         # reads 90% won and 50% gained.
+        # Wash sales (gap #92): the deferred losses that make Net = Gross win + Gross loss +
+        # Wash sales hold on the row; a dash where nothing was deferred (FUT, OPT, or a
+        # pending window, which has no statement behind it).
+        wash = getattr(r, "wash_sale", 0.0) or 0.0
         lines.append(
             f"| **{r.asset_class}** | {r.net:,.2f} | {r.gross_win:,.2f} | "
-            f"{r.gross_loss:,.2f} | {pct(r.gain_pct)} | {r.winners} | {r.losers} | "
+            f"{r.gross_loss:,.2f} | {num(wash) if wash else '—'} | {pct(r.gain_pct)} | {r.winners} | {r.losers} | "
             f"{pct(r.win_rate)} | {num(r.average_win)} | {num(r.average_loss)} |"
         )
     lines.append(
-        f"| **Total** | **{window.net:,.2f}** | | | {pct(gain_pct_over(window.rows))} | | | | | |"
+        f"| **Total** | **{window.net:,.2f}** | | | | {pct(gain_pct_over(window.rows))} | | | | | |"
     )
     lines.append("")
     lines.append(note)

@@ -3032,13 +3032,34 @@ def test_breakdown_table_shows_gain_pct_after_gross_loss_per_row_and_for_the_tot
     )
     text = pdash.breakdown_table(window, "USD")
     header = next(line for line in text.splitlines() if line.startswith("| Type |"))
-    assert "| Gross loss | Gain % | W |" in header
+    assert "| Gross loss | Wash sales | Gain % | W |" in header
     fut = next(line for line in text.splitlines() if line.startswith("| **FUT**"))
-    assert "| -500.00 | 50% | 9 | 1 | 90% |" in fut
+    assert "| -500.00 | — | 50% | 9 | 1 | 90% |" in fut
     stk = next(line for line in text.splitlines() if line.startswith("| **STK**"))
-    assert "| 0.00 | 100% | 2 | 0 | 100% |" in stk
+    assert "| 0.00 | — | 100% | 2 | 0 | 100% |" in stk
     total = next(line for line in text.splitlines() if line.startswith("| **Total**"))
-    assert "| **300.00** | | | 62% |" in total  # 800 / (800 + 500)
+    assert (
+        "| **300.00** | | | | 62% |" in total
+    )  # 800 / (800 + 500); the wash-sale column is blank on the total
+
+
+def test_breakdown_table_shows_the_wash_sale_deferral_so_the_row_adds_up():
+    """Gap #92: STK Net −3,432.25 against gross −16,041.49 read as broken until the deferred
+    12,609.24 was found in `flex_wash_sale`. The column sits between Gross loss and Gain %, a
+    dash where nothing was deferred, and the footnote states the identity and the three tables."""
+    window = dd.BreakdownWindow(
+        rows=(
+            dd.TypeBreakdown("STK", -3432.25, 11827.10, -27868.59, 15, 100, 0, wash_sale=12609.24),
+            dd.TypeBreakdown("FUT", -5704.90, 193423.70, -199128.60, 210, 166, 0),
+        )
+    )
+    text = pdash.breakdown_table(window, "USD")
+    stk = next(line for line in text.splitlines() if line.startswith("| **STK**"))
+    assert "| -3,432.25 | 11,827.10 | -27,868.59 | 12,609.24 |" in stk
+    fut = next(line for line in text.splitlines() if line.startswith("| **FUT**"))
+    assert "| -5,704.90 | 193,423.70 | -199,128.60 | — |" in fut
+    assert "Net = Gross win + Gross loss + Wash sales" in text
+    assert "`flex_wash_sale`" in text and "`flex_trade`" in text and "`flex_lot`" in text
 
 
 def test_breakdown_table_gain_pct_is_a_dash_when_nothing_was_traded():
@@ -3049,7 +3070,7 @@ def test_breakdown_table_gain_pct_is_a_dash_when_nothing_was_traded():
         for line in pdash.breakdown_table(window, "USD").splitlines()
         if line.startswith("| **FUT**")
     )
-    assert "| 0.00 | — | 0 | 0 |" in fut
+    assert "| 0.00 | — | — | 0 | 0 |" in fut  # no deferral, no gain rate
 
 
 # -- Every dated window to date: Monthly and YTD like the week (operator 2026-09-29) ---------
