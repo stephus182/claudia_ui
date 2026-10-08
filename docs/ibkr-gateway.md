@@ -200,6 +200,40 @@ belonged to the gateway itself. Four theories died before this one: a stale gate
 (SHA-256 identical to a fresh download), a wrong `ip2loc` (IBKR's own shipped default), an
 IB Key registered to another username (same username, user-confirmed), and 2FA itself.
 
+### Refused after "Client login succeeds" (2026-10-07/08)
+
+Five logins in a row completed in the browser, and the page read *"Client login succeeds"*.
+Yet the preflight read `[FREE]`, `/tickle` answered 401 to every caller, including Chrome's
+own request with its cookie, and the keepalive never logged `OK`. **The container's stdout
+showed nothing; the gateway's internal log showed everything:**
+
+```bash
+docker exec ibkr_core_gateway sh -c 'ls /app/api_gateway/logs'   # gw.<YYYY-MM-DD>.log, UTC times
+```
+
+```text
+GatewayHttpProxy : Client login succeeds
+BaseServiceProxy : -> GET /v1/api/sso/validate?gw=1,401
+BaseServiceProxy : failed /v1/api/sso/validate?gw=1 | reason Access Denied
+GatewayHttpProxy : authentication to cp failed, retry 1   … retry 5
+GatewayHttpProxy : giving up ...
+```
+
+The gateway labels an **upstream** 401 "Access Denied" (read in its own code), so IBKR's side
+refused the gateway's validation of a login that had just succeeded. A good login reads
+`sso/validate?gw=1,200` → `authenticated to cp` → `ssodh/init` 200 → `tickle,200`.
+
+**What cleared it (2026-10-08 12:15 EDT): one login on IBKR's website in Chrome, a log-out,
+then one gateway login.** The validation passed at once, and a direct gateway login the same
+afternoon (16:35 EDT) was validated at the first attempt. This matches Voyz/ibeam #267 and the
+ibeam wiki's "Authentication loop", where IBKR-side refusals of this kind are reported as
+sporadic and the website login can raise an extra identity confirmation that the gateway
+never shows. **IBKR's reason is not visible to us and is not established.** Ruled out by
+evidence: our code, the gateway image, macOS, and cookies. Evidence and timeline:
+`docs/plans/2026-10-08-gateway-login-failure/EVIDENCE.md` (local, git-ignored). The log
+carries the username, a numeric user id, cookies, tokens and device identifiers; redact before
+sharing.
+
 ### Runbook: a login that will not take
 
 ```bash
@@ -227,6 +261,11 @@ freshly started or freshly logged-out gateway, and the best possible moment to l
 *"Gateway is NOT answering. Start it first"* about a gateway that was running perfectly and
 waiting (fixed 2026-08-05, pinned by `test_a_401_means_alive_and_ready_not_down`, with a
 sibling test proving the carve-out still reports a genuine outage as DOWN).
+
+**`[FREE]` straight after *"Client login succeeds"* is not "log in again".** The preflight
+cannot tell a refused login from no login. Read the gateway's internal log first; if it shows
+`sso/validate?gw=1,401` and "authentication to cp failed", follow
+§ Refused after "Client login succeeds" instead of retrying, restarting or rebooting.
 
 ### Where the check runs by itself
 
@@ -381,6 +420,7 @@ reactivation with IBKR, not something to retry:
 | 2026-08-06 | Pollers hammered a gateway mid-login | Launcher did not block | `test_the_launcher_blocks_until_the_session_is_resolved` |
 | 2026-08-06 | `POST /logout` could not clear a session | Three renewers, one un-silenceable | Container tickler removed; `SuspendLock` |
 | 2026-08-06 | Container fix had no effect for a day | Image never rebuilt, **and could not be** | §The image trap |
+| 2026-10-07/08 | *"Client login succeeds"*, then no session, five logins | IBKR refused the gateway's `sso/validate` (401); cleared by one login on IBKR's website in Chrome; IBKR's reason not established | Runbook § Refused after "Client login succeeds"; not detected by the preflight (gap #93, open) |
 
 Full diagnosis of the 2026-08-05 borrowed session and the six 2026-08-06 gaps:
 `docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md` (local, git-ignored).
