@@ -259,15 +259,37 @@ This uses `ibkr_core_mcp.gateway.GatewayManager` — no changes to ibkr_core_mcp
 Alerts are managed exclusively through IBKR's native server-side alert system — they fire
 even when ClaudIA is not running, and appear on the IBKR mobile app.
 
+**Creating or modifying an alert has never succeeded through this setup, and the cause is
+not established.** What has been measured, and nothing more:
+
+- **2026-07-17 (this project):** `create_price_alert` returned HTTP 403 on every attempt. The
+  tool then offered only the operators `>=` and `<=`, so every attempt carried one of them.
+- **2026-09-16 (ibkr_core_mcp, live gateway, published build of 2023-04-24):** a create body
+  containing `>=`, `<=` or `!=`, in `operator` or in `alertName`, returned HTTP 403 with the text
+  "Error 403 - Access Denied". A body with `>`, `<`, `=` or `==` returned HTTP 500 with an IBKR
+  JSON validation error; for `>` it read `Condition #1:can't recognize fix [>]`. A modify body
+  against a real alert, whose operator is `<=`, returned 403. A delete of a non-existent alert
+  id returned IBKR's JSON error that the alert does not exist. The raw responses, headers
+  included, were not kept.
+- **Not established:** which component sends the 403, and why. The core's documentation and
+  its tool descriptions attribute it to the Client Portal Gateway; that attribution has not
+  been demonstrated. The gateway build IBKR publishes is still the 2023-04-24 one (download
+  `Last-Modified`, read 2026-10-08).
+
+Since core 2.0.0 both tool descriptions say "CURRENTLY BLOCKED UPSTREAM" and tell the model not
+to retry, and a 403 returns an explanation instead of an alert. Measurements:
+`ibkr_core_mcp/docs/ibkr-api-behaviors-reference.md` § Price alerts. IBKR Mobile can create an
+alert: the real alert the 2026-09-16 modify measurement used was created there.
+
 ClaudIA has five alert tools (via `ibkr_core_mcp.ClaudeToolkit`):
 
-| Tool | What it does |
-|---|---|
-| `create_price_alert` | Resolves symbol → conid, posts alert to IBKR server |
-| `get_alerts` | List all configured alerts with status |
-| `modify_price_alert` | Update threshold or direction on an existing alert |
-| `delete_alert` | Remove an alert by ID |
-| `activate_alert` | Toggle an alert on/off without deleting it |
+| Tool | What it does | Measured |
+|---|---|---|
+| `create_price_alert` | Posts a new alert | Never succeeded: 403 or 500 (above) |
+| `get_alerts` | Lists all configured alerts with status | Works live (core live-test log) |
+| `modify_price_alert` | Replaces an existing alert's fields | Never succeeded: 403 (above) |
+| `delete_alert` | Removes an alert by ID | Reaches IBKR (non-existent id); never run on a real alert |
+| `activate_alert` | Toggles an alert on or off | Never run on a real alert |
 
 There is no background polling loop in claudia_ui — IBKR delivers the notification directly
 to the mobile app and desktop.

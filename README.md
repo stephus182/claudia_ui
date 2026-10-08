@@ -8,7 +8,7 @@ ClaudIA is a Panel-based trading assistant that gives you a persistent, principl
 
 ## Features
 
-- **Conversational IBKR access** — positions, P&L, live orders, account summary, market data, backtests, price alerts — all via natural language
+- **Conversational IBKR access** — positions, P&L, live orders, account summary, market data, backtests, price alerts (listing; creating or modifying one has never succeeded here — see `docs/trading-data-reference.md`) — all via natural language
 - **Execution-triggered P&L** — a background listener watches for trade executions (any origin — mobile, TWS, web, API) and refreshes account P&L automatically each time a trade fills; no continuous polling
 - **Full trade history** — 7-year backfill via IBKR Flex Queries; `sync_flex_trades` keeps it current; `get_trades source='store'` queries with no date limit
 - **Human-confirmed order staging** — ClaudIA proposes trades (equities and futures); you click a button → Touch ID → AppKit colored dialog (green/BUY, red/SELL). The LLM has no order-execution tools. CME Rule 536-B fields auto-added for futures
