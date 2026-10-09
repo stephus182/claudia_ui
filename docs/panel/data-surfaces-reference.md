@@ -26,7 +26,7 @@ CLAUDE.md's "API Docs First" rule applies. Every claim below carries its evidenc
 
 | Tag | Meaning |
 |---|---|
-| **[S]** | **Scraped** from the official Panel docs on **2026-07-24**; URL in §10 |
+| **[S]** | **Scraped** from the official Panel docs on **2026-07-24**, and the Tabulator page again on **2026-10-08** (capture `.firecrawl/panel-tabulator/`, git-ignored); URL in §10 |
 | **[P]** | **Probed** against the *installed* panel 1.9.3 in `.venv` — the source of truth for our runtime behavior |
 | **[C]** | **Code** in this repo, cited `file:line` |
 | **[?]** | **Unverified** — a proposal, an open question, or something that needs a live check before it is relied on |
@@ -185,6 +185,86 @@ tabulator.style.map(color_negative_red)
 
 ⚠ On **pandas 3.0.5** the old `Styler.applymap` is gone — `.map` is the API **[P]**. The scraped
 example already uses `.map`, so it is correct as written.
+
+#### 2.2.1 Editing, buttons, selection and configuration — the write-surface toolkit
+
+Scraped from the Tabulator page on **2026-10-08** and probed on the installed **panel 1.9.3** the
+same evening, when the operator asked whether an alerts table could take edits in the row ("with a
+validate changes for the row"). It can. Nothing here is built; the alerts pane is a planned
+feature (`docs/project-status.md` § Planned Features).
+
+**Editing.** `editors` maps a column name to an editor; "Setting the editor of a column to `None`
+makes that column non-editable" **[S]**. Bokeh `CellEditor`s are accepted but replaced by the
+library's own, so prefer the Tabulator specs directly **[S]**: `{'type': 'number', 'max': 10,
+'step': 0.1}`, `{'type': 'tickCross', 'tristate': True, 'indeterminateValue': None}`,
+`{'type': 'list', 'valuesLookup': True}` or `{'type': 'list', 'values': [...]}`, `'date'`,
+`'datetime'`, and `{'type': 'nested', 'options': {...}, 'lookup_order': [cols]}` for an editor
+whose choices depend on other cells in the row **[S]**. `editables` maps a column to a
+`pn.io.JSCode` function of the cell, so a cell is editable only when a row condition holds
+("Optional editing") **[S]**. `disabled` governs the whole table and is **`False` on a fresh
+widget** **[P]** — gotcha 5 again: every order surface in the dashboard sets it `True` **[C]**.
+
+The frame is edited **in place**: `Tabulator.value` updates, `.param.watch(cb, 'value')` fires
+with `old` = a copy of the whole previous frame **[S]**. `.on_edit(cb)` is the per-cell channel:
+a `TableEditEvent` with `column`, `row`, `value`, `old` **[S]**, where `row` is the positional
+index into `value` **[S]**. Measured on 1.9.3 **[P]**: the browser sends two `table-edit` events
+per edit, `pre=True` then `pre=False`; the widget uses the `pre` one only for header-filter
+bookkeeping and runs the registered callbacks **once, on the post event**, after setting
+`event.old` from its own copy of the previous frame (`panel/widgets/tables.py:1495-1506`). A
+callback therefore sees the edit **after** the frame changed — staging means copying the row's
+previous values yourself before, or reading `event.old`.
+
+**Buttons.** `buttons={name: '<html>'}` renders one extra column per entry after the data
+columns; a click arrives through `.on_click(cb)` with `event.column == name` and `event.row`
+**[S]**. `.on_click(cb, column='A')` limits a callback to one column **[S]**. Measured **[P]**: for
+a button column the widget leaves `event.value` unset (it fills `value` from the frame for data
+columns only, `tables.py:1488-1492`), so a button handler reads the row by `event.row`, never by
+`event.value`.
+
+**Selection.** `selection` holds the selected rows' integer indexes, settable from Python;
+`selected_dataframe` is a new frame of just those rows **[S]**. `selectable`: `True` (click;
+Ctrl / Shift for multiple), `False`, `'checkbox'`, `'checkbox-single'` (no select-all header),
+`'toggle'`, or a positive `int` = the maximum number of selectable rows **[S]**.
+`selectable_rows=callable(df) → [indexes]` disables selection for the others **[S]**.
+
+**Row content.** `row_content=callable(row) → pane` renders an expandable detail region under the
+row; `embed_content=True` pre-renders every row's content **[S]**.
+
+**Static configuration.** `configuration={...}` passes options Panel does not expose straight to
+the Tabulator library — `clipboard`, `rowHeight`, `columnDefaults: {headerSort: False}` are the
+documented examples **[S]**. Measured on 1.9.3 **[P]**: it is a **constructor-only argument**,
+popped into `_configuration` (`tables.py:1395,1405`); there is no `configuration` attribute to
+read or change afterwards, `selectable` is merged into it unless given, and `groups` and
+`configuration['columns']` are mutually exclusive (`tables.py:2229-2239`).
+
+**Filtering.** `header_filters=True` turns on per-column header filters, declared with the same
+spec syntax as editors (or a dict per column) **[S]**; `add_filter(pn.bind(fn, ...))` adds a
+function filter that receives the frame and returns a filtered copy, with `pagination='remote'`
+for large frames **[S]**. `.current_view` is the post-filter frame **[S]**.
+
+**Downloading.** `.download(filename)` serves CSV or JSON by the extension; `.download_menu(
+text_kwargs=..., button_kwargs=...)` returns a `TextInput` and a `Button` for a client-side
+download **[S]**.
+
+**Streaming and patching.** `.stream(df, rollover=..., follow=...)` appends; `.patch(...)`
+updates cells, and "Calling `patch` doesn't trigger a `value` parameter update. You can trigger
+it manually with `widget.param.trigger('value')`" **[S]**.
+
+**Layout, style, theme.** `layout='fit_data_table'` is the default; `widths={col: px}` sets
+manual widths **[S]**. `.style` is the pandas Styler (§2.2 above). `theme` is a page-wide CSS
+choice: "changing the theme on one table will affect all tables on the page", set it once on the
+class **[S]**. `groups={'title': [cols]}` groups columns under a header; `groupby=[cols]` groups
+rows; `frozen_columns` / `frozen_rows` keep columns or rows in view while scrolling **[S]**.
+
+**How an alerts pane would use this [?]** (design sketch, not a decision): editors on the
+condition's value columns only (`number` with the instrument's tick as `step`), `None` on every
+other column; `on_edit` stages the change on the row (keyed by IBKR's alert id, with
+`event.old` kept for Discard); two `buttons` — `Validate changes` first, `Discard` — whose
+`on_click` is routed by `event.column`; the POST happens only on Validate, after a confirmation,
+never on the edit. Hard Rule 1's `disabled=True` stays on every **order** table; an alerts table
+is a write surface of its own class and needs its own invariant and test, since
+`tests/test_panel_dashboard.py::test_every_tabulator_on_the_dashboard_is_read_only_with_no_handlers`
+walks every `Tabulator` the tabs contain **[C]**.
 
 **`pn.pane.Perspective`** — a pivot/analytics grid (group_by, split_by, aggregates, expressions,
 filters, its own `.stream`/`.patch` **[P]**). No Python package needed; the JS is bundled **[P]**.
@@ -531,6 +611,11 @@ Every item is scraped or probed, not inferred:
 | 26 | `avgCost` is per **contract**, `avgPrice` per **unit**. A price column must use `avgPrice`, or a futures row shows an entry three orders of magnitude off the last price in the next column (CL: 80,932.36 beside a last of 75.14) | **[P]** live 2026-08-04 |
 | 27 | The positions endpoint serves **lean rows** on some polls: the same CL SEP2026 came back with no `ticker` and no `multiplier`, then complete minutes later. Never default a missing `multiplier` to 1 — derive it as `avgCost / avgPrice` and publish nothing if you cannot; the default put +0.00472 on screen where the answer was +4.72 | **[P]** live 2026-08-04 |
 | 28 | The summary's `grosspositionvalue`, the sum of the positions' `mktValue` and the allocation figure are **one quantity at three ages**, not three quantities: each replays the same value sequence later — allocation's values were held earlier by positions in 5 of 5 cases (median lag about 270 s), positions' by `grosspositionvalue` in 5 of 6 — on regular refreshes of about 180 s (summary), 300 s (positions) and 300 s offset about 285 s behind positions (allocation). Neither figure is wrong. **Never reconcile them arithmetically, and never show a positions total beside a summary total without an as-of.** The dashboard reads the ledger and positions only, and its reconciliation line names lag before error (`RECONCILE_TOLERANCE`). Measured after the close only (44 samples 30 s apart, from 16:00 ET, by containment rather than by eye); regular-hours periods are unmeasured | **[P]** live 2026-08-13 (Known Gaps #29) |
+| 29 | `Tabulator.patch(...)` does **not** trigger the `value` parameter — call `widget.param.trigger('value')` yourself if watchers must run | **[S]** |
+| 30 | `Tabulator.theme` is page-global: "changing the theme on one table will affect all tables on the page" — set it once on the class, never per table | **[S]** |
+| 31 | `configuration=` is a **constructor-only** argument on 1.9.3, stored as `_configuration`; there is no `configuration` attribute to read or set afterwards (`tables.py:1395,1405`) | **[P]** |
+| 32 | A click on a `buttons` column leaves `event.value` unset — the widget fills `value` from the frame for data columns only (`tables.py:1488-1492`); read the row by `event.row` | **[P]** |
+| 33 | `on_edit` callbacks run **once per edit, after** the frame changed (the browser's `pre` event is consumed internally); `event.old` is the previous cell value from the widget's own copy (`tables.py:1495-1506`) | **[P]** |
 
 ---
 
@@ -566,7 +651,7 @@ not duplicate — the styling/template URL index in `ui-design-reference.md` §9
 | Topic | URL |
 |---|---|
 | Component gallery (all 37 panes / 63 widgets / 15 layouts / 10 indicators) | https://panel.holoviz.org/reference/index.html |
-| Tabulator (params, formatters, editors, selection, filtering, streaming, patching, configuration) | https://panel.holoviz.org/reference/widgets/Tabulator.html |
+| Tabulator (params, formatters, editors, selection, filtering, streaming, patching, configuration) — re-scraped **2026-10-08** for §2.2.1 (capture `.firecrawl/panel-tabulator/Tabulator.md`, quotes verified in `SOURCES.md` beside it) | https://panel.holoviz.org/reference/widgets/Tabulator.html |
 | Perspective | https://panel.holoviz.org/reference/panes/Perspective.html |
 | DataFrame pane | https://panel.holoviz.org/reference/panes/DataFrame.html |
 | Bokeh pane | https://panel.holoviz.org/reference/panes/Bokeh.html |
