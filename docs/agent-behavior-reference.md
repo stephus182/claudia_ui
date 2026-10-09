@@ -325,6 +325,15 @@ can't show you that, no tool ran"* did not exist in ours until the guardrail mad
 start saying it. **Measure the corpus AND adversarially enumerate the honest shapes it
 cannot contain.**
 
+Applied again on 2026-10-09 (gap #98): `_ACTION_DONE` gained a deictic-locator branch after a
+live "Staged above — click to cancel…" with no proposal behind it slipped past the retry. Measured
+first over the whole store (401 assistant turns): 21 more matches, 19 cleared by a recorded
+proposal, 2 fires — both read as fabrications, one of them a 2026-09-25 occurrence nobody had
+recorded — and 0 false positives for either candidate form. The narrower form shipped anyway,
+because the honest sentence a bare locator would fire on ("Staged above means a button, not a
+live order") is exactly the kind the corpus does not contain until the guardrail provokes it;
+it is a fixture now, and the bare-locator mutant fails on it.
+
 ---
 
 ### 4d. Transcript fidelity and the same-turn retry (2026-09-11)

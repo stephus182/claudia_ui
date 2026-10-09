@@ -50,6 +50,15 @@ NARRATED_STAGING = [
     "Re-staged — new button's above.",
     "Done — re-staged with your new value.",
     "Proposed — button below.",
+    # Gap #98 (live 2026-10-08, and once before on 2026-09-25, unrecorded then): the
+    # participle followed by a deictic locator and no noun "button" — the one grammar the
+    # 2026-07-28 shapes did not cover. Synthetic wording; the real texts are in the store.
+    "Staged above — click to cancel, then confirm. Nothing cancels until you do.",
+    "Cancel staged above — review and confirm with Touch ID to pull it.",
+    "Proposed below — nothing reaches IBKR until you click it.",
+    "Modify staged above — limit 100 → 101, all else unchanged.",
+    "Staged here.",
+    "Re-staged above for order 9000001.",
 ]
 
 # The trap. Every one of these carries staging vocabulary with nothing pending, and the
@@ -76,6 +85,11 @@ HONEST_STAGING_TALK = [
     "No button was produced above.",
     "I will stage the cancel once you confirm the level.",
     "| 9000001 | ZZZ | BUY | 1 | LMT | 100.00 | GTC | Submitted | ClaudIA-staged |",
+    # Gap #98's adversarial pair: the locator as the SUBJECT of a definition, not a claim.
+    # A bare locator in the lookahead would fire on both; the shipped shape needs
+    # punctuation, the end, or a determiner/preposition after the locator.
+    "Staged above means a button, not a live order.",
+    "Staged above is not the same as sent.",
 ]
 
 

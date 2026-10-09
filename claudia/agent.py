@@ -818,7 +818,10 @@ _ACTION_DONE = re.compile(
     r"(?:(?:the\s+)?(?:cancel|modify|order|trade)\s+)?"
     r"(?:re-?)?(?:staged|proposed)\b"
     r"(?=\s*(?:[\u2014\u2013,.;:!-]|$)"
-    r"|\s+(?:the|a|an|your|this|that|it|one|for|on|at|with)\b)",
+    r"|\s+(?:the|a|an|your|this|that|it|one|for|on|at|with)\b"
+    r"|\s+(?:above|below|here|up top)\b"
+    r"(?=\s*(?:[\u2014\u2013,.;:!\u2026-]|$)"
+    r"|\s+(?:the|a|an|your|this|that|it|one|for|on|at|with)\b))",
     re.I,
 )
 """Claim shape 2: the sentence *opens* with a completed proposal act ("Cancel staged — …").
@@ -836,6 +839,21 @@ while keeping the failure in.
 First person is deliberately absent. "I proposed a cancel earlier" and "I staged that
 yesterday" are recaps of previous turns, which this check has no evidence about — L3's
 emission records are the channel for those. Only claims about *this* turn belong here.
+
+The third lookahead branch — a deictic locator after the participle — is gap #98
+(2026-10-09). "Staged above — click to cancel, then confirm." was shown live on 2026-10-08
+in a turn that ran only `get_order_status` and no proposal tool: the first two branches saw
+"above" as a bare noun, read the participle as a modifier and kept the sentence, so the
+same-turn retry built for exactly that turn shape never ran. The locator is accepted only
+when it is itself followed by punctuation, the end of the sentence, or the same
+determiner/preposition list ("Staged above — …", "Staged here.", "Re-staged above for …"),
+never bare: "Staged above means a button, not a live order" is a definition whose subject
+happens to be the claim's grammar, and a bare locator would fire on it. Measured before the
+edit on the whole live corpus (1,432 rows, 401 assistant turns): the branch matches 21 more
+turns, 19 of them cleared at the call site by a proposal recorded in the same turn, and the
+2 that fire are both read fabrications of this shape — 2026-09-25 15:07 ET (unrecorded at
+the time) and the 2026-10-08 one. Zero false positives, in both candidate forms; the
+narrower form ships because the corpus cannot contain the definition sentence yet.
 """
 
 _GOVERNING_OPERATOR = re.compile(
@@ -899,6 +917,13 @@ def _claims_completed_proposal(text: str) -> str | None:
       - claims about non-proposal tools ("Confirmed against the live book"), which were part
         of the same live failure. A general "I checked X" detector has no reliable shape.
       - a bare "Cancel staged." with no locator and no sentence-initial position.
+
+    Re-measured 2026-10-09 for gap #98 (the locator branch of `_ACTION_DONE`): the whole
+    store, 401 assistant turns; the two shapes together match 104 turns, 93 cleared by a
+    proposal recorded in the same turn; of the 11 that fire, 9 are the pre-existing set —
+    the 2026-07-28 failure, five turns of the 2026-09-11 measurement day, two of 09-24 and
+    one of 10-06, 4 of which the same-turn retry withdrew (`message_withdrawals`) —
+    and 2 are gap #98's instances. Still zero false positives.
 
     Args:
         text: The assistant text about to be, or already, shown to the user.
