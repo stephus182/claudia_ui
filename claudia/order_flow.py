@@ -652,23 +652,29 @@ def _post_dispatch_failure_text(exc: Exception, noun: str) -> str:
     )
 
 
-def _reply_first_line(text: str, limit: int = 120) -> str:
-    """The first non-empty line of an IBKR reply's cleaned text, cut to `limit` characters.
+def _reply_one_line(text: str, limit: int = 120) -> str:
+    """An IBKR reply's cleaned text as one line, cut to `limit` characters.
 
-    For a status line only — the decision row keeps the full raw and cleaned texts.
+    For a status line only — the decision row keeps the full raw and cleaned texts. The
+    whole text is collapsed, not its first line: IBKR wraps its own sentences ("price
+    exceeds \\nthe Percentage constraint of 3%.", live 2026-10-08), and a first-line cut
+    stopped at the wrap, before the constraint the question was about (gap #97). A heading
+    the cleaner turned into a line of its own fuses with its body the same way ("Confirm
+    Mandatory Cap Price To avoid trading at…"), which is readable and is the cost accepted:
+    the cleaned text cannot tell a wrap from a heading break, and this line is a pointer to
+    the record, never the record.
     """
-    for raw_line in text.replace("\xa0", " ").splitlines():
-        line = " ".join(raw_line.split())
-        if line:
-            return line if len(line) <= limit else line[: limit - 1] + "…"
-    return ""
+    line = " ".join(text.replace("\xa0", " ").split())
+    if not line:
+        return ""
+    return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
 def _format_reply_log(reply_log: list[dict[str, Any]]) -> str:
     """The IBKR precautions the human confirmed before the write was accepted (gap #38).
 
     Rendered from the client's reply records so the chat says what the human clicked
-    through — IBKR's own words, first line each — instead of a bare "accepted". "" when
+    through — IBKR's own words, one line each — instead of a bare "accepted". "" when
     no reply was confirmed.
     """
     confirmed = [r for r in reply_log if r.get("confirmed")]
@@ -678,7 +684,7 @@ def _format_reply_log(reply_log: list[dict[str, Any]]) -> str:
     lines = [f"**IBKR asked {len(confirmed)} {noun} before accepting:**"]
     for i, record in enumerate(confirmed, 1):
         text = str(record.get("message_text") or record.get("message") or "")
-        lines.append(f"{i}. {_reply_first_line(text)}")
+        lines.append(f"{i}. {_reply_one_line(text)}")
     return "\n".join(lines)
 
 
@@ -688,8 +694,8 @@ def _declined_reply_text(reply_log: list[dict[str, Any]]) -> str:
     if not declined:
         return ""
     text = str(declined[-1].get("message_text") or declined[-1].get("message") or "")
-    first = _reply_first_line(text)
-    return f" Declined prompt: {first}" if first else ""
+    line = _reply_one_line(text)
+    return f" Declined prompt: {line}" if line else ""
 
 
 # One table behind the user-facing sentence and the recorded stage of a refusal (#50,

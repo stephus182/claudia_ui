@@ -1052,7 +1052,10 @@ caller-owned list that receives one record per reply — `reply_id`, raw `messag
 raw `&nbsp;` of gap #39), `message_options`, `confirmed`, UTC `at` — appended before the gates so a
 decline or a Touch ID failure is recorded too. `order_flow` stores it as `ibkr_replies` in the
 `trade_staged` / `trade_modified` decision metadata and lists the confirmed precautions in the
-chat (first line each); a decline names the declined prompt. Live-verified 2026-09-10 16:00:
+chat (one line each — the whole cleaned text collapsed and cut at 120 characters, since 2026-10-09;
+until then the first line only, which stopped at IBKR's own wrap inside "price exceeds \nthe
+Percentage constraint of 3%.", gap #97); a decline names the declined prompt. Live-verified
+2026-09-10 16:00:
 decision row 72 carried both replies of a one-lot ES stop, confirmed and time-stamped.
 
 ## Post-dispatch read-back (L2)

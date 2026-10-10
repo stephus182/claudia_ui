@@ -3351,16 +3351,34 @@ async def test_execute_modify_order_persists_and_reports_the_reply_log():
     assert metadata["ibkr_replies"][0]["reply_id"] == "RPL1"
 
 
-def test_reply_first_line_takes_the_first_non_empty_line_and_truncates():
-    """The status line shows one clean line per reply: whitespace collapsed, NBSP → space,
-    cut at 120 characters with an ellipsis; the record keeps the full text."""
-    from claudia.order_flow import _reply_first_line
+def test_reply_one_line_collapses_the_whole_text_to_one_line_and_truncates():
+    """The status line shows one clean line per reply: every line of the cleaned text
+    joined by one space, whitespace collapsed, NBSP → space, cut at 120 characters with an
+    ellipsis; the record keeps the full text."""
+    from claudia.order_flow import _reply_one_line
 
-    assert _reply_first_line("\n\n  first   line \nsecond") == "first line"
-    assert _reply_first_line("a\xa0b") == "a b"
+    assert _reply_one_line("\n\n  first   line \nsecond") == "first line second"
+    assert _reply_one_line("a\xa0b") == "a b"
     long = "x" * 130
-    assert _reply_first_line(long) == "x" * 119 + "…"
-    assert _reply_first_line("") == ""
+    assert _reply_one_line(long) == "x" * 119 + "…"
+    assert _reply_one_line("") == ""
+
+
+def test_reply_one_line_keeps_the_half_of_a_sentence_ibkr_wraps_onto_a_second_line():
+    """Gap #97 (live 2026-10-08 16:49 ET): IBKR wraps its own sentence — "price exceeds \n
+    the Percentage constraint of 3%." — and the status line stopped at the wrap, so the
+    constraint the question was about never reached the screen. Synthetic symbol and
+    price; the grammar and the break are IBKR's."""
+    from claudia.order_flow import _reply_one_line
+
+    text = (
+        'The following order "BUY 1 ZZZ Dec18\'26 @ 100.00" price exceeds \n'
+        "the Percentage constraint of 3%.\nAre you sure you want to submit this order?"
+    )
+    line = _reply_one_line(text)
+    assert "price exceeds the Percentage constraint of 3%." in line
+    assert "\n" not in line
+    assert len(line) <= 120
 
 
 _ES_STATUS = {
