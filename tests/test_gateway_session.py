@@ -64,7 +64,7 @@ def _borrowed() -> GatewayState:
         sso_valid=True,
         client_app="IBKRMOBILE_000.a-000",
         sso_user="ibkruser",
-        user_id=10541387,
+        user_id=99999999,
     )
 
 
@@ -873,7 +873,7 @@ def test_classify_and_verdict_agree_over_every_possible_reading():
         (False, True),
         (False, True),
         ("", "IBKRMOBILE_000.a-000"),
-        (None, 10541387),
+        (None, 99999999),
         (False, True),
     ):
         state = GatewayState(
