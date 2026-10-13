@@ -230,14 +230,30 @@ ibeam wiki's "Authentication loop", where IBKR-side refusals of this kind are re
 sporadic and the website login can raise an extra identity confirmation that the gateway
 never shows. **IBKR's reason is not visible to us and is not established.** Ruled out by
 evidence: our code, the gateway image, macOS, and cookies. Evidence and timeline:
-`docs/plans/2026-10-08-gateway-login-failure/EVIDENCE.md` (local, git-ignored). The log
+`docs/plans/probes/2026-10-08-gateway-login-failure/EVIDENCE.md` (local, git-ignored). The log
 carries the username, a numeric user id, cookies, tokens and device identifiers; redact before
 sharing.
+
+**Since 2026-10-12 the tools read that log for you (gap #93).** One read —
+`docker exec ibkr_core_gateway grep -rHF --include=gw.[0-9]*.log -e <phrase>… /app/api_gateway/logs`,
+no shell, an explicit environment (`gateway_launch.read_login_events`) — and only the time, the
+event and its code survive it; no line of the log is printed or stored. The rule: take the last
+*"Client login succeeds"* in the container's logs, whatever its age — *"giving up"* after it
+and no *"authenticated to cp"* means refused; neither yet means IBKR is still answering. The
+page writes *"Client login succeeds"* one second **before** IBKR is asked, so it is not a
+session. A restart did not clear one (2026-10-08: the container started 15:47:49 UTC,
+the next login was refused at 15:49:37); a container that is removed and re-created loses its
+log, and with it the evidence (`GatewayManager.start()` removes it — core register F43).
+Where it shows: the preflight reads `[REFUSED]` (exit 5) or `[VALIDATING]` (exit 6); the
+launcher and the IBKR button name a refused last login before the page opens and end the wait
+at once if the new login is refused too; ClaudIA warns at start; `--diagnose` prints the login
+timeline. Checked against every login on record, 2026-10-07 → 10-13: five refused, five
+validated, and two *"giving up"* episodes with no login that are not refusals.
 
 ### Runbook: a login that will not take
 
 ```bash
-python -m claudia.gateway_preflight     # ALWAYS first — read-only, two GETs, no writes
+python -m claudia.gateway_preflight     # ALWAYS first — read-only: two GETs, then (after FREE) one read of the gateway's log
 ```
 
 | Verdict | Exit | What it means | Do this |
@@ -247,13 +263,18 @@ python -m claudia.gateway_preflight     # ALWAYS first — read-only, two GETs, 
 | `[FREE] …` | 2 | nothing holds the slot | log in now, through to *"Client login succeeds"* |
 | `[BUSY] Another IBKR client holds the session` | 3 | `competing`/`collision` set | fully close the other client, re-check |
 | `[BORROWED] SSO session belongs to X` | 4 | the gateway holds another app's session | log out of X **from its Log Out menu item**, then `./scripts/gateway-reset.sh` |
+| `[REFUSED] IBKR refused the last gateway login (…)` | 5 | the gateway's own log: IBKR refused its validation of the last login | **one login on IBKR's website in your browser, then log out, then one gateway login.** Not another gateway login first, not a restart |
+| `[VALIDATING] IBKR has not answered the last login yet (…)` | 6 | the last login is still being validated (a refusal took up to 13 s, measured) | **nothing** — do not log in again; re-run in a few seconds |
 
 Closing or swiping an app away is **not** logging out — IBKR's own gateway walkthrough
 warns it *"may cause a stale login session"*, which is precisely the state above.
 
 `./scripts/gateway-reset.sh` restarts the container and re-checks. It **refuses to run
 against a healthy session** (`--force` overrides) — a tool built to fix a login must not be
-able to break one.
+able to break one — **and, since 2026-10-12, against `[REFUSED]` and `[VALIDATING]`**: a
+restart did not clear IBKR's refusal on 2026-10-08, and it would cut off a login IBKR is still answering.
+It reads its exit codes from the preflight rather than restating them, and its guard is run in
+a test (`tests/test_gateway_ownership.py`), not only read.
 
 **HTTP 401 is not a failure.** It is the gateway answering that it holds no session — a
 freshly started or freshly logged-out gateway, and the best possible moment to log in.
@@ -262,10 +283,12 @@ freshly started or freshly logged-out gateway, and the best possible moment to l
 waiting (fixed 2026-08-05, pinned by `test_a_401_means_alive_and_ready_not_down`, with a
 sibling test proving the carve-out still reports a genuine outage as DOWN).
 
-**`[FREE]` straight after *"Client login succeeds"* is not "log in again".** The preflight
-cannot tell a refused login from no login. Read the gateway's internal log first; if it shows
-`sso/validate?gw=1,401` and "authentication to cp failed", follow
-§ Refused after "Client login succeeds" instead of retrying, restarting or rebooting.
+**A login IBKR refused reads `[REFUSED]`, not `[FREE]`** (since 2026-10-12, gap #93): after
+a `FREE` HTTP reading the preflight reads the gateway's own log (§ Refused after *"Client
+login succeeds"*). Until then it could not tell a refused login from no login: during the
+2026-10-07/08 incident it read `[FREE]` ("a login can proceed") between refused logins. When the
+log cannot be read, `[FREE]` says so on its last line — a refused login would then not show,
+and `python -m claudia.gateway_launch --diagnose` is the next step.
 
 ### Where the check runs by itself
 
@@ -273,7 +296,13 @@ cannot tell a refused login from no login. Read the gateway's internal log first
   `install_check.warn_if_stale()` and `agent.warn_if_model_lacks_operator_channel()`. It
   fires only on positive proof: valid SSO **and** a named `CLIENT_APP` **and** an
   unauthenticated gateway. Never on absence — a warning that fires when it need not is one
-  that gets ignored when it must not.
+  that gets ignored when it must not. Beside it since 2026-10-12,
+  `gateway_launch.warn_if_login_refused()` (gap #93), on the same terms: a `FREE` reading whose
+  log shows the last login refused; silent otherwise, and on a live session the log is not read.
+- **The launcher and the IBKR button** — both hand the owner `read_login_events` (gap #93).
+  From `FREE`, before the page opens, a refused last login is named with the remedy; during
+  the wait, a login newer than that one which IBKR refuses too ends the wait at once. The page
+  still opens: the remedy needs one gateway login after the website login.
 - **The IBKR button** (in the action bar under the chat since 2026-09-03; "Start IBKR Gateway" in the welcome message before) — hands a `GatewayManager` to
   `GatewaySession.establish()`, which reads the session *before* anything touches the
   container and opens a login page only from `FREE`. It used to inline its own sequence and
@@ -432,11 +461,14 @@ Full diagnosis of the 2026-08-05 borrowed session and the six 2026-08-06 gaps:
 ```
 claudia/gateway_session.py   — the session owner. Every read, the phase, the suspend lock,
                                and every session-affecting write. Start here.
-claudia/gateway_preflight.py — the reader: two GETs -> GatewayState, plus verdicts and the CLI
-claudia/gateway_launch.py    — CLI: `python -m claudia.gateway_launch [--diagnose]`
+claudia/gateway_preflight.py — the reader: two GETs -> GatewayState, plus verdicts and the CLI;
+                               the log rule (login_events, last_login, refine_with_log) — pure
+claudia/gateway_launch.py    — CLI: `python -m claudia.gateway_launch [--diagnose]`; the one
+                               read of the gateway's own log (read_login_events: docker exec,
+                               list form, no shell, explicit env — CLA-SEC-010)
 claudia/status.py            — ConnectivityChecker; check_ibkr() is a cached lookup, not a probe
 scripts/ibkr-keepalive.sh    — launchd renewer; honours the suspend lock
-scripts/gateway-reset.sh     — standalone recovery; refuses to run against a healthy session
+scripts/gateway-reset.sh     — standalone recovery; refuses a healthy session, [REFUSED], [VALIDATING]
 ibkr_core_mcp/gateway/       — GatewayManager (Docker only) + the image that runs the gateway
 tests/test_gateway_ownership.py — the repo-level guards that keep all of the above true
 ```

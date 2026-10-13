@@ -533,8 +533,10 @@ def test_pn_serve_binds_loopback_only():
         # `warn_if_session_borrowed` is a real GET /tickle against the gateway — the
         # IBKR session keepalive — and `read_state` swallows the failure, so an
         # unpatched call left the suite touching a live session while staying green
-        # (audit 2026-09-13, finding A-5).
+        # (audit 2026-09-13, finding A-5). `warn_if_login_refused` (gap #93) is the same
+        # GET plus, after a FREE reading, a `docker exec` into the gateway's container.
         patch("claudia.panel_app.warn_if_session_borrowed"),
+        patch("claudia.panel_app.warn_if_login_refused"),
     ):
         panel_app.main()
 
@@ -1002,6 +1004,7 @@ def test_bokeh_env_var_cannot_widen_the_websocket_origin_allowlist(monkeypatch):
             patch("claudia.panel_app.signal.signal"),
             patch.object(panel_app, "_gdrive_sync", None),
             patch("claudia.panel_app.warn_if_session_borrowed"),
+            patch("claudia.panel_app.warn_if_login_refused"),
         ):
             panel_app.main()
 

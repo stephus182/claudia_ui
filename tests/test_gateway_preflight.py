@@ -17,9 +17,17 @@ from claudia.gateway_preflight import (
     EXIT_CONTESTED,
     EXIT_FREE,
     EXIT_READY,
+    EXIT_REFUSED,
     EXIT_UNREACHABLE,
+    EXIT_VALIDATING,
     GatewayState,
+    LastLogin,
+    LoginEvent,
+    last_login,
+    login_events,
+    main,
     read_state,
+    refine_with_log,
     verdict,
     warn_if_session_borrowed,
 )
@@ -77,14 +85,17 @@ def test_bridge_up_but_unauthenticated_is_its_own_state():
     assert "cannot supply an authentication" in guidance.lower()
 
 
-def test_sso_alive_without_a_brokerage_session_names_the_user():
-    """The state this account was actually in — SSO valid, brokerage session absent."""
+def test_sso_alive_without_a_brokerage_session_is_free_and_prints_no_user_id():
+    """The state this account was actually in — SSO valid, brokerage session absent. Until
+    2026-10-12 the text named the IBKR user id ("IBKR knows you (userId …)") and this test
+    required it; the operator reversed that on the day (gap #101): no reader acts on the
+    number, and preflight output is pasted into records."""
     code, headline, guidance = verdict(
         GatewayState(reachable=True, user_id=99999999, connected=False)
     )
     assert code == EXIT_FREE
     assert "sso alive" in headline.lower()
-    assert "99999999" in guidance
+    assert "99999999" not in guidance
 
 
 def test_an_unreachable_gateway_is_not_reported_as_a_free_session():
@@ -319,3 +330,206 @@ def test_a_genuine_transport_failure_is_still_down():
     resp.status_code = 502
     with patch("claudia.gateway_preflight.requests.get", return_value=resp):
         assert verdict(read_state("https://x/v1/api"))[0] == EXIT_UNREACHABLE
+
+
+# ── Gap #93: the gateway's internal log — was the last login refused? ─────────────
+#
+# Synthetic lines in the shape `grep -HF` prints over the gateway's dated files: the path, a
+# colon, then the line, which starts with its UTC time — the two parts measured on the real
+# log (93 of 93 phrase lines); the rest of each line here is filler. No real line is copied: both repositories are
+# public and the real log carries the username, cookies and device ids. Each phrase line
+# below also carries an account-, token- and MAC-shaped string, so the exact-equality check
+# proves that nothing but the time, the event and its code leaves the extractor.
+
+_SECRETS = "U1234567 JSESSIONID=3f9c0a7be41d2c6a8f00ddee11223344 00:1a:2b:3c:4d:5e"
+_LOG = "/app/api_gateway/logs/gw.{day}.log:{time}.123 filler [a-thread-0] {text} " + _SECRETS
+
+
+def _grep(*lines: tuple[str, str, str]) -> str:
+    """`grep -HF` output for (day, time, text) lines."""
+    return "\n".join(_LOG.format(day=d, time=t, text=x) for d, t, x in lines) + "\n"
+
+
+def test_a_log_line_becomes_its_time_event_and_code_and_nothing_else():
+    """Each phrase line becomes (time, event, code) and nothing else: the account-, token- and
+    MAC-shaped strings on every line must not survive into any field."""
+    out = _grep(
+        ("2026-10-07", "17:53:14", "Client login succeeds"),
+        ("2026-10-07", "17:53:15", "-> GET /v1/api/sso/validate?gw=1,401"),
+        ("2026-10-07", "17:53:15", "authentication to cp failed, retry 1"),
+        ("2026-10-07", "17:53:27", "giving up"),
+        ("2026-10-08", "16:15:18", "authenticated to cp"),
+        ("2026-10-08", "16:15:23", "-> POST /v1/api/iserver/auth/ssodh/init,200"),
+    )
+
+    assert login_events(out) == [
+        LoginEvent("2026-10-07 17:53:14", "login", ""),
+        LoginEvent("2026-10-07 17:53:15", "validate", "401"),
+        LoginEvent("2026-10-07 17:53:15", "retry", "1"),
+        LoginEvent("2026-10-07 17:53:27", "giving up", ""),
+        LoginEvent("2026-10-08 16:15:18", "authenticated", ""),
+        LoginEvent("2026-10-08 16:15:23", "ssodh/init", "200"),
+    ]
+
+
+def test_events_come_out_in_time_order_whatever_order_the_files_were_read_in():
+    """`grep -r` lists the dated files in directory order, not date order (measured 2026-10-12:
+    the four files came back out of order), and `last_login` takes the LAST login in the list
+    as the newest — so an older file read last would decide the verdict."""
+    out = _grep(
+        ("2026-10-09", "18:25:00", "Client login succeeds"),
+        ("2026-10-07", "17:53:14", "Client login succeeds"),
+    )
+    assert [e.at for e in login_events(out)] == ["2026-10-07 17:53:14", "2026-10-09 18:25:00"]
+
+
+def test_a_login_line_without_a_time_is_an_unknown_format_not_a_skipped_line():
+    """Skipping it would make the rule answer about an OLDER login: a fresh refusal whose login
+    line had lost its time would read as the previous login's "validated" — the #93 failure,
+    silently. All 93 phrase lines measured start with their time, so such a line means the
+    format changed: no verdict from partial data. The message names the event, never the line."""
+    out = _grep(("2026-10-07", "17:53:14", "Client login succeeds"))
+    out += (
+        "/app/api_gateway/logs/gw.2026-10-08.log:no time Client login succeeds " + _SECRETS + "\n"
+    )
+    with pytest.raises(ValueError) as raised:
+        login_events(out)
+    assert (
+        str(raised.value) == "gateway log format not recognised: a 'login' line has no leading time"
+    )
+
+
+_REFUSED = [
+    ("login", ""),
+    ("validate", "401"),
+    ("retry", "1"),
+    ("validate", "401"),
+    ("retry", "2"),
+    ("giving up", ""),
+]
+_REPEAT_REFUSED = [("login", ""), ("validate", "401"), ("retry", "6"), ("giving up", "")]
+_VALIDATED = [("login", ""), ("validate", "200"), ("authenticated", ""), ("ssodh/init", "200")]
+_IN_PROGRESS = [("login", ""), ("validate", "401"), ("retry", "1")]
+# 2026-10-09 19:51 UTC: 86 minutes after a good login the gateway's validation lapsed by
+# itself — retries and a "giving up" with no login line — and 20:37: a burst of 500s with
+# "giving up" lines, recovered within a second. Neither is a refused login.
+_LAPSE = [("validate", "401"), ("retry", "1"), ("giving up", "")]
+_BURST = [
+    ("validate", "500"),
+    ("retry", "2"),
+    ("giving up", ""),
+    ("validate", "200"),
+    ("authenticated", ""),
+]
+
+
+@pytest.mark.parametrize(
+    ("shape", "outcome"),
+    [
+        (_REFUSED, "refused"),
+        (_REPEAT_REFUSED, "refused"),
+        (_VALIDATED, "validated"),
+        (_IN_PROGRESS, "validating"),
+        (_REFUSED + _VALIDATED, "validated"),
+        (_VALIDATED + _REFUSED, "refused"),
+        (_VALIDATED + _LAPSE, "validated"),
+        (_VALIDATED + _BURST, "validated"),
+    ],
+    ids=[
+        "refused",
+        "refused-again-at-once",
+        "validated",
+        "still-validating",
+        "a-good-login-after-a-refusal",
+        "a-refusal-after-a-good-login",
+        "a-lapse-without-a-login",
+        "a-500-burst-without-a-login",
+    ],
+)
+def test_the_last_login_decides(shape, outcome):
+    """The rule, over every shape the archive holds (10-07 → 10-13): the newest login line,
+    then `authenticated to cp` after it = validated, `giving up` after it = refused, neither
+    = still validating. A `giving up` that belongs to no login of its own (a lapse, a burst of
+    500s) never turns a validated login into a refusal."""
+    events = [LoginEvent(f"2026-10-07 18:{i:02d}:00", e, c) for i, (e, c) in enumerate(shape)]
+    newest = max(i for i, (e, _) in enumerate(shape) if e == "login")
+    assert last_login(events) == LastLogin(events[newest].at, outcome)
+
+
+def test_no_login_line_is_no_reading():
+    """No login line — a re-created container, or only a lapse — is no reading at all, never a
+    "validated" or a "refused" made up from the events around it."""
+    assert last_login([LoginEvent("2026-10-09 19:51:22", "giving up", "")]) is None
+    assert last_login([]) is None
+
+
+# ── Gap #93, piece 3: a FREE reading, refined by the gateway's own log ───────────
+
+_FREE = verdict(GatewayState(reachable=True))
+
+
+def _events(shape: list[tuple[str, str]]) -> list[LoginEvent]:
+    """Events one minute apart, in the order given."""
+    return [LoginEvent(f"2026-10-07 18:{i:02d}:00", e, c) for i, (e, c) in enumerate(shape)]
+
+
+@pytest.mark.parametrize(
+    ("events", "problem", "code", "says"),
+    [
+        (_events(_REFUSED), "", EXIT_REFUSED, "IBKR's website"),
+        (_events(_IN_PROGRESS), "", EXIT_VALIDATING, "Do not log in again"),
+        (_events(_VALIDATED), "", EXIT_FREE, "(2026-10-07 18:00:00 UTC) was validated by IBKR"),
+        ([], "", EXIT_FREE, "records no login"),
+        (
+            None,
+            "Error response from daemon: No such container: x",
+            EXIT_FREE,
+            "No such container: x",
+        ),
+    ],
+    ids=["refused", "validating", "validated", "no-login-recorded", "log-unreadable"],
+)
+def test_a_free_reading_is_refined_by_the_last_login(events, problem, code, says):
+    """The five readings of the prototype the operator reviewed 2026-10-12: each gets its
+    exit code and says the one fact it exists for — a log that cannot be read says so and
+    keeps FREE, never a silent FREE that looks like a clean bill."""
+    refined, _, guidance = refine_with_log(_FREE, events, problem)
+    assert (refined, says in guidance) == (code, True)
+
+
+def test_a_refused_login_is_told_the_website_login_first_and_is_never_forbidden_one():
+    """The remedy that worked (2026-10-08 12:15 EDT) is a website login THEN one gateway login;
+    a verdict that forbade the gateway login would deadlock it, since the log reads "refused"
+    until that gateway login succeeds."""
+    _, headline, guidance = refine_with_log(_FREE, _events(_REFUSED), "")
+    assert "(2026-10-07 18:00:00 UTC)" in headline
+    assert guidance.index("IBKR's website") < guidance.index("log in to the gateway once")
+
+
+def test_the_log_never_overrides_a_reading_that_is_not_free():
+    """A live session, or any other HTTP verdict, is the HTTP side's to state; an old refusal
+    in the log must not turn it into REFUSED."""
+    live = verdict(GatewayState(reachable=True, authenticated=True, connected=True))
+    assert refine_with_log(live, _events(_REFUSED), "") == live
+
+
+def test_the_command_exits_with_the_refined_verdict(capsys):
+    """`python -m claudia.gateway_preflight` is the runbook's first step and gates
+    `scripts/gateway-reset.sh` by its exit code."""
+    with (
+        patch("claudia.gateway_preflight.read_state", return_value=GatewayState(reachable=True)),
+        patch("claudia.gateway_launch.read_login_events", return_value=(_events(_REFUSED), "")),
+    ):
+        assert main([]) == EXIT_REFUSED
+    assert capsys.readouterr().out.startswith("[REFUSED] IBKR refused the last gateway login")
+
+
+def test_a_reading_that_is_not_free_runs_no_log_read():
+    """The `docker exec` runs only where it can change the answer."""
+    live = GatewayState(reachable=True, authenticated=True, connected=True)
+    with (
+        patch("claudia.gateway_preflight.read_state", return_value=live),
+        patch("claudia.gateway_launch.read_login_events") as read,
+    ):
+        assert main([]) == EXIT_READY
+    read.assert_not_called()

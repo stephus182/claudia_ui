@@ -23,6 +23,10 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
+from claudia.gateway_preflight import EXIT_FREE, EXIT_READY, EXIT_REFUSED, EXIT_VALIDATING
+
 _CLAUDIA = Path(__file__).resolve().parent.parent / "claudia"
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
@@ -324,3 +328,59 @@ def test_the_launcher_blocks_until_the_session_is_resolved():
         "start-claudia.sh backgrounds the gateway launcher, so ClaudIA starts polling a "
         "gateway that is still mid-login:\n  " + "\n  ".join(backgrounded)
     )
+
+
+# ── Gap #93: the reset script restarts only where a restart can help ─────────────
+
+
+@pytest.mark.parametrize(
+    ("before", "force", "restarts"),
+    [
+        (EXIT_READY, False, False),
+        (EXIT_REFUSED, False, False),
+        (EXIT_VALIDATING, False, False),
+        (EXIT_FREE, False, True),
+        (EXIT_REFUSED, True, True),
+    ],
+    ids=["live", "refused", "validating", "free", "refused-forced"],
+)
+def test_the_reset_script_restarts_only_where_a_restart_can_help(tmp_path, before, force, restarts):
+    """`scripts/gateway-reset.sh` destroys whatever session the container holds, so its guard
+    is run, not read: a copy of the script in a scratch directory, with stand-ins for
+    `python`, `docker` and `curl` — the real ones are never reached. A live session is never
+    reset; nor a REFUSED one, since a restart did not clear IBKR's refusal (2026-10-08: started again
+    15:47:49 UTC, refused again at 15:49:37); nor a VALIDATING one, which a restart would cut
+    off. `--force` still overrides."""
+    import shutil
+    import subprocess
+    import sys
+
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(_SCRIPTS / "gateway-reset.sh", tmp_path / "scripts")
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    docker_calls = tmp_path / "docker-calls"
+    stand_ins = {
+        # Only the preflight run (`-m`) is stood in. Every `-c` snippet — the container's name,
+        # the URL, the exit codes — runs on the real interpreter, so a broken one fails here
+        # as it would for real (a stand-in that matched their text let one through, measured).
+        "python": (
+            f'#!/bin/sh\nif [ "$1" = "-m" ]; then echo "[stub verdict]"; exit {before}; fi\n'
+            f'exec "{sys.executable}" "$@"\n'
+        ),
+        "docker": f'#!/bin/sh\necho "$@" >> {docker_calls}\n',
+        "curl": "#!/bin/sh\nexit 0\n",
+    }
+    for name, body in stand_ins.items():
+        (stubs / name).write_text(body)
+        (stubs / name).chmod(0o755)
+
+    subprocess.run(
+        ["bash", str(tmp_path / "scripts" / "gateway-reset.sh"), *(["--force"] if force else [])],
+        env={"PATH": f"{stubs}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert docker_calls.exists() == restarts

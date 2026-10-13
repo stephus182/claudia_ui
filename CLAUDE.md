@@ -582,7 +582,9 @@ the fix that established this (75,480 → 2,910 tokens/session).
   re-login); session-level events go to the collapsed **System log** card, not the chat —
   routing rule and button table in `docs/panel/ui-customisation-reference.md` §2.6.
   **Before opening the IBKR login page — from a script, a button, or by hand — run
-  `python -m claudia.gateway_preflight`** (read-only: two GETs, never a write). Only one
+  `python -m claudia.gateway_preflight`** (read-only: two GETs, never a write — and after a
+  `[FREE]` reading one read of the gateway's own log, the only place a login IBKR *refused*
+  shows: `[REFUSED]`, gap #93, 2026-10-12). Only one
   brokerage session exists per username across Client Portal, TWS and IBKR Mobile, so a
   needless re-login is what escalates into the IB Key challenge/response, and some login
   failures *cannot* be fixed by retrying. The case that cost days on 2026-08-05: the gateway
@@ -590,8 +592,11 @@ the fix that established this (75,480 → 2,910 tokens/session).
   visible only in `/sso/validate`'s `CLIENT_APP`, while `/tickle` showed `userId` populated,
   `ssoExpires` renewing and `competing` *false*. `POST /logout` could not clear it (three
   ticklers renewed it every 60s); `docker restart` could. Recovery: `./scripts/gateway-reset.sh`,
-  which refuses to run against a healthy session. Full diagnosis + verdict table:
-  `docs/connectivity.md` § A borrowed session / § Runbook
+  which refuses to run against a healthy session, a refused login or one IBKR is still
+  answering (a restart did not clear a refusal on 2026-10-08 — refused again under two minutes after one — and would cut off a login being validated). A
+  refusal was cleared on 2026-10-08 by one login on IBKR's website, then one gateway login. Full diagnosis
+  and verdict table: `docs/ibkr-gateway.md` § A borrowed session / § Refused after "Client
+  login succeeds" / § Runbook
 - Panel implementation (serving model, session lifecycle, MessageSink seam, widget gotchas,
   headless button testing): `docs/panel/panel-reference.md`
 - **UI customisation** (what is set and how to change it — theme default + per-tab URL

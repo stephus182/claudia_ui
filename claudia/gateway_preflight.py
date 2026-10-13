@@ -59,6 +59,15 @@ session exists per username across Client Portal, TWS and IBKR Mobile
 advice for the collision is to log out of the other app first — which is a step this
 check can recommend but can never verify in advance.
 
+## What the HTTP side cannot see and the gateway's own log can — 2026-10-12 (gap #93)
+
+**A login IBKR refused.** `/tickle` and `/sso/validate` answer 401 after it exactly as when
+nobody has logged in, so the HTTP verdict is FREE: during the five refused logins of
+2026-10-07/08 this check read FREE ("a login can proceed"). The gateway's own log records the refusal, and the CLI
+reads it after a FREE reading — `refine_with_log` over `gateway_launch.read_login_events`,
+where the process spawn lives (CLA-SEC-010) — to answer `EXIT_REFUSED` or `EXIT_VALIDATING`.
+`verdict` itself never reads the log and never returns either, so it stays `classify`'s mirror.
+
 ## Read-only by default, and where it is not
 
 `read_state` issues **two GETs and nothing else** — `/tickle` for whether *a* session is
@@ -76,15 +85,20 @@ permissions that are meant to shrink to nothing, and this was the last entry.
 The one side effect the GETs do have is benign: `/tickle` resets the keepalive timer,
 exactly as `ConnectivityChecker.check_ibkr` does every 60 seconds anyway. Reading can
 extend a session's life, never shorten it.
+
+The CLI's third read, after a FREE reading only, is of the gateway's own log inside its
+container (`docker exec … grep`): it sends the gateway no request at all.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 import requests
 import urllib3
@@ -134,6 +148,10 @@ EXIT_UNREACHABLE = 1  # gateway process is not answering at all
 EXIT_FREE = 2  # nothing holds the session; a login now should succeed
 EXIT_CONTESTED = 3  # another IBKR client holds it; logging in now starts a fight
 EXIT_BORROWED = 4  # the gateway holds an SSO session issued to a different client app
+# The two below refine a FREE reading from the gateway's own log (`refine_with_log`, gap #93);
+# `verdict` never returns them, so it stays the HTTP reading's mirror of `classify`.
+EXIT_REFUSED = 5  # IBKR refused the last login; a website login, then one gateway login
+EXIT_VALIDATING = 6  # IBKR is still answering the last login; do NOT log in again
 
 
 def read_state(gateway_url: str, timeout: float = 5.0) -> GatewayState:
@@ -278,7 +296,10 @@ def verdict(state: GatewayState) -> tuple[int, str, str]:
         return (
             EXIT_FREE,
             "SSO alive, brokerage session NOT established",
-            f"IBKR knows you (userId {state.user_id}) but no brokerage session exists, and "
+            # The user id is not printed (gap #101, operator 2026-10-12): no reader acts on
+            # the number, and this text is pasted into records. The username stays where
+            # it is shown — it says whose session a borrowed one is.
+            "IBKR knows your user but no brokerage session exists, and "
             "nothing is competing for it. This is the good moment to log in: complete the "
             "page through to 'Client login succeeds'.",
         )
@@ -291,6 +312,192 @@ def verdict(state: GatewayState) -> tuple[int, str, str]:
         "Mobile login left /tickle and /sso/validate both answering 401 and this check "
         "reading FREE. Only one brokerage session exists per username, so if the login "
         "is rejected, close TWS / IBKR Mobile / any Client Portal tab and try once more.",
+    )
+
+
+# ── Was the last login refused? The gateway's internal log (gap #93) ──────────────────
+#
+# Nothing on the HTTP side tells a login IBKR refused from no login at all: `/tickle` and
+# `/sso/validate` answer 401 in both, so the verdict above reads FREE ("a login can
+# proceed") straight after a refusal — the 2026-10-07/08 incident, five refused logins. The
+# only evidence is the gateway's own log
+# (`docs/plans/2026-10-08-gap93-preflight-refused-login-design.md`, § 6 for the measurements).
+
+LOGIN_PHRASES = {
+    "Client login succeeds": "login",
+    "sso/validate?gw=1,": "validate",
+    "authentication to cp failed, retry": "retry",
+    "authenticated to cp": "authenticated",
+    "giving up": "giving up",
+    "ssodh/init,": "ssodh/init",
+}
+"""The six phrases a login leaves in the gateway's log, verbatim, each with its event name.
+
+Measured 2026-10-12 over the incident container's own files (2026-10-07 → 10-13) and the
+redacted archive, which agree event for event: no line carries two of them, and every line
+that carries one starts with its time. A refused login is `login → validate 401 → retry 1…5
+→ giving up` within 13 s (a repeat attempt gives up at once, the retry counter carrying
+on); a good one is `login → validate 200 → authenticated`, then `ssodh/init 200` about 5 s
+later. "Client login succeeds" is written one second BEFORE IBKR is asked, so it is not a
+session. No phrase contains another ("authentication to cp failed" is not "authenticated
+to cp"), so a line matches at most one and the order of this table decides nothing.
+"""
+
+_LOG_LINE = re.compile(r"gw\.(\d{4}-\d{2}-\d{2})\.log:(\d{2}:\d{2}:\d{2})")
+# `grep -H` prefixes each line with its file, `gw.<UTC date>.log`; the line starts with its UTC time.
+
+
+class LoginEvent(NamedTuple):
+    """One phrase from the gateway's log, reduced to when, what and its code. Nothing else."""
+
+    at: str  # "YYYY-MM-DD HH:MM:SS" UTC: the file's date and the line's time
+    event: str  # a value of `LOGIN_PHRASES`
+    code: str  # the HTTP status of validate / ssodh/init, the retry number, else ""
+
+
+def login_events(grep_output: str) -> list[LoginEvent]:
+    """Reduce `grep -HF` output over the gateway's dated log files to `LoginEvent`s.
+
+    The log carries the username, a numeric user id, session cookies, a MAC address and
+    device ids, verbatim. This is where they stop: each line becomes its date, time, event
+    and code, and the rest of it is dropped here, before anything can log, print or store it
+    (OWASP Logging Cheat Sheet, "Data to exclude"). Returned in time order, whatever order
+    the files were read in.
+
+    Raises:
+        ValueError: A line carries a phrase but no leading time. All 93 measured do, so the
+            format has changed — and skipping the line would let `last_login` answer about an
+            older login (a fresh refusal read as the previous login's "validated"). The
+            message names the event, never the line.
+    """
+    events = []
+    for line in grep_output.splitlines():
+        stamp = _LOG_LINE.search(line)
+        if stamp is None:
+            unplaced = next((e for p, e in LOGIN_PHRASES.items() if p in line), None)
+            if unplaced is not None:
+                raise ValueError(
+                    f"gateway log format not recognised: a '{unplaced}' line has no leading time"
+                )
+            continue
+        for phrase, event in LOGIN_PHRASES.items():
+            i = line.find(phrase)
+            if i < 0:
+                continue
+            rest = line[i + len(phrase) :]
+            if event == "retry":
+                number = re.match(r"\s*(\d+)", rest)
+                code = number.group(1) if number else ""
+            elif event in ("validate", "ssodh/init"):
+                code = rest[:3] if rest[:3].isdigit() else ""
+            else:
+                code = ""
+            events.append(LoginEvent(f"{stamp.group(1)} {stamp.group(2)}", event, code))
+            break
+    # `grep -r` reads the files in directory order (measured 2026-10-12); a stable sort keeps
+    # each file's own order within a second.
+    return sorted(events, key=lambda e: e.at)
+
+
+def newest_login_index(events: Sequence[LoginEvent]) -> int | None:
+    """Where the newest `login` event sits in `events` (time-ordered), or None if there is none.
+    One definition, for the rule below and `gateway_launch`'s timeline."""
+    return max((i for i, e in enumerate(events) if e.event == "login"), default=None)
+
+
+class LastLogin(NamedTuple):
+    """The newest login in the gateway's log and what became of it."""
+
+    at: str  # the login line's "YYYY-MM-DD HH:MM:SS" UTC
+    outcome: Literal["validated", "refused", "validating"]
+
+
+def last_login(events: Sequence[LoginEvent]) -> LastLogin | None:
+    """What became of the newest login: validated, refused, or still being validated.
+
+    Anchored on the newest `login` line, whatever its age. A container restart did not clear
+    IBKR's refusal (2026-10-08: started 15:47:49 UTC, refused again at 15:49:37), so a window
+    "since the start" would read a gateway as free that IBKR is refusing; and a "giving up"
+    with no login before it is no refusal (2026-10-09 19:51 and 20:37 UTC: a validation that
+    lapsed by itself, a burst of 500s that recovered). After the login, `authenticated to cp`
+    means validated — a later lapse is the HTTP reading's to see — else `giving up` means
+    refused, else IBKR has not answered yet (measured: at most 13 s). None when the log holds
+    no login line, as in a re-created container.
+    """
+    newest = newest_login_index(events)
+    if newest is None:
+        return None
+    after = {e.event for e in events[newest + 1 :]}
+    if "authenticated" in after:
+        return LastLogin(events[newest].at, "validated")
+    if "giving up" in after:
+        return LastLogin(events[newest].at, "refused")
+    return LastLogin(events[newest].at, "validating")
+
+
+REFUSED_GUIDANCE = (
+    'The page read "Client login succeeds", then IBKR refused the gateway\'s validation and the '
+    "gateway gave up — the page writes its success before IBKR is asked, so it is not a session. "
+    "Logging in to the gateway again has not cleared this, and neither has a container restart "
+    "(2026-10-07/08: five refused logins, one of them under two minutes after a restart). First "
+    "log in once on IBKR's website in your browser and log out; then log in to the gateway once. "
+    'Runbook: docs/ibkr-gateway.md § Refused after "Client login succeeds".'
+)
+
+_VALIDATING_GUIDANCE = (
+    'The page read "Client login succeeds" and the gateway is still waiting for IBKR\'s '
+    "validation. A good login has been answered within a second, a refusal within 13 seconds "
+    "(measured). Do not log in again — re-run this check in a few seconds. If it still reads "
+    "this, the gateway stopped mid-validation: see docs/ibkr-gateway.md § Runbook: a login "
+    "that will not take."
+)
+
+
+def refine_with_log(
+    found: tuple[int, str, str], events: Sequence[LoginEvent] | None, problem: str
+) -> tuple[int, str, str]:
+    """A FREE verdict refined by the gateway's own log; any other verdict, unchanged.
+
+    FREE is the one reading the log can change: the HTTP side looks the same after a login
+    IBKR refused, during one it is still answering, and when nobody has logged in. A refused
+    or unanswered last login replaces it (`EXIT_REFUSED`, `EXIT_VALIDATING`); otherwise FREE
+    stands with one line of what the log showed — including that it could not be read, which
+    is never left silent. Wording reviewed with the operator on the real log, 2026-10-12.
+
+    Args:
+        found: `verdict(state)`.
+        events: `gateway_launch.read_login_events`'s events, or None when unreadable.
+        problem: Why the log could not be read; "" when it was.
+    """
+    code, headline, guidance = found
+    if code != EXIT_FREE:
+        return found
+    if events is None:
+        return (
+            code,
+            headline,
+            f"{guidance}\n\nThe gateway's own log could not be read ({problem}), so a login "
+            "IBKR refused would not show here.",
+        )
+    last = last_login(events)
+    if last is None:
+        return code, headline, f"{guidance}\n\nThe gateway's log records no login."
+    if last.outcome == "refused":
+        return (
+            EXIT_REFUSED,
+            f"IBKR refused the last gateway login ({last.at} UTC)",
+            REFUSED_GUIDANCE,
+        )
+    if last.outcome == "validating":
+        return (
+            EXIT_VALIDATING,
+            f"IBKR has not answered the last login yet ({last.at} UTC)",
+            _VALIDATING_GUIDANCE,
+        )
+    return (
+        code,
+        headline,
+        f"{guidance}\n\nThe last login in the gateway's log ({last.at} UTC) was validated by IBKR.",
     )
 
 
@@ -365,14 +572,16 @@ _MARK = {
     EXIT_FREE: "FREE",
     EXIT_CONTESTED: "BUSY",
     EXIT_BORROWED: "BORROWED",
+    EXIT_REFUSED: "REFUSED",
+    EXIT_VALIDATING: "VALIDATING",
 }
 
 
-def _report(state: GatewayState) -> int:
-    """Print one verdict block and return its exit code."""
-    code, headline, guidance = verdict(state)
+def _report(state: GatewayState, found: tuple[int, str, str]) -> int:
+    """Print one verdict block — `found`, read from `state` — and return its exit code."""
+    code, headline, guidance = found
     print(f"[{_MARK[code]}] {headline}\n")
-    print(f"  {guidance}\n")
+    print("\n\n".join(f"  {paragraph}" for paragraph in guidance.split("\n\n")) + "\n")
     if state.reachable:
         print(
             f"  authenticated={state.authenticated}  connected={state.connected}  "
@@ -386,7 +595,8 @@ def _report(state: GatewayState) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Print the verdict; with `--release`, drop a held session first and re-check."""
+    """Print the verdict — after a FREE reading, refined by the gateway's own log (gap #93);
+    with `--release`, drop a held session first and re-check."""
     import sys as _sys
 
     args = _sys.argv[1:] if argv is None else argv
@@ -402,7 +612,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  released={released}  {detail}\n")
         print("Re-checking:\n")
 
-    return _report(read_state(url))
+    state = read_state(url)
+    found = verdict(state)
+    if found[0] == EXIT_FREE:
+        # Imported here for the same reason as `release_session` above: `gateway_launch`
+        # imports this module. The log read lives there because a process may be spawned
+        # only from `gateway_launch.py` and `tradingview.py` (CLA-SEC-010).
+        from claudia.gateway_launch import read_login_events
+
+        found = refine_with_log(found, *read_login_events())
+    return _report(state, found)
 
 
 if __name__ == "__main__":

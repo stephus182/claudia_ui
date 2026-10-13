@@ -336,7 +336,9 @@ No container restart. No login. Session uninterrupted.
 2. User clicks the **IBKR** button → `_build_action_bar()`'s reconnect hands a
    `GatewayManager` to `GatewaySession.establish()`, the one shared session owner: it
    **pre-flights first** (read-only), leaves a working session alone, starts the container
-   only if it is not running, and opens the login page only from `FREE`. Progress lines
+   only if it is not running, and opens the login page only from `FREE` — naming a login
+   IBKR refused before it does, and ending the wait at once if the new login is refused too
+   (gap #93, 2026-10-12; the launcher behaves the same). Progress lines
    stream into the System log. (Until 2026-08-06 this path called `GatewayManager.start()`
    unconditionally, recreating the container before any pre-flight — see
    `docs/ibkr-gateway.md`.)
@@ -345,5 +347,11 @@ No container restart. No login. Session uninterrupted.
 **Common issues:**
 - **Login prompt on every restart**: Check `docker ps` — if the container is not running between restarts, the session is being lost before ClaudIA starts. Likely cause: Mac sleep (caffeinate should prevent this) or Docker Desktop stopping.
 - **Competing session**: Another TWS/mobile session holds the token. Log out from all other IBKR sessions, then re-authenticate via the gateway URL.
+- **The page said "Client login succeeds" but there is no session**: IBKR refused the gateway's
+  validation of that login — the page writes its success before IBKR is asked. The preflight
+  reads `[REFUSED]`, and the launcher and the IBKR button say so before the next login page.
+  Logging in to the gateway again, or restarting it, did not clear it on 2026-10-07/08; what did
+  was one login on IBKR's website, then one to the gateway (`docs/ibkr-gateway.md` § Refused after "Client login
+  succeeds").
 - **Gateway starts but session drops immediately**: Competing session or IBKR 2FA timing issue. Click the IBKR button again — the pre-flight names a borrowed session rather than retrying it.
 - **Container present but not authenticated**: Session timed out. Full path runs — remove/recreate/login.

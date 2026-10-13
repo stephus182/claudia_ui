@@ -76,6 +76,7 @@ from claudia.flex_sync import (
     statement_through,
     validate_dataset,
 )
+from claudia.gateway_launch import read_login_events, warn_if_login_refused
 from claudia.gateway_preflight import warn_if_session_borrowed
 from claudia.gateway_session import SessionPhase, get_session
 from claudia.gdrive_sync import GDriveSync
@@ -769,6 +770,9 @@ def _build_action_bar(
             get_session().establish,
             GatewayManager(),
             emit=lambda line: loop.call_soon_threadsafe(syslog.say, line),
+            # The same log read the launcher hands over (gap #93): a refused last login is
+            # named before the page, and a newer refusal ends the wait, on both paths.
+            read_login=read_login_events,
         )
         if result.phase is SessionPhase.LIVE:
             if _connectivity_checker is not None:
@@ -1759,6 +1763,9 @@ def main() -> None:
     # Third of the same family: provable-only, and it names the app holding the
     # session so the fix is one action rather than a retry loop on the 2FA code.
     warn_if_session_borrowed()
+    # Fourth (gap #93): a login IBKR refused leaves the gateway reading FREE, so ClaudIA
+    # would start cleanly with every IBKR call failing for a reason nothing names.
+    warn_if_login_refused()
     # The port has to be checked BEFORE the banner. `pn.serve` blocks until shutdown, so
     # there is no "after" in which to announce success — and until 2026-08-05 the banner
     # was simply logged first, which meant a start that then died on EADDRINUSE printed

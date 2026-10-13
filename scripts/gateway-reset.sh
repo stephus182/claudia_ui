@@ -33,8 +33,6 @@ FORCE=false
 # The preflight module supplies every verdict; this script only orchestrates. Keeping the
 # session logic in one place means the two can never disagree about what "free" means.
 PREFLIGHT="python -m claudia.gateway_preflight"
-EXIT_READY=0
-EXIT_FREE=2
 
 if [[ -d .venv ]]; then
   # shellcheck disable=SC1091
@@ -53,6 +51,12 @@ CONTAINER=$(python -c \
 API_URL=$(python -c 'from claudia.gateway_preflight import gateway_url; print(gateway_url())')
 LOGIN_URL=${API_URL%/v1/api}
 
+# And the exit codes, for the same reason: the preflight owns them. Should they not be
+# readable, `read` gets nothing and `set -e` stops here — before anything is restarted.
+read -r EXIT_READY EXIT_FREE EXIT_REFUSED EXIT_VALIDATING < <(python -c \
+  'from claudia.gateway_preflight import EXIT_READY, EXIT_FREE, EXIT_REFUSED, EXIT_VALIDATING
+print(EXIT_READY, EXIT_FREE, EXIT_REFUSED, EXIT_VALIDATING)')
+
 echo "── Before ─────────────────────────────────────────────────────────"
 set +e
 $PREFLIGHT
@@ -66,6 +70,20 @@ echo
 if [[ $BEFORE -eq $EXIT_READY && $FORCE == false ]]; then
   echo "REFUSING: the session is LIVE and healthy. Nothing to reset."
   echo "Re-run with --force only if you genuinely intend to destroy it."
+  exit 1
+fi
+
+# Two more readings a restart cannot help (gap #93). A refusal is IBKR's and survives a
+# restart: 2026-10-08, the container was started again at 15:47:49 UTC and the next login was refused
+# at 15:49:37. And a login IBKR is still answering would be cut off by one.
+if [[ $BEFORE -eq $EXIT_REFUSED && $FORCE == false ]]; then
+  echo "REFUSING: IBKR refused the last login, and a restart did not clear one on 2026-10-08."
+  echo "Log in once on IBKR's website first, then once to the gateway — see above."
+  exit 1
+fi
+if [[ $BEFORE -eq $EXIT_VALIDATING && $FORCE == false ]]; then
+  echo "REFUSING: IBKR is still answering the last login, and a restart would cut it off."
+  echo "Re-run this in a few seconds."
   exit 1
 fi
 

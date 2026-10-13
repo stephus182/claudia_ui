@@ -121,7 +121,7 @@ import logging
 import os
 import time
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -131,7 +131,15 @@ from typing import Protocol
 import requests
 import urllib3
 
-from claudia.gateway_preflight import GatewayState, gateway_url, read_state
+from claudia.gateway_preflight import (
+    REFUSED_GUIDANCE,
+    GatewayState,
+    LastLogin,
+    LoginEvent,
+    gateway_url,
+    last_login,
+    read_state,
+)
 
 log = logging.getLogger(__name__)
 
@@ -782,8 +790,25 @@ _LOGIN_INCOMPLETE_GUIDANCE = (
     "held by TWS, IBKR Mobile or a Client Portal tab is NOT visible from here until the "
     "gateway holds one — so if the login was rejected rather than abandoned, that is the "
     "first thing to check. Nothing was retried and no second login page was opened. "
-    "`python -m claudia.gateway_launch --diagnose` prints the gateway's own log."
+    "`python -m claudia.gateway_launch --diagnose` prints the last login as the gateway's "
+    "own log records it."
 )
+
+
+LoginReader = Callable[[], tuple[Sequence[LoginEvent] | None, str]]
+"""How `_establish` reads the gateway's own log: `gateway_launch.read_login_events`, handed in
+by its two callers — the read is a process spawn, and those live in `gateway_launch` only
+(CLA-SEC-010; this module cannot import that one, which imports it)."""
+
+
+def _seen_login(read_login: LoginReader | None) -> tuple[bool, LastLogin | None]:
+    """Whether the gateway's log could be read, and its newest login (gap #93)."""
+    if read_login is None:
+        return False, None
+    events, _problem = read_login()
+    if events is None:
+        return False, None
+    return True, last_login(events)
 
 
 def _establish(
@@ -800,6 +825,7 @@ def _establish(
     lock: SuspendLock | None = None,
     sleep: Callable[[float], None] | None = None,
     monotonic: Callable[[], float] | None = None,
+    read_login: LoginReader | None = None,
 ) -> SessionState:
     """Take the gateway from wherever it is to `LIVE`, or explain why it cannot get there.
 
@@ -831,6 +857,20 @@ def _establish(
         13:12:26  GET /v1/api/portfolio/{accountId}/ledger,401
         13:12:30  GET /v1/api/portfolio/{accountId}/positions/0,401
 
+    ## The gateway's own log, around the login page (gap #93)
+
+    A login IBKR refused leaves the HTTP side exactly as no login does, so FREE alone would
+    open the page with no word. The record of 2026-10-07 fits that — a refused browser login,
+    then the launcher, then a second refused login at 17:55:30 UTC — though no launcher output
+    from that day was kept to prove it (the operator's recollection, checked against the
+    timestamps). With `read_login` given, the log
+    is read once before the page: a refused last login is named, with the remedy. The page
+    still opens — the remedy is a website login THEN one gateway login, and withholding the
+    page would deadlock it. During the wait, a login newer than the one seen before the page
+    (the log's own timestamps, never a clock) that IBKR refused too ends the wait at once.
+    No readable log before the page, no early stop: nothing would tell old from new. The read
+    runs inside the container and sends the gateway no request, so the suspension holds.
+
     Returns the final published `SessionState`. Never raises for an ordinary gateway
     problem: unreachable, contested, borrowed and "the user did not finish" are all
     normal answers that a caller mid-startup has to branch on rather than catch.
@@ -859,7 +899,7 @@ def _establish(
                 detail=(
                     f"The gateway did not answer within {reach_timeout}s. The login page "
                     "will not load either — run `python -m claudia.gateway_launch "
-                    "--diagnose` for the gateway's own log."
+                    "--diagnose` for the last login as the gateway's own log records it."
                 ),
             )
         )
@@ -898,6 +938,10 @@ def _establish(
         return state
 
     # ── FREE: the one phase that earns a login page ──────────────────────────
+    readable, seen = _seen_login(read_login)
+    if seen is not None and seen.outcome == "refused":
+        say(f"⚠ IBKR refused the last gateway login ({seen.at} UTC).")
+        say(f"  {REFUSED_GUIDANCE}")
     suspend.acquire("login in progress")
     try:
         session.publish(declare(SessionPhase.AUTHENTICATING))
@@ -922,6 +966,16 @@ def _establish(
                 say(f"✕ The gateway is now holding {reading.client_app}'s session.")
                 session.publish(observe(reading, False))
                 return session.state()
+            if readable:
+                _, newest = _seen_login(read_login)
+                if (
+                    newest is not None
+                    and newest.outcome == "refused"
+                    and (seen is None or newest.at > seen.at)
+                ):
+                    say(f"✕ IBKR refused this login too ({newest.at} UTC).")
+                    session.publish(session.read_now(api_url).stale_copy(REFUSED_GUIDANCE))
+                    return session.state()
             _sleep(poll_interval)
 
         # Timed out. Republished as a fresh reading rather than left in AUTHENTICATING:

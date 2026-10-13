@@ -1195,6 +1195,7 @@ def test_main_serves_with_locked_kwargs_and_uploads_on_exit(monkeypatch):
         # unpatched call left the suite touching a live session while staying green
         # (audit 2026-09-13, finding A-5).
         patch("claudia.panel_app.warn_if_session_borrowed"),
+        patch("claudia.panel_app.warn_if_login_refused"),
         patch("claudia.panel_app.signal.signal") as mock_signal,
         # main() now refuses to serve on a taken port; without this the suite would
         # depend on whether 8001 happens to be free on the machine running it.
@@ -2912,6 +2913,7 @@ def test_main_logs_a_startup_banner(_restore_root_logging, caplog):
         # unpatched call left the suite touching a live session while staying green
         # (audit 2026-09-13, finding A-5).
         patch("claudia.panel_app.warn_if_session_borrowed"),
+        patch("claudia.panel_app.warn_if_login_refused"),
     ):
         panel_app.main()
 
@@ -2938,6 +2940,7 @@ def test_main_runs_both_startup_checks_before_serving(_restore_root_logging):
         # real GET /tickle, which is the IBKR session keepalive, and `read_state`
         # swallows the failure so the test passed either way (audit 2026-09-13, A-5).
         patch("claudia.panel_app.warn_if_session_borrowed"),
+        patch("claudia.panel_app.warn_if_login_refused"),
         patch("claudia.panel_app.warn_if_model_lacks_operator_channel") as mock_model,
         patch("claudia.panel_app.pn.serve") as mock_serve,
         # main() now refuses to serve on a taken port; without this the suite would
@@ -2964,6 +2967,7 @@ def test_main_warns_when_another_ibkr_app_holds_the_session(_restore_root_loggin
 
     with (
         patch("claudia.panel_app.warn_if_session_borrowed") as mock_borrowed,
+        patch("claudia.panel_app.warn_if_login_refused"),
         patch("claudia.panel_app.warn_if_stale"),
         patch("claudia.panel_app.warn_if_model_lacks_operator_channel"),
         patch("claudia.panel_app.pn.serve"),
@@ -2976,6 +2980,27 @@ def test_main_warns_when_another_ibkr_app_holds_the_session(_restore_root_loggin
         panel_app.main()
 
     mock_borrowed.assert_called_once_with()
+
+
+def test_main_warns_when_the_last_login_was_refused(_restore_root_logging):
+    """`main()` reaches the refused-login check before serving (gap #93), beside the
+    borrowed-session check and for the same reason: ClaudIA starting cleanly against a gateway
+    IBKR has refused, with nothing on screen saying why every IBKR call fails."""
+    from claudia import panel_app
+
+    with (
+        patch("claudia.panel_app.warn_if_session_borrowed"),
+        patch("claudia.panel_app.warn_if_login_refused") as mock_refused,
+        patch("claudia.panel_app.warn_if_stale"),
+        patch("claudia.panel_app.warn_if_model_lacks_operator_channel"),
+        patch("claudia.panel_app.pn.serve"),
+        patch("claudia.panel_app._port_is_free", return_value=True),
+        patch("claudia.panel_app.signal.signal"),
+        patch("claudia.panel_app._gdrive_sync", None),
+    ):
+        panel_app.main()
+
+    mock_refused.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -3062,6 +3087,7 @@ def test_main_refuses_to_announce_a_server_it_cannot_start(_restore_root_logging
         patch("claudia.panel_app.warn_if_stale"),
         patch("claudia.panel_app.warn_if_model_lacks_operator_channel"),
         patch("claudia.panel_app.warn_if_session_borrowed"),
+        patch("claudia.panel_app.warn_if_login_refused"),
         patch("claudia.panel_app._gdrive_sync", None),
         caplog.at_level(logging.INFO, logger="claudia.panel_app"),
     ):
@@ -3310,7 +3336,7 @@ async def test_gateway_progress_lines_emitted_from_the_worker_thread_reach_the_l
     owner = MagicMock()
     seen_thread: dict[str, str] = {}
 
-    def establish(manager, emit):
+    def establish(manager, emit, **_):
         """Emit one progress line from this (worker) thread, then report DOWN."""
         seen_thread["name"] = threading.current_thread().name
         emit("▶ progress from the worker")
@@ -3328,6 +3354,36 @@ async def test_gateway_progress_lines_emitted_from_the_worker_thread_reach_the_l
     texts = list(syslog.entries)
     assert "▶ progress from the worker" in texts
     assert any("Gateway is not answering" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_the_ibkr_button_hands_the_owner_the_log_read():
+    """Gap #93: the chat button's reconnect and the launcher hand the session owner the same
+    log read, so a refused last login is named before the page on both paths — the drift
+    `test_the_cli_delegates_rather_than_deciding` exists to prevent."""
+    from claudia import panel_app
+    from claudia.gateway_launch import read_login_events
+    from claudia.panel_system_log import SystemLog
+
+    session_state = {
+        "closed": False,
+        "unsubscribe": None,
+        "store": None,
+        "loader": None,
+        "agent": None,
+    }
+    owner = MagicMock()
+    owner.establish.return_value = SessionState(
+        phase=SessionPhase.DOWN, as_of=datetime.now(UTC), detail="no answer"
+    )
+    with (
+        patch("claudia.panel_app.GatewayManager"),
+        patch("claudia.panel_app.get_session", return_value=owner),
+    ):
+        bar = panel_app._build_action_bar(SystemLog(), session_state, "s1")
+        await _get_click_callback(bar.buttons["ibkr"])(None)
+
+    assert owner.establish.call_args.kwargs["read_login"] is read_login_events
 
 
 @pytest.mark.asyncio

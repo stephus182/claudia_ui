@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from claudia.gateway_preflight import GatewayState
+from claudia.gateway_preflight import GatewayState, LoginEvent
 from claudia.gateway_session import (
     GatewaySession,
     SessionPhase,
@@ -385,7 +385,7 @@ def _establish(session, gm, lock, **kw):
     return session.establish(
         gm,
         url="https://x/v1/api",
-        emit=lambda _: None,
+        emit=kw.pop("emit", lambda _: None),
         lock=lock,
         sleep=lambda _: None,
         monotonic=_clock(),
@@ -663,6 +663,110 @@ def test_a_timed_out_login_does_not_leave_the_session_suspended(wire):
     assert result.phase is not SessionPhase.AUTHENTICATING
     assert result.is_suspended is False
     assert "IBKR Mobile" in result.detail or "Mobile" in result.detail
+
+
+# ── Gap #93: the owner reads the gateway's log around the login page ─────────────
+#
+# A login IBKR refused leaves the HTTP side exactly as no login does, so the owner — the one
+# place both the launcher and the chat button pass through — reads the gateway's own log
+# through `read_login` (the callers pass `gateway_launch.read_login_events`; a spawn lives
+# there only, CLA-SEC-010). Operator, 2026-10-12: a note before the page, and the wait ended
+# at once when the new login is refused too ("B plus the early stop").
+
+_VALIDATED_AT_10 = [
+    LoginEvent("2026-10-07 10:00:00", "login", ""),
+    LoginEvent("2026-10-07 10:00:00", "authenticated", ""),
+]
+_REFUSED_AT_11 = [
+    LoginEvent("2026-10-07 11:00:00", "login", ""),
+    LoginEvent("2026-10-07 11:00:00", "validate", "401"),
+    LoginEvent("2026-10-07 11:00:13", "giving up", ""),
+]
+
+
+def _log_reads(*readings: tuple[list[LoginEvent] | None, str]) -> Any:
+    """A `read_login` returning each reading in turn, the last repeating."""
+    queue = list(readings)
+
+    def read() -> tuple[list[LoginEvent] | None, str]:
+        """Stand-in for `gateway_launch.read_login_events`."""
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    return read
+
+
+@pytest.mark.parametrize(
+    ("before", "noted"),
+    [(_VALIDATED_AT_10 + _REFUSED_AT_11, True), (_REFUSED_AT_11 + _VALIDATED_AT_10, False)],
+    ids=["last-login-refused", "last-login-validated"],
+)
+def test_a_refused_last_login_is_named_before_the_login_page_opens(wire, before, noted):
+    """From FREE the owner opened the page with no word, whatever the log held — the 10-07
+    record (a browser login IBKR refused, then the launcher, then a second refused login at
+    17:55:30 UTC) fits that, though no launcher output was kept to prove it. The note comes
+    first, and only when the last login was refused: a warning on every login would be one
+    nobody reads."""
+    gm = FakeManager(running=True)
+    lock = wire(gm, [_free(), _authenticated()], confirmations=[True])
+    session = GatewaySession()
+
+    _establish(
+        session,
+        gm,
+        lock,
+        read_login=_log_reads((before, "")),
+        emit=lambda line: gm.calls.append(line),
+    )
+
+    notes = [i for i, c in enumerate(gm.calls) if "IBKR refused the last gateway login" in c]
+    assert bool(notes) is noted
+    assert all(i < gm.calls.index("open_login_page") for i in notes)
+
+
+def test_a_newer_refused_login_ends_the_wait_at_once(wire):
+    """The early stop: a login refused after the page opened ends the wait with the guidance,
+    instead of sitting out the 300 s. "Newer" is the log's own timestamps — a login line later
+    than the last one seen before the page — never a clock."""
+    gm = FakeManager(running=True)
+    lock = wire(gm, [_free()])
+    session = GatewaySession()
+
+    result = _establish(
+        session,
+        gm,
+        lock,
+        login_timeout=300,
+        read_login=_log_reads((_VALIDATED_AT_10, ""), (_VALIDATED_AT_10 + _REFUSED_AT_11, "")),
+    )
+
+    assert "IBKR's website" in result.detail
+    assert gm.calls.count("read_state") <= 3  # stopped on the first poll, not after 60
+    assert result.is_suspended is False
+
+
+@pytest.mark.parametrize(
+    "before",
+    [(_REFUSED_AT_11, ""), (None, "no such container")],
+    ids=["the-refusal-already-seen", "log-unreadable-before-the-page"],
+)
+def test_only_a_login_made_after_the_page_opened_can_end_the_wait(wire, before):
+    """The operator's one gateway login after the website login must get its full wait: the
+    refusal the note already named is not news. And with no readable log before the page,
+    nothing tells an old refusal from a new one — so the wait runs as it always did."""
+    gm = FakeManager(running=True)
+    lock = wire(gm, [_free()])
+    session = GatewaySession()
+
+    result = _establish(
+        session,
+        gm,
+        lock,
+        login_timeout=20,
+        read_login=_log_reads(before, (_REFUSED_AT_11, "")),
+    )
+
+    assert "IBKR's website" not in result.detail
+    assert gm.calls.count("read_state") > 3
 
 
 # ═══════════════════════════════════════════════════════════════════════════
