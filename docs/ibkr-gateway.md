@@ -303,6 +303,15 @@ and `python -m claudia.gateway_launch --diagnose` is the next step.
   From `FREE`, before the page opens, a refused last login is named with the remedy; during
   the wait, a login newer than that one which IBKR refuses too ends the wait at once. The page
   still opens: the remedy needs one gateway login after the website login.
+- **The login window (gap #102, core register F44 — from core 2.2.0)** — `open_login_page()`
+  opens a small Chrome window of its own (profile `~/.ibkr_core/login-chrome`, app mode, 540×680,
+  not on top — nothing in a browser can pin one) and returns its handle. The owner closes it at
+  the first authenticated-and-connected reading; on every other end — refused, timed out, a
+  borrowed session — it stays open and the owner says "Close the login window (⌘Q on macOS)".
+  ⌘Q because, measured 2026-10-13, a closed window leaves its Chrome running on macOS and the next
+  login would open in that leftover, out of the owner's reach (it then says so). The gateway's
+  certificate warning is accepted once in that profile. With core 2.1.0, or no Chrome, a browser
+  tab as before, and today's lines.
 - **The IBKR button** (in the action bar under the chat since 2026-09-03; "Start IBKR Gateway" in the welcome message before) — hands a `GatewayManager` to
   `GatewaySession.establish()`, which reads the session *before* anything touches the
   container and opens a login page only from `FREE`. It used to inline its own sequence and
@@ -418,7 +427,8 @@ exposed by any endpoint. Work the list in order.
    **Check once, not in a loop.** The read's `/tickle` resets the keepalive, so polling a borrowed session is what keeps it alive: measured 2026-09-10, a session with `~0.2 min` left — about to lapse on its own — was back to `~9.8 min` after a single check.
 2. **Log out of IBKR Mobile from its Log Out menu item.** Closing or swiping leaves the
    server-side session alive.
-3. **Close every `localhost:5055` tab.** A reloaded login page issues a **new** challenge; a
+3. **Close every `localhost:5055` tab** — and the login window, with ⌘Q (core 2.2.0, gap #102). A
+   reloaded login page issues a **new** challenge; a
    response computed from an older one is permanently invalid. **Log in from a real browser** (Safari or Chrome), never an editor's embedded one: on 2026-09-10 every attempt hung with five connections to `:5055` coming from VS Code's webview, and the same credentials succeeded first try in Chrome minutes later.
 4. **Stop ClaudIA** if you are logging in from the CLI — its poller is a separate process and
    does not read the suspend lock (§Actors).

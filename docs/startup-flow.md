@@ -323,7 +323,8 @@ No container restart. No login. Session uninterrupted.
 ./start-claudia.sh
   → Phase -1: container missing or not authenticated → full path
   → Docker launched, fresh container started
-  → Login page opened
+  → Login page opened (from core 2.2.0: a small window of its own, closed at the first
+    authenticated-and-connected reading — gap #102)
   → User completes IBKR login + mobile 2FA
   → Phase 5 in the Panel app: ping() returns True
   → ConnectivityChecker: "IBKR Gateway reconnected" alert
@@ -338,7 +339,9 @@ No container restart. No login. Session uninterrupted.
    **pre-flights first** (read-only), leaves a working session alone, starts the container
    only if it is not running, and opens the login page only from `FREE` — naming a login
    IBKR refused before it does, and ending the wait at once if the new login is refused too
-   (gap #93, 2026-10-12; the launcher behaves the same). Progress lines
+   (gap #93, 2026-10-12; the launcher behaves the same). From core 2.2.0 the page is a small
+   window of its own (540×680), closed at the first authenticated-and-connected reading and
+   left open — with a line saying to close it — on any other end (gap #102). Progress lines
    stream into the System log. (Until 2026-08-06 this path called `GatewayManager.start()`
    unconditionally, recreating the container before any pre-flight — see
    `docs/ibkr-gateway.md`.)

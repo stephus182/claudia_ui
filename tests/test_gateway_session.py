@@ -342,6 +342,34 @@ class FakeManager:
         self.calls.append("open_login_page")
 
 
+class FakeWindow:
+    """A stand-in for the core's `LoginWindow`: records its close in the manager's call log."""
+
+    def __init__(self, manager: FakeManager, ours: bool = True) -> None:
+        """`ours=False` is the leftover case: the launch went to a Chrome already running."""
+        self._manager = manager
+        self._ours = ours
+
+    def close(self) -> bool:
+        """Record the call and report whether the window was ours to close."""
+        self._manager.calls.append("close_login_window")
+        return self._ours
+
+
+class WindowManager(FakeManager):
+    """A manager whose `open_login_page()` returns a window handle, as the core's does from 2.2.0."""
+
+    def __init__(self, ours: bool = True, **kwargs: bool) -> None:
+        """Configure the container as `FakeManager` does, and whether the window will be ours."""
+        super().__init__(**kwargs)
+        self.window = FakeWindow(self, ours=ours)
+
+    def open_login_page(self) -> FakeWindow:  # type: ignore[override]
+        """Record the call and hand back the window."""
+        self.calls.append("open_login_page")
+        return self.window
+
+
 @pytest.fixture
 def wire(monkeypatch, tmp_path):
     """Patch read_state/confirm_session, recording reads in the manager's call log."""
@@ -767,6 +795,72 @@ def test_only_a_login_made_after_the_page_opened_can_end_the_wait(wire, before):
 
     assert "IBKR's website" not in result.detail
     assert gm.calls.count("read_state") > 3
+
+
+# ── The login window (gap #102, core F44) ────────────────────────────────────
+
+
+def test_the_login_window_closes_at_the_first_authenticated_and_connected_reading(wire):
+    """Operator 2026-10-13: "when connected and authenificated, the window closes itself" — at the
+    first such reading, before the data half is confirmed: the login's job is done there."""
+    gm = WindowManager(running=True)
+    lock = wire(gm, [_free(), _authenticated(), _authenticated()], confirmations=[False, True])
+    session = GatewaySession()
+
+    _establish(session, gm, lock)
+
+    assert gm.calls.count("close_login_window") == 1
+    third_read = [i for i, c in enumerate(gm.calls) if c == "read_state"][2]
+    assert gm.calls.index("close_login_window") < third_read
+
+
+@pytest.mark.parametrize("ending", ["timed-out", "borrowed", "refused"])
+def test_a_login_that_did_not_validate_leaves_the_window_open_and_says_so(wire, ending):
+    """Operator 2026-10-13: "Do not auto-close if it fails! … user can acknoledge the failure and
+    manually clsoe the window" — and the message says to."""
+    gm = WindowManager(running=True)
+    lock = wire(gm, [_free(), _borrowed()] if ending == "borrowed" else [_free()])
+    session = GatewaySession()
+    kw: dict[str, Any] = {"login_timeout": 20}
+    if ending == "refused":
+        kw = {
+            "login_timeout": 300,
+            "read_login": _log_reads(
+                (_VALIDATED_AT_10, ""), (_VALIDATED_AT_10 + _REFUSED_AT_11, "")
+            ),
+        }
+    lines: list[str] = []
+
+    _establish(session, gm, lock, emit=lines.append, **kw)
+
+    assert "close_login_window" not in gm.calls
+    assert any("Close the login window" in line for line in lines), lines
+
+
+def test_a_window_that_was_not_ours_to_close_is_named(wire):
+    """Measured 2026-10-13: a launch on a profile already running is handed to it, and the handle
+    cannot reach that window. Said, not hidden."""
+    gm = WindowManager(running=True, ours=False)
+    lock = wire(gm, [_free(), _authenticated()])
+    session = GatewaySession()
+    lines: list[str] = []
+
+    _establish(session, gm, lock, emit=lines.append)
+
+    assert any("close it yourself" in line.lower() for line in lines), lines
+
+
+def test_a_browser_tab_gets_no_window_line(wire):
+    """No handle (the core fell back to a tab, or the pinned 2.1.0): nothing to close, nothing said
+    about a window — today's lines, unchanged."""
+    gm = FakeManager(running=True)
+    lock = wire(gm, [_free()])
+    session = GatewaySession()
+    lines: list[str] = []
+
+    _establish(session, gm, lock, emit=lines.append, login_timeout=20)
+
+    assert not any("login window" in line.lower() for line in lines), lines
 
 
 # ═══════════════════════════════════════════════════════════════════════════

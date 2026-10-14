@@ -576,6 +576,18 @@ class GatewaySession:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+class LoginWindowLike(Protocol):
+    """The handle the core's `open_login_page()` returns from 2.2.0 (register F44).
+
+    The pinned 2.1.0 returns `None`, and so does any version that fell back to a browser tab, so
+    nothing here needs a name only the 2.2.0 branch has.
+    """
+
+    def close(self) -> bool:
+        """End the window; `False` when it was not ours to close."""
+        ...
+
+
 class GatewayManagerLike(Protocol):
     """The slice of `ibkr_core_mcp.gateway.GatewayManager` the owner uses.
 
@@ -605,8 +617,9 @@ class GatewayManagerLike(Protocol):
         """Block until the Java process answers HTTP. False on timeout."""
         ...
 
-    def open_login_page(self) -> None:
-        """Open the Client Portal login page in the system browser."""
+    def open_login_page(self) -> LoginWindowLike | None:
+        """Open the login — a small window of its own when the core can (2.2.0), else a browser
+        tab, for which there is no handle (`None`)."""
         ...
 
 
@@ -794,6 +807,17 @@ _LOGIN_INCOMPLETE_GUIDANCE = (
     "own log records it."
 )
 
+_CLOSE_THE_WINDOW = "  Close the login window (⌘Q on macOS)."
+"""Said at every end of the wait but a validated one, when the core opened a window (gap #102).
+Operator 2026-10-13: "Do not auto-close if it fails! … user can acknoledge the failure and
+manually clsoe the window". ⌘Q, not the red button: on macOS a closed window leaves its Chrome
+running (measured), and the next login would open in that leftover, out of reach."""
+
+_NOT_OURS_TO_CLOSE = (
+    "  The login window was not ClaudIA's to close — it had already closed, or it opened in a "
+    "Chrome left from an earlier login. Close it yourself if it is still open (⌘Q on macOS)."
+)
+
 
 LoginReader = Callable[[], tuple[Sequence[LoginEvent] | None, str]]
 """How `_establish` reads the gateway's own log: `gateway_launch.read_login_events`, handed in
@@ -845,7 +869,10 @@ def _establish(
     3. Wait for the Java process to answer.
     4. Read and classify. A stopped or absent container cannot hold a session, so steps 2
        and 3 cannot have destroyed evidence.
-    5. Open the login page **only** from `FREE`, and only with the suspend lock held.
+    5. Open the login page **only** from `FREE`, and only with the suspend lock held. From
+       core 2.2.0 it is a window of its own whose handle comes back (gap #102, core F44):
+       closed at the first authenticated-and-connected reading, left open — with a line
+       saying to close it — on every other end. No handle (a tab, or 2.1.0): today's lines.
 
     ## Why the lock wraps the login and not just the recovery
 
@@ -945,8 +972,9 @@ def _establish(
     suspend.acquire("login in progress")
     try:
         session.publish(declare(SessionPhase.AUTHENTICATING))
-        manager.open_login_page()
-        say("▶ Login page opened. Complete it through to 'Client login succeeds'.")
+        window = manager.open_login_page()
+        opened = "window" if window is not None else "page"  # "page": today's line, unchanged
+        say(f"▶ Login {opened} opened. Complete it through to 'Client login succeeds'.")
         say(f"  Nothing else will touch the gateway for up to {int(login_timeout)}s.")
 
         deadline = _now() + login_timeout
@@ -954,6 +982,10 @@ def _establish(
         while _now() < deadline:
             reading = read_state(api_url)
             if reading.authenticated and reading.connected:
+                if window is not None:  # the login's job is done; the data half is checked next
+                    if not window.close():
+                        say(_NOT_OURS_TO_CLOSE)
+                    window = None
                 ok, detail = confirm_session(api_url)
                 if ok:
                     say(f"✔ Session established and serving data — {detail}")
@@ -964,6 +996,8 @@ def _establish(
                     announced = True
             elif reading.sso_valid and reading.client_app and not reading.authenticated:
                 say(f"✕ The gateway is now holding {reading.client_app}'s session.")
+                if window is not None:
+                    say(_CLOSE_THE_WINDOW)
                 session.publish(observe(reading, False))
                 return session.state()
             if readable:
@@ -974,12 +1008,16 @@ def _establish(
                     and (seen is None or newest.at > seen.at)
                 ):
                     say(f"✕ IBKR refused this login too ({newest.at} UTC).")
+                    if window is not None:
+                        say(_CLOSE_THE_WINDOW)
                     session.publish(session.read_now(api_url).stale_copy(REFUSED_GUIDANCE))
                     return session.state()
             _sleep(poll_interval)
 
         # Timed out. Republished as a fresh reading rather than left in AUTHENTICATING:
         # leaving the declared phase in place would suspend every tickler indefinitely.
+        if window is not None:
+            say(_CLOSE_THE_WINDOW)
         final = session.read_now(api_url)
         session.publish(final.stale_copy(_LOGIN_INCOMPLETE_GUIDANCE))
         return session.state()
