@@ -50,7 +50,7 @@ remote author of the system prompt.
 | History replays at the role it was stored with; withdrawn rows never return; the one `role: system` channel carries sanitised identity only | `_history_to_messages`, `search_messages`, `_operator_identity` / `_operator_line` | `tests/security/test_stored_content_authority.py` |
 | Claims about actions are ruled on by evidence, not by the model | four detectors, `called_tools` / `_pending_proposal` | `tests/test_agent.py`, `tests/test_corpus_precision.py` |
 | Unit tests reach no live system, see no real secret, write nothing into the operator's data, and reach nothing under `~/.ibkr_core` — the trade store, the Drive token (probe DB paths, redirected reporter, session-end check, an audit hook on SQLite and file events) | `tests/conftest.py`, pytest-socket | `tests/security/test_no_live_io.py`, `tests/security/test_no_real_data_io.py` |
-| Subprocesses are list-form, never a shell; the sidecar's **child process**, and the docker CLI that reads the gateway's log, receive only a declared environment. **Partial:** where processes are spawned is not guarded yet (gap #100) | `tradingview._sidecar_env`, `gateway_launch._docker_env` | `tests/security/test_sidecar_child_environment.py` (a real child reports its own environment), `tests/test_tradingview.py`, `tests/test_gateway_launch.py` |
+| Subprocesses start in two modules, list-form, never a shell; no unit test can start one that reaches the desktop; the sidecar's **child process**, and the docker CLI that reads the gateway's log, receive only a declared environment | `tradingview._sidecar_env`, `gateway_launch._docker_env`, the conftest desktop hook | `tests/security/test_process_spawn_sites.py` (every way to start a process, by AST), `tests/security/test_no_desktop_reached.py` (refused by name), `tests/security/test_sidecar_child_environment.py` (a real child reports its own environment), `tests/test_tradingview.py`, `tests/test_gateway_launch.py` |
 | The gateway's internal log reaches no output but the time, event and code of six login phrases; a line without a leading time is refused, never guessed | `gateway_launch.read_login_events` (one in-container `grep -F`), `gateway_preflight.login_events` | `tests/test_gateway_preflight.py` (account-, token- and MAC-shaped strings in every line, exact output), `tests/test_gateway_launch.py` (no user id or username in `--diagnose`) |
 | The server binds loopback with an exact origin allowlist that no environment variable can replace | `panel_app._WEBSOCKET_ORIGINS`, pinned as a bokeh user-set value | `tests/test_security_regressions.py::test_pn_serve_binds_loopback_only` and `::test_bokeh_env_var_cannot_widen_the_websocket_origin_allowlist` |
 | The cross-repo API contract is pinned in both directions, at a named release | `IMPORTED_API` (held equal to every core import statement), `TOOLKIT_REACH_INS`, `GATED_ENTRY_POINTS`, `core-ref.txt` (the supported PyPI version) | `tests/security/test_cross_repo_contract.py` |
@@ -115,9 +115,10 @@ grep -rcE 'sk-ant-|\?t=|Bearer |ya29\.' claudia-session.log data/test-sessions/ 
 
 **Two limits, stated rather than implied.** `redact_error` exists in the core and has **no
 call site in this package**: the guarantee that no secret reaches a log rests on the *type* of
-exception each site can see, not on a redaction function. And the keepalive shell agent
-sources the whole `.env` to read one URL, so it holds every secret for as long as it runs.
-Both are open items in `docs/security-architecture.md` § 9.
+exception each site can see, not on a redaction function. The keepalive shell agent reads
+its one URL line from `.env` with grep and sed and never sources the file (gap #103,
+2026-10-16; `tests/test_gateway_ownership.py` holds it), so it holds no secret. The first is
+an open item in `docs/security-architecture.md` § 9.
 
 ---
 
@@ -182,7 +183,7 @@ Before any significant change:
 - [ ] Any new client-side JS receives untrusted values as named arguments, never interpolated into the code string
 - [ ] Any new `Tabulator` is `disabled=True` with no click or edit handler
 - [ ] Any new file holding private-document or account content is chmod 0600 immediately after the write, **unconditionally**
-- [ ] Any new subprocess uses an explicit env allowlist and list-form arguments, asserted at the **child**, not at the dictionary handed to a library
+- [ ] Any new subprocess uses an explicit env allowlist and list-form arguments, asserted at the **child**, not at the dictionary handed to a library — and the test that drives it patches the call: a real `osascript`, `pkill`, `open` or `docker` is refused by the suite
 - [ ] Any new outbound HTTP path validates the URL and **every redirect hop** — and read the account-data residual in `docs/security-architecture.md` § 9 before adding a *second* model-directed outbound tool, or any tool that carries a request body
 - [ ] Any new value interpolated into the `role: system` operator channel goes through `_operator_identity` (identity) or `_operator_line` (prose)
 - [ ] Any new import from `ibkr_core_mcp` is added to the cross-repo contract test in the same commit — and if a ClaudIA invariant rests on how it *behaves*, that is pinned too

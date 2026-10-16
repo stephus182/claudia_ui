@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -384,3 +385,78 @@ def test_the_reset_script_restarts_only_where_a_restart_can_help(tmp_path, befor
     )
 
     assert docker_calls.exists() == restarts
+
+
+# ── The keepalive reads one line of .env and never sources it (gap #103, 2026-10-16) ─────
+
+_KEEPALIVE = _SCRIPTS / "ibkr-keepalive.sh"
+
+
+def test_the_keepalive_script_never_sources_the_env_file():
+    """Design test 11. `set -a; source .env` exported every secret into a permanent bash
+    process and its `curl`/`caffeinate` children, and ran the file as shell code. The script
+    may name one variable from the file. Break: a `source "$ENV_FILE"` line — red."""
+    code = [line for _, line in _shell_code_lines(_KEEPALIVE)]
+    assert not [ln for ln in code if re.search(r"(^|\s)(source|\.)\s+\"?\$ENV_FILE", ln)], code
+    assert not [ln for ln in code if re.search(r"\bset\s+-a\b", ln)], code
+    named = {
+        m
+        for ln in code
+        for m in re.findall(r"\b([A-Z][A-Z0-9_]+)\b", ln)
+        if "ENV_FILE" in ln or "grep" in ln
+    }
+    assert named <= {"ENV_FILE", "IBKR_GATEWAY_URL"}, named
+
+
+def _print_url(tmp_path: Path, env_text: str | None) -> subprocess.CompletedProcess[str]:
+    """Run a copy of the script with `--print-url` beside a `.env` of our own (the script
+    reads `$(dirname "$0")/../.env`). `bash` is a real child; it tickles nothing. The timeout
+    is what fails this before the flag exists — the script would otherwise loop forever."""
+    import shutil
+
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy(_KEEPALIVE, scripts / "ibkr-keepalive.sh")
+    if env_text is not None:
+        (tmp_path / ".env").write_text(env_text, encoding="utf-8")
+    return subprocess.run(
+        ["bash", str(scripts / "ibkr-keepalive.sh"), "--print-url"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+
+
+@pytest.mark.parametrize(
+    ("env_text", "expected"),
+    [
+        (
+            "# a comment\nIBKR_FLEX_TOKEN=secret-token-value\n"
+            "IBKR_GATEWAY_URL='https://h:1/v1/api'\n"
+            'export IBKR_GATEWAY_URL = "https://h:2/v1/api/"  # last wins\n',
+            "https://h:2/v1/api/tickle",
+        ),
+        ("IBKR_FLEX_TOKEN=secret-token-value\n", "https://localhost:5055/v1/api/tickle"),
+        (None, "https://localhost:5055/v1/api/tickle"),
+        ("IBKR_GATEWAY_URL=\n", "https://localhost:5055/v1/api/tickle"),
+    ],
+    ids=["quoted-export-last-wins", "no-url-line", "no-file", "empty-value"],
+)
+def test_the_keepalive_derives_its_url_from_the_one_line(tmp_path, env_text, expected):
+    """python-dotenv's grammar for the one line: `export` prefix, spaces around `=`, single
+    or double quotes, an inline comment on an unquoted value; the last line wins; empty or
+    absent means the default. Break: the quote stripping removed — the first case red."""
+    done = _print_url(tmp_path, env_text)
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == expected
+    assert "secret-token-value" not in done.stdout + done.stderr
+
+
+def test_the_keepalive_refuses_an_unusable_url(tmp_path):
+    """The 2026-08-06 refusal survives the rewrite: a URL that is not http(s) stops the script
+    before its first tick, loudly, instead of a WARN loop that releases `caffeinate`."""
+    done = _print_url(tmp_path, "IBKR_GATEWAY_URL=ftp://nope\n")
+
+    assert done.returncode == 1 and "FATAL" in done.stderr

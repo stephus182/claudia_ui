@@ -44,36 +44,64 @@
 #
 # Usage:
 #   ./scripts/ibkr-keepalive.sh   # foreground; Ctrl-C to stop
+#   ./scripts/ibkr-keepalive.sh --print-url   # the URL it would tickle; nothing contacted
 
 set -euo pipefail
 
 INTERVAL=55  # slightly under IBKR's recommended ~1 tickle/min
 SUSPEND_LOCK="${HOME}/.ibkr_core/session.suspend"
 
-# THE URL IS DERIVED ONCE, AFTER .env, AND VALIDATED. Both halves matter — measured
-# 2026-08-06, this block previously had two ways to silently stop renewing anything:
+# THE URL IS READ FROM ONE LINE OF .env, NEVER BY SOURCING THE FILE. Until 2026-10-16 this
+# block did `set -a; source "$ENV_FILE"; set +a`: every line of the file — the Anthropic key,
+# the Flex token, the Firecrawl key — became an exported variable of this permanent launchd
+# process and of every `curl` and `caffeinate` it starts, and the file was executed as shell
+# (gap #103, CWE-526). The script needs one value. It is read with grep and sed, by
+# python-dotenv's grammar for a line (`export` prefix, spaces around `=`, single or double
+# quotes, an inline comment on an unquoted value; the last line wins), and nothing else in
+# the file is read.
+#
+# Both halves below matter — measured 2026-08-06, the earlier block had two ways to silently
+# stop renewing anything:
 #
 #   1. The default was `https://localhost:5055` with NO `/v1/api`, so with no .env this
 #      tickled `https://localhost:5055/tickle` — probed live, that returns **HTTP 302**,
 #      not 200. The loop below would then log WARN forever AND release `caffeinate`,
 #      letting the Mac sleep the session away. A keepalive that reports a problem it is
 #      itself causing is worse than no keepalive.
-#   2. The URL was computed BEFORE .env was sourced and then recomputed inside the
-#      `if`, from `${IBKR_GATEWAY_URL%/}` — unset if .env exists but omits the var.
-#      Executed: that yields the bare string `/tickle`, and `set -u` does NOT catch it
-#      because `${var%pattern}` is not a plain expansion.
+#   2. The URL was computed BEFORE .env was read and then recomputed inside the `if`,
+#      from `${IBKR_GATEWAY_URL%/}` — unset if .env exists but omits the var. Executed:
+#      that yields the bare string `/tickle`, and `set -u` does NOT catch it because
+#      `${var%pattern}` is not a plain expansion.
 #
-# Both failures are silent and look identical to "the gateway is down". Hence: load .env
-# first, default once with the suffix, then refuse to start on anything unusable.
+# Both failures are silent and look identical to "the gateway is down". Hence: read the one
+# line first, default once with the suffix, then refuse to start on anything unusable.
 ENV_FILE="$(dirname "$0")/../.env"
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-    set +a
-fi
 
-GATEWAY_URL="${IBKR_GATEWAY_URL:-https://localhost:5055/v1/api}"
+# Prints the value of the LAST `IBKR_GATEWAY_URL` line of "$1", unquoted; returns 1 when
+# there is none. Nothing else in the file is read, and nothing is executed.
+gateway_url_from_env_file() {
+    local line value
+    line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?IBKR_GATEWAY_URL[[:space:]]*=' "$1" 2>/dev/null | tail -n 1)" || true
+    [ -n "$line" ] || return 1
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"   # leading blanks
+    value="${value%"${value##*[![:space:]]}"}"   # trailing blanks
+    # Quoted: the text up to the closing quote (a comment may follow it). Unquoted: up to
+    # an inline ` #`. python-dotenv's rule in both cases.
+    case "$value" in
+        \"*) value="${value#\"}"; value="${value%%\"*}" ;;
+        \'*) value="${value#\'}"; value="${value%%\'*}" ;;
+        *)   value="${value%%[[:space:]]#*}"; value="${value%"${value##*[![:space:]]}"}" ;;
+    esac
+    printf '%s' "$value"
+}
+
+GATEWAY_URL="https://localhost:5055/v1/api"
+if [ -f "$ENV_FILE" ]; then
+    if url="$(gateway_url_from_env_file "$ENV_FILE")" && [ -n "$url" ]; then
+        GATEWAY_URL="$url"
+    fi
+fi
 TICKLE_URL="${GATEWAY_URL%/}/tickle"
 
 case "$TICKLE_URL" in
@@ -86,6 +114,13 @@ case "$TICKLE_URL" in
         exit 1
         ;;
 esac
+
+# `--print-url`: what the daemon would tickle, then exit — the test seam, and a one-line
+# diagnostic for the operator. Nothing is contacted.
+if [ "${1:-}" = "--print-url" ]; then
+    echo "$TICKLE_URL"
+    exit 0
+fi
 
 # 0 (true) only when a LIVE process is holding the lock.
 is_suspended() {
