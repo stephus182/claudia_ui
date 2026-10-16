@@ -135,11 +135,13 @@ def core_config() -> Config:
     `Config.from_env()` with no path searches upward from the core's `config.py` — under the
     developer override that is the core repository's `.env`, not this one — and the Flex
     token would read as "not configured" with nothing saying why. Every `Config` in ClaudIA
-    comes from here (held by `test_config_from_env_is_called_only_by_the_loader`).
+    comes from here (held by `test_config_from_env_is_called_only_by_the_loader`). ClaudIA's
+    own secret names go with the call: with the core's names alone the Anthropic key was
+    exported as a setting the moment the toolkit's `Config` was built (live, 2026-10-16).
     """
     from ibkr_core_mcp import Config
 
-    return Config.from_env(dotenv_path=str(ENV_FILE))
+    return Config.from_env(dotenv_path=str(ENV_FILE), secret_names=secret_names())
 
 
 def model_unreachable_reason() -> str | None:

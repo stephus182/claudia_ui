@@ -227,6 +227,20 @@ def test_the_agent_builds_its_client_with_the_key_from_the_loader(env_path, monk
     assert fake.call_args.kwargs == {"api_key": "sk-ant-file-value"}
 
 
+def test_building_the_core_config_exports_no_anthropic_key(env_path):
+    """Found live 2026-10-16, twelve seconds after ClaudIA was serving: the core's
+    `Config.from_env` read the file with the core's secret names only, so the toolkit's
+    `Config` exported `ANTHROPIC_API_KEY` as a setting, and the next `gateway_url()` poll
+    removed it again with a warning. `core_config()` hands ClaudIA's names through. Break:
+    the names not passed — red."""
+    env_file.load()
+
+    cfg = env_file.core_config()
+
+    assert "ANTHROPIC_API_KEY" not in os.environ
+    assert cfg.flex_token.get_secret_value() == "flex-file-value"
+
+
 # ── Structural (design test 7) ─────────────────────────────────────────────────────────
 
 
