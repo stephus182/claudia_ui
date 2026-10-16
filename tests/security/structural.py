@@ -19,6 +19,7 @@ explicit, not deepen.
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Iterable, Iterator
 from functools import lru_cache
 from pathlib import Path
@@ -440,3 +441,55 @@ def notification_call_sites(source: str) -> list[tuple[int, str]]:
         if "notification" in name.lower():
             sites.append((node.lineno, node.func.attr))
     return sorted(sites)
+
+
+_SPAWN_MODULES = frozenset({"subprocess", "multiprocessing", "webbrowser", "pty"})
+_SPAWN_FROM_MODULES = frozenset({"mcp.client.stdio"})  # `stdio_client` starts the sidecar
+_SPAWN_OS_ATTRS = re.compile(r"^(system|popen|spawn\w*|exec\w*|fork\w*|posix_spawn\w*)$")
+
+
+def spawn_sites(source: str) -> set[str]:
+    """Descriptions of every process-starting construct in `source`.
+
+    A spawn-module import (`subprocess`, `multiprocessing`, `webbrowser`, `pty`), the MCP
+    stdio client, an `os.system`/`popen`/`spawn*`/`exec*`/`fork*`/`posix_spawn*` attribute or
+    `from os import` of one (matched on the imported name, so `as` cannot hide it), an
+    `asyncio.create_subprocess_*`, `pty.spawn`, `webbrowser.<anything>`. Written for this
+    package, not shared with the core's (§ 8 of the security architecture).
+    """
+    sites: set[str] = set()
+    for node in ast.walk(_tree(source)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in _SPAWN_MODULES:
+                    sites.add(f"import {alias.name}")
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            root = node.module.split(".")[0]
+            if root in _SPAWN_MODULES or node.module in _SPAWN_FROM_MODULES:
+                sites.add(f"from {node.module} import …")
+            elif root == "os":
+                for alias in node.names:
+                    if _SPAWN_OS_ATTRS.match(alias.name):
+                        sites.add(f"from os import {alias.name}")
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            base, attr = node.value.id, node.attr
+            if base == "os" and _SPAWN_OS_ATTRS.match(attr):
+                sites.add(f"os.{attr}")
+            elif base == "asyncio" and attr.startswith("create_subprocess"):
+                sites.add(f"asyncio.{attr}")
+            elif base == "pty" and attr == "spawn":
+                sites.add("pty.spawn")
+            elif base == "webbrowser":
+                sites.add(f"webbrowser.{attr}")
+    return sites
+
+
+def shell_true_keywords(source: str) -> list[int]:
+    """Line numbers of every call passing a literal `shell=True`."""
+    return sorted(
+        node.lineno
+        for node in ast.walk(_tree(source))
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
+        if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+    )

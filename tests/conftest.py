@@ -17,6 +17,8 @@ the pytest process — is asserted against by tests/security/test_no_live_io.py.
 The real-data blocks, 2026-09-29 and 2026-09-30 (gaps #81, #85, #89): the configured stores
 are probes, the session reporter is redirected, and an audit hook refuses anything under
 `~/.ibkr_core` — each in its section below, asserted by tests/security/test_no_real_data_io.py.
+The desktop block, 2026-10-16 (gap #100): the same hook refuses, by command name, a child
+process that would reach the desktop or a daemon — tests/security/test_no_desktop_reached.py.
 """
 
 import os
@@ -102,7 +104,11 @@ def _real_report_names() -> set[str]:
 
 
 def _real_data_violations(
-    probes: Iterable[Path], before: set[str], after: set[str], refusals: Iterable[str] = ()
+    probes: Iterable[Path],
+    before: set[str],
+    after: set[str],
+    refusals: Iterable[str] = (),
+    desktop: Iterable[str] = (),
 ) -> list[str]:
     """Every way the suite touched real data, one line each — empty when it touched none.
 
@@ -122,6 +128,8 @@ def _real_data_violations(
         violations.append(f"a test wrote into the real report directory: {_REAL_REPORT_DIR / name}")
     for refusal in refusals:
         violations.append(f"a test reached for the operator's data directory: {refusal}")
+    for refusal in desktop:
+        violations.append(f"a test reached for the desktop: {refusal}")
     return violations
 
 
@@ -292,6 +300,85 @@ def _operator_data_hook(event: str, args: tuple[object, ...]) -> None:
         )
 
 
+# ── …and starts nothing that reaches the operator's desktop or daemons (gap #100) ────────
+#
+# `tradingview.py` quits TradingView (`osascript`, `pkill`), launches it (`open -a`), and
+# `gateway_launch.py` runs the docker CLI; the core's Gate 2 is a child running
+# `_order_dialog.py` or `osascript`, its login window is Chrome. The socket guard stops none
+# of these, and a test that patched one call and not another — or a mutant that moved the
+# call — would act on the operator's machine (the core's register F32: a real Gate 2 dialog
+# opened on the operator's screen from a mutation run, 2026-10-01). The same audit hook
+# refuses a child process by the name of what would run — its last path component, read
+# whole ("Google Chrome" holds a space) — or by an `--app=` argument, whichever call asked.
+# Inventoried 2026-10-16 with the hook reporting: the suite's 45 real starts are `git`,
+# `python` and a shimmed `bash`, so nothing is exempt. Its own name lists, not the code's.
+# What it cannot see: a command named inside one shell string is read word by word, and
+# anything that disarms it on purpose. It catches accidents.
+_DESKTOP_GUARD = {"armed": False}
+_desktop_refusals: list[str] = []  # read by `pytest_sessionfinish`
+_DESKTOP_COMMANDS = ("osascript", "pkill", "open", "docker", "_order_dialog.py")
+_BROWSER_LAUNCHERS = (
+    "Google Chrome",
+    "chrome.exe",
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+)
+# Process creation, with the positions of the arguments that say what would run. Argument
+# order: https://docs.python.org/3.11/library/audit_events.html (checked 2026-10-16).
+_PROCESS_EVENTS: dict[str, tuple[int, ...]] = {
+    "subprocess.Popen": (0, 1),  # executable, args
+    "os.system": (0,),  # command
+    "os.posix_spawn": (0, 1),  # path, argv
+    "os.exec": (0, 1),  # path, args
+    "os.spawn": (1, 2),  # mode, path, args
+}
+
+
+def _names_a_desktop_command(value: object) -> str | None:
+    """What `value` would run that reaches the desktop, or None: a path, a command line, a
+    list of either, read by each word's last path component, or an `--app=` argument."""
+    if isinstance(value, bytes):
+        value = os.fsdecode(value)
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if isinstance(value, str):
+        whole = value.replace("\\", "/").rsplit("/", 1)[-1]
+        if whole in _BROWSER_LAUNCHERS:
+            return whole
+        if value.startswith("--app="):
+            return "--app="
+        for word in value.split():
+            name = word.strip("'\"").rsplit("/", 1)[-1]
+            if name in _DESKTOP_COMMANDS:
+                return name
+        return None
+    if isinstance(value, list | tuple):
+        for item in value:
+            if (found := _names_a_desktop_command(item)) is not None:
+                return found
+    return None
+
+
+def _desktop_hook(event: str, args: tuple[object, ...]) -> None:
+    """The audit hook: refuse a child process that would reach the desktop or a daemon."""
+    if not _DESKTOP_GUARD["armed"]:
+        return
+    positions = _PROCESS_EVENTS.get(event)
+    if positions is None:
+        return
+    for position in positions:
+        if position < len(args) and (found := _names_a_desktop_command(args[position])) is not None:
+            _desktop_refusals.append(f"{event} {found}")
+            pytest.fail(
+                f"a unit test tried to reach the desktop ({event} {found}) — patch the call "
+                "(subprocess.run / Popen) in the test; a mutant of the code under test must "
+                "not be able to act on the operator's machine",
+                pytrace=True,
+            )
+
+
 def _neutralise_dotenv() -> None:
     """Make `load_dotenv` a no-op at every import site, before any claudia module loads.
 
@@ -352,6 +439,8 @@ def pytest_configure(config):
     disable_socket(allow_unix_socket=True)
     sys.addaudithook(_operator_data_hook)
     _OPERATOR_GUARD["armed"] = True
+    sys.addaudithook(_desktop_hook)
+    _DESKTOP_GUARD["armed"] = True
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -366,6 +455,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         _reports_at_start,
         _real_report_names(),
         _operator_refusals,
+        _desktop_refusals,
     )
     if not violations:
         return
@@ -395,6 +485,7 @@ def pytest_unconfigure(config):
     from pytest_socket import enable_socket
 
     _OPERATOR_GUARD["armed"] = False
+    _DESKTOP_GUARD["armed"] = False
     enable_socket()
     # The probes were reported by `pytest_sessionfinish` if they existed; nothing to keep.
     shutil.rmtree(_PROBE_DIR, ignore_errors=True)
