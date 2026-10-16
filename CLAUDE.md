@@ -18,6 +18,8 @@ claudia/panel_pinescript.py — Pine-fence copy (real clipboard) / inject button
                               (matches pine | pinescript | pine-script, any case)
 claudia/panel_chart.py      — external HoloViews candlestick chart pane (STK, cache-backed)
 claudia/panel_theme.py      — session theme (CLAUDIA_THEME + ?theme=), user label, ClaudIA's avatar
+claudia/env_file.py         — the one reader of `.env` (gap #103): settings into the environment, secrets
+                              held as SecretStr and never exported, an inherited secret removed at startup
 claudia/dashboard_data.py   — live dashboard: pure data (ledger, positions, realised windows), no panel import
 claudia/dashboard_poller.py — live dashboard: process-wide 15s poller caching one DashboardSnapshot
 claudia/panel_dashboard.py  — live dashboard: KPI strip + Tabs(Chart/Positions/Orders/Fills/P&L), no IBKR and no SQL
@@ -191,8 +193,9 @@ ruff check . && ruff format --check . && mypy   # lint, format, type gates — a
 # aligned 2026-09-08 — change it in both repos or in neither.
 #
 # No unit test opens a socket, resolves a name, or sees a real secret: pytest-socket is armed
-# in pytest_configure and `load_dotenv` is neutralised there too, because importing panel_app
-# loads `.env` at module scope and a fixture would be far too late. Two exemption lists in
+# in pytest_configure and the loader is pointed at a stand-in `.env` of the suite's own there too
+# (python-dotenv's default search cut; the real file refused by the audit hook), because importing
+# panel_app reads `.env` at module scope and a fixture would be far too late. Two exemption lists in
 # tests/conftest.py, each with its reason, each held against collection by a staleness test.
 # No unit test writes into the operator's data either (gap #81, 2026-09-29): both DB path
 # variables point at probe files that must never exist, the session reporter is redirected and
@@ -561,7 +564,7 @@ the fix that established this (75,480 → 2,910 tokens/session).
 
 - **Security architecture** (the living design — read before changing anything a safety
   property rests on): `docs/security-architecture.md`. Principals and what each is *not*
-  trusted for, the trust-boundary map, the **thirteen invariants** with the test that fails when
+  trusted for, the trust-boundary map, the **fourteen invariants** with the test that fails when
   each stops being true and an honest BUILT/PARTIAL/OPEN status per row, a dated decision log,
   and the known limits stated plainly rather than implied. The control inventory and
   vulnerability reporting are `SECURITY.md`; point-in-time evidence is `docs/audits/`.

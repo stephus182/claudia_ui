@@ -460,8 +460,8 @@ CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api   # opt-in; bills real Anthropic 
 ```
 
 **No unit test opens a socket, resolves a name, or sees a real secret.** pytest-socket is
-armed before collection and `load_dotenv` is neutralised there too, because importing the app
-loads `.env` at module scope. Four tests are exempted by name for real DNS, with the reason
+armed before collection and the loader is pointed at a stand-in `.env` of the suite's own there too,
+because importing the app reads `.env` at module scope. Four tests are exempted by name for real DNS, with the reason
 recorded; one binds a loopback socket because socket behaviour is what it tests. An opted-in
 `live_api` run keeps its key and its network, and everything else in that run stays blocked —
 a block that silently retired those four tests would be worse than no block.

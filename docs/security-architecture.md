@@ -132,13 +132,13 @@ exceptions ──────────────►  the core's `_safe_erro
 | The browser DOM | `panel_markdown`'s four helpers | One sanctioned construction site per pane type; canaries per surface |
 | SQLite | `conversation_store` | A CHECK constraint that refuses a `system` role outright |
 | Google Drive | `gdrive_sync` | Fixed filenames on upload; size cap and integrity check on download |
-| A subprocess | `tradingview.py`, `gateway_launch.py` | List form, no shell; an env allowlist for the sidecar, and `PATH`/`HOME`/`DOCKER_*` only for the docker CLI that reads the gateway's log (`_docker_env`, gap #93) |
+| A subprocess | `tradingview.py`, `gateway_launch.py` | List form, no shell; the inherited environment holds no secret (CLA-SEC-014); an env allowlist for the sidecar, and `PATH`/`HOME`/`DOCKER_*` only for the docker CLI that reads the gateway's log (`_docker_env`, gap #93) |
 | TradingView | the 17 curated tools | The curated set is a constant; no order-shaped tool exists in it |
 | The public web | `fetch_web_page` | `_validate_public_url` on the initial URL and every redirect hop — a **destination** control, not an exfiltration one (CLA-SEC-013, § 9) |
 
 ---
 
-## 5. The thirteen invariants and their enforcement
+## 5. The fourteen invariants and their enforcement
 
 Each row is a property that must stay true regardless of implementation. "Mechanism" is the
 code that makes it true; "Enforcement" is the test that fails when it stops being true.
@@ -158,11 +158,12 @@ intention with no enforcement yet, and the audit is the record of why.
 | **CLA-SEC-007** | Stored content never gains authority | Role mapping is closed; withdrawn rows excluded from replay and from search; the store's CHECK refuses `system`; **and the operator channel interpolates only `_operator_identity`-shaped values** (§ 6.5) | `test_stored_content_authority.py`: one file over both halves — every stored kind replayed at its stored role, withdrawal through neither path, the CHECK, and a forgery attempt through each of the four operator-channel payloads | BUILT (2026-09-14) |
 | **CLA-SEC-008** | A claim about an action is checked against evidence, and the evidence is the API | Four detectors keyed on text, ruling from `called_tools` and `_pending_proposal`; withdraw-and-retry | `test_agent.py`, `test_corpus_precision.py` | PARTIAL — detection is four textual shapes; **nothing outside them is prevented**, and the corpus tests skip in CI (§ 9) |
 | **CLA-SEC-009** | Unit tests reach no live system, see no real secret, **write nothing into the operator's data, and open no database in the core's data directory (`~/.ibkr_core`)** | pytest-socket armed at configure time, markers applied at collection; dotenv neutralised before import. Since 2026-09-29: both configured database paths pointed at **probe files that must never exist**, the session reporter redirected and leftover sessions cleared for every test, and `pytest_sessionfinish` fails the run if a probe, a SQLite sidecar of it, or a new file in the real report directory appears. Since 2026-09-30 (gaps #85, #89): **an audit hook refuses anything under `~/.ibkr_core`** — any SQLite open, through every route to it, and any file opened, created, changed or removed there (the trade store, the Drive token and credentials) — from `pytest_configure` to the end of the run, before the operation, through a `BaseException` no `except Exception` can swallow; a URI is read by SQLite's own rules and the directory is recognised by identity as well as by name, and a refusal of the real directory fails the run at session end even if a thread or an `except BaseException` hid it. Not seen: SQL-level `ATTACH`/`VACUUM INTO`, `dir_fd`-relative calls, a deliberate bypass (§ 6.6, § 9) | `test_no_live_io.py`, plus a staleness test over both exemption lists; `test_no_real_data_io.py` (the probes, the redirect, the defect replayed, an ordered pair for the clearing, the session-end decision as a pure function; the directory guard end to end against a stand-in holding a store and a token: armed at import and in a module-scoped fixture, 13 spellings, 5 routes to SQLite, 15 file operations, the case alias and the firmlink, the core's own `SQLiteStore` refused before it touches the directory, a refusal swallowed in a thread still failing the run) | BUILT |
-| **CLA-SEC-010** | Processes are spawned from two modules, list-form, never through a shell, and no unit test can start one that reaches the desktop; the sidecar gets an env allowlist | `tradingview.py` (`_SIDECAR_ENV_PASSTHROUGH` → `_sidecar_env`), `gateway_launch.py` (`_docker_env`); the conftest desktop hook | `test_process_spawn_sites.py`: spawn sites by AST over `claudia/` and `scripts/` — every way to start a process (`subprocess`, `os.*`, `asyncio.create_subprocess_*`, `pty`, `webbrowser`, `multiprocessing`, the MCP `stdio_client`), `shell=True` nowhere; `test_no_desktop_reached.py`: `osascript`, `pkill`, `open`, `docker`, the dialog script and Chrome refused by name from configure time, a swallowed refusal failing the run; `test_sidecar_child_environment.py`: a **real child process**, spawned through the real MCP stdio client, reports the environment it was given (proven discriminating by widening `DEFAULT_INHERITED_ENV_VARS`); since gap #93 `test_gateway_launch.py` pins the docker CLI's command and environment | **PARTIAL until the pin (2026-10-16)** — both halves are guarded; the five `tradingview.py` spawns still inherit an environment that holds secrets until gap #103's branch merges at the core 2.2.0 pin, after which no environment holds one and the per-spawn allowlist is a courtesy, not a boundary |
+| **CLA-SEC-010** | Processes are spawned from two modules, list-form, never through a shell, and no unit test can start one that reaches the desktop; the sidecar gets an env allowlist | `tradingview.py` (`_SIDECAR_ENV_PASSTHROUGH` → `_sidecar_env`), `gateway_launch.py` (`_docker_env`); the conftest desktop hook | `test_process_spawn_sites.py`: spawn sites by AST over `claudia/` and `scripts/` — every way to start a process (`subprocess`, `os.*`, `asyncio.create_subprocess_*`, `pty`, `webbrowser`, `multiprocessing`, the MCP `stdio_client`), `shell=True` nowhere; `test_no_desktop_reached.py`: `osascript`, `pkill`, `open`, `docker`, the dialog script and Chrome refused by name from configure time, a swallowed refusal failing the run; `test_sidecar_child_environment.py`: a **real child process**, spawned through the real MCP stdio client, reports the environment it was given (proven discriminating by widening `DEFAULT_INHERITED_ENV_VARS`); since gap #93 `test_gateway_launch.py` pins the docker CLI's command and environment | BUILT (2026-10-16) — both halves guarded, and since CLA-SEC-014 no environment a child inherits holds a secret; the sidecar's allowlist and `_docker_env` stay as defence in depth |
 | **CLA-SEC-011** | The Panel server is reachable only from loopback, with an exact origin allowlist | `pn.serve(address="127.0.0.1", websocket_origin=_WEBSOCKET_ORIGINS)`, and `main()` pins `bokeh_settings.allowed_ws_origin` to the same list — a *user-set* value, which outranks the environment variable and both config files | `test_pn_serve_binds_loopback_only`, `test_bokeh_env_var_cannot_widen_the_websocket_origin_allowlist` (with `BOKEH_ALLOW_WS_ORIGIN=*` set), `test_bokeh_still_lets_the_setting_replace_the_served_origins` (the premise), `test_panel_app.py` | BUILT (2026-09-14) |
 | **CLA-SEC-012** | The cross-repo contract is pinned in both directions, at a named revision | One import list — held equal to what ClaudIA actually imports, `TYPE_CHECKING` and function-local imports included (since 2026-09-30, gap #84: two runtime imports had been outside it) — every attribute ClaudIA reads through a name ending in `toolkit` — every read today — checked on a real `ClaudeToolkit`, and the three private collaborators it reaches past it (`_store`, `_config`, `_cache`) pinned by identity (gap #87; the tests' MagicMock toolkits answer to any name), three gated entry points, the registry as the only source of tool claims, two core behaviours a ClaudIA invariant rests on, the Gate 1 policy (`LAPolicyDeviceOwnerAuthentication` at both LocalAuthentication calls — the device-password recovery; gap #60, 2026-09-28), and `core-ref.txt` as the single source of the supported core revision | `test_cross_repo_contract.py`, including the pinned release's shape, that the *installed* distribution version equals it, and a rule that no other file in the repository names one | BUILT (§ 7) |
 
 | **CLA-SEC-013** | The set of model-directed outbound channels is closed and known | One local tool (`fetch_web_page`) and the core's `WEB_FETCH`/`NETWORK` set; no local tool may carry a request body | `test_outbound_sink_inventory.py`: ClaudIA's outbound tools detected **structurally** (a schema taking a `url`/`domain`/`endpoint`/`webhook`), the core's computed from the registry, and the SSRF guard's scope pinned as *destination*, not payload | BUILT (2026-09-14) — it pins the surface, **not** the exfiltration itself, which is an accepted residual (§ 9) |
+| **CLA-SEC-014** | A secret is read from the protected `.env` into the object that uses it and never placed in a process environment; an inherited one is removed at startup by name | `claudia/env_file.py` over the core's `load_env_file` (its invariant 12): the Anthropic SDK's two names added to the core's, `ENV_FILE` the repository root's, `core_config()` handing the names through, `dotenv.load_dotenv` replaced process-wide after the first read (`crawl4ai` calls it bare at import, from inside the venv's tree), `AsyncAnthropic(api_key=…)` or `Setup required` | `test_secrets_out_of_environment.py`: a **real child** started after the loader reports no secret; the removal names the variable, never the value; a later `load_dotenv` by anyone exports no secret (against python-dotenv's genuine function); a refused or keyless file is reported with the `chmod 600` fix and refuses the agent; `core_config()` exports no Anthropic key (the live defect of 2026-10-16); structural: no dotenv loader outside the loader, every Anthropic client built with `api_key=`, `Config.from_env` only in the loader; the suite reads a stand-in `.env` of its own and the real one cannot be opened by any test | BUILT (2026-10-16; live-verified the same day, `docs/project-status.md` § Live Test Log) |
 
 `pytest tests/security` runs the set in under four seconds (3.7s measured 2026-09-14); it is part of every unit run, of
 the pre-push hook, and of CI.
@@ -274,9 +275,14 @@ everything on it is true must not lie about its own redactions.
 ### 6.6 Test isolation
 
 Sockets are blocked from `pytest_configure`, and pytest-socket's own markers are applied at
-collection so the per-test block lands before any fixture. `load_dotenv` is neutralised at
+collection so the per-test block lands before any fixture. The loader is pointed at a stand-in
+`.env` of the suite's own (a placeholder key and nothing else, 0600, under the probe directory) at
 configure time rather than in a fixture, because collection imports `panel_app` — which calls
-it at module scope — long before the first fixture runs.
+`env_file.load()` at module scope — long before the first fixture runs; python-dotenv's default
+search and the core's are cut, `load_dotenv` stays a no-op for any third party, and the audit hook
+below refuses any file event naming the real `.env` — found necessary on 2026-10-16, when a mutation
+of the replacement let a bare `load_dotenv()` in a test read the real file and pytest printed two
+values; a path relative to a `dir_fd` is not judged (pytest's own temp cleanup unlinks that way).
 
 Two exemption lists, kept apart because they are different claims: four tests need real DNS
 (a blocked lookup escapes the SSRF guard's narrow `except` and returns "Invalid URL", so an
@@ -340,7 +346,7 @@ A refusal is recorded and fails the run at session end even if swallowed
 | ruff check (incl. `S`) | Known-bad calls | Architecture | yes |
 | ruff format | — | — | yes |
 | mypy strict, over `claudia/` and `tests/` | Type errors | Everything typed correctly and wrong | yes |
-| pytest, including `tests/security/` | Behaviour, and the thirteen invariants | Anything without a test | yes; the `test` job installs `ibkr-core-mcp` from PyPI at the release in `core-ref.txt` |
+| pytest, including `tests/security/` | Behaviour, and the fourteen invariants | Anything without a test | yes; the `test` job installs `ibkr-core-mcp` from PyPI at the release in `core-ref.txt` |
 | **forward-compat** | A push to the core's release branch (`release/2.2.0` during the window opened 2026-09-28; `main` between windows) that moves the seam ClaudIA depends on | Anything outside the seam tests it runs | **no — informational by design**: a push in another repository must not make this one un-mergeable. **Its tick is not evidence** — see below |
 | **pip-audit** | A known-vulnerable version in the **resolved** tree, audited with the scraper extra a real install carries. The whole Panel/Bokeh/Tornado stack — 18 packages measured 2026-09-13, `tornado` among them — is audited by no other repository | Unknown vulnerabilities | yes; no-fix findings go in `security/pip-audit-ignores.txt` with a reason and a re-check date |
 | **gitleaks** | A committed secret or account identifier in the pushed range | History before the scan started | yes |
@@ -399,6 +405,7 @@ Dated, so a future reader can tell a decision from a default.
 | 2026-10-12 | The gateway's internal log is read — it is the only evidence of a login IBKR refused — but **only time, event and code ever leave the reader**: one in-container `grep -F` of six phrases, then `login_events`; a phrase line without a leading time is refused, never guessed; the raw tail `--diagnose` printed is gone (gap #93) | The HTTP side answers 401 after a refusal exactly as with no login, and during the five refused logins of 2026-10-07/08 the preflight read `[FREE]`; the log also carries the username, cookies and device ids (OWASP Logging, "Data to exclude"), and on 2026-10-12 the old tail printed the account number in 2 of 39 lines | A gateway version that writes the phrases differently — the reader then reports the format as unrecognised |
 | 2026-10-12 | CLA-SEC-010 is **PARTIAL**, not BUILT: its environment half has tests, its spawn-site half ("from two modules, never through a shell") has none (gap #100) | Placing the #93 read in `gateway_preflight` would have broken the invariant with nothing going red; a unit test that reaches a real spawn also starts a real `docker`, which the socket guard does not stop | The structural guard of #100 exists |
 | 2026-10-16 | The test guard on process starts refuses **by command name**, not every start with an exemption list (gap #100) | Inventoried with the hook reporting: 45 starts in a full run, all `git`, `python` or a shimmed `bash`; refusing by name fires on nothing and needs no list to go stale; the core's door 5 is the model; the names are the ones the two repositories spawn | A test needs a real desktop command — it does not; a live check is done by hand |
+| 2026-10-16 | Secrets stay in the protected `.env` and never enter a process environment (CLA-SEC-014, gap #103); an inherited one is removed at startup; `dotenv.load_dotenv` is replaced process-wide after the first read; encryption at rest deferred | OWASP Secrets Management and CWE-526: `load_dotenv` copied the file into every child's environment. The operator chose the protected file over the keychain ("platform agnostic") and option 1 (file only). `crawl4ai` calls `load_dotenv()` bare at import from inside the venv's tree, which finds the repository's file. Live: the VS Code terminal injected `.env` into every process it started until `python.terminal.useEnvFile` was turned off, and the core's `from_env` re-exported the Anthropic key with its own names until it took the host's | The OS keychain, if the operator asks — only `env_file` and the core loader change |
 
 ---
 
@@ -512,6 +519,13 @@ oversight.
   card and the session continues. The hash baseline for that warning lives in the database,
   which is itself downloaded from Drive.
 - **A failure to run the secret scan looks like a failure of it.**
+- **`.env` is not encrypted at rest** — deferred by the operator (2026-10-16); the OS keychain is the
+  candidate. A process running as the operator can read the file; the suite's refusal guards tests,
+  not code the operator runs.
+- **A running process's current environment cannot be read on this macOS.** `ps -E` reports the
+  environment a process was started with, and nothing at all for a launchd-spawned process; the live
+  evidence for CLA-SEC-014 is ClaudIA's and the sidecar child's starting environment, launchd's own
+  listing for the daemon, and the removal lines ClaudIA logs — not a read of its live environment.
 - **The suite's guard on `~/.ibkr_core` catches accidents, not intent** (§ 6.6). It sees what
   Python audits. SQL-level `ATTACH` and `VACUUM INTO` open their files inside SQLite with no
   event, and a call relative to a `dir_fd` names no whole path to judge. Python's own
@@ -568,10 +582,15 @@ it is an identity and `_operator_line` if it is prose, and add the case to
 `test_stored_content_authority.py`. The channel's whole worth is that the model cannot forge
 it; a raw value from a decision row is the model writing into it.
 
-**Spawn a process.** From `tradingview.py` or `gateway_launch.py`, list form, never a shell. The
-environment it inherits holds no secret once gap #103 is merged; until then give it
-`_docker_env`'s shape. Anywhere else fails `test_process_spawn_sites.py`; a command that reaches
-the desktop fails `test_no_desktop_reached.py` unless the test patches the call.
+**Spawn a process.** From `tradingview.py` or `gateway_launch.py`, list form, never a shell. Its
+inherited environment holds no secret (CLA-SEC-014); the sidecar's allowlist and `_docker_env` stay
+as defence in depth. Anywhere else fails `test_process_spawn_sites.py`; a command that reaches the
+desktop fails `test_no_desktop_reached.py` unless the test patches the call.
+
+**Add a secret.** Add its name to `env_file.ANTHROPIC_SECRET_NAMES` (or to the core's `SECRET_NAMES`
+if the core reads it); read it from `env_file` as a `SecretStr`; unwrap it only where it is sent;
+never through `os.environ`. The structural tests refuse a new dotenv loader and a client built
+without `api_key=`.
 
 **Accept a pip-audit finding.** Only when there is no fixed release. One line in
 `security/pip-audit-ignores.txt`: the identifier, why the path is unreachable or the risk
@@ -588,3 +607,4 @@ accepted, the date, and a re-check date.
 - Agent behaviour and the anti-fabrication layers: `docs/agent-behavior-reference.md` § 4d
 - Order staging end to end: `docs/order-api-reference.md`
 - Contributor rules: `CLAUDE.md` § Hard Rules for Developers
+- The secrets design and plan (local, git-ignored): `docs/plans/2026-10-16-secrets-out-of-environment-design.md`, `…-plan.md`
