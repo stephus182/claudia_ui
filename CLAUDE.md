@@ -205,7 +205,7 @@ ruff check . && ruff format --check . && mypy   # lint, format, type gates — a
 # swallowed. It catches accidents, not intent, and sees only what Python audits: SQL-level
 # ATTACH and dir_fd-relative calls are out of its sight (docs/security-architecture.md § 9).
 
-# Opt-in only — bills real Anthropic API calls, skipped by default (4 tests):
+# Opt-in only — bills real Anthropic API calls, skipped by default (7 tests):
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
 ```
 
