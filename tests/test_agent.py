@@ -3320,14 +3320,14 @@ def test_live_api_accepts_mid_conversation_system_message():
         CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
     """
     import anthropic
-    from dotenv import load_dotenv
 
+    from claudia import env_file
     from claudia.agent import _GUARDRAIL_NOTICE, _with_cache_marker, _with_history_cache_marker
     from claudia.proposal_tools import PROPOSAL_TOOLS
 
-    load_dotenv(override=False)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+    key = env_file.anthropic_api_key()
+    if key is None:
+        pytest.fail(f"CLAUDIA_LIVE_SCHEMA_CHECK=1 but {env_file.model_unreachable_reason()}")
 
     model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
     note = {"role": "system", "content": _GUARDRAIL_NOTICE}
@@ -3364,7 +3364,7 @@ def test_live_api_accepts_mid_conversation_system_message():
         "note last, cache-marked": _with_history_cache_marker([*two_turns, note]),
         "note before a tool round trip": [*two_turns, note, *tool_round_trip],
     }
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=key.get_secret_value())
     for label, messages in shapes.items():
         try:
             client.messages.create(  # type: ignore[call-overload]  # request bodies are plain dicts, as in agent.py
@@ -3406,13 +3406,13 @@ def test_live_api_rejects_the_operator_channel_on_an_excluded_model():
         CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
     """
     import anthropic
-    from dotenv import load_dotenv
 
+    from claudia import env_file
     from claudia.agent import _GUARDRAIL_NOTICE, _OPERATOR_CHANNEL_MODELS
 
-    load_dotenv(override=False)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+    key = env_file.anthropic_api_key()
+    if key is None:
+        pytest.fail(f"CLAUDIA_LIVE_SCHEMA_CHECK=1 but {env_file.model_unreachable_reason()}")
 
     excluded = "claude-sonnet-4-6"
     assert excluded not in _OPERATOR_CHANNEL_MODELS, "probe model must be one we exclude"
@@ -3423,7 +3423,7 @@ def test_live_api_rejects_the_operator_channel_on_an_excluded_model():
         {"role": "user", "content": "Is it staged?"},
         {"role": "system", "content": _GUARDRAIL_NOTICE},
     ]
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=key.get_secret_value())
     try:
         client.messages.create(  # type: ignore[call-overload]  # the SDK types reject the role being probed
             model=excluded,
@@ -3479,14 +3479,14 @@ def test_live_api_accepts_the_emission_record_channel():
         CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
     """
     import anthropic
-    from dotenv import load_dotenv
 
+    from claudia import env_file
     from claudia.agent import _OPERATOR_NOTE, _with_cache_marker, _with_history_cache_marker
     from claudia.proposal_tools import PROPOSAL_TOOLS
 
-    load_dotenv(override=False)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+    key = env_file.anthropic_api_key()
+    if key is None:
+        pytest.fail(f"CLAUDIA_LIVE_SCHEMA_CHECK=1 but {env_file.model_unreachable_reason()}")
 
     agent, _sink = _make_agent_recording()
     _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
@@ -3534,7 +3534,7 @@ def test_live_api_accepts_the_emission_record_channel():
         "records+note last, cache-marked": _with_history_cache_marker([*three_turns, combined]),
         "records+note before a tool round trip": [*three_turns, combined, *tool_round_trip],
     }
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=key.get_secret_value())
     for label, messages in shapes.items():
         try:
             client.messages.create(  # type: ignore[call-overload]  # request bodies are plain dicts, as in agent.py
@@ -4683,13 +4683,13 @@ def test_live_api_accepts_a_replayed_tool_cycle_with_synthetic_ids_and_no_thinki
         CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
     """
     import anthropic
-    from dotenv import load_dotenv
 
+    from claudia import env_file
     from claudia.agent import _with_cache_marker, _with_history_cache_marker
 
-    load_dotenv(override=False)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+    key = env_file.anthropic_api_key()
+    if key is None:
+        pytest.fail(f"CLAUDIA_LIVE_SCHEMA_CHECK=1 but {env_file.model_unreachable_reason()}")
 
     model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
     cycle = _replay_cycle("get_order_status", "toolu_replay_1081")
@@ -4697,7 +4697,7 @@ def test_live_api_accepts_a_replayed_tool_cycle_with_synthetic_ids_and_no_thinki
         "synthetic id, no thinking block": cycle,
         "same, cache-marked": _with_history_cache_marker(cycle),
     }
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=key.get_secret_value())
     for label, messages in shapes.items():
         try:
             client.messages.create(  # type: ignore[call-overload]  # plain-dict bodies, as in agent.py
@@ -4731,17 +4731,17 @@ def test_live_api_replayed_tool_cycle_whose_tool_is_no_longer_declared():
         CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
     """
     import anthropic
-    from dotenv import load_dotenv
 
+    from claudia import env_file
     from claudia.agent import _with_cache_marker
     from claudia.proposal_tools import PROPOSAL_TOOLS
 
-    load_dotenv(override=False)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+    key = env_file.anthropic_api_key()
+    if key is None:
+        pytest.fail(f"CLAUDIA_LIVE_SCHEMA_CHECK=1 but {env_file.model_unreachable_reason()}")
 
     model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=key.get_secret_value())
     try:
         client.messages.create(  # type: ignore[call-overload]  # plain-dict bodies, as in agent.py
             model=model,
@@ -4785,17 +4785,17 @@ def test_live_api_forced_tool_choice_under_adaptive_thinking():
         CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest tests/test_agent.py -m live_api -v
     """
     import anthropic
-    from dotenv import load_dotenv
 
+    from claudia import env_file
     from claudia.agent import _with_cache_marker
     from claudia.proposal_tools import PROPOSAL_TOOLS
 
-    load_dotenv(override=False)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.fail("CLAUDIA_LIVE_SCHEMA_CHECK=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+    key = env_file.anthropic_api_key()
+    if key is None:
+        pytest.fail(f"CLAUDIA_LIVE_SCHEMA_CHECK=1 but {env_file.model_unreachable_reason()}")
 
     model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=key.get_secret_value())
     messages = [{"role": "user", "content": "Buy 1 AAPL at 250, day order, conid 265598."}]
     tools = _with_cache_marker(PROPOSAL_TOOLS)
     try:

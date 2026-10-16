@@ -506,20 +506,22 @@ DEFAULT_GATEWAY_URL = "https://localhost:5055/v1/api"
 
 
 def gateway_url() -> str:
-    """The gateway URL, read directly from the environment rather than via `Config`.
+    """The gateway URL from the environment, once ClaudIA's `.env` has been read — directly
+    rather than via `Config`.
 
-    `Config.from_env()` raised unless `ANTHROPIC_API_KEY` was set — the core stopped
-    reading that key in 2.0.0 (2026-09-17) — and the reason stands without it: a full
-    configuration has nothing to do with reaching the IBKR gateway, and a diagnostic that
-    refuses to run because an unrelated setting is missing is useless precisely when it is
-    needed — a half-configured environment is one of the states this is for. `.env` is
-    still loaded so the normal setup works.
+    `Config.from_env()` raised unless `ANTHROPIC_API_KEY` was set — the core stopped reading
+    that key in 2.0.0 (2026-09-17) — and the reason stands without it: a full configuration
+    has nothing to do with reaching the IBKR gateway, and a diagnostic that refuses to run
+    because an unrelated setting is missing is useless precisely when it is needed — a
+    half-configured environment is one of the states this is for. The file is read through
+    `env_file.load()` (gap #103): the URL is a setting and reaches the environment; no secret
+    does.
     """
     import os
 
-    from dotenv import load_dotenv
+    from claudia import env_file
 
-    load_dotenv(override=False)
+    env_file.load()
     return os.environ.get("IBKR_GATEWAY_URL", DEFAULT_GATEWAY_URL)
 
 

@@ -54,6 +54,7 @@ from anthropic.types import MessageDeltaUsage, Usage
 
 # Declaration-only tool schemas. Importing them does not couple agent.py to the
 # order-execution layer — that module reaches nothing (CLAUDE.md Hard Rule 1).
+from claudia import env_file
 from claudia.proposal_tools import PROPOSAL_TOOL_NAMES, PROPOSAL_TOOLS
 
 if TYPE_CHECKING:
@@ -1989,7 +1990,15 @@ class ClaudIAAgent:
         self._doc_version = doc_version
         self._trade_context = trade_context
         self._tv_tool_names: set[str] = {t["name"] for t in self._extra_tools}
-        self._client = AsyncAnthropic()
+        # The key comes from `.env` through the loader and is passed explicitly, so the SDK
+        # reads no credential variable ("Explicit ctor args are total", anthropic 0.120.2
+        # `_client.py`; gap #103). Without one there is no client: the SDK's own error would
+        # tell the operator to set an environment variable, which is the one thing the rule
+        # forbids. `Setup required:` is the prefix `panel_app`'s init path shows unlabelled.
+        key = env_file.anthropic_api_key()
+        if key is None:
+            raise RuntimeError(f"Setup required: {env_file.model_unreachable_reason()}")
+        self._client = AsyncAnthropic(api_key=key.get_secret_value())
         self._system_blocks_cache: list[dict[str, Any]] | None = None
         self._system_reload_seen: int = -1
         # (kind, tool_use.input) for the one proposal this turn may make. Written only by

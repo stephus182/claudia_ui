@@ -27,8 +27,15 @@ import tempfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+import dotenv.main as _dotenv_main
 import panel as pn
 import pytest
+
+_REAL_LOAD_DOTENV = _dotenv_main.load_dotenv
+"""python-dotenv's own `load_dotenv`, before `_keep_the_real_env_file_out` replaces it: the
+test of ClaudIA's replacement (`test_a_later_load_dotenv_by_anyone_exports_no_secret`) puts
+it back for its own duration, so its named break — the replacement removed — exports a
+secret and goes red, instead of being masked by the no-op."""
 
 # Every entry here resolves a real name through `agent._validate_public_url`'s
 # `gethostbyname`, which is the SSRF guard's second layer. Blocking DNS does not make these
@@ -152,6 +159,14 @@ def _real_data_violations(
 # (Python's own documentation). It is there to catch accidents.
 _OPERATOR_DATA_DIR = (Path.home() / ".ibkr_core").resolve()
 _REAL_OPERATOR_DATA_DIR = _OPERATOR_DATA_DIR
+# The operator's `.env` is the other real-data file a test can reach: python-dotenv's default
+# search walks up from any test file to the repository root and finds it. Seen 2026-10-16 —
+# a mutation of the loader's replacement let a bare `load_dotenv()` in a test export the real
+# file into the pytest process, and the assertion's introspection printed two real values.
+# The same hook refuses any file event naming it; None on an opted-in `live_api` run, which
+# reads the real file by design; a test of the guard points it at a stand-in.
+_REAL_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+_GUARDED_ENV_FILE: Path | None = _REAL_ENV_FILE
 _OPERATOR_GUARD = {"armed": False}  # a hook cannot be removed, only disarmed
 _operator_refusals: list[str] = []  # of the real directory; read by `pytest_sessionfinish`
 
@@ -177,6 +192,22 @@ _FILE_EVENTS: dict[str, tuple[int, ...]] = {
     "shutil.rmtree": (0,),
     "tempfile.mkdtemp": (0,),
     "tempfile.mkstemp": (0,),
+}
+# Where each event carries a `dir_fd` (None when not given). A relative path with one set is
+# relative to that descriptor, not to the working directory, so it names no whole path to
+# judge and is not judged (§ 9 of the security architecture): pytest's own cleanup of old
+# temp directories unlinks by bare name this way, and a bare `.env` resolved against the
+# repository root read as the operator's file (2026-10-16). Positions probed on this Python.
+_DIR_FD_POSITIONS: dict[str, tuple[int, ...]] = {
+    "os.chmod": (2,),
+    "os.chown": (3,),
+    "os.link": (2, 3),
+    "os.mkdir": (2,),
+    "os.remove": (1,),
+    "os.rename": (2, 3),
+    "os.rmdir": (1,),
+    "os.symlink": (2,),
+    "os.utime": (3,),
 }
 _HEX_OCTET = re.compile(rb"[0-9A-Fa-f]{2}")
 
@@ -239,7 +270,7 @@ def _inside_operator_directory(path: Path) -> bool:
     return False
 
 
-def _operator_path(value: object, *, database: bool) -> Path | None:
+def _operator_path(value: object, *, database: bool, fd_relative: bool = False) -> Path | None:
     """The place under the operator's data directory that `value` names, or None.
 
     `value` is what the audited call was given: `str`, `bytes` or a path object — and, for a
@@ -263,10 +294,16 @@ def _operator_path(value: object, *, database: bool) -> Path | None:
         text = uri_path
     if not text or (database and text == ":memory:"):
         return None
+    if fd_relative and not os.path.isabs(os.path.expanduser(text)):
+        return (
+            None  # relative to a descriptor, not to the working directory: no whole path to judge
+        )
     try:
         resolved = Path(text).expanduser().resolve()
     except (OSError, RuntimeError, ValueError):  # a NUL, an unencodable name, an unknown ~user
         return None
+    if _GUARDED_ENV_FILE is not None and resolved == _GUARDED_ENV_FILE:
+        return resolved
     return resolved if _inside_operator_directory(resolved) else None
 
 
@@ -277,36 +314,76 @@ def _operator_data_hook(event: str, args: tuple[object, ...]) -> None:
     if event == "sqlite3.connect":
         targets = [_operator_path(args[0], database=True)]
     elif (positions := _FILE_EVENTS.get(event)) is not None:
-        targets = [_operator_path(args[p], database=False) for p in positions if p < len(args)]
+        fd_relative = any(
+            args[i] is not None for i in _DIR_FD_POSITIONS.get(event, ()) if i < len(args)
+        )
+        targets = [
+            _operator_path(args[p], database=False, fd_relative=fd_relative)
+            for p in positions
+            if p < len(args)
+        ]
     else:
         return
     for target in targets:
         if target is None:
             continue
-        if _OPERATOR_DATA_DIR == _REAL_OPERATOR_DATA_DIR:
+        if target == _REAL_ENV_FILE or (
+            _OPERATOR_DATA_DIR == _REAL_OPERATOR_DATA_DIR and target != _GUARDED_ENV_FILE
+        ):
             _operator_refusals.append(f"{event} {target}")
+        where = (
+            "the repository's .env"
+            if target == _GUARDED_ENV_FILE
+            else f"{target.name} under ~/.ibkr_core"
+        )
         pytest.fail(
-            f"a unit test tried to reach the operator's data ({event}: {target.name} under "
-            "~/.ibkr_core) — build it under tmp_path",
+            f"a unit test tried to reach the operator's data ({event}: {where}) — build it under tmp_path",
             pytrace=True,
         )
 
 
-def _neutralise_dotenv() -> None:
-    """Make `load_dotenv` a no-op at every import site, before any claudia module loads.
+_PLACEHOLDER_ENV_FILE = _PROBE_DIR / ".env"
+"""The suite's own `.env`: a placeholder key and nothing else, mode 0600, under the probe
+directory (removed at unconfigure). Holding a placeholder rather than nothing lets every
+agent test build its client through the real read path — `ClaudIAAgent` refuses to build
+without a key — while no test can read the operator's file."""
 
-    This cannot be a fixture. `claudia/panel_app.py` calls `load_dotenv(override=False)` at
-    module scope (line 86), and collection imports that module long before the first fixture
-    runs — measured 2026-09-13: a probe inside a running test found a real `sk-ant-` key of
-    length 108 and `IBKR_FLEX_TOKEN` in `os.environ`. `pytest_configure` runs before
-    collection, so patching the `dotenv` module here is what the module-level call picks up.
+
+def _keep_the_real_env_file_out() -> None:
+    """No test reads the operator's `.env` (CLA-SEC-009), before any claudia module loads.
+
+    `claudia/panel_app.py` calls `env_file.load()` at module scope, and collection imports
+    that module long before the first fixture runs — measured 2026-09-13, when the call was
+    `load_dotenv`: a probe inside a running test found a real `sk-ant-` key of length 108 and
+    `IBKR_FLEX_TOKEN` in `os.environ`. So, from `pytest_configure`: the loader's file is the
+    suite's own stand-in above; the core's default search (`find_dotenv`, walking up from its
+    `config.py` — the core repository's own `.env` under the developer override) finds
+    nothing; and `load_dotenv` is a no-op for any third party (`crawl4ai` calls it at import).
+    A test of the loader points `env_file.ENV_FILE` at a file under its `tmp_path`.
     """
-    noop = lambda *args, **kwargs: False  # noqa: E731
     import dotenv
     import dotenv.main
+    import ibkr_core_mcp.config as core_config
 
+    from claudia import env_file
+
+    noop = lambda *args, **kwargs: False  # noqa: E731
     dotenv.load_dotenv = noop
     dotenv.main.load_dotenv = noop
+    # `setattr`: the core imports `find_dotenv` without re-exporting it, so an attribute
+    # assignment is refused by mypy; the patch is the same.
+    setattr(core_config, "find_dotenv", lambda *args, **kwargs: "")  # noqa: B010
+    dotenv.find_dotenv = lambda *args, **kwargs: (
+        ""
+    )  # the genuine `load_dotenv`, if a test restores it,
+    dotenv.main.find_dotenv = lambda *args, **kwargs: (
+        ""
+    )  # searches upward from the test file otherwise
+    _PLACEHOLDER_ENV_FILE.write_text(
+        "ANTHROPIC_API_KEY=sk-ant-placeholder-for-unit-tests\n", encoding="utf-8"
+    )
+    _PLACEHOLDER_ENV_FILE.chmod(0o600)
+    env_file.ENV_FILE = _PLACEHOLDER_ENV_FILE
 
 
 def live_api_opted_in() -> bool:
@@ -340,8 +417,11 @@ def pytest_configure(config):
     """
     from pytest_socket import disable_socket
 
-    if not live_api_opted_in():
-        _neutralise_dotenv()
+    global _GUARDED_ENV_FILE
+    if live_api_opted_in():
+        _GUARDED_ENV_FILE = None
+    else:
+        _keep_the_real_env_file_out()
         for name in [k for k in os.environ if k.startswith(_SECRET_ENV_PREFIXES)]:
             del os.environ[name]
     # After the scrub, never before: `IBKR_SQLITE_PATH` carries the scrubbed prefix. Set here,

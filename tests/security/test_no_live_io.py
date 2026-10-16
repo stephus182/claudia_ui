@@ -63,7 +63,8 @@ def test_no_secret_bearing_variable_is_visible(prefix):
 
 
 def test_importing_the_app_does_not_load_the_operators_env():
-    """`claudia.panel_app` calls `load_dotenv` at module scope, which a fixture cannot undo.
+    """`claudia.panel_app` calls `env_file.load()` at module scope, which a fixture cannot undo;
+    conftest points the loader at the suite's own stand-in first.
 
     Collection imports the module long before any fixture runs, so the neutralisation has
     to happen in `pytest_configure`. This asserts the result rather than the mechanism: if

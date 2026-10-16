@@ -35,7 +35,7 @@ previously leaked object) on teardown.
 
 Unless a test targets the GDrive branch, GOOGLE_DRIVE_FOLDER_ID is blanked via
 patch.dict so that branch of _init_session is skipped — unit tests must never touch
-the real Drive (the developer .env sets that var, and panel_app's load_dotenv would
+the real Drive (the developer .env sets that var, and panel_app's `env_file.load()` would
 otherwise activate the branch).
 """
 
@@ -337,7 +337,7 @@ async def test_init_downloads_drive_db_before_first_store_open(monkeypatch):
 
     with (
         patch.dict(os.environ, {"GOOGLE_DRIVE_FOLDER_ID": "test-folder-id"}),
-        patch("claudia.panel_app.Config"),
+        patch("claudia.env_file.core_config"),
         patch("claudia.panel_app.GDriveSync", mock_sync_cls),
         patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
         patch("claudia.panel_app._get_store", mock_get_store),
@@ -374,7 +374,7 @@ async def test_init_continues_without_drive_when_gdrive_sync_fails(monkeypatch):
 
     with (
         patch.dict(os.environ, {"GOOGLE_DRIVE_FOLDER_ID": "test-folder-id"}),
-        patch("claudia.panel_app.Config"),
+        patch("claudia.env_file.core_config"),
         patch("claudia.panel_app.GDriveSync", side_effect=RuntimeError("drive down")),
         patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
         patch("claudia.panel_app._get_store", return_value=mock_store),
@@ -4224,3 +4224,48 @@ async def test_the_sent_message_records_where_its_dataset_line_sits_after_a_cave
     assert opening.dataset_index == 1
     opening.replace_dataset_line("fresh")
     assert chat.sent[0].object.startswith("OFFLINE BLOCK\n\n_fresh_\n\n")
+
+
+@pytest.mark.asyncio
+async def test_a_refused_or_keyless_env_file_is_said_in_the_system_log(monkeypatch):
+    """Gap #103: when the core refuses the secrets, or the file holds no key, building the
+    agent raises `Setup required: …`, and the existing init-failure path puts that sentence —
+    the file and the `chmod 600` fix — in the System log (and, through `_on_user_input`, in
+    the chat). No new path: this proves the agent's refusal reaches the operator where
+    session events go. Break: the agent building a client with `api_key=None` instead of
+    raising — red (init succeeds, nothing is said)."""
+    from pathlib import Path
+
+    from ibkr_core_mcp.config import EnvFile
+
+    from claudia import env_file
+    from claudia.panel_app import _system_log
+
+    monkeypatch.setattr(
+        env_file,
+        "_loaded",
+        EnvFile(path=Path("/x/.env"), secrets={}, refused="/x/.env is open — chmod 600 /x/.env"),
+    )
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.agent.AsyncAnthropic"),
+        patch("claudia.panel_app.PanelMessageSink"),
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
+    ):
+        _configure_loader(mock_loader_cls)
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("ping", "User", chat), timeout=_CALLBACK_TIMEOUT)
+
+    entries = _system_log(chat).entries
+    assert any("chmod 600 /x/.env" in e for e in entries), entries

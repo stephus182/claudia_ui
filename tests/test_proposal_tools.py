@@ -279,19 +279,19 @@ def test_live_api_accepts_proposal_tools() -> None:
     registration-time 400 that fails every request. Probed together, 2026-07-27: accepted.
     """
     import anthropic
-    from dotenv import load_dotenv
 
+    from claudia import env_file
     from claudia.agent import _with_cache_marker
 
     # Same credential resolution the app uses (order_flow.py): the key lives in .env, not
     # in the ambient environment. Never logged or interpolated anywhere.
-    load_dotenv(override=False)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.fail(f"{_LIVE_CHECK_ENV}=1 but no ANTHROPIC_API_KEY resolved (checked .env)")
+    key = env_file.anthropic_api_key()
+    if key is None:
+        pytest.fail(f"{_LIVE_CHECK_ENV}=1 but {env_file.model_unreachable_reason()}")
 
     model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
     try:
-        anthropic.Anthropic().messages.create(
+        anthropic.Anthropic(api_key=key.get_secret_value()).messages.create(
             model=model,
             max_tokens=1,
             tools=_with_cache_marker(PROPOSAL_TOOLS),  # type: ignore[arg-type]

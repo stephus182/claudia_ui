@@ -9,7 +9,7 @@ TradingView bridge, the external candlestick chart pane, the live dashboard
 session-end cleanup.
 
 Also owns the app's single `pn.extension(...)` call and `pn.config` settings — see
-the block below `load_dotenv`. That call is shared with the deferred restyle track,
+the block below `env_file.load()`. That call is shared with the deferred restyle track,
 so it is changed deliberately and in one place, never as a side effect.
 
 Served by Panel's own first-class Tornado server via pn.serve(callable) — the
@@ -41,17 +41,16 @@ from zoneinfo import ZoneInfo
 
 import panel as pn
 from bokeh.settings import settings as bokeh_settings
-from dotenv import load_dotenv
 from ibkr_core_mcp import (
     BrowserCookieAuth,
     ClaudeToolkit,
-    Config,
     GDriveCache,
     IBKRClient,
     SQLiteStore,
 )
 from ibkr_core_mcp.gateway import GatewayManager
 
+from claudia import env_file
 from claudia.agent import ClaudIAAgent, warn_if_model_lacks_operator_channel
 from claudia.briefing import (
     Briefing,
@@ -110,7 +109,7 @@ from claudia.tradingview import (
 
 log = logging.getLogger(__name__)
 
-load_dotenv(override=False)
+env_file.load()
 
 # The one and only pn.extension() call in this app, at import time so it runs before any
 # session Document exists (Panel collects the extension's JS into the page template).
@@ -163,8 +162,8 @@ this project intends. `bokeh/server/views/ws.py::check_origin` (read from bokeh 
         allowed_hosts = set(settings.allowed_ws_origin())
 
 so `BOKEH_ALLOW_WS_ORIGIN` does not widen what `pn.serve` was given — it *replaces* it, and
-`check_allowlist` accepts `*`. `panel_app` calls `load_dotenv` at module scope, so one line
-in `.env` was enough, and nothing said so. Two copies of the list would be the same defect
+`check_allowlist` accepts `*`. `panel_app` loads `.env` at module scope (a setting reaches the
+environment; a secret never does, gap #103), so one line in `.env` was enough, and nothing said so. Two copies of the list would be the same defect
 one refactor later.
 """
 # Floor on how soon the intro portrait may be settled, measured from the message's
@@ -237,7 +236,7 @@ def _get_toolkit() -> ClaudeToolkit:
     """
     global _toolkit
     if _toolkit is None:
-        config = Config.from_env()
+        config = env_file.core_config()
         ibkr = IBKRClient(
             config=config,
             auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
@@ -1382,7 +1381,7 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
                     # env-wide (toolkit construction needs the same Config later), so
                     # swallowing it as "continuing without Drive sync" would mislead —
                     # and init would then fail identically on the toolkit anyway.
-                    drive_cfg = Config.from_env()
+                    drive_cfg = env_file.core_config()
                     try:
                         _gdrive_sync = GDriveSync(drive_cfg)
                         if _conv_store is None:
@@ -1766,6 +1765,10 @@ def main() -> None:
     # Fourth (gap #93): a login IBKR refused leaves the gateway reading FREE, so ClaudIA
     # would start cleanly with every IBKR call failing for a reason nothing names.
     warn_if_login_refused()
+    # Fifth (gap #103): the model key is read from `.env` only. A missing key or a file
+    # readable by others would otherwise surface as the SDK's error at the first session,
+    # naming an environment variable ClaudIA deliberately does not read.
+    env_file.warn_if_model_unreachable()
     # The port has to be checked BEFORE the banner. `pn.serve` blocks until shutdown, so
     # there is no "after" in which to announce success — and until 2026-08-05 the banner
     # was simply logged first, which meant a start that then died on EADDRINUSE printed

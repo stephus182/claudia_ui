@@ -79,7 +79,7 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
     # Both imported at module level by `gdrive_sync`. `load_or_refresh_credentials` is in
     # neither the core's `__init__` nor its README or consumers guide (checked 2026-09-30):
     # an unexported seam, which is what this list exists to hold.
-    "ibkr_core_mcp.config": ("Config",),
+    "ibkr_core_mcp.config": ("Config", "EnvFile", "SECRET_NAMES", "load_env_file"),
     "ibkr_core_mcp.gdrive_auth": ("load_or_refresh_credentials",),
 }
 
