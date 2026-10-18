@@ -67,8 +67,9 @@ or adjective this project states about that set is computed from the registry by
 `tests/security/test_cross_repo_contract.py`, never typed by hand.
 
 On top of the toolkit, ClaudIA declares its own: **5 local utility tools** (document versions,
-past-conversation search, a public-web fetch behind an SSRF guard, live P&L), **3 proposal
-tools**, and **17 curated TradingView tools** when the sidecar is connected.
+past-conversation search, a public-web fetch behind an SSRF guard, live P&L), **5 proposal
+tools** (three strict, the two bracket tools non-strict and validated in-process — § 6.3), and
+**17 curated TradingView tools** when the sidecar is connected.
 
 ClaudIA's own capabilities, which the core's registry does not describe:
 
@@ -97,9 +98,13 @@ user message ────────────►  (none; it is the operator)
 model tool_use ──────────►  name ∈ one of three closed sets    ►  dispatcher (agent.py) ──────►  local handlers        [READ / COMPUTE]
                                                                                           ──►  ClaudeToolkit.execute [the core's registry]
                                                                                           ──►  TradingViewBridge     [TRADINGVIEW_CDP]
-model propose_* ─────────►  strict JSON Schema (the API),      ►  _record_proposal ──────────►  _pending_proposal (by reference)
+model propose_* ─────────►  the declared JSON Schema — at the  ►  _record_proposal ──────────►  _pending_proposal (by reference)
+                            API (strict) for order/cancel/
+                            modify, in-process (_schema_defect)
+                            for bracket/attach (2026-10-18);
                             then _proposal_defect: 7 terms
-                            the schema cannot express
+                            the schema cannot express + the
+                            child's (_child_defect)
 proposal ────────────────►  deepcopy at render (_snapshot)     ►  panel_order_flow ──────────►  a card + two buttons   [UI_RENDER]
 a human click ───────────►  _OneShot.claim(), first call       ►  _execute_*_order_core ─────►  IBKRClient gated entry [ORDER_EXECUTION_REQUEST]
                                                                                                   └─► Gate 1 ─► Gate 2 ─► IBKR   [the core]
@@ -152,7 +157,7 @@ intention with no enforcement yet, and the audit is the record of why.
 | **CLA-SEC-001** | The model's own layer cannot reach order execution | A four-branch dispatcher over three closed name sets; `agent.py` imports no execution module | `test_model_cannot_execute_orders.py`: the model layer names no write method, client, `_post` or authorization; imports neither execution module; the dispatcher reaches exactly seven collaborators; dynamic attribute resolution banned in the two shapes a name probe cannot follow | BUILT |
 | **CLA-SEC-002** | Execution begins at a human click and nowhere else | Cores called only from `on_click` closures; `_OneShot` claimed as the first call in every handler | `test_human_click_execution_boundary.py`: cores reached from one module and only from bound handlers; every handler claims first; no module writes `clicks`, passes `clicks=`, calls `trigger` or `setattr`; the sink holds no button | BUILT |
 | **CLA-SEC-003** | Proposing is a declaration — it reaches nothing | `_record_proposal`: three checks, one assignment, one string | `test_proposal_tools_are_side_effect_free.py`: collaborator set pinned; no I/O call; no write to the proposal in any of six shapes | BUILT |
-| **CLA-SEC-004** | Order parameters are immutable, and every price is a price | Reject whole, never repair; 7 terms in `_proposal_defect`; the dict is stored by identity | `test_security_regressions.py` (the malformed table, incl. non-finite and zero prices), `test_proposal_tools_are_side_effect_free.py` | BUILT |
+| **CLA-SEC-004** | Order parameters are immutable, and every price is a price | The declared schema — at the API for the three strict tools, in-process (`_schema_defect`, keyed on the declaration's own `strict` flag) for `propose_bracket` / `propose_attach` (2026-10-18, § 6.3); reject whole, never repair; 7 terms in `_proposal_defect` plus the child's in `_child_defect`; the dict is stored by identity | `test_security_regressions.py` (the malformed table, incl. non-finite and zero prices, and the schema rows the two non-strict tools reach in-process), `test_proposal_tools_are_side_effect_free.py` (both checks pure), `test_agent.py` (the child rules, each mutated red) | BUILT |
 | **CLA-SEC-005** | What the human reads is what the click sends | `_snapshot` deepcopy at render; one shared price formatter with the dialog; a priced type must carry its price | `test_panel_order_flow.py` (render → mutate → click), `test_order_flow.py` (precision, totality), `test_human_click_execution_boundary.py` (every renderer snapshots) | BUILT |
 | **CLA-SEC-006** | Untrusted content cannot execute in the UI | Four helpers in `panel_markdown`, each with the right number of escapes for its path; they are the only sanctioned construction sites | `test_markup_construction_sites.py`: the banned pane class is **computed from Panel** (every `HTMLBasePane` in `panel.pane.markup`/`alert`, plus `SVG`), matched by AST through every spelling of the call, over `claudia/` **and** `scripts/`, with an empty reviewed-exception list and a staleness test on it; `renderer_options` and direct notification levels banned outside the helper module; plus the existing canaries and guard-on-the-guard | BUILT (2026-09-14) |
 | **CLA-SEC-007** | Stored content never gains authority | Role mapping is closed; withdrawn rows excluded from replay and from search; the store's CHECK refuses `system`; **and the operator channel interpolates only `_operator_identity`-shaped values** (§ 6.5) | `test_stored_content_authority.py`: one file over both halves — every stored kind replayed at its stored role, withdrawal through neither path, the CHECK, and a forgery attempt through each of the four operator-channel payloads | BUILT (2026-09-14) |
@@ -208,11 +213,24 @@ Three rules now hold the surface to the body:
 
 ### 6.3 The proposal contract
 
-`strict: true` gives types, enums, required keys and closed objects at the API boundary.
-Seven things it cannot express are checked in `_proposal_defect`, and it **rejects whole,
-never repairs** — a defaulted field is a fabricated order parameter. The seventh, added
-2026-09-14, ties the price to the order type, because a schema can say "number or null" but
-not "null only when the type is MKT".
+`strict: true` gives types, enums, required keys and closed objects at the API boundary —
+for `propose_order`, `propose_cancel` and `propose_modify`. **`propose_bracket` and
+`propose_attach` are declared non-strict (2026-10-18, gap #36)**: the API caps union-typed
+parameters at 16 across all strict schemas in one request, the three originals carry 10, and
+its internal grammar limit refused every four- or five-strict-tool layout even at 14 (14
+probes; the record is in `claudia/proposal_tools.py`). For those two, `agent._schema_defect`
+validates `tool_use.input` against the tool's own declared `input_schema` in-process — the
+same closed shape, the schema still the single declaration — before any field is read and
+before `_proposal_defect`; it keys on the declaration's `strict` flag, so every tool has
+exactly one outer layer wherever that flag sits, and a tool with the key absent is enforced
+by neither (asserted). What is lost is constrained decoding: the model *can* emit an invalid
+call for those two and is refused with a tool result, the path the defect terms already use;
+nothing new reaches the store, a card or a button. Seven things no schema can express are
+checked in `_proposal_defect`, and it **rejects whole, never repairs** — a defaulted field is
+a fabricated order parameter. The seventh, added 2026-09-14, ties the price to the order
+type, because a schema can say "number or null" but not "null only when the type is MKT".
+The child's own rules (`_child_defect`: kind, prices, a profit taker's single price, the
+side against the parent's reference price in IBKR's words) are the eighth, 2026-10-18.
 
 ### 6.4 Rendering — four paths, three different escape counts
 
@@ -399,6 +417,7 @@ Dated, so a future reader can tell a decision from a default.
 | 2026-10-12 | The gateway's internal log is read — it is the only evidence of a login IBKR refused — but **only time, event and code ever leave the reader**: one in-container `grep -F` of six phrases, then `login_events`; a phrase line without a leading time is refused, never guessed; the raw tail `--diagnose` printed is gone (gap #93) | The HTTP side answers 401 after a refusal exactly as with no login, and during the five refused logins of 2026-10-07/08 the preflight read `[FREE]`; the log also carries the username, cookies and device ids (OWASP Logging, "Data to exclude"), and on 2026-10-12 the old tail printed the account number in 2 of 39 lines | A gateway version that writes the phrases differently — the reader then reports the format as unrecognised |
 | 2026-10-12 | CLA-SEC-010 is **PARTIAL**, not BUILT: its environment half has tests, its spawn-site half ("from two modules, never through a shell") has none (gap #100) | Placing the #93 read in `gateway_preflight` would have broken the invariant with nothing going red; a unit test that reaches a real spawn also starts a real `docker`, which the socket guard does not stop | The structural guard of #100 exists |
 | 2026-10-16 | The test guard on process starts refuses **by command name**, not every start with an exemption list (gap #100) | Inventoried with the hook reporting: 45 starts in a full run, all `git`, `python` or a shimmed `bash`; refusing by name fires on nothing and needs no list to go stale; the core's door 5 is the model; the names are the ones the two repositories spawn | A test needs a real desktop command — it does not; a live check is done by hand |
+| 2026-10-18 | `propose_bracket` and `propose_attach` are **non-strict**, validated in-process against their own declared schema (`_schema_defect`) before `_proposal_defect`; the three originals stay strict (gap #36) | The live probe refused the five strict tools on every model tried: 22 union-typed parameters against the API's cap of 16 across all strict schemas in a request, and the internal grammar limit refused every four- or five-strict-tool layout even at 14 — ClaudIA's exact production list included. Anthropic's first remedy: "Mark only critical tools as strict". The loss is constrained decoding; the enforcement is equal, one hop later, in our code, under our tests | The API's budget grows: flip the two flags, re-probe, and `_schema_defect` returns None for them by construction |
 
 ---
 
@@ -485,7 +504,7 @@ oversight.
     needs both capabilities in one session.**
   - *A session that structurally cannot stage an order.* The operator's own instinct on
     2026-09-14 ("only ONE session can trade"). Capability separation rather than a gate: a
-    research session whose dispatcher refuses the three `propose_*` tools, so injected content
+    research session whose dispatcher refuses the five `propose_*` tools, so injected content
     has no order path at all. Cheaper than a taint gate — one session-level mode, no per-call
     logic — and it addresses limit 1 above. Not built, and not a substitute for the gate: it
     stops orders, not exfiltration.
@@ -543,6 +562,10 @@ kind.
 
 **Change what a proposal may contain.** The schema is the outer layer and `_proposal_defect`
 is the inner one. Reject; never repair. Add the case to the malformed table with a reason.
+A new nullable field on a **strict** tool is a union-typed parameter against the API's budget
+of 16 (`test_the_strict_tools_stay_inside_the_api_union_budget`, then the live probe); on the
+two non-strict tools the outer layer is `_schema_defect`, and the malformed table gets the row
+through the real handler.
 
 **Import something new from `ibkr_core_mcp`.** Add it to `IMPORTED_API` in
 `test_cross_repo_contract.py` in the same commit. If it is an order write, it belongs in

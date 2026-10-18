@@ -22,7 +22,9 @@ claudia/dashboard_data.py   — live dashboard: pure data (ledger, positions, re
 claudia/dashboard_poller.py — live dashboard: process-wide 15s poller caching one DashboardSnapshot
 claudia/panel_dashboard.py  — live dashboard: KPI strip + Tabs(Chart/Positions/Orders/Fills/P&L), no IBKR and no SQL
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching (UI-agnostic via MessageSink)
-claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
+claudia/proposal_tools.py   — the five propose_* declarations (no execution): order/cancel/modify strict;
+                              bracket/attach non-strict by the API's union budget, validated in-process
+                              against the same declared schema (2026-10-18, gap #36)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
 claudia/order_flow.py       — framework-agnostic order-execution cores → ibkr_core_mcp biometric gates
 claudia/opening_status.py   — UI-free opening-status builders (session state + trade line; no account
@@ -313,7 +315,8 @@ These rules must never be violated when extending ClaudIA:
 
 1. **Never add a tool that calls `place_order`, `modify_order`, `cancel_order`, or
    `reply_order`.** *Proposing* is a tool call (`propose_order` / `propose_cancel` /
-   `propose_modify` — schema-validated, local handlers, no IBKR reachability). *Staging* is
+   `propose_modify` / `propose_bracket` / `propose_attach` — schema-validated, local
+   handlers, no IBKR reachability). *Staging* is
    a UI-layer action triggered by a physical button click. The rule forbids the second as an
    LLM capability, not the first.
 2. **Never log or expose `ANTHROPIC_API_KEY`** in UI output, logs, or error messages.
@@ -328,9 +331,11 @@ These rules must never be violated when extending ClaudIA:
 ## Order Staging (safety-critical — summary only, full spec: `docs/order-api-reference.md`)
 
 ClaudIA **cannot** place, modify, or cancel orders autonomously:
-1. ClaudIA calls `propose_order` (or `propose_cancel` / `propose_modify`) — a `strict: true`
-   tool declared in `claudia/proposal_tools.py`. It reaches nothing: the handler records the
-   proposal and returns a `tool_result`. There is no text format for a proposal.
+1. ClaudIA calls `propose_order` (or `propose_cancel` / `propose_modify`, or since
+   2026-10-18 `propose_bracket` / `propose_attach`, gap #36) — declared in
+   `claudia/proposal_tools.py`, `strict: true` for the first three. It reaches nothing: the
+   handler records the proposal and returns a `tool_result`. There is no text format for a
+   proposal.
 2. `agent.py` hands the recorded `tool_use.input` to the `MessageSink`
    (`send_order_proposal`); `PanelMessageSink` routes it to
    `panel_order_flow.render_order_proposal()` → a Panel message with a blue
@@ -414,7 +419,14 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   "restore" symbol resolution here — re-implementing it would put a second, drifting
   definition next to the authoritative one.
 - `strict: true` enforces types, `enum`s, required keys and closed objects at the API
-  boundary. **Seven** guarantees it cannot express are checked by `_proposal_defect()` in
+  boundary — for the three original tools. **`propose_bracket` and `propose_attach` are
+  non-strict** (2026-10-18): the API caps union-typed parameters at 16 across all strict
+  schemas in one request, the three originals carry 10, and its internal grammar limit
+  refused every four- or five-strict-tool layout even at 14 (the probe record in
+  `claudia/proposal_tools.py`). For those two, `agent._schema_defect()` enforces the same
+  declared schema in-process before any field is read, keyed on the declaration's own
+  `strict` flag; what is lost is constrained decoding, and an invalid call is refused with a
+  tool result like a defective one. **Seven** guarantees no schema can express are checked by `_proposal_defect()` in
   `claudia/agent.py`: positive quantity, non-blank `symbol`, non-blank `order_id`, no
   duplicate `changes` entries, `outside_rth` strictly boolean-or-null, every present price a
   finite non-zero number, and a priced `order_type` carrying the price it is priced by. A

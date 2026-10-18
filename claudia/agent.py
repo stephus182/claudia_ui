@@ -3,7 +3,7 @@
 Builds the system prompt, loads conversation history, streams Claude responses
 with multi-turn tool use, and persists every interaction to ConversationStore.
 
-Order proposals: ClaudIA calls one of the three `propose_*` tools (see
+Order proposals: ClaudIA calls one of the five `propose_*` tools (see
 claudia/proposal_tools.py) when it wants to suggest a staged trade. Their handlers
 here record the tool input — which the API has already validated against a strict
 schema — and the recorded dict is handed to the MessageSink for button rendering
@@ -51,6 +51,8 @@ from typing import TYPE_CHECKING, Any
 
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageDeltaUsage, Usage
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import best_match
 
 # Declaration-only tool schemas. Importing them does not couple agent.py to the
 # order-execution layer — that module reaches nothing (CLAUDE.md Hard Rule 1).
@@ -125,7 +127,9 @@ _SAFETY_BLOCK = """
 
 - You are ClaudIA, an AI trading research assistant. You are NOT a licensed financial advisor.
 - You CANNOT place, modify, or cancel any order. You have no tools for order execution.
-  When you want to suggest a trade, call the matching proposal tool (`propose_order`,
+  When you want to suggest a trade, call the matching proposal tool (`propose_order` for a
+  new order, `propose_bracket` for a new order with a profit taker and/or a stop loss
+  attached, `propose_attach` for one attached order on an order already working,
   `propose_cancel`, `propose_modify`) and explain your reasoning. Those tools only render
   a button — they reach nothing. The human must explicitly click it to stage anything.
 - Before proposing any trade action, verify it is consistent with the TRADING PRINCIPLES section above.
@@ -172,7 +176,8 @@ that arithmetic, or say which base you are using instead. Do not switch bases si
 ## ORDER PROPOSAL — USE THE TOOLS, NEVER PROSE
 
 To propose a trade action, call the matching tool: `propose_order` (new),
-`propose_cancel`, or `propose_modify`. There is no text format for proposals — writing
+`propose_bracket` (new, with attached orders), `propose_attach` (one attached order on a
+working order), `propose_cancel`, or `propose_modify`. There is no text format for proposals — writing
 about a proposal without calling the tool means no button is created and nothing is staged.
 Call at most one proposal tool per response.
 
@@ -204,6 +209,18 @@ the new value in a follow-up message. This includes price, quantity, symbol, ord
 - A modify proposal REQUIRES calling `get_order_status(order_id)` first — it returns the
   contract id (`conid`) and full current field set that `get_live_orders` does not expose.
   Never build a `propose_modify` call from `get_live_orders` data alone.
+
+## ATTACHED ORDERS — NON-OVERRIDABLE
+
+A profit taker or a stop loss is ONLY ever an attached order: `children` on `propose_bracket` for
+a new order, or `propose_attach` on an order already working.
+NEVER propose the exit as a separate standalone `propose_order` — not "meanwhile", not "to be
+safe": a standalone opposite-side order is live immediately and can open the wrong position.
+IBKR holds an attached
+order and releases it only when the parent fills; when one attached order fills, IBKR cancels
+the other. A child is the parent's size, the opposite side and the same contract — never type
+those. For `propose_attach`, `order_id` and the parent's fields come from a tool result in this
+conversation, never from memory.
 
 ## MODIFY PARAMETER IMMUTABILITY — NON-OVERRIDABLE
 
@@ -283,6 +300,8 @@ _PROPOSAL_KINDS: dict[str, str] = {
     "propose_order": "order",
     "propose_cancel": "cancel",
     "propose_modify": "modify",
+    "propose_bracket": "bracket",
+    "propose_attach": "attach",
 }
 """Tool name -> the proposal kind recorded in `_pending_proposal` and dispatched on."""
 
@@ -458,6 +477,8 @@ _PROPOSAL_DECISION_TOOLS: dict[str, str] = {
     "trade_proposed": "propose_order",
     "trade_cancel_proposed": "propose_cancel",
     "trade_modify_proposed": "propose_modify",
+    "trade_bracket_proposed": "propose_bracket",
+    "trade_attach_proposed": "propose_attach",
 }
 """Rendered-proposal decision type -> the tool call that produced it.
 
@@ -637,8 +658,8 @@ _UNBACKED_CLAIM_OPERATOR_NOTE = (
     "Your preceding message told the user an order action was completed, but you called no "
     "proposal tool in that turn: no staging button was created and nothing was staged. The "
     "user has been told. Do not repeat or defend that claim. Writing about a proposal is "
-    "not proposing — call `propose_order`, `propose_cancel` or `propose_modify` if you "
-    "intend one."
+    "not proposing — call `propose_order`, `propose_bracket`, `propose_attach`, "
+    "`propose_cancel` or `propose_modify` if you intend one."
 )
 """Operator-channel body for a narrated action nothing backs. See `_append_operator_message`."""
 
@@ -1368,6 +1389,118 @@ _REQUIRED_PRICES: dict[str, tuple[str, ...]] = {
     "STOP_LIMIT": ("limit_price", "stop_price"),
 }
 
+# An attached order (gap #36, 2026-10-18): the child object `propose_bracket.children` and
+# `propose_attach.child` share. Its own rules — the ones a schema cannot express — live in
+# `_child_defect`; everything it shares with the parent (contract, size, side) is derived on
+# the order path and never typed, so there is nothing of it to check here.
+_CHILD_KINDS: tuple[str, ...] = ("profit_taker", "stop_loss")
+_CHILD_PRICE_FIELDS: tuple[str, ...] = ("price", "limit_price")
+# The parent price a child's price is compared against: the limit of a LMT or STOP_LIMIT
+# parent, the trigger of a STP parent. MKT is absent: no reference, no comparison.
+_REFERENCE_FIELD: dict[str, str] = {
+    "LMT": "limit_price",
+    "STOP_LIMIT": "limit_price",
+    "STP": "stop_price",
+}
+
+
+def _reference_price(parent: dict[str, Any]) -> float | None:
+    """The parent price a child is compared against; None for a MKT parent (no comparison)."""
+    field = _REFERENCE_FIELD.get(str(parent.get("order_type")))
+    value = parent.get(field) if field else None
+    if isinstance(value, bool) or not isinstance(value, int | float) or not isfinite(value):
+        return None
+    return float(value)
+
+
+def _child_defect(child: Any, parent: dict[str, Any], where: str) -> str | None:
+    """One attached order's own rules — the ones strict mode cannot express.
+
+    IBKR's words (the order types catalogue, Bracket, scraped 2026-10-17): "A BUY order is
+    bracketed by a high-side sell limit order and a low-side sell stop order. A SELL order
+    is bracketed by a high-side buy stop order and a low side buy limit order." So a profit
+    taker on a BUY parent sits above the parent's reference price and its stop loss below;
+    on a SELL parent the two swap. A MKT parent has no reference price and gets no side
+    check. The type checks are belt-and-braces, as `_proposal_defect`'s are.
+    """
+    if not isinstance(child, dict):
+        return f"{where} is not an object"
+    kind = child.get("kind")
+    if kind not in _CHILD_KINDS:
+        return f"{where}.kind={kind!r} must be profit_taker or stop_loss"
+    for field in _CHILD_PRICE_FIELDS:
+        price = child.get(field)
+        if price is None:
+            continue
+        if (
+            isinstance(price, bool)
+            or not isinstance(price, int | float)
+            or not isfinite(price)
+            or price == 0
+        ):
+            return f"{where}.{field}={price!r} is not a price"
+    if child.get("price") is None:
+        return f"{where}.price is required"
+    if kind == "profit_taker" and child.get("limit_price") is not None:
+        return f"{where}: a profit taker is one limit price; limit_price must be null"
+    outside = child.get("outside_rth")
+    if outside is not None and not isinstance(outside, bool):
+        return f"{where}.outside_rth={outside!r} must be true, false or null"
+    reference = _reference_price(parent)
+    if reference is not None:
+        action = str(parent.get("action", "")).upper()
+        high_side = (kind == "profit_taker") == (action == "BUY")
+        price = float(child["price"])
+        if high_side and price <= reference:
+            return (
+                f"{where}: a {kind} on a {action} parent must be above the parent's {reference:g}"
+            )
+        if not high_side and price >= reference:
+            return (
+                f"{where}: a {kind} on a {action} parent must be below the parent's {reference:g}"
+            )
+    return None
+
+
+# One validator per proposal tool, built once from the declaration itself. The flag beside
+# it is the declaration's own `strict`: where it is true the API compiles the schema into a
+# grammar and the input cannot be invalid; where it is false (`propose_bracket`,
+# `propose_attach` — the API's union budget, proposal_tools.py's 2026-10-18 probe record)
+# this process is the outer layer, and `_schema_defect` runs it.
+_PROPOSAL_VALIDATORS: dict[str, tuple[bool, Draft202012Validator]] = {
+    str(tool["name"]): (bool(tool["strict"]), Draft202012Validator(tool["input_schema"]))
+    for tool in PROPOSAL_TOOLS
+}
+
+
+def _schema_defect(name: str, inputs: Any) -> str | None:
+    """The schema's own guarantees — types, enums, required keys, closed objects — for a
+    proposal tool the API does not enforce them on (2026-10-18, gap #36).
+
+    Validates `inputs` against the tool's OWN `input_schema`, so `proposal_tools.py` stays
+    the single declaration of the contract; nothing is re-typed here. Runs before any field
+    of a non-strict proposal is read — `_proposal_defect` assumes a schema-valid dict, and a
+    list payload or a string price would otherwise reach it (the 2026-07-27 crash vectors).
+    A strict tool returns None at once: the API already refused anything this would find.
+    Rejects whole, never repairs: the validator reads the instance and never writes to it
+    (measured on jsonschema 4.26.0 with a `default` planted in the schema).
+
+    Args:
+        name: One of `PROPOSAL_TOOL_NAMES`.
+        inputs: `tool_use.input` as received — any JSON value, not yet trusted to be a dict.
+
+    Returns:
+        The most relevant violation as one line, or None when the input validates.
+    """
+    strict, validator = _PROPOSAL_VALIDATORS[name]
+    if strict:
+        return None
+    error = best_match(validator.iter_errors(inputs))
+    if error is None:
+        return None
+    where = "/".join(str(part) for part in error.absolute_path) or "the proposal"
+    return f"{where}: {error.message}"
+
 
 def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     """Return why a proposal must be rejected, or None when it carries no defect.
@@ -1376,7 +1509,7 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     `proposal_tools.py`'s schemas, so nothing here re-checks those. Seven things it cannot
     express are checked here instead, because retiring `order_proposal_schema.py` would
     otherwise drop each guarantee silently. Each applies to every proposal kind that
-    declares the field — the schemas share `_QUANTITY` across all three tools:
+    declares the field — the schemas share `_QUANTITY` across all five tools:
 
     1. `quantity` is a finite number > 0 — `exclusiveMinimum` is a hard 400 on the tools
        endpoint (probed 2026-07-27), so the bound lives only in the field's description:
@@ -1410,8 +1543,12 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     The type checks below are belt-and-braces against a caller that is not the strict tool
     loop (tests, a future non-API path); they are not a claim that the schema fails.
 
+    A bracket's children and an attach's child add the child rules of `_child_defect`
+    (gap #36, 2026-10-18); a bracket parent follows the order rules, an attach parent the
+    cancel rules — the shapes those tools are built from.
+
     Args:
-        kind: "order", "cancel", or "modify".
+        kind: "order", "cancel", "modify", "bracket" or "attach".
         inputs: The tool_use.input dict, **never mutated** — order parameters are immutable,
             so a defective proposal is rejected whole, never repaired.
 
@@ -1433,7 +1570,7 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     if not isinstance(symbol, str) or not symbol.strip():
         return f"symbol={symbol!r} is blank"
 
-    if kind in ("cancel", "modify"):
+    if kind in ("cancel", "modify", "attach"):
         order_id = inputs.get("order_id")
         if not isinstance(order_id, str) or not order_id.strip():
             return f"order_id={order_id!r} is blank"
@@ -1464,7 +1601,7 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
     # the human, never sent, so demanding them would refuse a legitimate cancel over a
     # label. The check above is a different rule and does apply to cancel: a value that is
     # present must be a real number, whichever kind carries it.
-    if kind in ("order", "modify"):
+    if kind in ("order", "modify", "bracket"):
         order_type = inputs.get("order_type")
         for field in _REQUIRED_PRICES.get(order_type, ()) if isinstance(order_type, str) else ():
             if inputs.get(field) is None:
@@ -1482,6 +1619,16 @@ def _proposal_defect(kind: str, inputs: dict[str, Any]) -> str | None:
         duplicated = sorted({f for f in fields if fields.count(f) > 1})
         if duplicated:
             return f"changes names {', '.join(duplicated)} more than once"
+
+    if kind == "bracket":
+        children = inputs.get("children")
+        if not isinstance(children, list) or not children:
+            return "children must list at least one attached order"
+        for i, child in enumerate(children):
+            if (defect := _child_defect(child, inputs, f"children[{i}]")) is not None:
+                return defect
+    if kind == "attach" and (defect := _child_defect(inputs.get("child"), inputs, "child")):
+        return defect
 
     return None
 
@@ -2183,6 +2330,8 @@ class ClaudIAAgent:
                 "order": self._sink.send_order_proposal,
                 "cancel": self._sink.send_cancel_proposal,
                 "modify": self._sink.send_modify_proposal,
+                "bracket": self._sink.send_bracket_proposal,
+                "attach": self._sink.send_attach_proposal,
             }.get(kind or "")
             rendered = False
             if render is None:
@@ -2209,6 +2358,8 @@ class ClaudIAAgent:
                     msg_id,
                     cancel_proposal=proposal if kind == "cancel" else None,
                     modify_proposal=proposal if kind == "modify" else None,
+                    bracket_proposal=proposal if kind == "bracket" else None,
+                    attach_proposal=proposal if kind == "attach" else None,
                 )
 
         # Every claim the turn's evidence does not back, in the order the four detectors
@@ -3108,13 +3259,21 @@ class ClaudIAAgent:
                 "proposal stands."
             )
 
+        # The outer layer, where the API cannot run it (2026-10-18): a tool declared
+        # non-strict is checked against its own schema here, before any field is read.
+        defect = _schema_defect(name, inputs)
+
         # Poka-yoke (2026-09-11): a modify copies every unchanged field from the order's
         # current field set, so that read has to be in evidence *this turn*, not recalled
         # — the immutability rule wants the latest set, and a fresh read costs one call.
         # The real CL turn (get_order_status, then propose_modify) passes as is; a parallel
         # call listing the proposal before the read is refused here and re-proposed on the
         # next pass, since `_called_tools_this_turn` grows in execution order.
-        if kind == "modify" and "get_order_status" not in self._called_tools_this_turn:
+        if (
+            defect is None
+            and kind == "modify"
+            and "get_order_status" not in self._called_tools_this_turn
+        ):
             order_id = inputs.get("order_id", "?")
             log.warning(
                 "Rejected propose_modify: get_order_status(%s) not called this turn", order_id
@@ -3126,7 +3285,8 @@ class ClaudIAAgent:
                 "No staging button was created and nothing was staged."
             )
 
-        defect = _proposal_defect(kind, inputs)
+        if defect is None:
+            defect = _proposal_defect(kind, inputs)
         if defect is not None:
             log.warning("Rejected %s proposal: %s", name, defect)
             return (
@@ -3145,7 +3305,7 @@ class ClaudIAAgent:
     def _handle_local_tool(self, name: str, inputs: dict[str, Any]) -> str:
         """Dispatch every locally-executed tool and return a string result.
 
-        Two groups, both listed in `_LOCALLY_HANDLED`: the three `propose_*` tools, which
+        Two groups, both listed in `_LOCALLY_HANDLED`: the five `propose_*` tools, which
         only record a proposal (`_record_proposal`), and the five utility tools
         (list_doc_versions, get_doc_version, search_past_conversations, fetch_web_page,
         get_live_pnl) that are declared alongside the toolkit's but executed here rather
@@ -3357,6 +3517,8 @@ class ClaudIAAgent:
         msg_id: int,
         cancel_proposal: dict[str, Any] | None = None,
         modify_proposal: dict[str, Any] | None = None,
+        bracket_proposal: dict[str, Any] | None = None,
+        attach_proposal: dict[str, Any] | None = None,
     ) -> None:
         """Log a user-directed trade proposal to the proposals table for future recall.
 
@@ -3403,6 +3565,35 @@ class ClaudIAAgent:
                 symbol=symbol,
                 message_id=msg_id,
                 metadata={"order": modify_proposal},
+            )
+        elif bracket_proposal:
+            symbol = bracket_proposal.get("symbol", "")
+            action = bracket_proposal.get("action", "")
+            qty = bracket_proposal.get("quantity", "")
+            reason = bracket_proposal.get("reason", "")
+            children = bracket_proposal.get("children") or []
+            kinds = ", ".join(str(c.get("kind", "?")) for c in children if isinstance(c, dict))
+            self._store.add_decision(
+                session_id=self._session_id,
+                decision_type="trade_bracket_proposed",
+                summary_text=f"{action} {qty} {symbol} with {kinds} attached: {reason}",
+                symbol=symbol,
+                message_id=msg_id,
+                metadata={"order": bracket_proposal},
+            )
+        elif attach_proposal:
+            symbol = attach_proposal.get("symbol", "")
+            order_id = attach_proposal.get("order_id", "")
+            reason = attach_proposal.get("reason", "")
+            child = attach_proposal.get("child")
+            kind = child.get("kind", "?") if isinstance(child, dict) else "?"
+            self._store.add_decision(
+                session_id=self._session_id,
+                decision_type="trade_attach_proposed",
+                summary_text=f"ATTACH {kind} to order {order_id} ({symbol}): {reason}",
+                symbol=symbol,
+                message_id=msg_id,
+                metadata={"order": attach_proposal},
             )
 
     async def handle_image(self, image_b64: str, media_type: str, caption: str = "") -> None:

@@ -30,6 +30,8 @@ RENDERED_PROPOSAL_TYPES: tuple[str, ...] = (
     "trade_proposed",
     "trade_cancel_proposed",
     "trade_modify_proposed",
+    "trade_bracket_proposed",
+    "trade_attach_proposed",
 )
 """The decision types that mean **a staging button reached the user**.
 
@@ -614,6 +616,10 @@ class ConversationStore:
           - ``trade_proposed`` — a new-order staging button was rendered for the user
           - ``trade_cancel_proposed`` — a cancel staging button was rendered
           - ``trade_modify_proposed`` — a modify staging button was rendered
+          - ``trade_bracket_proposed`` — a bracket staging button (a parent with attached
+            children) was rendered (gap #36, 2026-10-18)
+          - ``trade_attach_proposed`` — an attach staging button (one child on a working
+            order) was rendered
           - ``proposal_render_failed`` — a proposal was accepted but **no button reached
             the user**; nothing was staged and no order exists
           - ``proposal_claim_unbacked`` — the assistant text claimed a completed order
@@ -638,7 +644,7 @@ class ConversationStore:
             honest as those three fields.
 
         The three failure types are deliberately their own types rather than flags on the
-        three proposal types: those must keep meaning "a button was shown", or every
+        five proposal types: those must keep meaning "a button was shown", or every
         historical row and every regression baseline silently changes meaning. They are
         also distinct from each other, because they describe different states of the tool
         loop and no query or report may conflate them:

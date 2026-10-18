@@ -110,12 +110,56 @@ def test_schema_rejects_every_known_crash_vector(payload: Any) -> None:
     assert errors, f"schema accepted a known crash vector: {payload}"
 
 
-def test_every_tool_is_strict_and_closed() -> None:
-    """Every tool is `strict: true` with closed objects — the crash vectors are impossible."""
+# The API's cap on union-typed parameters (every anyOf / type array) across ALL strict schemas
+# in one request — measured 2026-10-18 (the module's probe record): 17 is refused, and the
+# internal grammar limit refused every four- or five-strict-tool layout even at 14.
+_API_UNION_BUDGET = 16
+
+
+def _union_count(node: Any) -> int:
+    """Properties typed with anyOf or a type array, at every depth — what the API counts."""
+    count = 0
+    if isinstance(node, dict):
+        for prop in (node.get("properties") or {}).values():
+            if isinstance(prop, dict) and ("anyOf" in prop or isinstance(prop.get("type"), list)):
+                count += 1
+            count += _union_count(prop)
+        count += _union_count(node.get("items"))
+        for branch in node.get("anyOf") or []:
+            count += _union_count(branch)
+    return count
+
+
+def test_every_tool_is_closed_and_strict_where_the_api_budget_allows() -> None:
+    """Closed objects on all five; `strict: true` on exactly the three the API can compile.
+
+    The two bracket tools are declared non-strict — explicitly, never by omission — because
+    the five together exceed the API's union budget (the module's 2026-10-18 record); the
+    same closed shape is enforced in-process by `agent._schema_defect`, which keys on this
+    very flag. A tool whose `strict` key is absent would be enforced by neither.
+    """
     for tool in PROPOSAL_TOOLS:
-        assert tool["strict"] is True
+        assert "strict" in tool, tool["name"]
         assert tool["input_schema"]["additionalProperties"] is False
         assert tool["input_schema"]["required"]
+    strict = {str(t["name"]) for t in PROPOSAL_TOOLS if t["strict"] is True}
+    assert strict == {"propose_order", "propose_cancel", "propose_modify"}
+    assert {str(t["name"]) for t in PROPOSAL_TOOLS if t["strict"] is False} == {
+        "propose_bracket",
+        "propose_attach",
+    }
+
+
+def test_the_strict_tools_stay_inside_the_api_union_budget() -> None:
+    """A 17th union-typed parameter across the strict tools is a 400 on EVERY request.
+
+    The live probe is the authority; this is the local guard that fails before a billed
+    request does. It cannot see the internal grammar limit, which is why a change here still
+    needs the probe (`CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api`).
+    """
+    strict_unions = sum(_union_count(t["input_schema"]) for t in PROPOSAL_TOOLS if t["strict"])
+    assert strict_unions <= _API_UNION_BUDGET, strict_unions
+    assert strict_unions == 10  # the three originals, unchanged since 2026-09-04
 
 
 def test_no_numeric_constraint_keyword_at_any_depth() -> None:
@@ -273,10 +317,15 @@ def test_live_api_accepts_proposal_tools() -> None:
     throwaway prompt, and no assertion about what the model says.
 
     Sent through `_with_cache_marker`, which is how `agent.py` actually ships them: the
-    last tool in the array — `propose_modify`, since Task 3 appends PROPOSAL_TOOLS last —
+    last tool in the array — `propose_attach` since 2026-10-18 (`propose_modify` before), as
+    the agent appends PROPOSAL_TOOLS last —
     carries the prompt-cache breakpoint. `strict: true` alongside `cache_control` on one
     tool is its own untested combination, and a rejection there would be the same
     registration-time 400 that fails every request. Probed together, 2026-07-27: accepted.
+
+    Since 2026-10-18 the five are three strict and two non-strict: the five strict would
+    carry 22 union-typed parameters against the API's cap of 16 across all strict schemas
+    in a request (the module's probe record). This test is what found it.
     """
     import anthropic
     from dotenv import load_dotenv
@@ -299,6 +348,8 @@ def test_live_api_accepts_proposal_tools() -> None:
         )
     except anthropic.BadRequestError as exc:  # pragma: no cover - only on schema breakage
         pytest.fail(f"live API rejected PROPOSAL_TOOLS on {model}: {exc}")
+    # The evidence line for the module docstring's probe record (visible with `-s`).
+    print(f"live API accepted {len(PROPOSAL_TOOLS)} PROPOSAL_TOOLS on {model}")
 
 
 def test_valid_proposal_is_accepted() -> None:
@@ -417,3 +468,92 @@ def test_modify_description_does_not_point_outside_rth_at_a_source_that_lacks_it
     desc = next(t for t in PROPOSAL_TOOLS if t["name"] == "propose_modify")["description"]
     assert "outside_rth" in desc
     assert "futures" in desc.lower()
+
+
+# --- Brackets and attached orders (gap #36, 2026-10-18) -----------------------------------
+# The parent of a bracket is a propose_order; the parent of an attach is the propose_cancel
+# identity (the working order's fields); the child is one shape shared by both tools.
+
+_CHILD_OK = {
+    "kind": "profit_taker",
+    "price": 170.0,
+    "limit_price": None,
+    "tif": None,
+    "outside_rth": None,
+}
+
+
+def _valid_bracket() -> dict[str, Any]:
+    """A well-formed bracket proposal: propose_order's eleven fields plus one child."""
+    return {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "LMT",
+        "limit_price": 150.0,
+        "stop_price": None,
+        "tif": "GTC",
+        "sec_type": "STK",
+        "conid": 265598,
+        "outside_rth": None,
+        "reason": "test",
+        "children": [_CHILD_OK],
+    }
+
+
+def test_valid_bracket_proposal_is_accepted() -> None:
+    """A parent with a profit taker and a stop-limit stop loss validates."""
+    ok = {
+        **_valid_bracket(),
+        "children": [
+            _CHILD_OK,
+            {
+                "kind": "stop_loss",
+                "price": 140.0,
+                "limit_price": 139.5,
+                "tif": "DAY",
+                "outside_rth": False,
+            },
+        ],
+    }
+    assert not list(Draft202012Validator(_schema("propose_bracket")).iter_errors(ok))
+
+
+def test_bracket_schema_requires_at_least_one_child() -> None:
+    """`minItems: 1` on `children` — a bracket without a child is a plain order, propose_order's job."""
+    bad = {**_valid_bracket(), "children": []}
+    assert list(Draft202012Validator(_schema("propose_bracket")).iter_errors(bad))
+
+
+def test_valid_attach_proposal_is_accepted() -> None:
+    """A working order's identity plus one child validates."""
+    ok = {
+        "order_id": "123",
+        "symbol": "AAPL",
+        "action": "BUY",
+        "quantity": 1,
+        "order_type": "LMT",
+        "limit_price": 150.0,
+        "stop_price": None,
+        "tif": "GTC",
+        "reason": "test",
+        "child": _CHILD_OK,
+    }
+    assert not list(Draft202012Validator(_schema("propose_attach")).iter_errors(ok))
+
+
+def test_bracket_children_and_attach_child_are_one_shape() -> None:
+    """One child object, defined once: a rule added to one tool cannot be missed by the other."""
+    bracket = _schema("propose_bracket")["properties"]["children"]["items"]
+    attach = _schema("propose_attach")["properties"]["child"]
+    assert bracket is attach
+
+
+def test_bracket_parent_fields_are_propose_orders_and_attach_fields_are_propose_cancels() -> None:
+    """The parents are the existing tools' own tables: the four schemas cannot drift field by field."""
+    order = _schema("propose_order")["properties"]
+    bracket = _schema("propose_bracket")["properties"]
+    assert {k: v for k, v in bracket.items() if k != "children"} == order
+    cancel = _schema("propose_cancel")["properties"]
+    attach = _schema("propose_attach")["properties"]
+    assert {k: v for k, v in attach.items() if k != "child"} == cancel

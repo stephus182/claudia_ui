@@ -28,6 +28,39 @@ restating any of it::
     ACCEPTED  minLength on strings       (NOT used — see "Deliberate omissions")
     ACCEPTED  minItems: 1 on changes     (used)
 
+2026-10-18, gap #36 — `propose_bracket` and `propose_attach` added. `claude-opus-4-8`
+(`claude-opus-5`, `claude-fable-5`, `claude-fable-5-1`: identical), `max_tokens=1`, 14
+requests; the full table is in the git-ignored probe folder
+(`docs/plans/probes/2026-10-17-bracket-live/strict-union-limit-probe.md`)::
+
+    400       the five tools strict — 22 union-typed parameters
+              -> Schemas contains too many parameters with union types (22 parameters
+                 with type arrays or anyOf) ... (limit: 16 parameters with unions)
+              The cap is a TOTAL across every strict schema in one request (the page:
+              "Parameters with union types | 16"); each nullable field is one union.
+              The three original tools carry 10; the child's three nullables and the
+              bracket parent's four add 12. Reproduced on ClaudIA's exact production
+              list (44 core + 5 local + 5 proposal tools) — every request would fail.
+    400       every four- or five-strict-tool layout with the children stripped to
+              14–16 unions, `children` folded onto propose_order included
+              -> The compiled grammar is too large ... reduce the number of strict tools
+                 (the page's "additional internal limits on the compiled grammar size",
+                 no published number)
+    ACCEPTED  the three originals strict (10) + the two new tools NON-strict, shapes
+              verbatim                                   (used — see below)
+    ACCEPTED  children folded onto a strict propose_order (13) + attach non-strict
+              (NOT used — one tool fewer than the design, under an unmeasured ceiling)
+
+So the two bracket tools are declared `strict: False` — the page's own first remedy
+("Mark only critical tools as strict … rely on Claude's natural adherence for simpler
+tools") — and what strict enforced at the API for them is enforced in-process instead:
+`agent._schema_defect` validates the input against the tool's OWN `input_schema` (this
+module stays the single declaration) before any field is read, rejecting whole exactly as
+`_proposal_defect` does. The loss is constrained decoding: the model CAN emit an invalid
+call for those two tools and is refused with a tool result, the path the seven defect
+terms already use. Nothing new reaches the store, a card or a button. Non-strict tools do
+not count toward the budget, so the three originals keep their known-good 10.
+
 Two findings contradict the published reference. **Unsupported keywords are not stripped
 — they are a hard 400**: the SDK's `transform_schema` runs only for
 `output_config.format` / `output_format`, never for `tools=`, so hand-written tool dicts
@@ -64,6 +97,11 @@ have been silently lost:
 3. `order_id` non-blank — `""` and `"   "` both validate (cancel and modify).
 4. No duplicate `changes` entries for the same field — `uniqueItems` is an array
    constraint beyond `minItems` 0/1 and is unsupported.
+
+For `propose_bracket` and `propose_attach` (non-strict, see the 2026-10-18 record) the
+schema's own guarantees — types, enums, required keys, closed objects — are
+`agent._schema_defect`'s to enforce, in-process, before `_proposal_defect` runs; the
+obligations above then apply to them as to the strict three.
 
 Conversely, these WERE gaps in the old validator and are now closed structurally — do not
 re-add hand checks for them: non-numeric or fractional `quantity`, `inf`/`NaN`/`True`
@@ -173,6 +211,94 @@ _CHANGES: dict[str, object] = {
     },
 }
 
+# Brackets and attached orders (gap #36, 2026-10-18). A child is what IBKR defines it to be
+# — the parent's size, the opposite side, the same contract — so none of that is typed here:
+# the model gives a kind, a price, optionally a limit (a stop-limit), its own tif and
+# outside_rth. ONE object serves both `propose_bracket.children` and `propose_attach.child`
+# (identity asserted by the tests), so a rule added to one cannot be missed by the other.
+# Everything the child shares with the parent is derived on the order path from the parent,
+# never typed twice: two structures describing one fact can disagree (the `_CHANGES` lesson).
+_CHILD_KIND: dict[str, object] = {"type": "string", "enum": ["profit_taker", "stop_loss"]}
+# anyOf, the documented nullable form, around the existing enum. Each nullable field here is
+# one union-typed parameter — the budget the 2026-10-18 probe record is about.
+_TIF_OR_NULL: dict[str, object] = {"anyOf": [_TIF, {"type": "null"}]}
+_CHILD: dict[str, object] = {
+    "type": "object",
+    "description": (
+        "One attached order, as IBKR defines it: the parent's size, the opposite side, the same "
+        "contract — none of which is typed here. price is the limit for a profit_taker and the "
+        "trigger for a stop_loss; limit_price (stop_loss only) turns the stop into a stop-limit; "
+        "tif null = the parent's; outside_rth null = send nothing."
+    ),
+    "properties": {
+        "kind": _CHILD_KIND,
+        "price": {"type": "number"},
+        "limit_price": _PRICE,
+        "tif": _TIF_OR_NULL,
+        "outside_rth": _OUTSIDE_RTH,
+    },
+    "required": ["kind", "price", "limit_price", "tif", "outside_rth"],
+    "additionalProperties": False,
+}
+_CHILDREN: dict[str, object] = {
+    "type": "array",
+    "minItems": 1,  # the same probed keyword `_CHANGES` carries
+    "description": "The attached orders — a profit taker and/or a stop loss. At least one.",
+    "items": _CHILD,
+}
+
+# The parent of a bracket IS a propose_order, and the parent of an attach IS the working
+# order propose_cancel names: the two tables below are those tools' own, built once and
+# reused, so the four schemas cannot drift apart field by field.
+_ORDER_PROPERTIES: dict[str, object] = {
+    "symbol": {"type": "string"},
+    "action": _ACTION,
+    "quantity": _QUANTITY,
+    "order_type": _ORDER_TYPE,
+    "limit_price": _PRICE,
+    "stop_price": _PRICE,
+    "tif": _TIF,
+    "sec_type": _SEC_TYPE,
+    "conid": _CONID,
+    "outside_rth": _OUTSIDE_RTH,
+    "reason": {"type": "string"},
+}
+_ORDER_REQUIRED: list[str] = [
+    "symbol",
+    "action",
+    "quantity",
+    "order_type",
+    "limit_price",
+    "stop_price",
+    "tif",
+    "sec_type",
+    "conid",
+    "outside_rth",
+    "reason",
+]
+_CANCEL_PROPERTIES: dict[str, object] = {
+    "order_id": {"type": "string"},
+    "symbol": {"type": "string"},
+    "action": _ACTION,
+    "quantity": _QUANTITY,
+    "order_type": _ORDER_TYPE,
+    "limit_price": _PRICE,
+    "stop_price": _PRICE,
+    "tif": _TIF,
+    "reason": {"type": "string"},
+}
+_CANCEL_REQUIRED: list[str] = [
+    "order_id",
+    "symbol",
+    "action",
+    "quantity",
+    "order_type",
+    "limit_price",
+    "stop_price",
+    "tif",
+    "reason",
+]
+
 PROPOSE_ORDER: dict[str, object] = {
     "name": "propose_order",
     "description": (
@@ -184,32 +310,8 @@ PROPOSE_ORDER: dict[str, object] = {
     "strict": True,
     "input_schema": {
         "type": "object",
-        "properties": {
-            "symbol": {"type": "string"},
-            "action": _ACTION,
-            "quantity": _QUANTITY,
-            "order_type": _ORDER_TYPE,
-            "limit_price": _PRICE,
-            "stop_price": _PRICE,
-            "tif": _TIF,
-            "sec_type": _SEC_TYPE,
-            "conid": _CONID,
-            "outside_rth": _OUTSIDE_RTH,
-            "reason": {"type": "string"},
-        },
-        "required": [
-            "symbol",
-            "action",
-            "quantity",
-            "order_type",
-            "limit_price",
-            "stop_price",
-            "tif",
-            "sec_type",
-            "conid",
-            "outside_rth",
-            "reason",
-        ],
+        "properties": _ORDER_PROPERTIES,
+        "required": _ORDER_REQUIRED,
         "additionalProperties": False,
     },
 }
@@ -225,28 +327,8 @@ PROPOSE_CANCEL: dict[str, object] = {
     "strict": True,
     "input_schema": {
         "type": "object",
-        "properties": {
-            "order_id": {"type": "string"},
-            "symbol": {"type": "string"},
-            "action": _ACTION,
-            "quantity": _QUANTITY,
-            "order_type": _ORDER_TYPE,
-            "limit_price": _PRICE,
-            "stop_price": _PRICE,
-            "tif": _TIF,
-            "reason": {"type": "string"},
-        },
-        "required": [
-            "order_id",
-            "symbol",
-            "action",
-            "quantity",
-            "order_type",
-            "limit_price",
-            "stop_price",
-            "tif",
-            "reason",
-        ],
+        "properties": _CANCEL_PROPERTIES,
+        "required": _CANCEL_REQUIRED,
         "additionalProperties": False,
     },
 }
@@ -307,5 +389,55 @@ PROPOSE_MODIFY: dict[str, object] = {
     },
 }
 
-PROPOSAL_TOOLS: list[dict[str, Any]] = [PROPOSE_ORDER, PROPOSE_CANCEL, PROPOSE_MODIFY]
+PROPOSE_BRACKET: dict[str, object] = {
+    "name": "propose_bracket",
+    "description": (
+        "Surface a NEW order WITH attached orders (a bracket) as a staging button: a parent plus "
+        "a profit taker and/or a stop loss that IBKR holds and releases only when the parent "
+        "fills. Each child is the parent's size, the opposite side and the same contract — give "
+        "only its kind, its price(s), and optionally its own tif and outside_rth. Use this "
+        "whenever the user asks for a profit taker, a stop loss or a bracket on a new order. "
+        "Never propose the exit as a separate standalone order. Renders a button; places nothing."
+    ),
+    # NOT strict: the API's union budget (the 2026-10-18 probe record). The same closed shape
+    # is enforced in-process by `agent._schema_defect`.
+    "strict": False,
+    "input_schema": {
+        "type": "object",
+        "properties": {**_ORDER_PROPERTIES, "children": _CHILDREN},
+        "required": [*_ORDER_REQUIRED, "children"],
+        "additionalProperties": False,
+    },
+}
+
+PROPOSE_ATTACH: dict[str, object] = {
+    "name": "propose_attach",
+    "description": (
+        "Surface ONE attached order (a profit taker or a stop loss) on an order ALREADY WORKING "
+        "at IBKR as a staging button. order_id MUST come from get_live_orders / get_order_status / "
+        "diagnose_orders in this conversation — never from memory; copy the parent's fields from "
+        "that result so the card shows what the child attaches to. The child is the parent's "
+        "size, the opposite side, the same contract — give only its kind, its price(s), and "
+        "optionally tif and outside_rth. One child per call: a profit taker AND a stop loss are "
+        "two calls. Renders a button; attaches nothing by itself."
+    ),
+    # NOT strict — the same budget and the same in-process enforcement as propose_bracket.
+    "strict": False,
+    "input_schema": {
+        "type": "object",
+        "properties": {**_CANCEL_PROPERTIES, "child": _CHILD},
+        "required": [*_CANCEL_REQUIRED, "child"],
+        "additionalProperties": False,
+    },
+}
+
+# Appended last in the agent's tool list, so the cache breakpoint sits on the final entry:
+# it moved from propose_modify to propose_attach once (2026-10-18); do not reorder again.
+PROPOSAL_TOOLS: list[dict[str, Any]] = [
+    PROPOSE_ORDER,
+    PROPOSE_CANCEL,
+    PROPOSE_MODIFY,
+    PROPOSE_BRACKET,
+    PROPOSE_ATTACH,
+]
 PROPOSAL_TOOL_NAMES: frozenset[str] = frozenset(str(t["name"]) for t in PROPOSAL_TOOLS)

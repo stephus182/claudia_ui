@@ -119,3 +119,24 @@ class MessageSink(Protocol):
                 LLM-authored, so the diff is presentation, not a verified before/after.
         """
         ...
+
+    async def send_bracket_proposal(self, proposal: dict[str, Any]) -> None:
+        """Render a bracket proposal (a parent with attached children) for human approval.
+        Never places.
+
+        Args:
+            proposal: `propose_order`'s fields plus `children` — one or more attached orders
+                (`kind`, `price`, `limit_price`, `tif`, `outside_rth`); each is the parent's
+                size, the opposite side and the same contract, derived on the order path.
+        """
+        ...
+
+    async def send_attach_proposal(self, proposal: dict[str, Any]) -> None:
+        """Render an attach proposal (one child on a working order) for human approval.
+        Never attaches.
+
+        Args:
+            proposal: `propose_cancel`'s fields (the working parent as the model read it,
+                keyed by `order_id`) plus `child` — one attached order.
+        """
+        ...

@@ -43,8 +43,8 @@ remote author of the system prompt.
 |---|---|---|
 | The model has no order-execution tool | `agent.py` dispatcher; three closed name sets | `tests/security/test_model_cannot_execute_orders.py` |
 | Execution begins at a human click, never from code | `panel_order_flow.py`, six `on_click` handlers | `tests/security/test_human_click_execution_boundary.py` |
-| Proposing reaches nothing and repairs nothing | `agent._record_proposal`, `_proposal_defect` | `tests/security/test_proposal_tools_are_side_effect_free.py` |
-| Order parameters are immutable; every price is a finite non-zero number | `_proposal_defect`, seven terms | `tests/test_security_regressions.py` |
+| Proposing reaches nothing and repairs nothing | `agent._record_proposal`, `_schema_defect`, `_proposal_defect` | `tests/security/test_proposal_tools_are_side_effect_free.py` |
+| Order parameters are immutable; every price is a finite non-zero number | the declared schema (at the API for the three strict tools; in-process, `_schema_defect`, for the two non-strict bracket tools — 2026-10-18), then `_proposal_defect`, seven terms plus the child's | `tests/test_security_regressions.py` |
 | What the human reads is what the click sends | `_snapshot` deepcopy; one shared price formatter | `tests/test_panel_order_flow.py`, `tests/test_order_flow.py` |
 | Untrusted text cannot execute in the UI, and the four helpers are the only construction sites | `panel_markdown`'s four helpers | `tests/security/test_markup_construction_sites.py` (AST allowlist), `tests/test_security_regressions.py`, `tests/test_panel_system_log.py` |
 | History replays at the role it was stored with; withdrawn rows never return; the one `role: system` channel carries sanitised identity only | `_history_to_messages`, `search_messages`, `_operator_identity` / `_operator_line` | `tests/security/test_stored_content_authority.py` |
@@ -70,9 +70,9 @@ unit run, the pre-push hook, and CI.
 ClaudIA cannot place, modify or cancel an order on its own, and the barrier is in two
 independent layers owned by two repositories.
 
-**This repository's layer.** The model may call `propose_order`, `propose_cancel` or
-`propose_modify`. Those handlers validate, record and return a string; they open no socket and
-touch no client. An accepted proposal is deep-copied and rendered as a card with two buttons.
+**This repository's layer.** The model may call `propose_order`, `propose_cancel`,
+`propose_modify`, `propose_bracket` or `propose_attach`. Those handlers validate, record and
+return a string; they open no socket and touch no client. An accepted proposal is deep-copied and rendered as a card with two buttons.
 The execution cores are reachable only from a function `on_click` registers, each claims a
 one-shot before doing anything else, and nothing in the package writes the parameter Panel
 watches. A rejected proposal creates no button and says so in its tool result.

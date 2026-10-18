@@ -9,6 +9,14 @@ description = "ClaudIA — AI trading assistant powered by ibkr_core_mcp"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "panel>=1.9",
+    # Runtime since 2026-10-18 (gap #36): `claudia/agent.py` validates the two NON-strict
+    # proposal tools (`propose_bracket`, `propose_attach`) against their own declared
+    # schemas in-process — the enforcement the Anthropic API gives the three strict tools
+    # and cannot give these two (the union budget; the probe record in
+    # claudia/proposal_tools.py). Until then a test-only dependency that resolved for a
+    # while only because mcp requires it — an mcp release that dropped or vendored it
+    # would have broken the suite at import time; now it would break the proposal path.
+    "jsonschema>=4.0",
     # No longer a direct import: claudia/panel_chart.py's own `import bokeh.plotting` was
     # removed when that module moved to hvplot/HoloViews (superseded 2026-08-03 — D1,
     # docs/panel/data-surfaces-reference.md). bokeh now reaches this app as a panel
@@ -95,13 +103,11 @@ dev = [
     "pytest-socket>=0.7",
     "mypy>=1.8",
     "ruff>=0.16",
-    # Direct test dependency, not transitive: tests/test_proposal_tools.py imports
-    # jsonschema itself to validate claudia/proposal_tools.py's strict tool schemas
-    # locally. It resolved for a while only because mcp requires it — an mcp release
-    # that dropped or vendored that dependency would have broken the suite at import
-    # time. Test-only: the Anthropic API is what enforces these schemas in production.
-    "jsonschema>=4.0",
-    # Same rule as jsonschema above: a direct test dependency, declared rather than
+    # jsonschema moved to the runtime dependencies on 2026-10-18 (gap #36): agent.py now
+    # enforces the two non-strict proposal schemas in-process with it. Still a direct test
+    # dependency too (tests/test_proposal_tools.py), satisfied by the runtime declaration.
+    #
+    # A direct test dependency, declared rather than
     # inherited. `tests/security/test_cross_repo_contract.py` parses the core dependency's
     # specifier and compares it with the pinned release, which needs real PEP 440 version
     # and specifier semantics — a string comparison would call 2.0.10 older than 2.0.9. It

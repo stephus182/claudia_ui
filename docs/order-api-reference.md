@@ -6,11 +6,15 @@ handling, or debugging an order-related issue.
 
 ## How a proposal is made
 
-A proposal is a **tool call**, not text. ClaudIA calls `propose_order`, `propose_cancel`, or
-`propose_modify` — declared in `claudia/proposal_tools.py` with `strict: true`, so the
+A proposal is a **tool call**, not text. ClaudIA calls `propose_order`, `propose_cancel`,
+`propose_modify`, or (since 2026-10-18, gap #36) `propose_bracket` / `propose_attach` —
+declared in `claudia/proposal_tools.py`. The first three carry `strict: true`, so the
 Anthropic API validates `tool_use.input` against the schema before the handler in
-`claudia/agent.py` ever sees it. The handler records the input and returns a `tool_result`;
-it reaches no IBKR API. There is no fenced text format — the `order-proposal` /
+`claudia/agent.py` ever sees it; the two bracket tools are non-strict (the API's budget of 16
+union-typed parameters across all strict schemas in a request — the module's probe record)
+and `agent._schema_defect` validates them against the same declared schema in-process,
+before any field is read. The handler records the input and returns a `tool_result`; it
+reaches no IBKR API. There is no fenced text format — the `order-proposal` /
 `order-cancel-proposal` blocks and their hand-written validator (`order_proposal_schema.py`)
 were retired 2026-07-27.
 
@@ -18,8 +22,8 @@ Two enforcement layers, and the split matters:
 
 | Layer | Enforces |
 |---|---|
-| `strict: true` JSON Schema (API boundary) | Types, `enum` membership, every `required` key present, `additionalProperties: false`, `minItems: 1` on `changes` |
-| `agent.py:_proposal_defect()` | The four terms a strict schema cannot express: `quantity > 0`, non-blank `symbol`, non-blank `order_id` (cancel/modify), no duplicate `changes` entries |
+| The declared JSON Schema — `strict: true` at the API boundary for order/cancel/modify; `agent.py:_schema_defect()` in-process for bracket/attach (2026-10-18) | Types, `enum` membership, every `required` key present, `additionalProperties: false`, `minItems: 1` on `changes` and on `children` |
+| `agent.py:_proposal_defect()` (+ `_child_defect()` for each attached order) | The terms a schema cannot express: `quantity > 0`, non-blank `symbol`, non-blank `order_id` (cancel/modify/attach), no duplicate `changes` entries, `outside_rth` boolean-or-null, every price finite and non-zero, a priced type carrying its price; a child's kind, its single price for a profit taker, and its side against the parent's reference price in IBKR's words |
 
 Neither layer repairs a value. A defect rejects the whole proposal, creates no button, and
 returns a `REJECTED — <reason>` `tool_result` that says so — order parameters are immutable

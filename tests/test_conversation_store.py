@@ -355,11 +355,17 @@ _SYNTHETIC_CANCEL = {
 }
 
 
-def test_get_rendered_proposals_returns_the_three_rendered_types_oldest_first(store):
-    """All three rendered types are returned oldest first — the order the model replays."""
+def test_get_rendered_proposals_returns_every_rendered_type_oldest_first(store):
+    """All five rendered types are returned oldest first — the order the model replays."""
     store.create_session("sess-l3")
     msg = store.add_message("sess-l3", "assistant", "proposed")
-    for dtype in ("trade_proposed", "trade_cancel_proposed", "trade_modify_proposed"):
+    for dtype in (
+        "trade_proposed",
+        "trade_cancel_proposed",
+        "trade_modify_proposed",
+        "trade_bracket_proposed",
+        "trade_attach_proposed",
+    ):
         store.add_decision(
             session_id="sess-l3",
             decision_type=dtype,
@@ -373,6 +379,8 @@ def test_get_rendered_proposals_returns_the_three_rendered_types_oldest_first(st
         "trade_proposed",
         "trade_cancel_proposed",
         "trade_modify_proposed",
+        "trade_bracket_proposed",
+        "trade_attach_proposed",
     ]
     assert rows[0]["metadata"] == {"order": _SYNTHETIC_CANCEL}  # decoded, not raw JSON
 
@@ -529,6 +537,8 @@ def test_get_completed_order_actions_excludes_proposals_and_unrelated_types(stor
         "trade_proposed",
         "trade_cancel_proposed",
         "trade_modify_proposed",
+        "trade_bracket_proposed",
+        "trade_attach_proposed",
         "proposal_render_failed",
         "proposal_claim_unbacked",
         "backtest_run",
