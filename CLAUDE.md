@@ -379,16 +379,28 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   refusal before Gate 1 — no conid, no order id, no tradeable future — is stage `before_gates`
   (`RefusedBeforeGatesError`, gap #80, 2026-09-28: six such exits reported and returned,
   so they wrote nothing).
-- **Attached profit taker / bracket orders (2026-09-06, reviewed 2026-09-08): supported by the
-  Web API, not yet expressible here.** IBKR takes a bracket as one request — an `orders` array
-  where the parent carries `cOID` and each child `parentId` equal to it — and holds the child
-  until the parent fills. Every layer of this stack carries one ticket (proposal schema, order
-  body, the ibkr_core_mcp client, Gate 2, read-back), so it is Known Gaps #36 with a plan in
-  `docs/plans/` (build deferred). Documented 2026-09-08: the response is one entry per ticket and
-  the reply chain is per ticket, **index-aligned** — `place_order_and_confirm` answers the first
-  entry only, which is right for one ticket and would drop a bracket child's reply. **Never
-  approximate it with two independent proposals** (user rule 2026-09-07): a standalone
-  opposite-side limit is live immediately and can open the wrong position. Finding and sources:
+- **Attached profit taker / bracket orders (gap #36): BUILT 2026-10-18 on branch
+  `bracket-orders`, waiting for the core 2.2.0 pin.** Two tools, one child shape:
+  `propose_bracket` (a new order plus a profit taker and/or a stop loss) and `propose_attach`
+  (ONE child on an order already working; a profit taker AND a stop loss are two calls). A
+  child is the parent's size, the opposite side and the same contract — derived on the order
+  path (`order_flow._child_ticket`) or by the core from IBKR's record of the parent, never
+  typed. IBKR takes a bracket as one request — an `orders` array where the parent carries
+  `cOID` and each child `parentId` equal to it — and holds the child until the parent fills;
+  the response order is not the submission order, so the legs are paired by identifier
+  (`pair_bracket_response`, `attached_entry`), and a pairing problem is said and recorded,
+  never reported as success. The parent gets IBKR's **All or None** where IBKR's product
+  list allows it (stocks, options, bonds — never futures: refused on CME, NYMEX and COMEX),
+  and a multi-lot parent without it gets the red partial-fill line on the card and on Gate 2:
+  warned, never refused. IBKR's own whatif of the array runs before any gate. Both cards end
+  at the core's bracket dialog (`SEND TO IBKR`); the cores are `_execute_staged_bracket_core`
+  and `_execute_attach_core`, one `trade_staged` row per leg naming its parent and siblings; a
+  held child is said to be held, never "working". On the Orders tab a child reads
+  `held (parent N)` or `parent N not in the book` and inherits its parent's origin. A cancel
+  or modify of a bracket leg says what IBKR does to the other legs before Touch ID. **Never
+  approximate it with two independent proposals** (user rule 2026-09-07, a non-overridable
+  section of the safety block since 2026-10-18): a standalone opposite-side limit is live
+  immediately and can open the wrong position. Finding and sources:
   `docs/order-api-reference.md` § Attached profit taker.
 - Modify requests require the **full original order**, not a diff (IBKR API requirement).
   `propose_modify` carries the replacement order in its top-level fields plus a `changes`

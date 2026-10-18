@@ -50,7 +50,10 @@ ORDER_WRITE_NAMES = frozenset(
         "reply_order",
         "place_order_and_confirm",
         "modify_order_and_confirm",
+        "place_bracket_and_confirm",  # gap #36, 2026-10-18
+        "attach_order_and_confirm",
         "_resolve_one_reply",
+        "_resolve_reply_chain",
     }
 )
 GATE_AND_TRANSPORT_NAMES = frozenset(

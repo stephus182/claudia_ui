@@ -371,6 +371,7 @@ What shipped, strongest layer first (commits `7eb5fbc` … `d23c56c`):
 | Same-turn retry | a zero-tool turn whose text still claims a tool result or an action is withdrawn **before display** and run again with the operator note delivered and `tool_choice: any` on the first request (probed per model, `auto` elsewhere); one retry, then the ⚠️ notice; a System-log line is the visible trace | `_RETRIES_PER_TURN`, `_withdraw_attempt`, `retry_tool_choice`, `MessageSink.send_system_note` |
 | Not-completed record | the fifth replay record (§4b) | `_refused_order_records` |
 | Poka-yoke | `propose_modify` is refused unless `get_order_status` ran this turn | `_record_proposal` |
+| Attached orders (2026-10-18, gap #36) | a profit taker or a stop loss is expressed only through `propose_bracket` (children on a new order) or `propose_attach` (one child on a working order); the safety block's ATTACHED ORDERS section forbids a standalone exit `propose_order`; the two tools are non-strict by the API's union budget and validated in-process against their own schema before any defect rule (`_schema_defect`), then the child rules (`_child_defect`: kind, prices, IBKR's side rule against the parent's reference price) | `_SAFETY_BLOCK`, `_record_proposal`, `_proposal_defect` |
 | Shape log | `response shape: text blocks=… tool_use=… thinking blocks=…` per pass — measurement only; the block-count detector was withdrawn when a fabrication was measured inside one block | `_stream_turn` |
 
 Not shipped, with the reason: `xhigh` effort (no measurable gain over the transcript

@@ -586,32 +586,41 @@ against, so the expectations above do not have to be re-derived:
   read-back must say *held* from the parent link, never from the status alone), then
   `Cancelled` with `cannot_cancel_order: true`.
 
-### Why ClaudIA cannot send it today (2026-09-06, re-checked against the 2026-09-08 scrape)
+### What ClaudIA sends — built 2026-10-18 on branch `bracket-orders`, waiting for the 2.2.0 pin
 
-Every layer carries exactly one ticket:
+Until 2026-10-18 every layer carried exactly one ticket; the table below is what each layer
+does now (gap #36; design `docs/plans/2026-10-17-bracket-orders-design.md`):
 
-| Layer | Where | The one-ticket assumption |
+| Layer | Where | Now |
 |---|---|---|
-| Proposal schema | `claudia/proposal_tools.py` | `propose_order` is 11 closed keys, no child; a strict-schema change needs the live-API probe (`live_api` marker) |
-| Order body | `claudia/order_flow.py` (`order_body`) | one dict; `cOID` is set, `parentId` never |
-| Client | `ibkr_core_mcp/client.py` `place_order(account_id, order: dict)` and `get_order_preview` | both wrap the single dict as `{"orders": [api_order]}` — a caller cannot pass two tickets **through those two methods**, and `place_order_and_confirm` answers replies for `response[0]` only. **No longer the blocker, 2026-09-21:** the bracket seam exists on core `main` (unreleased) — `place_bracket_and_confirm` and `get_bracket_preview` take a parent plus children, and it resolves every ticket's reply chain rather than the first entry; the single-order path is deliberately untouched. What remains is the claudia_ui layers in this table, and the fact that the release named in `core-ref.txt` does not carry the seam |
-| Gate 2 | `ibkr_core_mcp/order_confirm.py` | renders one order; the human must see **both** legs before **SEND TO IBKR** |
-| Read-back | `order_flow._read_back` | one order id; the documented bracket response carries one entry per ticket (above), so both ids are available to read back — the child's `PreSubmitted` must read as *held*, not *working* |
-| Orders tab | `claudia/panel_dashboard.py` | no parent column; two candidate fields to measure before adding one — `order_ref` and `child_order_type` (above) |
-| Execution reports | `claudia/execution_listener.py` | already correct: both legs of a bracket are reported since the 2026-09-04 fix |
+| Proposal schema | `claudia/proposal_tools.py` | `propose_bracket` = `propose_order`'s eleven fields + `children` (`minItems: 1`); `propose_attach` = `propose_cancel`'s nine + `child`; ONE child object shared by both (`kind`, `price`, `limit_price`, `tif`, `outside_rth` — size, side and contract are never typed). **Both non-strict**: the API caps union-typed parameters at 16 across all strict schemas in a request and the five strict would carry 22 (the module's probe record); `agent._schema_defect` enforces the same declared schema in-process before `_proposal_defect` |
+| Defect rules | `claudia/agent.py` (`_child_defect`) | every child price finite and non-zero; a profit taker is one limit price; the sides follow IBKR's words ("a BUY is bracketed by a high-side sell limit and a low-side sell stop") against the parent's reference price — the limit for LMT/STOP_LIMIT, the stop for STP, no comparison on a MKT parent |
+| Order body | `claudia/order_flow.py` (`_parent_body`, `_child_ticket`) | the parent by the live-proven one-ticket code plus `cOID` and `allOrNone: true` on IBKR's product classes (stocks, options, bonds — never futures); each child written in full from the parent: its contract, size and account, the opposite side, the parent's TIF unless stated, `parentId` = `cOID`, `manualIndicator` on a future |
+| Client | `ibkr_core_mcp` 2.2.0: `get_bracket_preview` → `place_bracket_and_confirm`; `attach_order_and_confirm` for a working parent | IBKR's own whatif of the ticket array runs BEFORE any gate; one request, one Touch ID, one dialog, every reply resolved; the attach form reads the parent from IBKR, refuses one that is not working before its gates, and completes the child itself — ClaudIA sends the child's own fields and the parent's id, nothing derived |
+| Gate 2 | `ibkr_core_mcp/order_confirm.py` `confirm_bracket_dialog` | the parent plus every child on one screen; on an attach the parent row reads `order N · Submitted · k attached` and the title says ATTACHED ORDER; a multi-lot parent without All or None gets the red `⚠ Partial fill` row (warned, never refused); button `SEND TO IBKR` |
+| Read-back | `order_flow._stage_bracket`, `_attach_order` | the legs are paired by identifier (`pair_bracket_response`, `attached_entry` — the response order is NOT the submission order, measured 2026-09-21); every leg read back on its own, one `trade_staged` row per leg naming its parent and siblings; a child's `PreSubmitted` is said as *held by IBKR until the parent fills*, never *working*; a pairing problem, or an accepted order the response does not link to its parent, is said loudly and recorded, never reported as success |
+| Orders tab | `claudia/dashboard_data.py`, `panel_dashboard.py` | the live-orders feed carries `parentId` (int) on a child row — measured 2026-10-18 — and `order_ref` on the parent only: a child shows `held (parent N)` while its parent is in the book, `parent N not in the book` otherwise (a fill is never inferred from an absence), and inherits its parent's origin |
+| Cancel / modify of a leg | `order_flow._linked_sentence`, `_HELD_CHILD_MODIFY_SENTENCE` | before Touch ID, from the status read the dialog is built from: cancelling a child cancels every attached order of the parent and the parent keeps working if the child was held; cancelling a parent cancels its children (`children_order_ids` is **semicolon**-separated, measured 2026-10-18); a quantity change on a held child is ignored by IBKR, and the core refuses one above the parent's fill once released |
+| Execution reports | `claudia/execution_listener.py` | unchanged: both legs of a bracket are reported since the 2026-09-04 fix |
 
 Hard Rule 1 is unaffected by any of this: a bracket is still one physical click on a request the
-human sees whole. Known Gaps #36 in `docs/project-status.md` tracks it.
+human sees whole. Known Gaps #36 in `docs/project-status.md` tracks it; the branch merges after
+`core-ref.txt` moves to 2.2.0.
+
+**Measured 2026-10-18 on the attach form (core session A5, market closed, prices far away;
+record `docs/plans/probes/2026-10-17-bracket-live/`):** a Ford parent took two, then three
+attached children one request each, every status read linked by `parent_order_id`; two children
+in one request were accepted up to a precaution; after a parent cancel the held children were
+seen both lingering as `Inactive` feed rows with `parentId` and vanishing — which is why the
+Orders tab reads the parent's presence and never infers a fill.
 
 **Two independent orders are NOT a substitute and must never be proposed as one — user
 rule, 2026-09-07.** A standalone opposite-side limit placed *before* the parent fills is a live
 order on its own: at 7700 it fills first and opens a long, the opposite of the intent, with
 the "parent" still resting to double the exposure on the way back. The conditional link
 (`parentId`) *is* the order type; without it there is no profit taker, only two unrelated
-orders. Until the bracket path exists, the profit taker is either attached in TWS/IBKR Mobile
-by hand, or proposed through ClaudIA **only after** the parent's fill has been reported by
-IBKR (§ Automatic execution reports). This rule belongs in ClaudIA's safety block when the
-feature is built, so the model can never "help" by splitting a bracket into two proposals.
+orders. Since 2026-10-18 the rule is a non-overridable section of ClaudIA's safety block
+(ATTACHED ORDERS), so the model can never "help" by splitting a bracket into two proposals.
 
 ### The whatif is BLIND to bracket children — measured live 2026-09-20
 
