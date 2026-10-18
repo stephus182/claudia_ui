@@ -22,11 +22,17 @@ from claudia.order_flow import (
     DISCARD_LABEL,
     KEEP_ORDER_LABEL,
     MODIFY_ORDER_LABEL,
+    STAGE_ATTACHED_LABEL,
+    STAGE_BRACKET_LABEL,
     STAGE_ORDER_LABEL,
     SendStatus,
+    _execute_attach_core,
     _execute_cancel_order_core,
     _execute_modify_order_core,
+    _execute_staged_bracket_core,
     _execute_staged_order_core,
+    _format_attach_summary,
+    _format_bracket_summary,
     _format_cancel_summary,
     _format_modify_summary,
     _format_order_summary,
@@ -44,6 +50,8 @@ log = logging.getLogger(__name__)
 _ORDER_BUTTON_COLORS: dict[str, str] = {
     STAGE_ORDER_LABEL: "primary",
     MODIFY_ORDER_LABEL: "primary",
+    STAGE_BRACKET_LABEL: "primary",  # gap #36, 2026-10-18: both stage a new order
+    STAGE_ATTACHED_LABEL: "primary",
     CANCEL_ORDER_LABEL: "danger",
     DISCARD_LABEL: "danger",
     KEEP_ORDER_LABEL: "default",
@@ -346,5 +354,134 @@ async def render_modify_proposal(
     chat.send(
         pn.Column(summary_pane, pn.Row(modify_btn, discard_btn)),
         user="ClaudIA — Modify Proposal",
+        respond=False,
+    )
+
+
+async def render_bracket_proposal(
+    chat: pn.chat.ChatInterface,
+    proposal: dict[str, Any],
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """Render a bracket proposal — a parent with attached children — with a staging button.
+
+    The one-ticket card's twin (gap #36, 2026-10-18): the same snapshot, the same one-shot,
+    the same two buttons, bound to `_execute_staged_bracket_core`. The summary is the
+    parent's own lines plus one per child, each held by IBKR until the parent fills.
+
+    Args:
+        chat: The session's ChatInterface. Also the target for status messages.
+        proposal: Validated bracket-proposal dict from the LLM.
+        session_id: Session to attribute the decision to. Optional — see
+            `render_order_proposal`.
+        store: Conversation store for decision logging. Optional, as above.
+    """
+    proposal = _snapshot(proposal)
+    contract_label = await asyncio.to_thread(proposal_contract_label, proposal)
+    summary_pane = safe_markdown(_format_bracket_summary(proposal, contract_label=contract_label))
+    acted = _OneShot()
+    stage_btn = _order_button(STAGE_BRACKET_LABEL)
+    discard_btn = _order_button(DISCARD_LABEL)
+    send_status = _make_send_status(chat)
+
+    async def _on_stage_bracket(event: Event) -> None:
+        """Stage the bracket — one request, one Touch ID, one dialog; same one-shot as `_on_stage`."""
+        if not acted.claim():
+            return
+        stage_btn.disabled = True
+        discard_btn.disabled = True
+        try:
+            await _execute_staged_bracket_core(proposal, send_status, session_id, store)
+        except Exception:
+            log.exception("Bracket staging failed (session %s)", session_id)
+            raise
+
+    async def _on_discard_bracket(event: Event) -> None:
+        """Dismiss the proposal without contacting IBKR. Disables both buttons first."""
+        if not acted.claim():
+            return
+        stage_btn.disabled = True
+        discard_btn.disabled = True
+        try:
+            chat.send(
+                "Bracket proposal discarded — nothing was sent to IBKR.",
+                user="ClaudIA",
+                respond=False,
+            )
+        except Exception:
+            log.exception("Failed to send bracket-proposal discard notice (session %s)", session_id)
+            raise
+
+    stage_btn.on_click(_on_stage_bracket)
+    discard_btn.on_click(_on_discard_bracket)
+
+    chat.send(
+        pn.Column(summary_pane, pn.Row(stage_btn, discard_btn)),
+        user="ClaudIA — Bracket Proposal",
+        respond=False,
+    )
+
+
+async def render_attach_proposal(
+    chat: pn.chat.ChatInterface,
+    proposal: dict[str, Any],
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """Render an attach proposal — one child on a working order — with a staging button.
+
+    Bound to `_execute_attach_core` (gap #36, 2026-10-18). The card shows the parent as the
+    model read it; the core reads the parent from IBKR before anything is sent and Gate 2
+    shows it as IBKR holds it, so no contract label is resolved here.
+
+    Args:
+        chat: The session's ChatInterface. Also the target for status messages.
+        proposal: Validated attach-proposal dict from the LLM.
+        session_id: Session to attribute the decision to. Optional — see
+            `render_order_proposal`.
+        store: Conversation store for decision logging. Optional, as above.
+    """
+    proposal = _snapshot(proposal)
+    summary_pane = safe_markdown(_format_attach_summary(proposal))
+    acted = _OneShot()
+    stage_btn = _order_button(STAGE_ATTACHED_LABEL)
+    discard_btn = _order_button(DISCARD_LABEL)
+    send_status = _make_send_status(chat)
+
+    async def _on_stage_attach(event: Event) -> None:
+        """Attach the child — one Touch ID, one dialog; same one-shot as `_on_stage`."""
+        if not acted.claim():
+            return
+        stage_btn.disabled = True
+        discard_btn.disabled = True
+        try:
+            await _execute_attach_core(proposal, send_status, session_id, store)
+        except Exception:
+            log.exception("Attachment failed (session %s)", session_id)
+            raise
+
+    async def _on_discard_attach(event: Event) -> None:
+        """Dismiss the proposal; the working order is untouched. No IBKR call."""
+        if not acted.claim():
+            return
+        stage_btn.disabled = True
+        discard_btn.disabled = True
+        try:
+            chat.send(
+                "Attach proposal discarded — the working order is unchanged at IBKR.",
+                user="ClaudIA",
+                respond=False,
+            )
+        except Exception:
+            log.exception("Failed to send attach-proposal discard notice (session %s)", session_id)
+            raise
+
+    stage_btn.on_click(_on_stage_attach)
+    discard_btn.on_click(_on_discard_attach)
+
+    chat.send(
+        pn.Column(summary_pane, pn.Row(stage_btn, discard_btn)),
+        user="ClaudIA — Attach Proposal",
         respond=False,
     )

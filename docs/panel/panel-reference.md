@@ -189,7 +189,7 @@ inheritance). Notable behavior:
   call in `__exit__` is gated on `failed_title` being `None`. Leaving it unset yields a
   correct auto-title *and* the real error text, for free
   ([`:29-33`](../../claudia/panel_sink.py#L29-L33)).
-- The three proposal methods use **deferred imports** of `claudia.panel_order_flow` to avoid a
+- The five proposal methods use **deferred imports** of `claudia.panel_order_flow` to avoid a
   `panel_app ↔ panel_sink` import cycle ([`:122-132`](../../claudia/panel_sink.py#L122-L132)).
 
 Wiring: `panel_app.py` constructs the sink with `tv_bridge_getter=lambda: _tv_bridge`, which

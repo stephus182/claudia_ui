@@ -156,3 +156,25 @@ async def test_send_modify_proposal_delegates_to_panel_order_flow():
     with patch("claudia.panel_order_flow.render_modify_proposal", new=AsyncMock()) as mock_render:
         await sink.send_modify_proposal(proposal)
         mock_render.assert_awaited_once_with(chat, proposal, session_id="s1", store=None)
+
+
+@pytest.mark.asyncio
+async def test_send_bracket_proposal_delegates_to_panel_order_flow():
+    """Bracket rendering is delegated rather than reimplemented in the sink (gap #36)."""
+    chat = _make_chat()
+    sink = PanelMessageSink(chat=chat, session_id="s1", store=None)
+    proposal = {"symbol": "AAPL", "action": "BUY", "quantity": 1, "children": []}
+    with patch("claudia.panel_order_flow.render_bracket_proposal", new=AsyncMock()) as mock_render:
+        await sink.send_bracket_proposal(proposal)
+        mock_render.assert_awaited_once_with(chat, proposal, session_id="s1", store=None)
+
+
+@pytest.mark.asyncio
+async def test_send_attach_proposal_delegates_to_panel_order_flow():
+    """Attach rendering is delegated rather than reimplemented in the sink (gap #36)."""
+    chat = _make_chat()
+    sink = PanelMessageSink(chat=chat, session_id="s1", store=None)
+    proposal = {"order_id": "123", "symbol": "AAPL", "child": {}}
+    with patch("claudia.panel_order_flow.render_attach_proposal", new=AsyncMock()) as mock_render:
+        await sink.send_attach_proposal(proposal)
+        mock_render.assert_awaited_once_with(chat, proposal, session_id="s1", store=None)

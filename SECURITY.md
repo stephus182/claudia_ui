@@ -42,7 +42,7 @@ remote author of the system prompt.
 | Control | Where | Enforced by |
 |---|---|---|
 | The model has no order-execution tool | `agent.py` dispatcher; three closed name sets | `tests/security/test_model_cannot_execute_orders.py` |
-| Execution begins at a human click, never from code | `panel_order_flow.py`, six `on_click` handlers | `tests/security/test_human_click_execution_boundary.py` |
+| Execution begins at a human click, never from code | `panel_order_flow.py`, ten `on_click` handlers (two per card: place, cancel, modify, bracket, attach) | `tests/security/test_human_click_execution_boundary.py` |
 | Proposing reaches nothing and repairs nothing | `agent._record_proposal`, `_schema_defect`, `_proposal_defect` | `tests/security/test_proposal_tools_are_side_effect_free.py` |
 | Order parameters are immutable; every price is a finite non-zero number | the declared schema (at the API for the three strict tools; in-process, `_schema_defect`, for the two non-strict bracket tools — 2026-10-18), then `_proposal_defect`, seven terms plus the child's | `tests/test_security_regressions.py` |
 | What the human reads is what the click sends | `_snapshot` deepcopy; one shared price formatter | `tests/test_panel_order_flow.py`, `tests/test_order_flow.py` |

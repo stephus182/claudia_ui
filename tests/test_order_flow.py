@@ -12,20 +12,27 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from ibkr_core_mcp.exceptions import HumanAuthError, OrderValidationError
+from ibkr_core_mcp.exceptions import HumanAuthError, IBKRAPIError, OrderValidationError
 
 from claudia import order_flow
 from claudia.order_flow import (
     _READBACK_DELAY_S,
+    _all_or_none,
+    _child_ticket,
     _compare_modify_readback,
+    _execute_attach_core,
     _execute_cancel_order_core,
     _execute_modify_order_core,
+    _execute_staged_bracket_core,
     _execute_staged_order_core,
     _extract_order_id,
+    _format_attach_summary,
+    _format_bracket_summary,
     _format_cancel_summary,
     _format_modify_summary,
     _format_order_summary,
     _is_ibkr_rejection,
+    _partial_fill_line,
     _read_back,
     _resolve_account_id,
 )
@@ -4983,3 +4990,507 @@ async def test_a_fractional_replacement_quantity_the_contract_refuses_is_refused
         and kwargs["metadata"]["stage"] == "before_gates"
     )
     assert "permits no fractional quantity" in kwargs["summary_text"], kwargs["summary_text"]
+
+
+# ── Brackets and attached orders (gap #36, 2026-10-18) — pure helpers, no client ─────────
+
+_PARENT_BODY: dict[str, Any] = {
+    "conid": 265598,
+    "orderType": "LMT",
+    "side": "BUY",
+    "tif": "GTC",
+    "quantity": 2,
+    "ticker": "AAPL",
+    "acctId": "U1234567",
+    "cOID": "CLAUDIA-1",
+    "_companyName": "APPLE INC",
+    "_currency": "USD",
+}
+_PROPOSAL_BRACKET_STK: dict[str, Any] = {
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LMT",
+    "limit_price": 150.0,
+    "stop_price": None,
+    "tif": "GTC",
+    "sec_type": "STK",
+    "conid": 265598,
+    "outside_rth": None,
+    "reason": "r",
+    "children": [],
+}
+_PT = {
+    "kind": "profit_taker",
+    "price": 170.0,
+    "limit_price": None,
+    "tif": None,
+    "outside_rth": None,
+}
+_SL = {"kind": "stop_loss", "price": 140.0, "limit_price": None, "tif": "DAY", "outside_rth": None}
+
+
+def test_a_child_ticket_is_the_parents_size_side_inverse_contract_and_link():
+    """IBKR's definition of an attached order, written in full from the parent ClaudIA built."""
+    kid = _child_ticket(_PARENT_BODY, _PT)
+    keys = ("conid", "side", "quantity", "tif", "parentId", "acctId", "orderType", "price")
+    assert {k: kid[k] for k in keys} == {
+        "conid": 265598,
+        "side": "SELL",
+        "quantity": 2,
+        "tif": "GTC",
+        "parentId": "CLAUDIA-1",
+        "acctId": "U1234567",
+        "orderType": "LMT",
+        "price": 170.0,
+    }
+    assert "cOID" not in kid and "outsideRTH" not in kid and kid["_currency"] == "USD"
+
+
+def test_a_stop_loss_with_a_limit_is_a_stop_limit_child_with_its_own_tif_and_rth():
+    """`limit_price` on a stop loss makes it STOP_LIMIT: `price` the limit, `auxPrice` the stop."""
+    kid = _child_ticket(
+        _PARENT_BODY,
+        {
+            "kind": "stop_loss",
+            "price": 140.0,
+            "limit_price": 139.5,
+            "tif": "DAY",
+            "outside_rth": True,
+        },
+    )
+    assert (kid["orderType"], kid["price"], kid["auxPrice"], kid["tif"], kid["outsideRTH"]) == (
+        "STOP_LIMIT",
+        139.5,
+        140.0,
+        "DAY",
+        True,
+    )
+
+
+def test_a_futures_parent_passes_manual_indicator_to_its_child():
+    """CME Rule 536-B: every ticket of a futures bracket carries `manualIndicator`."""
+    kid = _child_ticket(
+        {**_PARENT_BODY, "manualIndicator": True},
+        {
+            "kind": "stop_loss",
+            "price": 7000.0,
+            "limit_price": None,
+            "tif": None,
+            "outside_rth": None,
+        },
+    )
+    assert kid["manualIndicator"] is True
+
+
+@pytest.mark.parametrize(
+    "sec_type, expected",
+    [
+        ("STK", True),
+        ("OPT", True),
+        ("BOND", True),
+        ("FUT", False),
+        ("FOP", False),
+        ("CASH", False),
+        ("WAR", False),
+    ],
+)
+def test_all_or_none_follows_ibkrs_product_list(sec_type, expected):
+    """IBKR's catalogue (2026-10-17): All or None on Stocks, ETFs, Options, Bonds, EFPs; never futures."""
+    assert _all_or_none(sec_type) is expected
+
+
+@pytest.mark.parametrize(
+    "quantity, aon, warned",
+    [(1, True, False), (1, False, False), (2, True, False), (2, False, True)],
+)
+def test_the_partial_fill_line_is_keyed_on_the_attribute_not_the_instrument(quantity, aon, warned):
+    """The card's twin of the core dialog's `⚠ Partial fill` row: a multi-lot parent without AON."""
+    line = _partial_fill_line(quantity, aon)
+    assert (line is not None) is warned
+    if line is not None:
+        assert line.startswith(
+            "🔴 **Quantity 2: a partial fill of the parent leaves each held child at 2."
+        )
+
+
+def test_the_bracket_summary_lists_the_parent_then_each_child_as_held():
+    """The parent as a plain order, then each child's own line, each held until the parent fills."""
+    text = _format_bracket_summary({**_PROPOSAL_BRACKET_STK, "children": [_PT, _SL]})
+    assert "**BUY 1 AAPL** (LMT @ 150.00 limit, GTC)" in text
+    assert (
+        "**Profit taker:** SELL 1 LMT @ 170.00 limit · GTC · held by IBKR until the parent fills"
+        in text
+    )
+    assert (
+        "**Stop loss:** SELL 1 STP @ 140.00 stop · DAY · held by IBKR until the parent fills"
+        in text
+    )
+    assert "when one child fills, IBKR cancels the other" in text
+    assert "STAGE BRACKET" in text and "SEND TO IBKR" in text and "🔴" not in text
+
+
+def test_the_bracket_summary_warns_on_a_multi_lot_futures_parent_and_not_on_a_stock():
+    """A stock parent gets All or None, so no partial fill; a future cannot, so the red line."""
+    fut = _format_bracket_summary(
+        {
+            **_PROPOSAL_BRACKET_STK,
+            "sec_type": "FUT",
+            "symbol": "ES",
+            "quantity": 2,
+            "conid": 1,
+            "children": [_PT],
+        }
+    )
+    assert "🔴 **Quantity 2:" in fut
+    stk = _format_bracket_summary({**_PROPOSAL_BRACKET_STK, "quantity": 2, "children": [_PT]})
+    assert "🔴" not in stk
+
+
+def test_the_attach_summary_names_the_working_order_and_the_one_child():
+    """The working order as the model read it, the one child, and what a timeout leaves."""
+    text = _format_attach_summary(
+        {
+            "order_id": "123",
+            "symbol": "AAPL",
+            "action": "BUY",
+            "quantity": 1,
+            "order_type": "LMT",
+            "limit_price": 150.0,
+            "stop_price": None,
+            "tif": "GTC",
+            "reason": "r",
+            "child": {
+                "kind": "stop_loss",
+                "price": 140.0,
+                "limit_price": None,
+                "tif": None,
+                "outside_rth": None,
+            },
+        }
+    )
+    assert "**Attach to order 123:** BUY 1 AAPL (LMT @ 150.00 limit, GTC)" in text
+    assert (
+        "**Stop loss:** SELL 1 STP @ 140.00 stop · GTC · held by IBKR until the parent fills"
+        in text
+    )
+    assert "STAGE ATTACHED ORDER" in text and "the working order stays as it is" in text
+
+
+# ── The bracket staging core (gap #36) ──────────────────────────────────────────────────
+
+_BRACKET_ONE_CHILD: dict[str, Any] = {**_PROPOSAL_BRACKET_STK, "children": [_PT]}
+
+
+def _bracket_mock(parent_only: bool = False):
+    """The file's IBKR mock with the real pairing function and a bracket response whose parent
+    entry echoes the `cOID` the core generated — the only key the pairing can match on."""
+    from ibkr_core_mcp import pair_bracket_response
+
+    ibkr_mod, client = _make_ibkr_mock()
+    ibkr_mod.pair_bracket_response = pair_bracket_response
+    client.get_accounts.return_value = [{"accountId": "U1234567"}]
+
+    def _respond(_account, parent, _children, reply_log=None):
+        """IBKR's terminal entries: the parent echoing the cOID, then the child, unless parent-only."""
+        parent_entry = {
+            "order_id": "1",
+            "local_order_id": parent["cOID"],
+            "order_status": "Submitted",
+        }
+        if parent_only:
+            return [parent_entry]
+        return [
+            parent_entry,
+            {"order_id": "2", "parent_order_id": "1", "order_status": "PreSubmitted"},
+        ]
+
+    client.place_bracket_and_confirm.side_effect = _respond
+    by_id = {
+        "1": {
+            "order_status": "Submitted",
+            "order_status_description": "working",
+            "order_type": "LIMIT",
+        },
+        "2": {
+            "order_status": "PreSubmitted",
+            "order_status_description": "held",
+            "order_type": "LIMIT",
+        },
+    }
+    client.get_order_status.side_effect = lambda order_id: by_id[str(order_id)]
+    return ibkr_mod, client
+
+
+async def _run_bracket(proposal, ibkr_mod, store=None, session_id="s1"):
+    """Drive `_execute_staged_bracket_core` with the recorder and the mocked core."""
+    send_status, calls = _make_send_status_recorder()
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        await _execute_staged_bracket_core(
+            proposal, send_status, session_id=session_id, store=store
+        )
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_the_bracket_core_sends_the_parent_with_aon_and_every_child_written_in_full():
+    """One request: the parent with All or None (a stock) and its `cOID`; each child the parent's
+    size, the opposite side, `parentId` = `cOID`; IBKR's whatif of the array before any gate."""
+    ibkr_mod, client = _bracket_mock()
+    await _run_bracket(_BRACKET_ONE_CHILD, ibkr_mod)
+    account, parent, children = client.place_bracket_and_confirm.call_args.args
+    assert account == "U1234567"
+    assert parent["allOrNone"] is True and parent["cOID"].startswith("CLAUDIA-")
+    (kid,) = children
+    assert kid["parentId"] == parent["cOID"] and kid["side"] == "SELL"
+    assert kid["quantity"] == parent["quantity"] and kid["tif"] == "GTC"
+    client.get_bracket_preview.assert_called_once_with("U1234567", parent, children)
+    names = [name for name, *_ in client.method_calls]
+    assert names.index("get_bracket_preview") < names.index("place_bracket_and_confirm")
+
+
+@pytest.mark.asyncio
+async def test_a_futures_bracket_parent_carries_no_aon():
+    """IBKR refuses All or None on futures (CME, NYMEX, COMEX measured): no such key, and
+    CME Rule 536-B's `manualIndicator` on every ticket."""
+    ibkr_mod, client = _bracket_mock()
+    fut = {
+        **_BRACKET_ONE_CHILD,
+        "sec_type": "FUT",
+        "symbol": "ES",
+        "conid": 649180671,
+        "limit_price": 6000.0,
+        "children": [{**_PT, "price": 6100.0}],
+    }
+    await _run_bracket(fut, ibkr_mod)
+    _account, parent, children = client.place_bracket_and_confirm.call_args.args
+    assert "allOrNone" not in parent and parent["manualIndicator"] is True
+    assert children[0]["manualIndicator"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_refused_preview_stops_before_the_gates_and_records_a_refusal():
+    """IBKR's whatif refusing the array ends the flow before Touch ID: nothing placed, one row."""
+    ibkr_mod, client = _bracket_mock()
+    client.get_bracket_preview.side_effect = IBKRAPIError("HTTP 500: invalid order attribute")
+    store = MagicMock()
+    calls = await _run_bracket(_BRACKET_ONE_CHILD, ibkr_mod, store=store)
+    client.place_bracket_and_confirm.assert_not_called()
+    store.add_decision.assert_called_once()
+    assert store.add_decision.call_args.kwargs["decision_type"] == "trade_refused"
+    assert any(text.startswith("**Bracket not placed:**") for text, _author in calls)
+
+
+@pytest.mark.asyncio
+async def test_one_trade_staged_row_per_leg_with_the_parent_and_sibling_ids():
+    """Every leg gets its own `trade_staged` row naming its parent and siblings; a held child
+    is said to be held, never working."""
+    ibkr_mod, _client = _bracket_mock()
+    store = MagicMock()
+    calls = await _run_bracket(_BRACKET_ONE_CHILD, ibkr_mod, store=store)
+    rows = [c.kwargs for c in store.add_decision.call_args_list]
+    assert [r["decision_type"] for r in rows] == ["trade_staged", "trade_staged"]
+    parent_row, child_row = rows
+    assert parent_row["metadata"]["bracket"] == {
+        "leg": "parent",
+        "parent_order_id": None,
+        "sibling_ids": ["2"],
+        "pairing_problems": [],
+    }
+    assert child_row["metadata"]["bracket"] == {
+        "leg": "profit_taker",
+        "parent_order_id": "1",
+        "sibling_ids": [],
+        "pairing_problems": [],
+    }
+    assert child_row["metadata"]["ibkr_order_id"] == "2"
+    contents = _sent_contents(calls)
+    assert any("Order 2: held by IBKR until the parent fills" in c for c in contents)
+    assert not any("order 2" in c.lower() and "working" in c.lower() for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_a_leg_missing_from_the_response_is_said_and_recorded_never_reported_as_success():
+    """A response carrying the parent only: the pairing problem is said, written on the row, and
+    no child is reported held."""
+    ibkr_mod, _client = _bracket_mock(parent_only=True)
+    store = MagicMock()
+    calls = await _run_bracket(_BRACKET_ONE_CHILD, ibkr_mod, store=store)
+    contents = _sent_contents(calls)
+    assert any(
+        "did not pair cleanly" in c and "do not assume every leg is held" in c for c in contents
+    )
+    rows = [c.kwargs for c in store.add_decision.call_args_list]
+    assert rows[0]["metadata"]["bracket"]["pairing_problems"]
+    assert not any("held by IBKR" in c for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_an_ibkr_rejection_of_the_bracket_records_a_rejection_and_places_nothing():
+    """A 200 carrying a rejection payload is a rejection: one `trade_rejected` row, no read-back."""
+    ibkr_mod, client = _bracket_mock()
+    client.place_bracket_and_confirm.side_effect = None
+    client.place_bracket_and_confirm.return_value = _REJECTION_PAYLOAD
+    store = MagicMock()
+    calls = await _run_bracket(_BRACKET_ONE_CHILD, ibkr_mod, store=store)
+    store.add_decision.assert_called_once()
+    assert store.add_decision.call_args.kwargs["decision_type"] == "trade_rejected"
+    assert any(
+        text.startswith("**Bracket REJECTED by IBKR (nothing placed):**") for text, _author in calls
+    )
+    client.get_order_status.assert_not_called()
+
+
+# ── The attach staging core (gap #36) ───────────────────────────────────────────────────
+
+_ATTACH_PROPOSAL: dict[str, Any] = {
+    "order_id": "123",
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LMT",
+    "limit_price": 150.0,
+    "stop_price": None,
+    "tif": "GTC",
+    "reason": "r",
+    "child": {
+        "kind": "stop_loss",
+        "price": 140.0,
+        "limit_price": None,
+        "tif": None,
+        "outside_rth": None,
+    },
+}
+
+
+def _attach_mock(response):
+    """The file's IBKR mock with the real `attached_entry` and the given attach response."""
+    from ibkr_core_mcp import attached_entry
+
+    ibkr_mod, client = _make_ibkr_mock()
+    ibkr_mod.attached_entry = attached_entry
+    client.get_accounts.return_value = [{"accountId": "U1234567"}]
+    client.attach_order_and_confirm.return_value = response
+    client.get_order_status.return_value = {
+        "order_status": "PreSubmitted",
+        "order_status_description": "held",
+        "order_type": "STOP",
+    }
+    return ibkr_mod, client
+
+
+async def _run_attach(proposal, ibkr_mod, store=None, session_id="s1"):
+    """Drive `_execute_attach_core` with the recorder and the mocked core."""
+    send_status, calls = _make_send_status_recorder()
+    with (
+        patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
+        _no_readback_delay(),
+    ):
+        await _execute_attach_core(proposal, send_status, session_id=session_id, store=store)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_the_attach_core_sends_only_the_childs_own_fields_and_the_parent_id():
+    """The core receives the child's own fields and the parent's id, nothing derived — it
+    completes contract, side and size from IBKR's record of the parent; a held child is said
+    to be held; one `trade_staged` row names the leg, the parent and the link."""
+    ibkr_mod, client = _attach_mock(
+        [{"order_id": "2", "parent_order_id": "123", "order_status": "PreSubmitted"}]
+    )
+    store = MagicMock()
+    calls = await _run_attach(_ATTACH_PROPOSAL, ibkr_mod, store=store)
+    client.attach_order_and_confirm.assert_called_once()
+    args, kwargs = client.attach_order_and_confirm.call_args
+    assert args == ("U1234567", "123", {"orderType": "STP", "price": 140.0})
+    assert isinstance(kwargs["reply_log"], list)
+    assert any("Order 2: held by IBKR until the parent fills" in c for c in _sent_contents(calls))
+    store.add_decision.assert_called_once()
+    row = store.add_decision.call_args.kwargs
+    assert row["decision_type"] == "trade_staged"
+    assert row["metadata"]["bracket"] == {
+        "leg": "stop_loss",
+        "parent_order_id": "123",
+        "attached": True,
+    }
+    assert row["summary_text"].startswith("STAGED")
+
+
+@pytest.mark.asyncio
+async def test_an_unattached_response_is_said_loudly_and_recorded_as_not_attached():
+    """An accepted order the response does not link to the parent may be a standalone order:
+    said now, recorded as not attached, never as staged."""
+    ibkr_mod, _client = _attach_mock([{"order_id": "2", "order_status": "Submitted"}])
+    store = MagicMock()
+    calls = await _run_attach(_ATTACH_PROPOSAL, ibkr_mod, store=store)
+    contents = _sent_contents(calls)
+    assert any(
+        "did not report it attached to 123" in c and "may be a standalone order" in c
+        for c in contents
+    )
+    row = store.add_decision.call_args.kwargs
+    assert row["metadata"]["bracket"]["attached"] is False
+    assert row["summary_text"].startswith("DISPATCHED (UNVERIFIED)")
+
+
+@pytest.mark.asyncio
+async def test_a_parent_that_is_not_working_is_refused_before_the_gates():
+    """The core refuses a parent that is not working before its gates; the refusal is recorded."""
+    ibkr_mod, client = _attach_mock([])
+    client.attach_order_and_confirm.side_effect = ValueError(
+        "Order 123 is Filled, not working — nothing can be attached to it"
+    )
+    store = MagicMock()
+    calls = await _run_attach(_ATTACH_PROPOSAL, ibkr_mod, store=store)
+    assert store.add_decision.call_args.kwargs["decision_type"] == "trade_refused"
+    assert any(text.startswith("**Attachment not made:**") for text, _author in calls)
+
+
+# ── The cancel and modify sentences for a bracket leg (gap #36) ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_bracket_child_says_the_siblings_go_and_the_parent_stays():
+    """Keyed on `parent_order_id` alone (the status field that names a child; the OCA fields
+    are not required): the sentence is sent before the write, from the same status read the
+    cancel dialog is built from."""
+    ibkr_mod, _client = _make_cancel_modify_ibkr_mock()
+    _set_readback(_client, order_status="Cancelled", parent_order_id="1")
+    contents = _sent_contents(await _run_cancel(_make_cancel_action(), ibkr_mod))
+    linked = [
+        i
+        for i, c in enumerate(contents)
+        if "cancelling this attached order cancels every attached order of parent 1; the parent "
+        "keeps working if the child was held (measured 2026-09-22)" in c
+    ]
+    assert linked, contents
+    verified = next(i for i, c in enumerate(contents) if "Verified via get_order_status" in c)
+    assert linked[0] < verified
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_bracket_parent_says_its_children_go():
+    """`children_order_ids` is semicolon-separated (measured 2026-10-18); the count is right."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    _set_readback(client, order_status="Cancelled", children_order_ids="2;3")
+    contents = _sent_contents(await _run_cancel(_make_cancel_action(), ibkr_mod))
+    assert any("cancelling this parent cancels its 2 attached order(s)" in c for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_modifying_a_held_child_says_quantity_changes_are_ignored_and_capped_once_released():
+    """One read of the order serves the dialog's `Currently at IBKR` row and this sentence."""
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    _set_readback(client, parent_order_id="1")
+    contents = _sent_contents(await _run_modify(_make_modify_action(), ibkr_mod))
+    assert any(
+        "this order is attached to parent 1" in c.lower()
+        and "IBKR ignores a quantity change while it is held, and the core refuses one above "
+        "the parent's fill once released"
+        in c
+        for c in contents
+    )
+    assert client.get_order_status.call_count == 2  # the pre-gate read, then the read-back

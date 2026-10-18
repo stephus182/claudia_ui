@@ -77,6 +77,11 @@ CANCEL_ORDER_LABEL = "CANCEL ORDER"
 MODIFY_ORDER_LABEL = "MODIFY ORDER"
 DISCARD_LABEL = "DISCARD"
 KEEP_ORDER_LABEL = "KEEP ORDER"
+# The two bracket cards (gap #36, 2026-10-18): a chat button STAGES, so these say what is
+# staged — a bracket (a parent with its attached orders), or one attached order on a
+# working parent. Gate 2 is the core's bracket dialog on both, whose button is SEND TO IBKR.
+STAGE_BRACKET_LABEL = "STAGE BRACKET"
+STAGE_ATTACHED_LABEL = "STAGE ATTACHED ORDER"
 
 # Gate 2's confirm button, per path, as the core draws it (`order_confirm` passes these as
 # literal `confirm_label=` arguments, not constants, so they are copied here and held to the
@@ -94,6 +99,7 @@ GATE2_CANCEL_LABEL = "CANCEL ORDER"
 TIMEOUT_LEAVES_PLACE = "nothing is sent"
 TIMEOUT_LEAVES_MODIFY = "the order stays as it is"
 TIMEOUT_LEAVES_CANCEL = "the order stays working"
+TIMEOUT_LEAVES_ATTACH = "the working order stays as it is"
 
 
 def _gates_notice(confirm_label: str, timeout_leaves: str) -> str:
@@ -365,20 +371,58 @@ def _number_or_none(value: Any) -> float | None:
         return None
 
 
-def _current_order_description(ibkr: Any, order_id: str) -> str | None:
+def _current_order_description(
+    ibkr: Any, order_id: str
+) -> tuple[str | None, dict[str, Any] | None]:
     """IBKR's own one-line description of a working order (`order_description_with_contract`,
     e.g. "Buy 1 ES Sep18'26 Stop 7900.00, GTC"), for the modify dialog's `Currently at IBKR`
-    row. A failed read returns None — the dialog then shows the request alone; it never
-    blocks."""
+    row — and the status it was read from, so the modify path can tell a bracket child
+    (gap #36: one read, two uses). A failed read returns `(None, None)` — the dialog then
+    shows the request alone; it never blocks."""
     try:
         status = ibkr.get_order_status(order_id)
     except Exception as exc:
         log.warning("Order %s: status read for the dialog failed: %s", order_id, exc)
-        return None
+        return None, None
     if not isinstance(status, dict):
-        return None
+        return None, None
     text = status.get("order_description_with_contract")
-    return str(text) if text else None
+    return (str(text) if text else None), status
+
+
+def _linked_sentence(status: Mapping[str, Any]) -> str | None:
+    """What IBKR does to the other legs when this one is cancelled (gap #36).
+
+    Measured 2026-09-22: cancelling a child cancels every child of its parent (they share
+    one OCA group), and the parent keeps working if the child was held; cancelling a parent
+    cancels its children. Read from the status's `parent_order_id` (the field that names a
+    child) and `children_order_ids` (semicolon-separated — measured 2026-10-18, a comma split
+    counted two as one). The core's cancel dialog carries the same facts on its ⚠ rows.
+    """
+    parent = status.get("parent_order_id")
+    if parent not in (None, ""):
+        return (
+            "⚠️ **This is an attached order:** cancelling this attached order cancels every "
+            f"attached order of parent {parent}; the parent keeps working if the child was held "
+            "(measured 2026-09-22)."
+        )
+    raw = str(status.get("children_order_ids") or "").replace(";", ",")
+    children = [x for x in raw.split(",") if x.strip()]
+    if children:
+        return (
+            "⚠️ **This order has attached orders:** cancelling this parent cancels its "
+            f"{len(children)} attached order(s)."
+        )
+    return None
+
+
+_HELD_CHILD_MODIFY_SENTENCE = (
+    "⚠️ **This order is attached to parent {parent}:** IBKR ignores a quantity change while it "
+    "is held, and the core refuses one above the parent's fill once released (2.2.0)."
+)
+"""The modify path's one sentence for a bracket child (gap #36): IBKR's behaviour on a held
+child measured 2026-09-22 (the core's `modify_order_and_confirm` docstring), the released case
+the core's own rule since 2.2.0 (its commit 8d5c7f9)."""
 
 
 def _apply_futures_display_facts(ibkr: Any, order: dict[str, Any], conid: int) -> None:
@@ -499,6 +543,10 @@ def _cancel_display_details(ibkr: Any, proposal: dict[str, Any]) -> dict[str, An
         text = status.get("order_description_with_contract")
         if text:
             details["_current_description"] = str(text)
+        linked = _linked_sentence(status)
+        if linked:
+            # Popped by `_cancel_order` and sent to the chat before the write; never a dialog key.
+            details["_linked_sentence"] = linked
         conid = status.get("conid")
         if conid is not None:
             _apply_contract_display_facts(
@@ -576,32 +624,13 @@ def _outside_rth_line(proposal: dict[str, Any]) -> str | None:
     return None
 
 
-def _format_order_summary(proposal: dict[str, Any], contract_label: str | None = None) -> str:
-    """Build the human-approval text for a new order.
+def _order_lines(proposal: dict[str, Any], contract_label: str | None = None) -> list[str]:
+    """The approval lines of a new order, without the closing ⚠️ card warning.
 
-    Safety surface: this string, plus the Gate 2 dialog, is everything the user sees before
-    authorising a live order. It deliberately ends with the Touch-ID/confirmation warning so
-    the consequence of the click is never implicit.
-
-    Recognised keys: `symbol`, `action`, `quantity`, `order_type` (default MKT),
-    `limit_price` / `stop_price` (rendered by `_price_suffix`, which covers LMT, STP and
-    STOP_LIMIT), `sec_type` (default STK; labelled inline only when it is not STK),
-    `outside_rth` (rendered by `_outside_rth_line` — always for a futures stop, otherwise
-    only when set), and `reason`. TIF is read from `tif`, then `time_in_force`, then `timeInForce`, defaulting
-    to DAY — the identical expression `_execute_staged_order_core` uses, so display and
-    execution cannot diverge. Do not change one without the other.
-
-    `contract_label` (design 2026-09-10, gap #37) is the resolved futures contract in IBKR's
-    own terms — `ESU6 · SEP26 · expires 2026-09-18` from `proposal_contract_label` — shown as a
-    `Contract:` line on a future only; a bare root in the proposal means the front month.
-
-    Args:
-        proposal: Schema-checked order-proposal dict.
-        contract_label: The resolved contract's label for a future, or None for no line.
-
-    Returns:
-        Markdown for the proposal message. Rendered via `safe_markdown` — `reason` is
-        free-form LLM text.
+    Extracted from `_format_order_summary` on 2026-10-18 (gap #36) so a bracket's card can
+    open with its parent written by exactly this code — the one-ticket card and the bracket
+    card cannot describe the same parent differently. Every rule of the text is documented
+    on the wrapper, which the existing tests pin.
     """
     symbol = proposal.get("symbol", "?")
     action = proposal.get("action", "?")
@@ -630,9 +659,203 @@ def _format_order_summary(proposal: dict[str, Any], contract_label: str | None =
         lines.append(rth_line)
     if reason:
         lines.append(f"*Reason:* {reason}")
+    return lines
+
+
+def _format_order_summary(proposal: dict[str, Any], contract_label: str | None = None) -> str:
+    """Build the human-approval text for a new order.
+
+    Safety surface: this string, plus the Gate 2 dialog, is everything the user sees before
+    authorising a live order. It deliberately ends with the Touch-ID/confirmation warning so
+    the consequence of the click is never implicit.
+
+    Recognised keys: `symbol`, `action`, `quantity`, `order_type` (default MKT),
+    `limit_price` / `stop_price` (rendered by `_price_suffix`, which covers LMT, STP and
+    STOP_LIMIT), `sec_type` (default STK; labelled inline only when it is not STK),
+    `outside_rth` (rendered by `_outside_rth_line` — always for a futures stop, otherwise
+    only when set), and `reason`. TIF is read from `tif`, then `time_in_force`, then `timeInForce`, defaulting
+    to DAY — the identical expression `_execute_staged_order_core` uses, so display and
+    execution cannot diverge. Do not change one without the other.
+
+    `contract_label` (design 2026-09-10, gap #37) is the resolved futures contract in IBKR's
+    own terms — `ESU6 · SEP26 · expires 2026-09-18` from `proposal_contract_label` — shown as a
+    `Contract:` line on a future only; a bare root in the proposal means the front month.
+
+    Args:
+        proposal: Schema-checked order-proposal dict.
+        contract_label: The resolved contract's label for a future, or None for no line.
+
+    Returns:
+        Markdown for the proposal message. Rendered via `safe_markdown` — `reason` is
+        free-form LLM text.
+    """
+    lines = _order_lines(proposal, contract_label)
     lines.append(_card_warning(STAGE_ORDER_LABEL, GATE2_SEND_LABEL, "sent"))
     # Blank line between entries, not a bare newline: Markdown renders a single newline
     # as a space, which fused every field of this text into one paragraph (gap #44).
+    return "\n\n".join(lines)
+
+
+# ─── Attached orders (gap #36, 2026-10-18) ─────────────────────────────────────────────────
+# IBKR's own product list for All or None (order types catalogue, scraped 2026-10-17): Stocks,
+# ETFs, Options, Bonds, EFPs — US products only; never futures (refused on CME, NYMEX and
+# COMEX, measured 2026-09-21 and 2026-10-17). ETFs are STK to IBKR; EFPs are not a sec_type
+# ClaudIA sends. Non-US stocks are refused by IBKR's whatif before any gate, not here.
+_AON_PRODUCT_CLASSES = frozenset({"STK", "OPT", "BOND"})
+_CHILD_ORDER_TYPE = {"profit_taker": "LMT", "stop_loss": "STP"}
+_CHILD_WORD = {"profit_taker": "Profit taker", "stop_loss": "Stop loss"}
+HELD_UNTIL_PARENT_FILLS = "held by IBKR until the parent fills"
+
+
+def _all_or_none(sec_type: str) -> bool:
+    """Whether a bracket parent of this product class is sent with IBKR's All or None."""
+    return str(sec_type).upper() in _AON_PRODUCT_CLASSES
+
+
+def _partial_fill_line(quantity: Any, all_or_none: bool) -> str | None:
+    """The card's twin of the core dialog's `⚠ Partial fill` row — same rule, same words.
+
+    A multi-lot parent without All or None can fill in part while each held child keeps the
+    full size; nothing in either repository corrects that, so the card says so in red and
+    stages anyway (the operator's rule: warn, never refuse). Red bold on the card is an emoji
+    plus bold: `safe_markdown` renders HTML as text, so an inline style is not available, and
+    a styled pane would be a second renderer for one line.
+    """
+    try:
+        size = float(quantity)
+    except (TypeError, ValueError):
+        return None
+    if size <= 1 or all_or_none:
+        return None
+    return (
+        f"🔴 **Quantity {size:g}: a partial fill of the parent leaves each held child at "
+        f"{size:g}. Nothing here corrects that.**"
+    )
+
+
+def _child_spec(child: Mapping[str, Any]) -> dict[str, Any]:
+    """The child's own fields — kind, prices, TIF, outsideRTH — and nothing derived.
+
+    This is what `propose_attach` sends to the core, which completes contract, side and size
+    from IBKR's record of the parent; `_child_ticket` adds the same from a parent ClaudIA
+    built. A stop loss with a `limit_price` is a STOP_LIMIT: `price` the limit, `auxPrice`
+    the trigger — the field names the one-ticket body uses for the same type.
+    """
+    kind = str(child["kind"])
+    limit = child.get("limit_price")
+    spec: dict[str, Any]
+    if kind == "stop_loss" and limit is not None:
+        spec = {"orderType": "STOP_LIMIT", "price": float(limit), "auxPrice": float(child["price"])}
+    else:
+        spec = {"orderType": _CHILD_ORDER_TYPE[kind], "price": float(child["price"])}
+    if child.get("tif"):
+        spec["tif"] = str(child["tif"]).upper()
+    if child.get("outside_rth") is not None:
+        spec["outsideRTH"] = bool(child["outside_rth"])
+    return spec
+
+
+def _child_ticket(parent_body: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, Any]:
+    """A bracket child written in full from the parent ClaudIA built.
+
+    The core's builder tolerates absent fields but does not fill them: the parent's contract,
+    size and account, the opposite side, the parent's TIF unless the child states its own,
+    `parentId` = the parent's `cOID`, and the parent's display-only keys so Gate 2 names the
+    same contract on every row.
+    """
+    ticket = _child_spec(child)
+    ticket.update(
+        conid=parent_body["conid"],
+        side="SELL" if str(parent_body["side"]).upper() == "BUY" else "BUY",
+        quantity=parent_body["quantity"],
+        ticker=parent_body["ticker"],
+        acctId=parent_body["acctId"],
+        parentId=parent_body["cOID"],
+    )
+    ticket.setdefault("tif", str(parent_body["tif"]).upper())
+    if parent_body.get("manualIndicator"):
+        ticket["manualIndicator"] = True
+    for key in ("_companyName", "_multiplier", "_multiplier_unknown", "_currency"):
+        if key in parent_body:
+            ticket[key] = parent_body[key]
+    return ticket
+
+
+def _child_line(
+    child: Mapping[str, Any], parent_action: str, parent_qty: Any, parent_tif: str
+) -> str:
+    """One attached order's approval line: its side and size follow the parent's."""
+    spec = _child_spec(child)
+    side = "SELL" if str(parent_action).upper() == "BUY" else "BUY"
+    otype = spec["orderType"]
+    limit = spec.get("price") if otype in ("LMT", "STOP_LIMIT") else None
+    if otype == "STOP_LIMIT":
+        stop = spec.get("auxPrice")
+    else:
+        stop = spec.get("price") if otype == "STP" else None
+    tif = spec.get("tif") or str(parent_tif).upper()
+    line = (
+        f"**{_CHILD_WORD[str(child['kind'])]}:** {side} {parent_qty} {otype}"
+        f"{_price_suffix(otype, limit, stop)} · {tif} · {HELD_UNTIL_PARENT_FILLS}"
+    )
+    if "outsideRTH" in spec:
+        line += f" · outside RTH: {'yes' if spec['outsideRTH'] else 'no'}"
+    return line
+
+
+def _format_bracket_summary(proposal: dict[str, Any], contract_label: str | None = None) -> str:
+    """The human-approval text for a bracket: the parent's lines, then each child as held.
+
+    The parent is written by `_order_lines`, the one-ticket card's own code; the children
+    follow, each held by IBKR until the parent fills; the partial-fill line appears exactly
+    when the core dialog's `⚠ Partial fill` row will (a multi-lot parent without All or
+    None); the card warning names STAGE BRACKET and Gate 2's SEND TO IBKR.
+    """
+    lines = _order_lines(proposal, contract_label)
+    parent_tif = str(proposal.get("tif") or "DAY")
+    children = list(proposal.get("children") or [])
+    lines.extend(
+        _child_line(c, proposal.get("action", "?"), proposal.get("quantity", "?"), parent_tif)
+        for c in children
+    )
+    if len(children) > 1:
+        lines.append(
+            "_The attached orders are linked: when one child fills, IBKR cancels the other "
+            "(measured 2026-09-22)._"
+        )
+    warning = _partial_fill_line(
+        proposal.get("quantity"), _all_or_none(str(proposal.get("sec_type", "STK")))
+    )
+    if warning:
+        lines.append(warning)
+    lines.append(_card_warning(STAGE_BRACKET_LABEL, GATE2_SEND_LABEL, "sent"))
+    return "\n\n".join(lines)
+
+
+def _format_attach_summary(proposal: dict[str, Any]) -> str:
+    """The human-approval text for one attached order on a working parent.
+
+    The parent line is the order as the model read it (`propose_cancel`'s identity); the
+    core reads the parent from IBKR before anything is sent, and Gate 2 shows it as IBKR
+    holds it. A timeout leaves the working order as it is.
+    """
+    otype = str(proposal.get("order_type", "?"))
+    price = _price_suffix(otype, proposal.get("limit_price"), proposal.get("stop_price"))
+    tif = str(proposal.get("tif") or "DAY").upper()
+    lines = [
+        f"**Attach to order {proposal.get('order_id', '?')}:** {proposal.get('action', '?')} "
+        f"{proposal.get('quantity', '?')} {proposal.get('symbol', '?')} ({otype}{price}, {tif})",
+        _child_line(
+            proposal["child"], proposal.get("action", "?"), proposal.get("quantity", "?"), tif
+        ),
+    ]
+    if proposal.get("reason"):
+        lines.append(f"*Reason:* {proposal['reason']}")
+    lines.append(
+        "_The parent is read from IBKR before anything is sent; the dialog shows it as IBKR "
+        f"holds it. If the dialog times out, {TIMEOUT_LEAVES_ATTACH}._"
+    )
+    lines.append(_card_warning(STAGE_ATTACHED_LABEL, GATE2_SEND_LABEL, "sent"))
     return "\n\n".join(lines)
 
 
@@ -1726,6 +1949,206 @@ async def _one_order_at_a_time(send_status: SendStatus) -> AsyncIterator[None]:
         yield
 
 
+async def _parent_body(ibkr: Any, proposal: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """The one-ticket order body for a proposal, and its `cOID` — the live-proven path.
+
+    Extracted verbatim from `_stage_order` on 2026-10-18 (gap #36) so a bracket's parent is
+    built by exactly this code: the two conid routes, the futures facts and the expiry
+    refusal (gap #71), the stock's name and currency (#49), the fractional-quantity rule
+    (#18), the body with its display-only keys, the prices by type, `outsideRTH` when stated.
+    Reads the proposal's own fields with the same expressions `_stage_order` uses for its
+    messages. Every refusal raises as before; nothing here reaches a gate.
+
+    Returns:
+        `(order_body, claudia_ref)` — the body with `acctId` still empty (the caller fills
+        it after the account lookup) and the `CLAUDIA-…` reference it carries as `cOID`.
+    """
+    symbol = proposal.get("symbol", "?")
+    action_str = proposal.get("action", "?")
+    qty = _whole_or_exact(proposal.get("quantity", 0))
+    otype = proposal.get("order_type", "MKT")
+    limit_price = proposal.get("limit_price")
+    sec_type = proposal.get("sec_type", "STK").upper()
+
+    # Resolve conid — routing depends on sec_type and optional conid override.
+    # Only two routes reach an order body: a conid the caller pre-resolved, or the
+    # front-month lookup for FUT. Everything else is refused — see `_needs_conid_text`.
+    multiplier: float | None = None
+    override_conid = proposal.get("conid")
+    if override_conid is not None:
+        # Pre-resolved conid (required for FOP; valid for any instrument).
+        # ClaudIA resolves options chain in conversation and embeds the conid.
+        conid = int(override_conid)
+        company_name = proposal.get("_companyName", "")
+    elif sec_type == "FUT":
+        futures = await asyncio.to_thread(ibkr.get_futures, [symbol])
+        if not futures:
+            raise RefusedBeforeGatesError(f"Could not find futures contracts for {symbol}.")
+        # Front month = earliest contract STILL TRADEABLE, not simply the lowest expiry.
+        # IBKR keeps returning a contract after its last trade date (measured 2026-09-20,
+        # two days after the Sep roll: ESU6, ltd 20260918, still among 22 ES rows), so
+        # "lowest expirationDate" staged a dead contract — which IBKR rejects with
+        # "Order is already expired." only AFTER Touch ID and Gate 2, making a human
+        # authenticate an order that could never work. Gap #58.
+        tradeable = [
+            f for f in futures if _last_trade_key(f) == 0 or _last_trade_key(f) >= _today_key()
+        ]
+        if not tradeable:
+            latest = max((_last_trade_key(f) for f in futures), default=0)
+            raise RefusedBeforeGatesError(
+                f"Every futures contract IBKR returned for {symbol} has passed its last trade "
+                f"date (latest {latest or 'unknown'})."
+            )
+        try:
+            contract = min(tradeable, key=lambda f: int(f.get("expirationDate") or 0))
+        except (ValueError, TypeError):
+            contract = tradeable[0]
+        # conid is IBKR's mandatory contract identifier — always present on a successful
+        # get_futures() lookup (the `if not futures` guard above already handles the
+        # no-match case). Not user/LLM-supplied, so order-parameter-immutability doesn't
+        # apply here — this is IBKR's own response data.
+        conid = int(contract.get("conid"))
+        company_name = contract.get("contractDesc", contract.get("description", ""))
+        # No multiplier read here: /trsrv/futures rows carry none (measured 2026-09-04;
+        # the read that used to sit here had never fired live). It comes from contract
+        # info below, on every futures path.
+    else:
+        raise RefusedBeforeGatesError(_needs_conid_text(sec_type, symbol))
+
+    currency: str | None = None
+    if sec_type in ("FUT", "FOP"):
+        # Every futures path, conid-supplied or resolved: the multiplier is what turns
+        # a price into a notional on the Gate 2 screen, and the label carries the
+        # contract month the proposal text cannot show. Live 2026-09-04 (conid path):
+        # the dialog printed 7,735.00 for one ES contract worth 386,750 USD.
+        multiplier, currency, contract_label, maturity = await asyncio.to_thread(
+            _futures_contract_facts, ibkr, conid
+        )
+        if sec_type == "FUT" and (not maturity or _today_key() >= maturity):
+            # HARD RULE (gap #71, operator 2026-09-24): an expired future is never staged.
+            # Before Gate 1, from the read above — no extra call. See the exception.
+            raise ContractNotTradeableError(conid, contract_label, maturity)
+        if contract_label:
+            company_name = contract_label
+    else:
+        # A stock's price IS money: its listing's name and currency reach Gate 2 too
+        # (gap #49, 2026-09-11). A name the proposal already carries is kept.
+        name, currency = (
+            await asyncio.to_thread(_stock_contract_facts, ibkr, int(conid))
+            if conid is not None
+            else (None, None)
+        )
+        if name and not company_name:
+            company_name = name
+
+    # A fractional quantity is staged only where this contract's own rules permit it,
+    # read now, before Gate 1 (gap #18). A whole quantity reads nothing.
+    if not isinstance(qty, int):
+        rules = await asyncio.to_thread(_contract_rules, ibkr, conid, action_str == "BUY")
+        # Named by its symbol AND IBKR's contract name: live, the name alone read "Swiss franc".
+        named = f"{symbol} ({company_name})" if company_name and company_name != symbol else symbol
+        if problem := _fractional_quantity_problem(qty, otype, rules, named):
+            raise RefusedBeforeGatesError(problem)
+
+    claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"
+    tif = (
+        proposal.get("tif") or proposal.get("time_in_force") or proposal.get("timeInForce") or "DAY"
+    ).upper()
+
+    # ----------------------------------------------------------------
+    # Order body — field spec from IBKR CP API docs (2026-07-02)
+    # Source: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/place-order.md
+    #
+    # Field          Type     Req?       Notes
+    # -------------- -------- ---------- ---------------------------------
+    # conid          int      yes*       *or conidex; SMART-routes when set
+    # orderType      str      yes        LMT | MKT | STP | STOP_LIMIT | MIDPRICE | TRAIL | TRAILLMT
+    # side           str      yes        "BUY" | "SELL"
+    # tif            str      yes        DAY | GTC | OPG | IOC (proposal enum); per-contract
+    #                                     set in /iserver/contract/rules — docs/order-api-reference.md
+    #                                     § Time in force
+    # quantity       double   yes        exactly as proposed; whole → int; a fraction only where
+    #                                    the contract's fraqTypes / fraqInt permit it (gap #18)
+    # price          float    LMT/STOP_LIMIT  limit price
+    # auxPrice       float    STOP_LIMIT/TRAILLMT  stop price
+    # acctId         str      no         defaults to first account if omitted
+    # ticker         str      no         underlying symbol — valid IBKR field (not stripped)
+    # cOID           str      no         customer order ID; max 64 chars; unique per 24h
+    # listingExchange str     no         default: SMART routing
+    # outsideRTH     bool     no         allow execution outside regular trading hours
+    # manualIndicator bool    FUT/FOP*   CME Rule 536-B compliance (required since May 1 2025)
+    # extOperator    str      FUT/FOP*   NOT sent — docs mark it "Required*" for 536-B, but
+    #                                    IBKR rejects any non-empty value as undocumented
+    #                                    field 8089 on this account class (the "Required*"
+    #                                    evidently scopes to institutional/multi-operator
+    #                                    setups). Proven via whatif isolation 2026-07-23:
+    #                                    docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md
+    # Source (536-B): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
+    # ----------------------------------------------------------------
+    order_body: dict[str, Any] = {
+        "conid": conid,  # int
+        "orderType": otype,  # str
+        "side": action_str,  # str: BUY | SELL
+        "tif": tif,  # str: the proposal enum, DAY | GTC | OPG | IOC
+        "quantity": qty,  # exactly as proposed; a whole one is an int (IBKR types it double)
+        "ticker": symbol,  # str — display + valid IBKR field
+        "acctId": "",  # filled below after account lookup
+        "cOID": claudia_ref,  # str — max 64 chars
+        "_companyName": company_name,  # display only — underscore prefix → stripped
+    }
+    if sec_type in ("FUT", "FOP"):
+        # CME Group Rule 536-B — manualIndicator=True: order submitted through a
+        # manual UI (not automated). extOperator is deliberately NOT sent: IBKR
+        # rejects it with any non-empty value as undocumented field 8089 on
+        # this account class — proven via whatif isolation 2026-07-23
+        # (manualIndicator alone is accepted); see
+        # docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md
+        order_body["manualIndicator"] = True
+        if multiplier is not None:
+            order_body["_multiplier"] = multiplier  # display only — stripped by client.py
+        else:
+            # Gate 2 must not fall back to price x qty on a future: that is not an
+            # estimate, it is the notional divided by the multiplier.
+            order_body["_multiplier_unknown"] = True
+        if currency:
+            order_body["_currency"] = currency  # display only — ISO code, never "$"
+    elif currency:
+        order_body["_currency"] = currency  # display only — a stock's price is money (#49)
+    if otype == "LMT" and limit_price is not None:
+        order_body["price"] = float(limit_price)  # float
+    elif otype == "STP" and proposal.get("stop_price") is not None:
+        order_body["price"] = float(proposal["stop_price"])  # float (STP uses price field)
+    elif otype == "STOP_LIMIT":
+        if limit_price is not None:
+            order_body["price"] = float(limit_price)
+        if proposal.get("stop_price") is not None:
+            order_body["auxPrice"] = float(proposal["stop_price"])
+    _apply_outside_rth(order_body, proposal)
+    return order_body, claudia_ref
+
+
+async def _ibkr_client() -> Any:
+    """The IBKR client every order write starts from, built in a worker thread.
+
+    One site for every path — place, cancel, modify, and the bracket and attach paths
+    (gap #36) — extracted 2026-10-18 from three identical blocks so that the change to how
+    the configuration is read (`secrets-out-of-env`, gap #103) touches this function and
+    nothing else. Every synchronous IBKR call in these flows runs in a worker thread
+    (gap #17): the client reads browser cookies here, and the gated write blocks on Touch
+    ID and a 60 s dialog — none of it may hold the event loop every tab is served from.
+    """
+    from dotenv import load_dotenv
+    from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+
+    load_dotenv(override=False)
+    config = Config.from_env()
+    return await asyncio.to_thread(
+        IBKRClient,
+        config=config,
+        auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
+    )
+
+
 async def _execute_staged_order_core(
     proposal: dict[str, Any],
     send_status: SendStatus,
@@ -1751,7 +2174,6 @@ async def _stage_order(
     action_str = proposal.get("action", "?")
     qty = _whole_or_exact(proposal.get("quantity", 0))
     otype = proposal.get("order_type", "MKT")
-    limit_price = proposal.get("limit_price")
     sec_type = proposal.get("sec_type", "STK").upper()
     dispatched = False  # flips once the IBKR write has returned — see the except block
 
@@ -1765,179 +2187,9 @@ async def _stage_order(
 
     reply_log: list[dict[str, Any]] = []
     try:
-        from dotenv import load_dotenv
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+        ibkr = await _ibkr_client()
 
-        load_dotenv(override=False)
-        config = Config.from_env()
-        # Every synchronous IBKR call in this flow runs in a worker thread (gap #17): the
-        # client reads browser cookies here, and the gated write blocks on Touch ID and a
-        # 60 s dialog — none of it may hold the event loop every tab is served from.
-        ibkr = await asyncio.to_thread(
-            IBKRClient,
-            config=config,
-            auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
-        )
-
-        # Resolve conid — routing depends on sec_type and optional conid override.
-        # Only two routes reach an order body: a conid the caller pre-resolved, or the
-        # front-month lookup for FUT. Everything else is refused — see `_needs_conid_text`.
-        multiplier: float | None = None
-        override_conid = proposal.get("conid")
-        if override_conid is not None:
-            # Pre-resolved conid (required for FOP; valid for any instrument).
-            # ClaudIA resolves options chain in conversation and embeds the conid.
-            conid = int(override_conid)
-            company_name = proposal.get("_companyName", "")
-        elif sec_type == "FUT":
-            futures = await asyncio.to_thread(ibkr.get_futures, [symbol])
-            if not futures:
-                raise RefusedBeforeGatesError(f"Could not find futures contracts for {symbol}.")
-            # Front month = earliest contract STILL TRADEABLE, not simply the lowest expiry.
-            # IBKR keeps returning a contract after its last trade date (measured 2026-09-20,
-            # two days after the Sep roll: ESU6, ltd 20260918, still among 22 ES rows), so
-            # "lowest expirationDate" staged a dead contract — which IBKR rejects with
-            # "Order is already expired." only AFTER Touch ID and Gate 2, making a human
-            # authenticate an order that could never work. Gap #58.
-            tradeable = [
-                f for f in futures if _last_trade_key(f) == 0 or _last_trade_key(f) >= _today_key()
-            ]
-            if not tradeable:
-                latest = max((_last_trade_key(f) for f in futures), default=0)
-                raise RefusedBeforeGatesError(
-                    f"Every futures contract IBKR returned for {symbol} has passed its last trade "
-                    f"date (latest {latest or 'unknown'})."
-                )
-            try:
-                contract = min(tradeable, key=lambda f: int(f.get("expirationDate") or 0))
-            except (ValueError, TypeError):
-                contract = tradeable[0]
-            # conid is IBKR's mandatory contract identifier — always present on a successful
-            # get_futures() lookup (the `if not futures` guard above already handles the
-            # no-match case). Not user/LLM-supplied, so order-parameter-immutability doesn't
-            # apply here — this is IBKR's own response data.
-            conid = int(contract.get("conid"))  # type: ignore[arg-type]
-            company_name = contract.get("contractDesc", contract.get("description", ""))
-            # No multiplier read here: /trsrv/futures rows carry none (measured 2026-09-04;
-            # the read that used to sit here had never fired live). It comes from contract
-            # info below, on every futures path.
-        else:
-            raise RefusedBeforeGatesError(_needs_conid_text(sec_type, symbol))
-
-        currency: str | None = None
-        if sec_type in ("FUT", "FOP"):
-            # Every futures path, conid-supplied or resolved: the multiplier is what turns
-            # a price into a notional on the Gate 2 screen, and the label carries the
-            # contract month the proposal text cannot show. Live 2026-09-04 (conid path):
-            # the dialog printed 7,735.00 for one ES contract worth 386,750 USD.
-            multiplier, currency, contract_label, maturity = await asyncio.to_thread(
-                _futures_contract_facts, ibkr, conid
-            )
-            if sec_type == "FUT" and (not maturity or _today_key() >= maturity):
-                # HARD RULE (gap #71, operator 2026-09-24): an expired future is never staged.
-                # Before Gate 1, from the read above — no extra call. See the exception.
-                raise ContractNotTradeableError(conid, contract_label, maturity)
-            if contract_label:
-                company_name = contract_label
-        else:
-            # A stock's price IS money: its listing's name and currency reach Gate 2 too
-            # (gap #49, 2026-09-11). A name the proposal already carries is kept.
-            name, currency = (
-                await asyncio.to_thread(_stock_contract_facts, ibkr, int(conid))
-                if conid is not None
-                else (None, None)
-            )
-            if name and not company_name:
-                company_name = name
-
-        # A fractional quantity is staged only where this contract's own rules permit it,
-        # read now, before Gate 1 (gap #18). A whole quantity reads nothing.
-        if not isinstance(qty, int):
-            rules = await asyncio.to_thread(_contract_rules, ibkr, conid, action_str == "BUY")
-            # Named by its symbol AND IBKR's contract name: live, the name alone read "Swiss franc".
-            named = (
-                f"{symbol} ({company_name})" if company_name and company_name != symbol else symbol
-            )
-            if problem := _fractional_quantity_problem(qty, otype, rules, named):
-                raise RefusedBeforeGatesError(problem)
-
-        claudia_ref = f"CLAUDIA-{int(time.time() * 1000)}"
-        tif = (
-            proposal.get("tif")
-            or proposal.get("time_in_force")
-            or proposal.get("timeInForce")
-            or "DAY"
-        ).upper()
-
-        # ----------------------------------------------------------------
-        # Order body — field spec from IBKR CP API docs (2026-07-02)
-        # Source: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/place-order.md
-        #
-        # Field          Type     Req?       Notes
-        # -------------- -------- ---------- ---------------------------------
-        # conid          int      yes*       *or conidex; SMART-routes when set
-        # orderType      str      yes        LMT | MKT | STP | STOP_LIMIT | MIDPRICE | TRAIL | TRAILLMT
-        # side           str      yes        "BUY" | "SELL"
-        # tif            str      yes        DAY | GTC | OPG | IOC (proposal enum); per-contract
-        #                                     set in /iserver/contract/rules — docs/order-api-reference.md
-        #                                     § Time in force
-        # quantity       double   yes        exactly as proposed; whole → int; a fraction only where
-        #                                    the contract's fraqTypes / fraqInt permit it (gap #18)
-        # price          float    LMT/STOP_LIMIT  limit price
-        # auxPrice       float    STOP_LIMIT/TRAILLMT  stop price
-        # acctId         str      no         defaults to first account if omitted
-        # ticker         str      no         underlying symbol — valid IBKR field (not stripped)
-        # cOID           str      no         customer order ID; max 64 chars; unique per 24h
-        # listingExchange str     no         default: SMART routing
-        # outsideRTH     bool     no         allow execution outside regular trading hours
-        # manualIndicator bool    FUT/FOP*   CME Rule 536-B compliance (required since May 1 2025)
-        # extOperator    str      FUT/FOP*   NOT sent — docs mark it "Required*" for 536-B, but
-        #                                    IBKR rejects any non-empty value as undocumented
-        #                                    field 8089 on this account class (the "Required*"
-        #                                    evidently scopes to institutional/multi-operator
-        #                                    setups). Proven via whatif isolation 2026-07-23:
-        #                                    docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md
-        # Source (536-B): https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-changelog/
-        # ----------------------------------------------------------------
-        order_body: dict[str, Any] = {
-            "conid": conid,  # int
-            "orderType": otype,  # str
-            "side": action_str,  # str: BUY | SELL
-            "tif": tif,  # str: the proposal enum, DAY | GTC | OPG | IOC
-            "quantity": qty,  # exactly as proposed; a whole one is an int (IBKR types it double)
-            "ticker": symbol,  # str — display + valid IBKR field
-            "acctId": "",  # filled below after account lookup
-            "cOID": claudia_ref,  # str — max 64 chars
-            "_companyName": company_name,  # display only — underscore prefix → stripped
-        }
-        if sec_type in ("FUT", "FOP"):
-            # CME Group Rule 536-B — manualIndicator=True: order submitted through a
-            # manual UI (not automated). extOperator is deliberately NOT sent: IBKR
-            # rejects it with any non-empty value as undocumented field 8089 on
-            # this account class — proven via whatif isolation 2026-07-23
-            # (manualIndicator alone is accepted); see
-            # docs/plans/archive/orders/2026-07-23-futures-order-field-8089-bug.md
-            order_body["manualIndicator"] = True
-            if multiplier is not None:
-                order_body["_multiplier"] = multiplier  # display only — stripped by client.py
-            else:
-                # Gate 2 must not fall back to price x qty on a future: that is not an
-                # estimate, it is the notional divided by the multiplier.
-                order_body["_multiplier_unknown"] = True
-            if currency:
-                order_body["_currency"] = currency  # display only — ISO code, never "$"
-        elif currency:
-            order_body["_currency"] = currency  # display only — a stock's price is money (#49)
-        if otype == "LMT" and limit_price is not None:
-            order_body["price"] = float(limit_price)  # float
-        elif otype == "STP" and proposal.get("stop_price") is not None:
-            order_body["price"] = float(proposal["stop_price"])  # float (STP uses price field)
-        elif otype == "STOP_LIMIT":
-            if limit_price is not None:
-                order_body["price"] = float(limit_price)
-            if proposal.get("stop_price") is not None:
-                order_body["auxPrice"] = float(proposal["stop_price"])
-        _apply_outside_rth(order_body, proposal)
+        order_body, claudia_ref = await _parent_body(ibkr, proposal)
 
         # Gate 1 (Touch ID) + Gate 2 (AppKit colored dialog) fire inside place_order()
         accounts = await asyncio.to_thread(ibkr.get_accounts)
@@ -2049,6 +2301,369 @@ async def _stage_order(
             )
 
 
+# ── Bracket staging (gap #36, 2026-10-18) ────────────────────────────────────
+
+
+async def _execute_staged_bracket_core(
+    proposal: dict[str, Any],
+    send_status: SendStatus,
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """The click-bound core for a bracket proposal; one order write at a time, as the others."""
+    async with _one_order_at_a_time(send_status):
+        await _stage_bracket(proposal, send_status, session_id, store)
+
+
+def _leg_kind(observed: Mapping[str, Any] | None) -> str:
+    """Which child an IBKR read describes: IBKR echoes no identifier of ours on a child, so
+    the kind is read from its order type (a limit → profit taker, a stop → stop loss) —
+    `order_type` on a status read, `orderType` on the live-book row the read-back kept."""
+    row = (observed or {}).get("live_order") or {}
+    otype = str((observed or {}).get("order_type") or row.get("orderType") or "").upper()
+    if otype.startswith("LIMIT") or otype == "LMT":
+        return "profit_taker"
+    return "stop_loss" if otype else "child"
+
+
+async def _stage_bracket(
+    proposal: dict[str, Any],
+    send_status: SendStatus,
+    session_id: str | None,
+    store: ConversationStore | None,
+) -> None:
+    """Mirror of `_stage_order` for a parent plus attached children — one request, one Touch
+    ID, one dialog, every leg read back and recorded on its own row.
+
+    The parent body is `_parent_body`'s, the live-proven one; All or None is added where
+    IBKR's product list allows it (`_all_or_none`), never on a future; each child is written
+    in full from the parent (`_child_ticket`). IBKR's own validation of the ticket array
+    (`get_bracket_preview`) runs BEFORE any gate, so a refusal costs no Touch ID. After the
+    write, `pair_bracket_response` matches IBKR's entries to the tickets by identifier —
+    the response order is not the submission order — and a pairing problem is said and
+    recorded, never reported as success. A child reading PreSubmitted is held by IBKR until
+    the parent fills: said in those words, never as "working".
+    """
+    symbol = proposal.get("symbol", "?")
+    action_str = proposal.get("action", "?")
+    qty = _whole_or_exact(proposal.get("quantity", 0))
+    otype = proposal.get("order_type", "MKT")
+    sec_type = proposal.get("sec_type", "STK").upper()
+    children_spec = list(proposal.get("children") or [])
+    dispatched = False  # flips once the IBKR write has returned — see the except block
+
+    await send_status(
+        (
+            f"Initiating staging for **{action_str} {qty} {symbol}** bracket ({sec_type}, "
+            f"{len(children_spec)} attached)…\n\n"
+            + _gates_notice(GATE2_SEND_LABEL, TIMEOUT_LEAVES_PLACE)
+        ),
+        "System",
+    )
+
+    reply_log: list[dict[str, Any]] = []
+    try:
+        ibkr = await _ibkr_client()
+        order_body, claudia_ref = await _parent_body(ibkr, proposal)
+        accounts = await asyncio.to_thread(ibkr.get_accounts)
+        account_id = _resolve_account_id(accounts)
+        order_body["acctId"] = account_id
+        if _all_or_none(sec_type):
+            order_body["allOrNone"] = True
+        children = [_child_ticket(order_body, child) for child in children_spec]
+
+        # IBKR's own validation of the array before a Touch ID is spent. The figures are the
+        # parent's alone (the whatif previews ticket one only, measured 2026-09-20), so
+        # nothing is read from the response: accepted or refused is the whole answer.
+        await asyncio.to_thread(ibkr.get_bracket_preview, account_id, order_body, children)
+
+        log.info(
+            "Placing bracket: %s + %d attached",
+            {k: v for k, v in order_body.items() if not k.startswith("_")},
+            len(children),
+        )
+        result = await asyncio.to_thread(
+            ibkr.place_bracket_and_confirm, account_id, order_body, children, reply_log=reply_log
+        )
+        dispatched = True
+        reply_line = _format_reply_log(reply_log)
+        if reply_line:
+            await send_status(reply_line, "System")
+
+        if _is_ibkr_rejection(result):
+            log.warning("IBKR rejected bracket for %s: %s", symbol, result)
+            _record_rejection(
+                store, session_id, noun="trade", proposal=proposal, result=result, symbol=symbol
+            )
+            await send_status(
+                (
+                    f"**Bracket REJECTED by IBKR (nothing placed):** {action_str} {qty} {symbol} "
+                    f"({otype})\nIBKR response: {json.dumps(result, indent=2)}"
+                ),
+                "System",
+            )
+            return
+
+        from ibkr_core_mcp import pair_bracket_response
+
+        pairing = pair_bracket_response([order_body, *children], result)
+        for problem in pairing.problems:
+            await send_status(
+                (
+                    f"**⚠ Bracket response did not pair cleanly:** {problem} — check the book; "
+                    "do not assume every leg is held."
+                ),
+                "System",
+            )
+        parent_entry = dict(pairing.parent or {})
+        parent_id = str(parent_entry.get("order_id") or "") or None
+        child_ids = [
+            str(c.get("order_id")) for c in pairing.children if c.get("order_id") is not None
+        ]
+        await send_status(
+            (
+                f"**Dispatch accepted by IBKR — bracket parent {parent_id or 'id not reported'}, "
+                f"{len(child_ids)} attached** ({action_str} {qty} {symbol}, {otype}). "
+                f"Verifying each leg…\nIBKR response: {json.dumps(result, indent=2)}"
+            ),
+            "System",
+        )
+
+        legs: list[tuple[str, str | None, dict[str, Any]]] = [("parent", parent_id, parent_entry)]
+        legs.extend(
+            ("child", str(c["order_id"]) if c.get("order_id") is not None else None, dict(c))
+            for c in pairing.children
+        )
+        child_side = "SELL" if action_str == "BUY" else "BUY"
+        for role, leg_id, _entry in legs:
+            confirmed, observed = False, None
+            if leg_id is None:
+                await send_status(
+                    (
+                        f"**The {role}'s order id was not reported** — its live state could not "
+                        "be verified; check IBKR directly."
+                    ),
+                    "System",
+                )
+            else:
+                confirmed, readback_line, observed = await _read_back_place(ibkr, leg_id)
+                if role == "child" and str((observed or {}).get("order_status")) == "PreSubmitted":
+                    readback_line = (
+                        f"Order {leg_id}: {HELD_UNTIL_PARENT_FILLS} (PreSubmitted, by design)."
+                    )
+                    confirmed = True
+                await send_status(readback_line, "System")
+            if store and session_id:
+                kind = "parent" if role == "parent" else _leg_kind(observed)
+                siblings = [i for i in child_ids if i != leg_id] if role == "child" else child_ids
+                observed_state = (observed or {}).get("order_status")
+                store.add_decision(
+                    session_id=session_id,
+                    decision_type="trade_staged",
+                    summary_text=(
+                        f"{'STAGED' if confirmed else 'DISPATCHED (UNVERIFIED)'}: bracket {kind} "
+                        f"{action_str if role == 'parent' else child_side} {qty} {symbol} — "
+                        f"observed state: {observed_state or 'not observed'}"
+                    ),
+                    symbol=symbol,
+                    metadata={
+                        "proposal": proposal,
+                        "bracket": {
+                            "leg": kind,
+                            "parent_order_id": None if role == "parent" else parent_id,
+                            "sibling_ids": siblings,
+                            "pairing_problems": list(pairing.problems),
+                        },
+                        "ibkr_response": result,
+                        "ibkr_replies": reply_log,
+                        "ibkr_order_id": leg_id,
+                        "claudia_ref": claudia_ref,
+                        "readback_confirmed": confirmed,
+                        "readback_order_status": observed_state,
+                        "readback_response": observed,
+                    },
+                )
+
+    except Exception as exc:
+        _log_refusal(exc, dispatched, "Bracket staging", symbol)
+        _record_refusal(
+            store,
+            session_id,
+            noun="trade",
+            proposal=proposal,
+            exc=exc,
+            reply_log=reply_log,
+            dispatched=dispatched,
+            symbol=symbol,
+        )
+        if dispatched:
+            await send_status(_post_dispatch_failure_text(exc, "bracket"), "System")
+        else:
+            await send_status(
+                f"**Bracket not placed:** {_classify_execution_error(exc)}"
+                f"{_declined_reply_text(reply_log)}",
+                "System",
+            )
+
+
+# ── Attach staging (gap #36, 2026-10-18) ─────────────────────────────────────
+
+
+async def _execute_attach_core(
+    proposal: dict[str, Any],
+    send_status: SendStatus,
+    session_id: str | None = None,
+    store: ConversationStore | None = None,
+) -> None:
+    """The click-bound core for an attach proposal — one child on a working order."""
+    async with _one_order_at_a_time(send_status):
+        await _attach_order(proposal, send_status, session_id, store)
+
+
+async def _attach_order(
+    proposal: dict[str, Any],
+    send_status: SendStatus,
+    session_id: str | None,
+    store: ConversationStore | None,
+) -> None:
+    """One attached order on an order already working at IBKR, through the core's
+    `attach_order_and_confirm`.
+
+    ClaudIA sends the child's OWN fields and the parent's id, nothing derived: the core reads
+    the parent from IBKR, refuses one that is not working before any gate, completes the
+    child as IBKR defines an attached order (the parent's contract and size, the opposite
+    side), and shows the parent as IBKR holds it on Gate 2. After the write the response is
+    checked for the link (`attached_entry`): an accepted order the response does not tie to
+    the parent may be a standalone order, live on its own — said loudly, recorded as not
+    attached, never as staged. A child reading PreSubmitted is held, said in those words.
+    """
+    order_id = str(proposal.get("order_id", ""))
+    symbol = proposal.get("symbol", "?")
+    child = dict(proposal.get("child") or {})
+    kind = str(child.get("kind", "child"))
+    dispatched = False  # flips once the IBKR write has returned — see the except block
+
+    await send_status(
+        (
+            f"Initiating attachment of a {_CHILD_WORD.get(kind, kind).lower()} to order "
+            f"**{order_id}** ({symbol})…\n\n"
+            + _gates_notice(GATE2_SEND_LABEL, TIMEOUT_LEAVES_ATTACH)
+        ),
+        "System",
+    )
+
+    reply_log: list[dict[str, Any]] = []
+    try:
+        ibkr = await _ibkr_client()
+        accounts = await asyncio.to_thread(ibkr.get_accounts)
+        account_id = _resolve_account_id(accounts)
+        spec = _child_spec(child)
+        log.info("Attaching to order %s: %s", order_id, spec)
+        result = await asyncio.to_thread(
+            ibkr.attach_order_and_confirm, account_id, order_id, spec, reply_log=reply_log
+        )
+        dispatched = True
+        reply_line = _format_reply_log(reply_log)
+        if reply_line:
+            await send_status(reply_line, "System")
+
+        if _is_ibkr_rejection(result):
+            log.warning("IBKR rejected the attachment to %s: %s", order_id, result)
+            _record_rejection(
+                store, session_id, noun="trade", proposal=proposal, result=result, symbol=symbol
+            )
+            await send_status(
+                (
+                    f"**Attachment REJECTED by IBKR (nothing attached):** order {order_id}\n"
+                    f"IBKR response: {json.dumps(result, indent=2)}"
+                ),
+                "System",
+            )
+            return
+
+        from ibkr_core_mcp import attached_entry
+
+        entry = attached_entry(order_id, result)
+        child_id = (
+            str(entry.get("order_id"))
+            if entry and entry.get("order_id") is not None
+            else _extract_order_id(result)
+        )
+        confirmed, observed = False, None
+        if entry is None:
+            await send_status(
+                (
+                    f"**⚠ IBKR accepted order {child_id or '(id not reported)'} but did not "
+                    f"report it attached to {order_id}** — it may be a standalone order, live "
+                    f"on its own. Check the book now.\nIBKR response: {json.dumps(result, indent=2)}"
+                ),
+                "System",
+            )
+        elif child_id:
+            await send_status(
+                (
+                    f"**Dispatch accepted by IBKR — order {child_id} attached to {order_id}.** "
+                    f"Verifying…\nIBKR response: {json.dumps(result, indent=2)}"
+                ),
+                "System",
+            )
+            confirmed, readback_line, observed = await _read_back_place(ibkr, child_id)
+            if str((observed or {}).get("order_status")) == "PreSubmitted":
+                readback_line = (
+                    f"Order {child_id}: {HELD_UNTIL_PARENT_FILLS} (PreSubmitted, by design)."
+                )
+                confirmed = True
+            await send_status(readback_line, "System")
+
+        if store and session_id:
+            observed_state = (observed or {}).get("order_status")
+            staged = confirmed and entry is not None
+            store.add_decision(
+                session_id=session_id,
+                decision_type="trade_staged",
+                summary_text=(
+                    f"{'STAGED' if staged else 'DISPATCHED (UNVERIFIED)'}: {kind} attached to "
+                    f"{order_id} ({symbol}) — observed state: {observed_state or 'not observed'}"
+                ),
+                symbol=symbol,
+                metadata={
+                    "proposal": proposal,
+                    "bracket": {
+                        "leg": kind,
+                        "parent_order_id": order_id,
+                        "attached": entry is not None,
+                    },
+                    "ibkr_response": result,
+                    "ibkr_replies": reply_log,
+                    "ibkr_order_id": child_id,
+                    "readback_confirmed": confirmed,
+                    "readback_order_status": observed_state,
+                    "readback_response": observed,
+                },
+            )
+
+    except Exception as exc:
+        _log_refusal(exc, dispatched, "Attachment", symbol)
+        _record_refusal(
+            store,
+            session_id,
+            noun="trade",
+            proposal=proposal,
+            exc=exc,
+            reply_log=reply_log,
+            dispatched=dispatched,
+            symbol=symbol,
+        )
+        if dispatched:
+            await send_status(_post_dispatch_failure_text(exc, "attachment"), "System")
+        else:
+            await send_status(
+                f"**Attachment not made:** {_classify_execution_error(exc)}"
+                f"{_declined_reply_text(reply_log)}",
+                "System",
+            )
+
+
 # ── Order cancellation ───────────────────────────────────────────────────────
 
 
@@ -2131,19 +2746,7 @@ async def _cancel_order(
             "System",
         )
 
-        from dotenv import load_dotenv
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
-
-        load_dotenv(override=False)
-        config = Config.from_env()
-        # Every synchronous IBKR call in this flow runs in a worker thread (gap #17): the
-        # client reads browser cookies here, and the gated write blocks on Touch ID and a
-        # 60 s dialog — none of it may hold the event loop every tab is served from.
-        ibkr = await asyncio.to_thread(
-            IBKRClient,
-            config=config,
-            auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
-        )
+        ibkr = await _ibkr_client()
 
         accounts = await asyncio.to_thread(ibkr.get_accounts)
         account_id = _resolve_account_id(accounts)
@@ -2152,6 +2755,11 @@ async def _cancel_order(
         # One read-only status GET before Touch ID: the dialog shows the order as IBKR holds
         # it, not the proposal's copy (gap #40). A failed read falls back to the proposal.
         order_details = await asyncio.to_thread(_cancel_display_details, ibkr, proposal)
+        linked = order_details.pop("_linked_sentence", None)
+        if linked:
+            # A bracket leg (gap #36): what this cancel does to the other legs, said before
+            # Touch ID, from the read above — one read, two uses.
+            await send_status(linked, "System")
         result = await asyncio.to_thread(
             ibkr.cancel_order, account_id, order_id, order_details=order_details
         )
@@ -2356,19 +2964,7 @@ async def _modify_order(
             "System",
         )
 
-        from dotenv import load_dotenv
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
-
-        load_dotenv(override=False)
-        config = Config.from_env()
-        # Every synchronous IBKR call in this flow runs in a worker thread (gap #17): the
-        # client reads browser cookies here, and the gated write blocks on Touch ID and a
-        # 60 s dialog — none of it may hold the event loop every tab is served from.
-        ibkr = await asyncio.to_thread(
-            IBKRClient,
-            config=config,
-            auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
-        )
+        ibkr = await _ibkr_client()
 
         action_str = proposal.get("action", "?")
         qty = _whole_or_exact(proposal.get("quantity", 0))
@@ -2423,9 +3019,15 @@ async def _modify_order(
             _apply_contract_display_facts, ibkr, order_body, int(conid), sec_type
         )
         order_body["_changes"] = list(proposal.get("changes") or [])
-        current = await asyncio.to_thread(_current_order_description, ibkr, str(order_id))
+        current, current_status = await asyncio.to_thread(
+            _current_order_description, ibkr, str(order_id)
+        )
         if current:
             order_body["_current_description"] = current
+        parent = (current_status or {}).get("parent_order_id")
+        if parent not in (None, ""):
+            # A bracket child (gap #36): said before Touch ID, from the same read.
+            await send_status(_HELD_CHILD_MODIFY_SENTENCE.format(parent=parent), "System")
 
         accounts = await asyncio.to_thread(ibkr.get_accounts)
         account_id = _resolve_account_id(accounts)
