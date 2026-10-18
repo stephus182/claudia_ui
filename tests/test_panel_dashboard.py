@@ -3192,3 +3192,18 @@ def test_ytd_appends_the_pending_point_after_the_weekly_regrouping():
     assert str(days[-1])[:10] == "2026-08-06"
     assert realised[-1] == pytest.approx(999.0)
     assert realised[-2] != pytest.approx(999.0 + 250.25)  # not merged into Aug 6's week
+
+
+# ── Brackets on the book (gap #36, 2026-10-18) ───────────────────────────────
+
+
+def test_status_words_for_a_child_depend_only_on_whether_its_parent_is_in_the_book():
+    """Two states for a child, read off the feed and nothing else: held while its parent is
+    in the working book, otherwise "not in the book" — a fill is never inferred from an
+    absence (a filled parent leaves the feed; so does a cancelled one)."""
+    parent = _order(order_id="1", origin="CLAUDIA-7")
+    child = _order(order_id="2", side="SELL", status="PreSubmitted", parent_order_id="1")
+    held = pdash.orders_frame(_snapshot(orders=(parent, child)))["Status"].tolist()
+    assert held == ["Submitted", "held (parent 1)"]
+    orphan = pdash.orders_frame(_snapshot(orders=(child,)))["Status"].tolist()
+    assert orphan == ["parent 1 not in the book"]

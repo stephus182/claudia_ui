@@ -73,6 +73,7 @@ from claudia.dashboard_data import (
     FUTURES_CLASSES,
     RECONCILE_TOLERANCE,
     DashboardSnapshot,
+    LiveOrder,
     RealisedPoint,
     RealisedWindow,
     Reconciliation,
@@ -1065,7 +1066,11 @@ _ORDER_TOOLTIPS = {
     "Outside RTH": "Whether the order may act outside regular trading hours, as IBKR reports it. "
     "Decides when a stop on a US future can trigger. '—' = not reported by IBKR "
     "for this order (measured on futures rows) — not 'No'.",
-    "Status": "IBKR's own status string, verbatim.",
+    "Status": (
+        "IBKR's own status string, verbatim. For an attached child (gap #36): "
+        "`held (parent N)` while its parent is in this book, `parent N not in the book` "
+        "otherwise — read off the feed, never a fill inferred from an absence."
+    ),
     "Origin": "ClaudIA for orders staged through this app; external for TWS, mobile or the "
     "web portal — those cannot be modified or cancelled through the API.",
 }
@@ -1082,6 +1087,19 @@ def _yes_no_or_dash(value: bool | None) -> str:
     return "Yes" if value else "No"
 
 
+def _status_text(order: LiveOrder, book_ids: frozenset[str]) -> str:
+    """Two states for a child, read off the feed and nothing else (gap #36, 2026-10-18):
+    held while its parent is in the working book, otherwise "not in the book" — a fill is
+    never inferred from an absence (a filled parent leaves the feed; so does a cancelled
+    one, and after a cancel its children were seen both lingering and gone, 2026-10-18).
+    Every other order shows IBKR's own status word."""
+    if order.parent_order_id is None:
+        return order.status
+    if order.parent_order_id in book_ids:
+        return f"held (parent {order.parent_order_id})"
+    return f"parent {order.parent_order_id} not in the book"
+
+
 def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     """Working orders as the DataFrame the `Tabulator` renders.
 
@@ -1095,6 +1113,7 @@ def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     would tell a trader they have nothing resting, which is the most dangerous sentence
     this panel could say by accident.
     """
+    book_ids = frozenset(o.order_id for o in (snapshot.orders or ()))
     rows = [
         {
             "Order": o.order_id,
@@ -1110,7 +1129,7 @@ def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
             # other unknown on this table, never a value.
             "TIF": o.tif or "—",
             "Outside RTH": _yes_no_or_dash(o.outside_rth),
-            "Status": o.status,
+            "Status": _status_text(o, book_ids),
             "Origin": "ClaudIA" if o.is_claudia_staged else "external",
         }
         for o in (snapshot.orders or ())

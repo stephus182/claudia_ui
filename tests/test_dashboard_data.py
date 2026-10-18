@@ -2705,3 +2705,48 @@ def test_with_pending_step_on_an_empty_window_is_the_pending_point_alone():
     )
     out = dd.with_pending_step((), wtd, date(2026, 9, 29))
     assert [(p.day, p.realised, p.cumulative) for p in out] == [(date(2026, 9, 29), 108.02, 108.02)]
+
+
+# ── Brackets on the book (gap #36, 2026-10-18) ───────────────────────────────
+
+
+def test_a_child_row_carries_its_parent_and_inherits_its_origin():
+    """Measured 2026-10-18 (core session A5, case (a)): a child's feed row carries `parentId`
+    and `order_ref` sits on the parent only — so a child's origin is ITS parent's, found by
+    id, never the first ClaudIA order on the same symbol (the decoy row)."""
+    rows = dd.parse_orders(
+        [
+            {
+                "orderId": 9,
+                "ticker": "F",
+                "side": "BUY",
+                "totalSize": 1,
+                "status": "Submitted",
+                "order_ref": "CLAUDIA-1",
+            },
+            {
+                "orderId": 1,
+                "ticker": "F",
+                "side": "BUY",
+                "totalSize": 1,
+                "orderType": "LMT",
+                "price": 5.0,
+                "status": "Submitted",
+                "order_ref": "CLAUDIA-7",
+            },
+            {
+                "orderId": 2,
+                "ticker": "F",
+                "side": "SELL",
+                "totalSize": 1,
+                "orderType": "LMT",
+                "price": 9.0,
+                "status": "PreSubmitted",
+                "parentId": 1,
+            },
+        ]
+    )
+    decoy, parent, child = rows
+    assert decoy.parent_order_id is None and parent.parent_order_id is None
+    assert child.parent_order_id == "1"
+    assert child.origin == "CLAUDIA-7" and child.is_claudia_staged

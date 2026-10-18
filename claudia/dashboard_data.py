@@ -1385,6 +1385,11 @@ class LiveOrder:
     tif: str
     status: str
     origin: str = ""
+    # The parent's order id on an attached child (gap #36, 2026-10-18): the live-orders feed
+    # carries `parentId` on a child row (measured 2026-10-18 on Ford, core session A5), and
+    # `order_ref` on the parent only — so a child's origin is read through its parent in
+    # `parse_orders`. None on every order that is not a child.
+    parent_order_id: str | None = None
     # IBKR's outsideRTH attribute as reported on the order row — True / False, or None when
     # the row does not carry a boolean. Measured 2026-09-04: the field is present though
     # undocumented, False on a resting stock limit and **None on a resting ES futures
@@ -1418,6 +1423,12 @@ def _optional_float(raw: Any) -> float | None:
         return None
 
 
+# Whichever key the live-orders feed carries for a child's parent: `parentId` (int) is what
+# it carried on 2026-10-18 (the core's A5 session, case (a)); `parent_order_id` is the order
+# status endpoint's spelling, kept so a row shaped by that endpoint reads the same.
+_PARENT_KEYS = ("parentId", "parent_order_id")
+
+
 def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
     """Type IBKR's live-order rows, skipping any row that carries no order id.
 
@@ -1431,6 +1442,10 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
     Rows are any `Mapping`, not only dicts: since 2026-09-17 ibkr_core_mcp returns
     `IBKRResponse` models, which serve IBKR's payload as a mapping and are not dicts. A
     `dict` check here kept 0 of 1 live orders that day, with this suite green.
+
+    An attached child (gap #36) carries its parent's id (`_PARENT_KEYS`) and, since IBKR
+    puts `order_ref` on the parent only (measured 2026-09-21 and 2026-10-18), inherits its
+    parent's origin — by id, from the same book, never from another row on the symbol.
     """
     out: list[LiveOrder] = []
     for row in rows or ():
@@ -1463,6 +1478,9 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                 tif="",
                 status=str(row.get("status") or row.get("order_status") or "").strip(),
                 origin=str(row.get("order_ref") or row.get("orderRef") or "").strip(),
+                parent_order_id=next(
+                    (str(row[k]) for k in _PARENT_KEYS if row.get(k) not in (None, "")), None
+                ),
                 outside_rth=(
                     row["outsideRTH"] if isinstance(row.get("outsideRTH"), bool) else None
                 ),
@@ -1476,7 +1494,13 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                 description=str(row.get("orderDesc") or "").strip(),
             )
         )
-    return tuple(out)
+    by_id = {o.order_id: o for o in out}
+    return tuple(
+        replace(o, origin=by_id[o.parent_order_id].origin)
+        if o.parent_order_id in by_id and not o.origin
+        else o
+        for o in out
+    )
 
 
 # The three top-of-book fields the positions table renders, plus the availability flag.
