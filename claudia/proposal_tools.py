@@ -228,7 +228,8 @@ _CHILD: dict[str, object] = {
         "One attached order, as IBKR defines it: the parent's size, the opposite side, the same "
         "contract — none of which is typed here. price is the limit for a profit_taker and the "
         "trigger for a stop_loss; limit_price (stop_loss only) turns the stop into a stop-limit; "
-        "tif null = the parent's; outside_rth null = send nothing."
+        "tif null = the parent's, a stated tif equal to or shorter than the parent's, never longer; "
+        "outside_rth null = send nothing."
     ),
     "properties": {
         "kind": _CHILD_KIND,

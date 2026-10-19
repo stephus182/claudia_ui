@@ -220,7 +220,9 @@ IBKR holds an attached
 order and releases it only when the parent fills; when one attached order fills, IBKR cancels
 the other. A child is the parent's size, the opposite side and the same contract — never type
 those. For `propose_attach`, `order_id` and the parent's fields come from a tool result in this
-conversation, never from memory.
+conversation, never from memory. A child's `tif` is null for the parent's own, or equal to or
+shorter than the parent's (DAY on a GTC parent) — never longer: IBKR overrides a longer one with
+the parent's, so such a proposal is refused.
 
 ## MODIFY PARAMETER IMMUTABILITY — NON-OVERRIDABLE
 
@@ -1395,6 +1397,16 @@ _REQUIRED_PRICES: dict[str, tuple[str, ...]] = {
 # the order path and never typed, so there is nothing of it to check here.
 _CHILD_KINDS: tuple[str, ...] = ("profit_taker", "stop_loss")
 _CHILD_PRICE_FIELDS: tuple[str, ...] = ("price", "limit_price")
+# IBKR's rule for an attached order's time in force (TWS guide, Using the Orders Panel,
+# scraped 2026-10-18, https://www.ibkrguides.com/traderworkstation/using-the-orders-panel.htm):
+# "You must set the TIF for a child order equal to or shorter than that of the parent.
+# Otherwise, the TIF of the parent order will override that of the child order." Ranked by
+# duration from IBKR's own definitions (the guide's Times in Force): IOC cancels what does
+# not fill at once, OPG lives to the open, DAY to the session's end, GTC "until the order
+# fills or is canceled". A longer child is refused here rather than rewritten by IBKR after
+# the human approved what the card said (operator rule 2026-10-18); the core refuses the
+# same pair before any gate, from IBKR's record of the parent on an attach.
+_TIF_RANK: dict[str, int] = {"IOC": 0, "OPG": 1, "DAY": 2, "GTC": 3}
 # The parent price a child's price is compared against: the limit of a LMT or STOP_LIMIT
 # parent, the trigger of a STP parent. MKT is absent: no reference, no comparison.
 _REFERENCE_FIELD: dict[str, str] = {
@@ -1421,7 +1433,9 @@ def _child_defect(child: Any, parent: dict[str, Any], where: str) -> str | None:
     is bracketed by a high-side buy stop order and a low side buy limit order." So a profit
     taker on a BUY parent sits above the parent's reference price and its stop loss below;
     on a SELL parent the two swap. A MKT parent has no reference price and gets no side
-    check. The type checks are belt-and-braces, as `_proposal_defect`'s are.
+    check. A child's own TIF is equal to or shorter than the parent's (`_TIF_RANK`): IBKR
+    overrides a longer one with the parent's, so it is refused instead. The type checks are
+    belt-and-braces, as `_proposal_defect`'s are.
     """
     if not isinstance(child, dict):
         return f"{where} is not an object"
@@ -1446,6 +1460,15 @@ def _child_defect(child: Any, parent: dict[str, Any], where: str) -> str | None:
     outside = child.get("outside_rth")
     if outside is not None and not isinstance(outside, bool):
         return f"{where}.outside_rth={outside!r} must be true, false or null"
+    tif = child.get("tif")
+    if tif is not None:
+        parent_tif = str(parent.get("tif") or "").upper()
+        # An unranked parent TIF cannot be compared (the schema's enum admits none here).
+        if _TIF_RANK.get(str(tif).upper(), 0) > _TIF_RANK.get(parent_tif, len(_TIF_RANK)):
+            return (
+                f"{where}.tif={tif} is longer than the parent's {parent_tif}: IBKR takes a "
+                "child's TIF equal to or shorter than the parent's and overrides a longer one"
+            )
     reference = _reference_price(parent)
     if reference is not None:
         action = str(parent.get("action", "")).upper()

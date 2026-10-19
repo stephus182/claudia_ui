@@ -385,7 +385,10 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   (ONE child on an order already working; a profit taker AND a stop loss are two calls). A
   child is the parent's size, the opposite side and the same contract — derived on the order
   path (`order_flow._child_ticket`) or by the core from IBKR's record of the parent, never
-  typed. IBKR takes a bracket as one request — an `orders` array where the parent carries
+  typed; its TIF is the parent's unless it states an equal or shorter one, never longer
+  (IBKR overrides a longer child TIF with the parent's — refused at the proposal and by the
+  core, and both TIFs are explicit and bold on the card and the dialog, operator rule
+  2026-10-18). IBKR takes a bracket as one request — an `orders` array where the parent carries
   `cOID` and each child `parentId` equal to it — and holds the child until the parent fills;
   the response order is not the submission order, so the legs are paired by identifier
   (`pair_bracket_response`, `attached_entry`), and a pairing problem is said and recorded,

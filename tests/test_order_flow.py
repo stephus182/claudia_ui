@@ -5117,15 +5117,17 @@ def test_the_partial_fill_line_is_keyed_on_the_attribute_not_the_instrument(quan
 def test_the_bracket_summary_lists_the_parent_then_each_child_as_held():
     """The parent as a plain order, then each child's own line, each held until the parent fills."""
     text = _format_bracket_summary({**_PROPOSAL_BRACKET_STK, "children": [_PT, _SL]})
-    assert "**BUY 1 AAPL** (LMT @ 150.00 limit, GTC)" in text
+    # The TIF of the parent and of each child explicit and bold, and whose it is (operator
+    # rule 2026-10-18): IBKR takes a child's TIF equal to or shorter than the parent's.
+    assert "**BUY 1 AAPL** (LMT @ 150.00 limit) · **TIF GTC**" in text
     assert (
-        "**Profit taker:** SELL 1 LMT @ 170.00 limit · GTC · held by IBKR until the parent fills"
-        in text
-    )
+        "**Profit taker:** SELL 1 LMT @ 170.00 limit · **TIF GTC** (the parent's) · "
+        "held by IBKR until the parent fills"
+    ) in text
     assert (
-        "**Stop loss:** SELL 1 STP @ 140.00 stop · DAY · held by IBKR until the parent fills"
-        in text
-    )
+        "**Stop loss:** SELL 1 STP @ 140.00 stop · **TIF DAY** (its own) · "
+        "held by IBKR until the parent fills"
+    ) in text
     assert "when one child fills, IBKR cancels the other" in text
     assert "STAGE BRACKET" in text and "SEND TO IBKR" in text and "🔴" not in text
 
@@ -5169,11 +5171,11 @@ def test_the_attach_summary_names_the_working_order_and_the_one_child():
             },
         }
     )
-    assert "**Attach to order 123:** BUY 1 AAPL (LMT @ 150.00 limit, GTC)" in text
+    assert "**Attach to order 123:** BUY 1 AAPL (LMT @ 150.00 limit) · **TIF GTC**" in text
     assert (
-        "**Stop loss:** SELL 1 STP @ 140.00 stop · GTC · held by IBKR until the parent fills"
-        in text
-    )
+        "**Stop loss:** SELL 1 STP @ 140.00 stop · **TIF GTC** (the parent's) · "
+        "held by IBKR until the parent fills"
+    ) in text
     assert "STAGE ATTACHED ORDER" in text and "the working order stays as it is" in text
 
 

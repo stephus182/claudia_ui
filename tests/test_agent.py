@@ -5086,6 +5086,19 @@ _ATTACH_OK: dict[str, Any] = {
             {**_ATTACH_OK, "child": {**_ATTACH_OK["child"], "outside_rth": "yes"}},
             "outside_rth",
         ),
+        # IBKR (TWS guide, Using the Orders Panel, scraped 2026-10-18): a child's TIF must be
+        # equal to or shorter than the parent's; a longer one is overridden by the parent's.
+        # Refused here instead of rewritten there (operator rule 2026-10-18), on both tools.
+        (
+            "bracket",
+            {**_BRACKET_OK, "tif": "DAY", "children": [{**_CHILD_PT, "tif": "GTC"}]},
+            "longer than the parent's",
+        ),
+        (
+            "attach",
+            {**_ATTACH_OK, "tif": "DAY", "child": {**_ATTACH_OK["child"], "tif": "GTC"}},
+            "longer than the parent's",
+        ),
     ],
 )
 def test_bracket_and_attach_defects_are_rejected_whole(kind, inputs, fragment):
@@ -5107,6 +5120,20 @@ def test_a_market_parent_has_no_reference_price_so_only_positivity_is_checked():
         "children": [{**_CHILD_PT, "price": 1.0}],
     }
     assert _proposal_defect("bracket", mkt) is None
+
+
+@pytest.mark.parametrize(
+    "parent_tif, child_tif",
+    [("GTC", "GTC"), ("GTC", "DAY"), ("DAY", "DAY"), ("DAY", "IOC"), ("GTC", None)],
+)
+def test_a_childs_tif_equal_to_or_shorter_than_the_parents_is_accepted(parent_tif, child_tif):
+    """IBKR's rule is a ceiling, not an equality: equal or shorter passes, null is the parent's own."""
+    from claudia.agent import _proposal_defect
+
+    bracket = {**_BRACKET_OK, "tif": parent_tif, "children": [{**_CHILD_PT, "tif": child_tif}]}
+    assert _proposal_defect("bracket", bracket) is None
+    attach = {**_ATTACH_OK, "tif": parent_tif, "child": {**_ATTACH_OK["child"], "tif": child_tif}}
+    assert _proposal_defect("attach", attach) is None
 
 
 def test_a_sell_parents_profit_taker_sits_below_and_its_stop_above():

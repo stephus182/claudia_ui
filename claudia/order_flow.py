@@ -648,7 +648,7 @@ def _order_lines(proposal: dict[str, Any], contract_label: str | None = None) ->
 
     sec_label = f" [{sec_type}]" if sec_type != "STK" else ""
     lines = [
-        f"**{action} {qty} {symbol}{sec_label}** ({otype}{price_str}, {tif})",
+        f"**{action} {qty} {symbol}{sec_label}** ({otype}{price_str}) · **TIF {tif}**",
     ]
     if sec_type in ("FUT", "FOP") and contract_label:
         # The resolved contract in IBKR's own terms (design 2026-09-10): a bare root means
@@ -675,7 +675,10 @@ def _format_order_summary(proposal: dict[str, Any], contract_label: str | None =
     `outside_rth` (rendered by `_outside_rth_line` — always for a futures stop, otherwise
     only when set), and `reason`. TIF is read from `tif`, then `time_in_force`, then `timeInForce`, defaulting
     to DAY — the identical expression `_execute_staged_order_core` uses, so display and
-    execution cannot diverge. Do not change one without the other.
+    execution cannot diverge. Do not change one without the other. The TIF is explicit and
+    bold, on this card and on each line of a bracket card (operator rule 2026-10-18): IBKR
+    takes a child's TIF equal to or shorter than the parent's and overrides a longer one, so
+    the parent's and each child's must be readable side by side before Touch ID.
 
     `contract_label` (design 2026-09-10, gap #37) is the resolved futures contract in IBKR's
     own terms — `ESU6 · SEP26 · expires 2026-09-18` from `proposal_contract_label` — shown as a
@@ -784,7 +787,9 @@ def _child_ticket(parent_body: Mapping[str, Any], child: Mapping[str, Any]) -> d
 def _child_line(
     child: Mapping[str, Any], parent_action: str, parent_qty: Any, parent_tif: str
 ) -> str:
-    """One attached order's approval line: its side and size follow the parent's."""
+    """One attached order's approval line: its side and size follow the parent's; its TIF is
+    explicit and bold, and says whether it is the parent's own or the child's stated one
+    (IBKR: equal to or shorter than the parent's — `agent._TIF_RANK`)."""
     spec = _child_spec(child)
     side = "SELL" if str(parent_action).upper() == "BUY" else "BUY"
     otype = spec["orderType"]
@@ -793,10 +798,12 @@ def _child_line(
         stop = spec.get("auxPrice")
     else:
         stop = spec.get("price") if otype == "STP" else None
-    tif = spec.get("tif") or str(parent_tif).upper()
+    own_tif = spec.get("tif")
+    tif = own_tif or str(parent_tif).upper()
+    whose = "its own" if own_tif else "the parent's"
     line = (
         f"**{_CHILD_WORD[str(child['kind'])]}:** {side} {parent_qty} {otype}"
-        f"{_price_suffix(otype, limit, stop)} · {tif} · {HELD_UNTIL_PARENT_FILLS}"
+        f"{_price_suffix(otype, limit, stop)} · **TIF {tif}** ({whose}) · {HELD_UNTIL_PARENT_FILLS}"
     )
     if "outsideRTH" in spec:
         line += f" · outside RTH: {'yes' if spec['outsideRTH'] else 'no'}"
@@ -844,7 +851,8 @@ def _format_attach_summary(proposal: dict[str, Any]) -> str:
     tif = str(proposal.get("tif") or "DAY").upper()
     lines = [
         f"**Attach to order {proposal.get('order_id', '?')}:** {proposal.get('action', '?')} "
-        f"{proposal.get('quantity', '?')} {proposal.get('symbol', '?')} ({otype}{price}, {tif})",
+        f"{proposal.get('quantity', '?')} {proposal.get('symbol', '?')} ({otype}{price}) "
+        f"· **TIF {tif}**",
         _child_line(
             proposal["child"], proposal.get("action", "?"), proposal.get("quantity", "?"), tif
         ),
