@@ -4033,6 +4033,46 @@ async def test_a_stock_modify_carries_name_and_currency_to_gate2():
     assert body["_companyName"] == "SPDR GOLD SHARES" and body["_currency"] == "USD"
 
 
+@pytest.mark.parametrize(
+    ("status_extra", "expect_group", "expect_children"),
+    [
+        # A held child: IBKR reports its OCA membership; the core's ⚠ Linked orders row needs it.
+        (
+            {"parent_order_id": "1", "oca_group_id": "1", "oca_group_type": "ReduceOnFillNonBlock"},
+            "ReduceOnFillNonBlock",
+            False,
+        ),
+        # A parent: `children_order_ids`; the core's ⚠ Attached orders row needs it.
+        ({"children_order_ids": "2;3"}, None, True),
+        # A plain order: neither key, so neither row.
+        ({}, None, False),
+    ],
+)
+def test_cancel_display_details_carry_the_linked_order_keys_the_core_dialog_reads(
+    status_extra, expect_group, expect_children
+):
+    """ClaudIA builds the cancel dialog's details itself (gap #40), so the core's own builder
+    never runs on this path — and its two ⚠ rows, drawn from `_oca_group_type` and
+    `_has_attached_children`, were absent from the last screen before the write (seen live
+    2026-10-19, C1 step 2: a held child's dialog showed no Linked orders row). Set here from
+    the same status read, exactly as the core sets them."""
+    from claudia.order_flow import _cancel_display_details
+
+    client = MagicMock()
+    client.get_order_status.return_value = {
+        "symbol": "F",
+        "side": "S",
+        "size": "1.0",
+        "order_type": "STP",
+        "stop_price": "6.71",
+        "tif": "GTC",
+        **status_extra,
+    }
+    details = _cancel_display_details(client, {"order_id": "2", "symbol": "F"})
+    assert details.get("_oca_group_type") == expect_group
+    assert details.get("_has_attached_children", False) is expect_children
+
+
 def test_cancel_display_details_carry_name_and_currency_for_a_stock():
     """The cancel dialog reads the live status; a stock's status carries the conid and
     sec_type, and the facts follow (#49)."""
@@ -5109,8 +5149,9 @@ def test_the_partial_fill_line_is_keyed_on_the_attribute_not_the_instrument(quan
     line = _partial_fill_line(quantity, aon)
     assert (line is not None) is warned
     if line is not None:
-        assert line.startswith(
-            "🔴 **Quantity 2: a partial fill of the parent leaves each held child at 2."
+        assert line == (
+            "🔴 **Parent 2 lots without All-or-None: it can fill in part, and IBKR does not "
+            "document what becomes of the 2-lot children.**"
         )
 
 
@@ -5144,7 +5185,7 @@ def test_the_bracket_summary_warns_on_a_multi_lot_futures_parent_and_not_on_a_st
             "children": [_PT],
         }
     )
-    assert "🔴 **Quantity 2:" in fut
+    assert "🔴 **Parent 2 lots without All-or-None" in fut
     stk = _format_bracket_summary({**_PROPOSAL_BRACKET_STK, "quantity": 2, "children": [_PT]})
     assert "🔴" not in stk
 

@@ -5196,3 +5196,9 @@ def test_the_safety_block_forbids_a_standalone_exit_order():
 
     assert "## ATTACHED ORDERS — NON-OVERRIDABLE" in _SAFETY_BLOCK
     assert "NEVER propose the exit as a separate standalone `propose_order`" in _SAFETY_BLOCK
+    # Live 2026-10-19 (C1 step 2): the model told the user a cancelled stop loss "leaves the
+    # profit taker in place"; IBKR cancelled the sibling, as its OCA rule says. The block
+    # states the rule so the narrative matches what ClaudIA's own pre-gate line says.
+    assert (
+        "cancelling one attached order cancels every attached order of its parent" in _SAFETY_BLOCK
+    )

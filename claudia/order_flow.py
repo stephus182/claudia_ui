@@ -547,6 +547,15 @@ def _cancel_display_details(ibkr: Any, proposal: dict[str, Any]) -> dict[str, An
         if linked:
             # Popped by `_cancel_order` and sent to the chat before the write; never a dialog key.
             details["_linked_sentence"] = linked
+        # The two keys the core's cancel dialog draws its ⚠ rows from (its A6): ClaudIA builds
+        # the dialog's details itself (gap #40), so the core's own builder never runs on this
+        # path, and the rows were absent from the last screen before the write — seen live
+        # 2026-10-19 (C1 step 2, a held child's dialog). Set from the same read, as the core
+        # sets them: `oca_group_id` names a child, `children_order_ids` a parent.
+        if status.get("oca_group_id"):
+            details["_oca_group_type"] = status.get("oca_group_type") or "unknown"
+        if status.get("children_order_ids"):
+            details["_has_attached_children"] = True
         conid = status.get("conid")
         if conid is not None:
             _apply_contract_display_facts(
@@ -730,9 +739,11 @@ def _partial_fill_line(quantity: Any, all_or_none: bool) -> str | None:
         return None
     if size <= 1 or all_or_none:
         return None
+    # One sentence, the risk only (operator 2026-10-19: "too long text is NOT explicit and
+    # loses impact") — the same words as the core dialog's `⚠ Partial fill` row.
     return (
-        f"🔴 **Quantity {size:g}: a partial fill of the parent leaves each held child at "
-        f"{size:g}. Nothing here corrects that.**"
+        f"🔴 **Parent {size:g} lots without All-or-None: it can fill in part, and IBKR does not "
+        f"document what becomes of the {size:g}-lot children.**"
     )
 
 

@@ -218,7 +218,8 @@ NEVER propose the exit as a separate standalone `propose_order` — not "meanwhi
 safe": a standalone opposite-side order is live immediately and can open the wrong position.
 IBKR holds an attached
 order and releases it only when the parent fills; when one attached order fills, IBKR cancels
-the other. A child is the parent's size, the opposite side and the same contract — never type
+the other; cancelling one attached order cancels every attached order of its parent (they share
+one OCA group) while the parent keeps working — say so, never that the sibling stays. A child is the parent's size, the opposite side and the same contract — never type
 those. For `propose_attach`, `order_id` and the parent's fields come from a tool result in this
 conversation, never from memory. A child's `tif` is null for the parent's own, or equal to or
 shorter than the parent's (DAY on a GTC parent) — never longer: IBKR overrides a longer one with

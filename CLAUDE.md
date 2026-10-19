@@ -400,7 +400,8 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   and `_execute_attach_core`, one `trade_staged` row per leg naming its parent and siblings; a
   held child is said to be held, never "working". On the Orders tab a child reads
   `held (parent N)` or `parent N not in the book` and inherits its parent's origin. A cancel
-  or modify of a bracket leg says what IBKR does to the other legs before Touch ID. **Never
+  or modify of a bracket leg says what IBKR does to the other legs before Touch ID, and the cancel
+  details carry the two OCA keys the core's dialog draws its ⚠ rows from (2026-10-19). **Never
   approximate it with two independent proposals** (user rule 2026-09-07, a non-overridable
   section of the safety block since 2026-10-18): a standalone opposite-side limit is live
   immediately and can open the wrong position. Finding and sources:
