@@ -66,6 +66,8 @@ defaults:
 - Grey circular avatars with a letter/glyph, the author name as plain text above each bubble,
   light-grey rounded message bubbles, and a copy/like icon pair plus an `HH:MM` timestamp
   beneath every message.
+  **Gone since 2026-10-20:** no avatar has a grey disc; ClaudIA's is the round portrait
+  (`ui-customisation-reference.md` §1, *Avatar disc*).
 - Markdown renders correctly and richly: bold headings, a genuine bordered `<table>` for open
   positions, bulleted live orders, italic footnotes.
 - **P&L values are bold but not colored.** `-$1,009.95`, `-$8,892.69` and `+$1,265.10` all

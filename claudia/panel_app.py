@@ -96,6 +96,7 @@ from claudia.panel_markdown import escape_markup, safe_markdown
 from claudia.panel_sink import PanelMessageSink
 from claudia.panel_system_log import SystemLog
 from claudia.panel_theme import (
+    AVATAR_STYLESHEET,
     apply_session_theme,
     intro_card,
     register_claudia_avatar,
@@ -1174,7 +1175,8 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
     # Phase-1 surface (2026-09-02, docs/panel/ui-customisation-reference.md §1): Rerun/Undo/
     # Clear are hidden — they replay or erase messages on a surface that can stage live
     # orders; Send stays (Enter sends too), Stop keeps its default. Reaction icons are off for
-    # every message the feed builds. The box is the default ChatAreaInput, three rows, growing
+    # every message the feed builds, and so is the avatar's grey disc (AVATAR_STYLESHEET,
+    # 2026-10-20). The box is the default ChatAreaInput, three rows, growing
     # to ten. The human's author label comes from CLAUDIA_USER_NAME.
     chat = pn.chat.ChatInterface(
         renderers=[safe_markdown],
@@ -1183,7 +1185,7 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
         show_rerun=False,
         show_undo=False,
         show_clear=False,
-        message_params={"show_reaction_icons": False},
+        message_params={"show_reaction_icons": False, "stylesheets": [AVATAR_STYLESHEET]},
         # Viewport-bound, not page-growing (user request 2026-09-02): with a height of its
         # own, ChatInterface scrolls its feed internally and keeps the input row at the
         # bottom; the column holding it stretches too (_build_session_root), so the page

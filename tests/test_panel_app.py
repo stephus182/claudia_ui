@@ -1735,9 +1735,18 @@ async def test_chat_interface_phase1_surface(monkeypatch):
     assert (chat.show_rerun, chat.show_undo, chat.show_clear) == (False, False, False)
     assert chat.show_send is True
     assert chat.message_params["show_reaction_icons"] is False
-    # Every message the feed builds inherits it — including the ones already sent.
+    # Every message the feed builds inherits it — including the ones already sent — and so
+    # does the avatar rule: no grey disc and no shadow behind any avatar, so the round
+    # portrait's own ring is its only edge (operator 2026-10-20, V3b).
+    messages = [m for m in chat.objects if isinstance(m, pn.chat.ChatMessage)]
+    assert messages
+    assert all(m.show_reaction_icons is False for m in messages)
     assert all(
-        m.show_reaction_icons is False for m in chat.objects if isinstance(m, pn.chat.ChatMessage)
+        any(
+            ".avatar" in s and "background-color: transparent" in s and "box-shadow: none" in s
+            for s in m.stylesheets
+        )
+        for m in messages
     )
     assert chat.user == "Steph"
     widget = chat.active_widget

@@ -50,6 +50,15 @@ AVATAR_SIZE_WARN_BYTES = 200 * 1024
 """A local avatar path is base64-embedded in *every* message model (panel/chat/utils.py
 ``build_avatar_pane`` → ``pn.pane.Image``), so a large file is paid on each message."""
 
+AVATAR_STYLESHEET = ".avatar { background-color: transparent; box-shadow: none; }"
+"""No grey disc and no shadow behind any avatar (operator 2026-10-20): the round portrait's own
+ring is its only edge. Panel draws the avatar image at 35 px on a 50 px grey disc
+(``panel/chat/message.py`` ``build_avatar_pane(..., height=35, width=35)``; ``.avatar`` in
+``dist/css/chat_message.css``, 1.9.3), so a ring could never reach the disc's edge. The rule
+reaches every author — the System gear and the user's glyph lose their disc too, by decision —
+and it rests on Panel's internal ``.avatar`` class, not a documented setting: re-check it in
+the browser after a Panel upgrade (docs/panel/ui-customisation-reference.md §1)."""
+
 CLAUDIA_INTRO_PATH = Path(__file__).parent / "assets" / "claudia-standing.jpg"
 """The standing portrait shown in the opening bubble while a session loads (once per session,
 so it may be larger than the avatar — still keep it a JPEG of a few tens of KB)."""

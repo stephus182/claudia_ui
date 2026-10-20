@@ -33,7 +33,8 @@ hearts, and a menu of other easy changes. Decisions taken in the same session:
 |---|---|---|---|---|
 | Theme default | light unless `CLAUDIA_THEME=dark` | `panel_theme.apply_session_theme`, called in `panel_app._build_session_root` | `CLAUDIA_THEME` | unset the var |
 | Theme per tab | `?theme=dark` / `?theme=default` on the URL wins over the env var | `panel_theme.resolve_theme` | — | drop the query parameter |
-| ClaudIA's avatar | `claudia/assets/claudia-avatar.png`, registered in `ChatMessage.default_avatars` | `panel_theme.register_claudia_avatar`, called at import in `panel_app` right after `pn.extension(...)` | — | delete the file (letter fallback + one warning) |
+| ClaudIA's avatar | `claudia/assets/claudia-avatar.png` (round since 2026-10-20 — §2.2), registered in `ChatMessage.default_avatars` | `panel_theme.register_claudia_avatar`, called at import in `panel_app` right after `pn.extension(...)` | — | delete the file (letter fallback + one warning) |
+| Avatar disc (2026-10-20) | none — no grey disc and no shadow behind any avatar, so the round portrait's ring is its only edge; the System gear and the user's glyph lose their disc too (the operator's choice of three versions, render-checked in Panel 1.9.3 the same day) | `panel_theme.AVATAR_STYLESHEET`, passed as `message_params["stylesheets"]` in `panel_app._build_chat_app` | — | drop the `stylesheets` entry (Panel's 50 px grey disc returns). The rule rests on Panel's internal `.avatar` class (`chat_message.css`), not a documented setting: re-check it in the browser after a Panel upgrade |
 | Human's author label (typed messages and screenshot uploads alike) | `CLAUDIA_USER_NAME`, else `User` | `panel_theme.user_display_name`; applied as `user=` in `panel_app._build_chat_app` | `CLAUDIA_USER_NAME` | unset the var |
 | Footer buttons | Send only (Stop replaces it while a reply streams) | `show_rerun/undo/clear=False` in `panel_app._build_chat_app` | — | delete the three lines |
 | Input box | `ChatAreaInput`, 3 rows growing to 10, placeholder "Ask ClaudIA…", Enter sends | `widgets=` in `panel_app._build_chat_app` | — | delete `widgets=` |
@@ -166,7 +167,14 @@ base64 in every message model (`panel/chat/utils.py` `build_avatar_pane` →
 `pn.pane.Image`), so a 1 MB file adds ~1.3 MB (base64) to every message. `register_claudia_avatar`
 registers the file's **bytes** (read once) rather than the path: Panel `.format()`s a string avatar,
 so a checkout path containing `{` or `}` would break every message. `register_claudia_avatar` warns above
-200 KB. To shrink a source image on macOS:
+200 KB.
+
+**The file is round since 2026-10-20:** cropped at its own ring — a circle fitted to the ring's outer edge on 720
+rays, residual 0.39 px — 138×138 RGBA, transparent outside the ring. Panel draws the image at 35 px on a 50 px grey
+disc (`panel/chat/message.py` `build_avatar_pane(..., height=35, width=35)`; `.avatar` is 50 px in
+`chat_message.css`, 1.9.3), so the ring could never reach the disc's edge; the same day the disc and its shadow were
+turned off for every avatar (§1, *Avatar disc*), and the ring is the portrait's only edge. A replacement should be
+round with transparent corners too, or a white square shows. To shrink a source image on macOS:
 
 ```bash
 sips -Z 128 path/to/source.png --out claudia/assets/claudia-avatar.png
