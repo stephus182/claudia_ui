@@ -78,6 +78,10 @@ def store(tmp_path):
     """
     path = tmp_path / "store.db"
     with sqlite3.connect(path) as w:
+        # One row per statement, as the core's archive writes it; the newest `toDate` is a day
+        # AFTER the newest trade (2026-08-06), so a reader of the trade date would differ.
+        w.execute("CREATE TABLE flex_change_in_nav (stmt_to_date TEXT)")
+        w.executemany("INSERT INTO flex_change_in_nav VALUES (?)", [("20260805",), ("20260807",)])
         w.execute(
             "CREATE TABLE flex_trade (trade_date_iso TEXT, trade_date TEXT, source TEXT,"
             " asset_category TEXT, currency TEXT, open_close_indicator TEXT,"
@@ -298,9 +302,12 @@ def test_win_rate_excludes_scratches_and_is_none_when_nothing_closed(store):
 
 
 def test_flex_coverage_reports_the_newest_statement_day(store):
-    """`through` is the newest Flex trade date, and a stored live row does not move it."""
+    """`through` is the newest STATEMENT day the store holds — IBKR's own `toDate`, the same
+    reading the opening line makes — never the newest trade date (2026-08-06 here): a weekday
+    with no trades still has a statement, and every "through" on the dashboard must agree with
+    the opening line (operator 2026-10-20). A stored live row does not move it."""
     cov = dd.flex_coverage(store)
-    assert cov.through == date(2026, 8, 6)
+    assert cov.through == date(2026, 8, 7)
 
 
 def test_flex_coverage_on_an_empty_store(tmp_path):

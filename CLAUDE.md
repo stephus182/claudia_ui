@@ -649,12 +649,18 @@ the fix that established this (75,480 → 2,910 tokens/session).
   carries a UTC time and no trade date, so it is **pending** if and only if its
   `execution_id` is not yet a Flex `execution_key`, and pending realised P&L is its own
   "Not yet on a statement" window (the P&L pane's **Daily** tab; its heading says "Not yet
-  on a statement · Flex through <date>", which can include an earlier day while a statement
-  is late), never placed in a dated window. **Every dated window — week, month, YTD — and
+  on a statement · Flex statement through <date>" — the statement's own `toDate`, the one
+  date every "through" on the dashboard and the opening line print, never the newest trade
+  date (operator 2026-10-20) — which can include an earlier day while a statement is late),
+  never placed in a dated window. **Every dated window — week, month, YTD — and
   the week tile are to date: settled plus the pending part, both named on the tab** (operator
   rule 2026-09-29, gap #82: "flex realised + realised new", "one rule is the only way"; a
   flat week had read as down by the whole pending amount, and Monthly read +4,037.77 with
-  +3,307.92 realised). The curve alone stays Flex, because a point needs a date.
+  +3,307.92 realised). The curve is Flex's settled days plus one last point at the window's
+  end for the part not yet on a statement (placed at today, because a pending fill has no trade
+  date), and since 2026-10-20 it starts at zero on the window's first day (`from_zero`: a
+  to-date window stands at nothing before its first trade, so one trading day is a curve; the
+  daily bars take no anchor).
   The Daily line's book is every Flex execution of a contract plus the fills not on a
   statement yet (`flex_fills` + `build_book`), so a contract is never declined by a
   fill-window edge — the seven-day window alone had declined CL when its first fill closed a

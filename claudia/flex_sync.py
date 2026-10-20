@@ -467,11 +467,19 @@ def statement_through(sqlite_path: str | Path) -> date | None:
     except _UNOPENABLE:
         return None
     try:
+        return statement_through_in(conn)
+    finally:
+        conn.close()
+
+
+def statement_through_in(conn: sqlite3.Connection) -> date | None:
+    """`statement_through` on an open connection — the one reading of IBKR's `toDate`, shared
+    with the dashboard's `FlexCoverage` so every "through" on screen is this date (2026-10-20).
+    A missing table or an unreadable value is None, never a guess."""
+    try:
         row = conn.execute("SELECT MAX(stmt_to_date) FROM flex_change_in_nav").fetchone()
     except sqlite3.DatabaseError:
         return None
-    finally:
-        conn.close()
     try:
         return datetime.strptime(str(row[0]), "%Y%m%d").date() if row and row[0] else None
     except ValueError:

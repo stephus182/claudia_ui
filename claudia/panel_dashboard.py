@@ -56,7 +56,7 @@ caused once (`dashboard_data.parse_ledger`).
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import holoviews as hv
@@ -79,6 +79,7 @@ from claudia.dashboard_data import (
     WindowToDate,
     display_symbol,
     fill_display_name,
+    from_zero,
     gain_pct_over,
     order_display_name,
     position_display_name,
@@ -140,8 +141,9 @@ _NON_FUTURES = ("STK", "OPT", "FUND", "CASH")
 # PENDING window: the executions IBKR has not put on a statement yet, decided by execution
 # id, which carry NO day because Flex is the only source of a trade date. The operator
 # named the tab "Daily" (2026-09-24): most days that is exactly today's closes, and the
-# heading under the tab states what it really holds ("Not yet on a statement · Flex through
-# <date>"), which can include an earlier day while a statement is late. So it has no
+# heading under the tab states what it really holds ("Not yet on a statement · Flex statement
+# through <date>" — the statement's own `toDate`, as the opening line prints it, never the
+# newest trade date; operator 2026-10-20: "MUST be consistent"). So it has no
 # `RealisedWindow`, no curve and no settled block; it is `snapshot.pending` alone. See
 # `_refresh_pending`.
 _PENDING_LABEL = "Daily"
@@ -326,7 +328,7 @@ def pending_heading(snapshot: DashboardSnapshot | None, stale: bool = False) -> 
         return "**Daily realised — non-Flex**"
     cov = snapshot.coverage
     against = (
-        f"Flex through **{cov.through.isoformat()}**"
+        f"Flex statement through **{cov.through.isoformat()}**"
         if cov is not None and cov.through is not None
         else "no statement in the local store yet"
     )
@@ -715,8 +717,16 @@ def _money_hover(field: str, label: str) -> Any:
     )
 
 
-def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
+def build_realised_chart(
+    points: tuple[RealisedPoint, ...], title: str, start: date | None = None
+) -> Any:
     """Cumulative realised P&L over the window, with daily realisations beneath.
+
+    With `start`, the window's first day, the cumulative row begins at ZERO there
+    (`dashboard_data.from_zero`, 2026-10-20): a to-date window stands at nothing before its
+    first trade, a fact rather than an observation, so one trading day after the start is a
+    curve. Seen live: a week with no settled day yet and today's pending point drew nothing.
+    The daily bars take no anchor — only days that traded appear there.
 
     Returns an `hv.Layout` of two stacked rows sharing an x-range (HoloViews' own
     `Layout.shared_axes`, not anything Panel does — see `panel_chart`'s note), or None
@@ -737,7 +747,8 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     on mypy's `ignore_missing_imports` list, so everything chained off `.hvplot` is `Any`
     and gets no type checking. Keep this function small for that reason.
     """
-    if len(points) < 2:
+    anchored = from_zero(points, start) if start is not None else points
+    if len(anchored) < 2:
         return None
     df = realised_frame(points)
     # A Curve carries ONE colour, so the cumulative row is coloured by where the window
@@ -758,7 +769,7 @@ def build_realised_chart(points: tuple[RealisedPoint, ...], title: str) -> Any:
     # and closed at +855 drew the underwater stretch green, and a month that opened -871
     # drew its first week green. Above zero is a profit and below zero is a loss whatever
     # the window later did. On a stepped line the crossing is exact — see `_split_at_zero`.
-    step = _step_frame(df)
+    step = _step_frame(realised_frame(anchored))
     cumulative = _break_even()
     for frame, colour in zip(_split_at_zero(step), (UP_COLOR, DOWN_COLOR), strict=True):
         if not frame["line"].notna().any():
@@ -1266,7 +1277,7 @@ def fills_status_line(snapshot: DashboardSnapshot, stale: bool = False) -> str:
         )
     cov = snapshot.coverage
     against = (
-        f"Flex through **{cov.through.isoformat()}**"
+        f"Flex statement through **{cov.through.isoformat()}**"
         if cov is not None and cov.through is not None
         else "no statement in the local store yet"
     )
@@ -1542,12 +1553,12 @@ def to_date_markdown(
     futures = sum(r.net for r in wtd.rows if r.asset_class in FUTURES_CLASSES)
     others = sum(r.net for r in wtd.rows if r.asset_class in _NON_FUTURES)
     lines = [
-        f"#### {label} — {period} to date (Flex through {through} + not yet on a statement)",
+        f"#### {label} — {period} to date (Flex statement through {through} + not yet on a statement)",
         "",
         "| | |",
         "|---|---|",
         f"| {period.capitalize()} to date | **{fmt_signed(wtd.total, ccy)}** |",
-        f"| Settled through {through} (Flex) | {fmt_signed(wtd.settled.total, ccy)} |",
+        f"| Settled through {through} (Flex statement) | {fmt_signed(wtd.settled.total, ccy)} |",
         f"| Not yet on a statement | {pending_cell} |",
         f"| Futures | {fmt_signed(futures, ccy)} |",
         f"| Equities & options | {fmt_signed(others, ccy)} |",
@@ -1793,7 +1804,10 @@ class DashboardView:
             show_index=False,
             layout="fit_data_stretch",
             sizing_mode="stretch_width",
-            height=300,
+            # No fixed height (operator 2026-10-20: ten fills, the last behind a scroll bar,
+            # "we have more space below"): the table grows with its rows and the page scrolls,
+            # so every pending fill is on screen — render-checked with 25 rows.
+            height=None,
             formatters={
                 "Qty": NumberFormatter(format=_QTY_FORMAT),
                 "Price": NumberFormatter(format=_PRICE_FORMAT),
@@ -2173,9 +2187,9 @@ class DashboardView:
             title = f"Realised P&L — {label} ({window.start.isoformat()} to date" + (
                 f", {ccy})" if ccy else ")"
             )
-            self._pnl_chart.object = build_realised_chart(points, title)
+            self._pnl_chart.object = build_realised_chart(points, title, start=window.start)
             self._pnl_chart_note.object = realised_chart_note(
-                points,
+                from_zero(points, window.start),
                 ccy,
                 unit="week" if key == "ytd" else "day",
                 pending_last=wtd is not None and wtd.pending is not None,

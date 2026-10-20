@@ -412,7 +412,7 @@ def test_the_settled_block_says_it_is_settled_and_where_the_rest_is(view):
     """
     view._window.value = "Weekly"
     text = view._pnl_stats.object
-    assert "Settled through 2026-08-05 (Flex)" in text
+    assert "Settled through 2026-08-05 (Flex statement)" in text
     assert "Not yet on a statement" in text
     assert "never bucketed by date" in text
     assert "bridged" not in text
@@ -429,8 +429,9 @@ def test_each_window_shows_its_own_round_trip_counts(view):
     view._window.value = "YTD"
     assert "| Closed round trips (lots) | 42 |" in view._pnl_stats.object
     assert "20 / 22" in view._pnl_stats.object
-    assert "#### YTD — year to date (Flex through 2026-08-05 + not yet on a statement)" in (
-        view._pnl_stats.object
+    assert (
+        "#### YTD — year to date (Flex statement through 2026-08-05 + not yet on a statement)"
+        in (view._pnl_stats.object)
     )
 
 
@@ -1266,6 +1267,23 @@ def test_a_single_point_window_explains_itself_instead_of_drawing_a_broken_axis(
     assert pdash.build_realised_chart(one, "t") is None
     assert "at least two" in pdash.realised_chart_note(one, "USD")
     assert "-3,516.98 USD" in pdash.realised_chart_note(one, "USD")
+    # Since 2026-10-20 the cumulative row starts at ZERO on the window's first day — a fact
+    # of a to-date window, not an observation — so one trading day after the start is a
+    # curve (seen live: a week with no settled day yet and today's pending point drew
+    # nothing). A point ON the start day gets no anchor: the one-point note stays honest.
+    anchor = dd.RealisedPoint(date(2026, 8, 2), 0.0, 0.0)
+    assert dd.from_zero(one, date(2026, 8, 2)) == (anchor, *one)
+    assert dd.from_zero(one, date(2026, 8, 3)) == one
+    assert dd.from_zero((), date(2026, 8, 2)) == ()
+    anchored_chart = pdash.build_realised_chart(one, "t", start=date(2026, 8, 2))
+    assert anchored_chart is not None
+    assert pdash.build_realised_chart(one, "t", start=date(2026, 8, 3)) is None
+    # The anchor is the cumulative row's alone: the daily bars show only days that traded.
+    import holoviews as hv
+
+    rows = list(anchored_chart)
+    bars = next(e for e in rows[1] if type(e) is hv.Bars)
+    assert [pd.Timestamp(v).date() for v in bars.dimension_values("day")] == [date(2026, 8, 3)]
 
     v = pdash.build_dashboard()
     v.refresh(
@@ -1597,6 +1615,9 @@ def test_selecting_pending_repaints_the_pane_from_the_held_snapshot():
     v.refresh(_snapshot(), now=_NOW)
     v._window.value = "Daily"
     assert "Daily realised — non-Flex" in v._pnl_source_note.object
+    # The statement the membership is measured against, worded as the opening line words
+    # it — the statement's own `toDate`, never the newest trade date (operator 2026-10-20).
+    assert "Flex statement through **2026-08-05**" in v._pnl_source_note.object
     assert isinstance(v._pnl_breakdown.object, str)
 
 
@@ -1761,7 +1782,10 @@ def test_the_weekly_tab_leads_with_the_week_to_date_and_shows_both_parts():
     pending = dd.PendingWindow(rows=(dd.TypeBreakdown("FUT", 999.0, 999.0, 0.0, 1, 0, 0),))
     snap = _snapshot(pending=pending, to_date={"week": _wtd(pending)})
     text = pdash.to_date_markdown(snap.to_date["week"], "Weekly", "week", currency="USD")
-    assert "#### Weekly — week to date (Flex through 2026-08-05 + not yet on a statement)" in text
+    assert (
+        "#### Weekly — week to date (Flex statement through 2026-08-05 + not yet on a statement)"
+        in text
+    )
     assert "Week to date" in text and f"{snap.week.total + 999.0:+,.2f} USD" in text
     assert "Settled through 2026-08-05" in text and f"{snap.week.total:+,.2f} USD" in text
     assert "Not yet on a statement" in text and "+999.00 USD" in text
@@ -2673,11 +2697,15 @@ def test_the_ytd_view_shows_weekly_points_on_both_rows():
             if src is None or "day" not in src.data:
                 continue
             days = sorted({pd.Timestamp(v).date() for v in src.data["day"]})
-            # Every point but the trailing one opens a week; the tail is a bucket past it.
-            assert all(d.weekday() == 0 for d in days[:-1]), (
+            # The cumulative row opens with the zero anchor on the window's first day
+            # (2026-10-20, `from_zero`) — a fact of the window, not a trading point; the
+            # bars row carries no anchor. Every trading point but the trailing one opens a
+            # week; the tail is a bucket past it.
+            trading = days[1:] if days[0] == date(2026, 1, 1) else days
+            assert all(d.weekday() == 0 for d in trading[:-1]), (
                 f"YTD points are not weekly: {days[:6]}"
             )
-            assert len(days) <= 4, f"YTD still drawing daily points: {len(days)}"
+            assert len(trading) <= 4, f"YTD still drawing daily points: {len(trading)}"
 
 
 def test_the_single_point_note_names_the_right_unit():
@@ -2796,6 +2824,9 @@ def test_the_fills_table_is_read_only_and_has_no_handlers(view):
     assert view._fills.disabled is True
     assert not view._fills._on_click_callbacks
     assert not view._fills._on_edit_callbacks
+    # No fixed height (operator 2026-10-20, ten fills with the last behind a scroll bar): every
+    # pending fill is on screen and the page grows — render-checked with 25 rows.
+    assert view._fills.height is None
 
 
 def test_every_tabulator_on_the_dashboard_is_read_only_with_no_handlers(view):
@@ -2897,7 +2928,7 @@ def test_the_fills_status_names_the_statement_the_membership_is_measured_against
     and the line says which statement — never "today", which would assert a trade date."""
     line = pdash.fills_status_line(_polled(_fills(_fill(), _fill(eid="b"))))
     assert "2 execution(s) not yet on a statement" in line
-    assert "Flex through **2026-08-05**" in line
+    assert "Flex statement through **2026-08-05**" in line
     assert "today" not in line.lower()
 
 
@@ -3083,11 +3114,15 @@ def test_monthly_and_ytd_blocks_are_to_date_with_their_own_period_word():
     snap = _snapshot(pending=pending)
     month = pdash.to_date_markdown(snap.to_date["month"], "Monthly", "month", currency="USD")
     assert (
-        "#### Monthly — month to date (Flex through 2026-08-05 + not yet on a statement)" in month
+        "#### Monthly — month to date (Flex statement through 2026-08-05 + not yet on a statement)"
+        in month
     )
     assert f"| Month to date | **{snap.month.total + 999.0:+,.2f} USD** |" in month
     ytd = pdash.to_date_markdown(snap.to_date["ytd"], "YTD", "ytd", currency="USD")
-    assert "#### YTD — year to date (Flex through 2026-08-05 + not yet on a statement)" in ytd
+    assert (
+        "#### YTD — year to date (Flex statement through 2026-08-05 + not yet on a statement)"
+        in ytd
+    )
     assert f"| Year to date | **{snap.ytd.total + 999.0:+,.2f} USD** |" in ytd
 
 
@@ -3172,6 +3207,14 @@ def test_the_pending_point_is_drawn_from_a_single_settled_day():
     v._window.value = "Weekly"
     assert v._pnl_chart.object is not None
     assert "Only one trading day" not in v._pnl_chart_note.object
+    # Today's case (2026-10-20, a Tuesday): NO settled day in the week yet, only the pending
+    # point — with the zero anchor on Monday that is a curve too, and the note says the last
+    # point is the pending part rather than "none is drawn".
+    v.refresh(_snapshot(series=(), pending=snap.pending), now=_NOW)
+    v._window.value = "Weekly"
+    assert v._pnl_chart.object is not None
+    assert "Only one trading day" not in v._pnl_chart_note.object
+    assert "not yet on a statement" in v._pnl_chart_note.object
 
 
 def test_ytd_appends_the_pending_point_after_the_weekly_regrouping():

@@ -148,6 +148,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from claudia.contract_identity import ContractIdentity
+from claudia.flex_sync import statement_through_in
 from claudia.sqlite_read_only import connect_read_only
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -1190,22 +1191,23 @@ def round_trip_stats(conn: sqlite3.Connection, start: date, end: date) -> RoundT
 class FlexCoverage:
     """How far the Flex dataset reaches: the T+1 gap made visible instead of implicit.
 
-    `through` is the newest Flex `trade_date_iso`. What has not landed in Flex yet is
-    `pending_window`'s, decided by execution id. A count of stored `source='live'` rows
-    used to sit here as "fills not yet in a statement"; it counted only rows written when
-    the model called `get_trades(source='live')`, which is not the pending set, and was
-    removed with gap #69.
+    `through` is the newest STATEMENT day the store holds — IBKR's own `toDate`, read by
+    `flex_sync.statement_through_in`, the same reading the opening line makes — never the
+    newest trade date (operator 2026-10-20: the opening line said "statement through
+    2026-10-19" while the tabs said "Flex through 2026-10-14", the last day traded; "MUST
+    be consistent"). A weekday with no trades still has a statement. What has not landed in
+    Flex yet is `pending_window`'s, decided by execution id. A count of stored
+    `source='live'` rows used to sit here as "fills not yet in a statement"; it counted only
+    rows written when the model called `get_trades(source='live')`, which is not the
+    pending set, and was removed with gap #69.
     """
 
     through: date | None
 
 
 def flex_coverage(conn: sqlite3.Connection) -> FlexCoverage:
-    """The newest Flex trade date, or None when the store holds no statement rows."""
-    newest = conn.execute(
-        "SELECT MAX(trade_date_iso) AS d FROM flex_trade WHERE source = 'flex'"
-    ).fetchone()["d"]
-    return FlexCoverage(through=date.fromisoformat(str(newest)) if newest else None)
+    """The newest statement day the store holds, or None when it holds no statement."""
+    return FlexCoverage(through=statement_through_in(conn))
 
 
 def settled_execution_ids(conn: sqlite3.Connection, ids: Iterable[str]) -> frozenset[str]:
@@ -1938,6 +1940,21 @@ def build_flex_sections(
             for name in bounds
         },
     }
+
+
+def from_zero(points: tuple[RealisedPoint, ...], start: date) -> tuple[RealisedPoint, ...]:
+    """`points` with a zero point on `start`, the window's first day, when the first point
+    lies after it — the anchor of a to-date cumulative (operator 2026-10-20).
+
+    A to-date window stands at nothing before its first trade: a fact of the window, not an
+    observation, so it is exact and carries no date guessed. One trading day after the start
+    then makes a curve (seen live 2026-10-20: a week with no settled day yet and today's
+    pending point drew nothing). A first point ON the start day gets no anchor — the
+    one-point note stays honest — and nothing is anchored when there are no points.
+    """
+    if not points or points[0].day <= start:
+        return points
+    return (RealisedPoint(day=start, realised=0.0, cumulative=0.0), *points)
 
 
 def with_pending_step(
