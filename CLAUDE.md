@@ -395,11 +395,15 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   never reported as success. The parent gets IBKR's **All or None** where IBKR's product
   list allows it (stocks, options, bonds — never futures: refused on CME, NYMEX and COMEX),
   and a multi-lot parent without it gets the red partial-fill line on the card and on Gate 2:
-  warned, never refused. IBKR's own whatif of the array runs before any gate. Both cards end
+  warned, never refused. IBKR's own whatif of the array runs before any gate, and a refusal it
+  answers in a 2xx body (`error`, measured 2026-10-19: a margin shortfall) refuses there too, so
+  no Touch ID is spent on an order IBKR has already refused. Both cards end
   at the core's bracket dialog (`SEND TO IBKR`); the cores are `_execute_staged_bracket_core`
   and `_execute_attach_core`, one `trade_staged` row per leg naming its parent and siblings; a
   held child is said to be held, never "working". On the Orders tab a child reads
-  `held (parent N)` or `parent N not in the book` and inherits its parent's origin. A cancel
+  `held (parent N)` while its parent is in the book, otherwise IBKR's own status word with
+  `· parent N not in the book` beside it (`Submitted` there is a released child working — seen
+  live 2026-10-19 — and a fill is never inferred), and it inherits its parent's origin. A cancel
   or modify of a bracket leg says what IBKR does to the other legs before Touch ID, and the cancel
   details carry the two OCA keys the core's dialog draws its ⚠ rows from (2026-10-19). **Never
   approximate it with two independent proposals** (user rule 2026-09-07, a non-overridable
@@ -473,7 +477,7 @@ before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.m
 
 `self._all_tools` in `claudia/agent.py` is **not** just that catalog: it is the toolkit's 44,
 plus the TradingView extras when the sidecar is up (17 curated), plus 5 local utility tools
-(`_LOCAL_TOOLS`) and the 3 `PROPOSAL_TOOLS`, both declared in claudia_ui. The proposal tools
+(`_LOCAL_TOOLS`) and the 5 `PROPOSAL_TOOLS`, both declared in claudia_ui. The proposal tools
 are appended last so the tools cache breakpoint on the final entry stays stable.
 
 No extras (e.g. `[server]`) are needed for the install above; `[scraper]` is the one that

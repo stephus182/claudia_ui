@@ -1376,9 +1376,14 @@ def test_order_proposal_schema_module_is_gone():
 
 
 def test_proposal_tools_are_registered_in_the_tool_list(agent):
-    """All three proposal tools are actually offered to the model."""
+    """Every declared proposal tool — the five, read from the declaration, never a list kept
+    here — is actually offered to the model."""
+    from claudia.proposal_tools import PROPOSAL_TOOLS
+
     names = {t["name"] for t in agent._all_tools}
-    assert {"propose_order", "propose_cancel", "propose_modify"} <= names
+    declared = {t["name"] for t in PROPOSAL_TOOLS}
+    assert len(declared) == 5
+    assert declared <= names
 
 
 def test_locally_handled_tools_exclude_order_write_tools():
@@ -1647,10 +1652,12 @@ async def test_proposal_is_logged_as_a_decision():
 
 
 def test_safety_block_names_the_proposal_tools():
-    """All three tool names appear, so the model has no reason to invent a text format."""
+    """Every declared tool name appears, so the model has no reason to invent a text format."""
+    from claudia.proposal_tools import PROPOSAL_TOOLS
+
     prompt = _build_system_prompt("# Role\nI am ClaudIA.")
-    for tool in ("propose_order", "propose_cancel", "propose_modify"):
-        assert tool in prompt
+    for tool in PROPOSAL_TOOLS:
+        assert tool["name"] in prompt
 
 
 def test_safety_block_has_no_fenced_proposal_format_left():
@@ -2227,6 +2234,37 @@ SYNTHETIC_MODIFY = {
     "reason": "synthetic bump",
     "changes": [{"field": "limit_price", "previous_value": 550.0}],
 }
+SYNTHETIC_BRACKET = {
+    **SYNTHETIC_ORDER,
+    "symbol": "WWW",
+    "children": [
+        {
+            "kind": "profit_taker",
+            "price": 350.0,
+            "limit_price": None,
+            "tif": None,
+            "outside_rth": None,
+        }
+    ],
+}
+SYNTHETIC_ATTACH = {
+    "order_id": "7770003333",
+    "symbol": "VVV",
+    "action": "BUY",
+    "quantity": 5,
+    "order_type": "LMT",
+    "limit_price": 100.0,
+    "stop_price": None,
+    "tif": "DAY",
+    "reason": "synthetic exit",
+    "child": {
+        "kind": "stop_loss",
+        "price": 95.0,
+        "limit_price": None,
+        "tif": None,
+        "outside_rth": None,
+    },
+}
 
 
 def _seed_rendered(agent, decision_type: str, payload: dict[str, Any]) -> None:
@@ -2261,19 +2299,30 @@ def test_emission_record_names_the_tool_and_the_order_id():
     assert "YYY" in body
 
 
-def test_emission_record_covers_all_three_proposal_kinds():
-    """Each kind renders its own identity line, in emission order."""
+def test_emission_record_covers_every_proposal_kind():
+    """Each of the five kinds renders its own identity line, in emission order — a bracket
+    like a new order (its symbol), an attach like a cancel (the working order's id)."""
     agent, _sink = _make_agent_recording()
     _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
     _seed_rendered(agent, "trade_cancel_proposed", SYNTHETIC_CANCEL)
     _seed_rendered(agent, "trade_modify_proposed", SYNTHETIC_MODIFY)
+    _seed_rendered(agent, "trade_bracket_proposed", SYNTHETIC_BRACKET)
+    _seed_rendered(agent, "trade_attach_proposed", SYNTHETIC_ATTACH)
     body = _operator_message(agent)
 
     assert "propose_order for ZZZ" in body
     assert "propose_cancel for order 9990001111 (YYY)" in body
     assert "propose_modify for order 8880002222 (XXX)" in body
+    assert "propose_bracket for WWW" in body
+    assert "propose_attach for order 7770003333 (VVV)" in body
     # Emission order is the order they were emitted in.
-    assert body.index("propose_order") < body.index("propose_cancel") < body.index("propose_modify")
+    assert (
+        body.index("propose_order")
+        < body.index("propose_cancel")
+        < body.index("propose_modify")
+        < body.index("propose_bracket")
+        < body.index("propose_attach")
+    )
 
 
 def test_emission_record_carries_no_pricing():

@@ -5328,6 +5328,28 @@ async def test_a_refused_preview_stops_before_the_gates_and_records_a_refusal():
 
 
 @pytest.mark.asyncio
+async def test_a_preview_answering_200_with_an_error_body_stops_before_the_gates():
+    """IBKR's whatif refuses a margin shortfall in a 2xx body (`error`, measured 2026-10-19:
+    2 ES against the account's funds): the flow ends before Touch ID exactly as for an HTTP
+    refusal — nothing placed, one `trade_refused` row at `before_gates`, IBKR's sentence in
+    the chat."""
+    ibkr_mod, client = _bracket_mock()
+    client.get_bracket_preview.return_value = {
+        "error": "The Available Funds in your Commodities segment are insufficient to cover …",
+        "warn": "5/The estimated order value of 696,975 USD exceeds the value limit of 100,000 USD.",
+        "initial": {"current": "0", "change": "69,700", "after": "69,700"},
+    }
+    store = MagicMock()
+    calls = await _run_bracket(_BRACKET_ONE_CHILD, ibkr_mod, store=store)
+    client.place_bracket_and_confirm.assert_not_called()
+    store.add_decision.assert_called_once()
+    row = store.add_decision.call_args.kwargs
+    assert row["decision_type"] == "trade_refused"
+    assert row["metadata"]["stage"] == "before_gates"
+    assert any("Available Funds" in text for text, _author in calls)
+
+
+@pytest.mark.asyncio
 async def test_one_trade_staged_row_per_leg_with_the_parent_and_sibling_ids():
     """Every leg gets its own `trade_staged` row naming its parent and siblings; a held child
     is said to be held, never working."""
@@ -5480,6 +5502,35 @@ async def test_an_unattached_response_is_said_loudly_and_recorded_as_not_attache
 
 
 @pytest.mark.asyncio
+async def test_an_attached_entry_without_an_order_id_is_said_loudly_and_never_read_back():
+    """IBKR's entry links the child to the parent but names no order id: nothing can be read
+    back, so the chat says so now and the row is unverified — never silence, never STAGED."""
+    # A second, unrelated entry carries an id: it is NOT the child's, and must never be read
+    # back as if it were (the old reader took the last id of the whole response).
+    ibkr_mod, client = _attach_mock(
+        [
+            {"parent_order_id": "123", "order_status": "PreSubmitted"},
+            {"order_id": "77", "order_status": "Submitted"},
+        ]
+    )
+    store = MagicMock()
+    calls = await _run_attach(_ATTACH_PROPOSAL, ibkr_mod, store=store)
+    contents = _sent_contents(calls)
+    assert not any("order 77" in c for c in contents)
+    assert any(
+        "reported an order attached to 123 but gave it no order id" in c
+        and "Check the book now" in c
+        for c in contents
+    )
+    client.get_order_status.assert_not_called()
+    row = store.add_decision.call_args.kwargs
+    assert row["metadata"]["bracket"]["attached"] is True
+    assert row["metadata"]["readback_confirmed"] is False
+    assert row["metadata"]["ibkr_order_id"] is None
+    assert row["summary_text"].startswith("DISPATCHED (UNVERIFIED)")
+
+
+@pytest.mark.asyncio
 async def test_a_parent_that_is_not_working_is_refused_before_the_gates():
     """The core refuses a parent that is not working before its gates; the refusal is recorded."""
     ibkr_mod, client = _attach_mock([])
@@ -5506,8 +5557,10 @@ async def test_cancelling_a_bracket_child_says_the_siblings_go_and_the_parent_st
     linked = [
         i
         for i, c in enumerate(contents)
-        if "cancelling this attached order cancels every attached order of parent 1; the parent "
-        "keeps working if the child was held (measured 2026-09-22)" in c
+        if "cancelling this attached order cancels every attached order of parent 1 (they share "
+        "one OCA group — IBKR's TWS guide, One-Cancels-All); the parent keeps working"
+        in c
+        and "measured" not in c
     ]
     assert linked, contents
     verified = next(i for i, c in enumerate(contents) if "Verified via get_order_status" in c)
@@ -5516,11 +5569,21 @@ async def test_cancelling_a_bracket_child_says_the_siblings_go_and_the_parent_st
 
 @pytest.mark.asyncio
 async def test_cancelling_a_bracket_parent_says_its_children_go():
-    """`children_order_ids` is semicolon-separated (measured 2026-10-18); the count is right."""
+    """`children_order_ids` is semicolon-separated (measured 2026-10-18); the count is right;
+    the sentence is hedged as the core's dialog row is — IBKR documents no parent-cancel rule
+    (docs check 2026-10-18, row 7), and the children were seen cancelled (2026-09-22) and
+    left Inactive (2026-10-18)."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     _set_readback(client, order_status="Cancelled", children_order_ids="2;3")
     contents = _sent_contents(await _run_cancel(_make_cancel_action(), ibkr_mod))
-    assert any("cancelling this parent cancels its 2 attached order(s)" in c for c in contents)
+    assert any(
+        "This order has 2 attached order(s):" in c
+        and "cancelling this parent normally cancels them too" in c
+        and "undocumented by IBKR" in c
+        and "check the book after" in c
+        for c in contents
+    )
+    assert not any("cancels its 2 attached order(s)" in c for c in contents)
 
 
 @pytest.mark.asyncio
@@ -5531,9 +5594,11 @@ async def test_modifying_a_held_child_says_quantity_changes_are_ignored_and_capp
     contents = _sent_contents(await _run_modify(_make_modify_action(), ibkr_mod))
     assert any(
         "this order is attached to parent 1" in c.lower()
-        and "IBKR ignores a quantity change while it is held, and the core refuses one above "
-        "the parent's fill once released"
+        and "IBKR ignores a quantity change while the child is held; once released, a quantity "
+        "above the parent's fill is refused before anything is sent"
         in c
+        and "2.2.0" not in c
+        and "the core" not in c
         for c in contents
     )
     assert client.get_order_status.call_count == 2  # the pre-gate read, then the read-back

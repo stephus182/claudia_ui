@@ -393,36 +393,50 @@ def _current_order_description(
 def _linked_sentence(status: Mapping[str, Any]) -> str | None:
     """What IBKR does to the other legs when this one is cancelled (gap #36).
 
-    Measured 2026-09-22: cancelling a child cancels every child of its parent (they share
-    one OCA group), and the parent keeps working if the child was held; cancelling a parent
-    cancels its children. Read from the status's `parent_order_id` (the field that names a
-    child) and `children_order_ids` (semicolon-separated — measured 2026-10-18, a comma split
-    counted two as one). The core's cancel dialog carries the same facts on its ⚠ rows.
+    Two sentences, each as strong as its source and no stronger (docs check 2026-10-18,
+    `docs/plans/probes/2026-10-17-bracket-live/ibkr-parent-child-docs-check.md`):
+
+    - A child: **documented.** The children share one OCA group, and IBKR's TWS guide
+      (Order Types, One-Cancels-All) says an order "canceled by the client before execution"
+      cancels "all remaining orders in the OCA group"; the parent keeps working because the
+      "Auto-cancel parent" preset is off unless set (Define Order Preset Value). Measured
+      the same way 2026-09-22 and 2026-10-19.
+    - A parent: **undocumented.** No IBKR page says what a parent's cancel does to a held
+      child; measured, the children were cancelled (2026-09-22) and left `Inactive`, never
+      working (2026-10-18). So the sentence is hedged as the core's `⚠ Attached orders` row
+      is ("normally cancels its children too") and ends on the one safe instruction.
+
+    Read from `parent_order_id` (the status field that names a child) and
+    `children_order_ids` (semicolon-separated — measured 2026-10-18, a comma split counted two
+    as one). The core's cancel dialog carries the same facts on its ⚠ rows.
     """
     parent = status.get("parent_order_id")
     if parent not in (None, ""):
         return (
             "⚠️ **This is an attached order:** cancelling this attached order cancels every "
-            f"attached order of parent {parent}; the parent keeps working if the child was held "
-            "(measured 2026-09-22)."
+            f"attached order of parent {parent} (they share one OCA group — IBKR's TWS guide, "
+            "One-Cancels-All); the parent keeps working."
         )
     raw = str(status.get("children_order_ids") or "").replace(";", ",")
     children = [x for x in raw.split(",") if x.strip()]
     if children:
         return (
-            "⚠️ **This order has attached orders:** cancelling this parent cancels its "
-            f"{len(children)} attached order(s)."
+            f"⚠️ **This order has {len(children)} attached order(s):** cancelling this parent "
+            "normally cancels them too (undocumented by IBKR; measured: cancelled, or left "
+            "Inactive and never working) — check the book after."
         )
     return None
 
 
 _HELD_CHILD_MODIFY_SENTENCE = (
-    "⚠️ **This order is attached to parent {parent}:** IBKR ignores a quantity change while it "
-    "is held, and the core refuses one above the parent's fill once released (2.2.0)."
+    "⚠️ **This order is attached to parent {parent}:** IBKR ignores a quantity change while the "
+    "child is held; once released, a quantity above the parent's fill is refused before anything "
+    "is sent."
 )
-"""The modify path's one sentence for a bracket child (gap #36): IBKR's behaviour on a held
-child measured 2026-09-22 (the core's `modify_order_and_confirm` docstring), the released case
-the core's own rule since 2.2.0 (its commit 8d5c7f9)."""
+"""The modify path's one sentence for a bracket child (gap #36), in the trader's terms: IBKR's
+behaviour on a held child measured 2026-09-22 (the core's `modify_order_and_confirm` docstring);
+the released case is the core's own rule since 2.2.0 (its commit 8d5c7f9) — the sentence names
+the effect, not the repository or the version (review 2026-10-18)."""
 
 
 def _apply_futures_display_facts(ibkr: Any, order: dict[str, Any], conid: int) -> None:
@@ -2393,8 +2407,17 @@ async def _stage_bracket(
 
         # IBKR's own validation of the array before a Touch ID is spent. The figures are the
         # parent's alone (the whatif previews ticket one only, measured 2026-09-20), so
-        # nothing is read from the response: accepted or refused is the whole answer.
-        await asyncio.to_thread(ibkr.get_bracket_preview, account_id, order_body, children)
+        # nothing is READ from a clean response: accepted or refused is the whole answer. A
+        # refusal can arrive as a 2xx body carrying `error` — measured 2026-10-19, a margin
+        # shortfall on 2 ES ("The Available Funds in your Commodities segment are
+        # insufficient…") — and that is a refusal like an HTTP one: before the gates, so the
+        # Touch ID is never spent on an order IBKR has already refused.
+        preview = await asyncio.to_thread(
+            ibkr.get_bracket_preview, account_id, order_body, children
+        )
+        refusal = preview.get("error") if isinstance(preview, Mapping) else None
+        if refusal:
+            raise RefusedBeforeGatesError(f"IBKR's preview refused the bracket: {refusal}")
 
         log.info(
             "Placing bracket: %s + %d attached",
@@ -2603,11 +2626,10 @@ async def _attach_order(
         from ibkr_core_mcp import attached_entry
 
         entry = attached_entry(order_id, result)
-        child_id = (
-            str(entry.get("order_id"))
-            if entry and entry.get("order_id") is not None
-            else _extract_order_id(result)
-        )
+        # The child's id comes from ITS entry when IBKR linked one, never from another entry
+        # of the response (a reply-chain entry carries an id too); the one reader for both —
+        # `_extract_order_id` — treats IBKR's "0" placeholder as no id.
+        child_id = _extract_order_id([entry]) if entry is not None else _extract_order_id(result)
         confirmed, observed = False, None
         if entry is None:
             await send_status(
@@ -2633,6 +2655,17 @@ async def _attach_order(
                 )
                 confirmed = True
             await send_status(readback_line, "System")
+        else:
+            # Linked, but no id to read back: said now, never silence — the row below stays
+            # DISPATCHED (UNVERIFIED) with `attached: True` and no order id.
+            await send_status(
+                (
+                    f"**⚠ IBKR reported an order attached to {order_id} but gave it no order "
+                    "id** — nothing can be read back. Check the book now.\n"
+                    f"IBKR response: {json.dumps(result, indent=2)}"
+                ),
+                "System",
+            )
 
         if store and session_id:
             observed_state = (observed or {}).get("order_status")

@@ -82,9 +82,9 @@ ClaudIA's own capabilities, which the core's registry does not describe:
 | TRADINGVIEW_CDP | `tradingview.py` → sidecar → port 9222 | the model, through the curated set |
 | SUBPROCESS | `tradingview.py`, `gateway_launch.py`, the shell scripts, the keepalive agent | startup and operator buttons |
 | GOOGLE_DRIVE | `gdrive_sync.py` | session start, session end, shutdown |
-| ORDER_PROPOSAL | the three `propose_*` handlers | the model |
+| ORDER_PROPOSAL | the five `propose_*` handlers | the model |
 | HUMAN_CONFIRMATION | a rendered button and a click | **a person, and only a person** (§ 6.1) |
-| ORDER_EXECUTION_REQUEST | the three execution cores | the click closures alone |
+| ORDER_EXECUTION_REQUEST | the five execution cores (place, cancel, modify, bracket, attach) | the click closures alone |
 | IBKR_ORDER_EXECUTION | inside `ibkr_core_mcp` after both gates | owned by the core |
 
 ---
@@ -418,6 +418,7 @@ Dated, so a future reader can tell a decision from a default.
 | 2026-10-12 | CLA-SEC-010 is **PARTIAL**, not BUILT: its environment half has tests, its spawn-site half ("from two modules, never through a shell") has none (gap #100) | Placing the #93 read in `gateway_preflight` would have broken the invariant with nothing going red; a unit test that reaches a real spawn also starts a real `docker`, which the socket guard does not stop | The structural guard of #100 exists |
 | 2026-10-16 | The test guard on process starts refuses **by command name**, not every start with an exemption list (gap #100) | Inventoried with the hook reporting: 45 starts in a full run, all `git`, `python` or a shimmed `bash`; refusing by name fires on nothing and needs no list to go stale; the core's door 5 is the model; the names are the ones the two repositories spawn | A test needs a real desktop command — it does not; a live check is done by hand |
 | 2026-10-18 | `propose_bracket` and `propose_attach` are **non-strict**, validated in-process against their own declared schema (`_schema_defect`) before `_proposal_defect`; the three originals stay strict (gap #36) | The live probe refused the five strict tools on every model tried: 22 union-typed parameters against the API's cap of 16 across all strict schemas in a request, and the internal grammar limit refused every four- or five-strict-tool layout even at 14 — ClaudIA's exact production list included. Anthropic's first remedy: "Mark only critical tools as strict". The loss is constrained decoding; the enforcement is equal, one hop later, in our code, under our tests | The API's budget grows: flip the two flags, re-probe, and `_schema_defect` returns None for them by construction |
+| 2026-10-19 | A bracket preview that IBKR answers in a **2xx body carrying `error`** refuses before the gates (`_stage_bracket`, `RefusedBeforeGatesError`), a seventh pre-gate exit | Measured on the real path with the operator's account: a margin shortfall on 2 ES came back HTTP 200 with `error`, and the core had discarded the body — Touch ID and the dialog would have been spent on an order IBKR had already refused | Never |
 
 ---
 

@@ -1089,15 +1089,18 @@ def _yes_no_or_dash(value: bool | None) -> str:
 
 def _status_text(order: LiveOrder, book_ids: frozenset[str]) -> str:
     """Two states for a child, read off the feed and nothing else (gap #36, 2026-10-18):
-    held while its parent is in the working book, otherwise "not in the book" — a fill is
-    never inferred from an absence (a filled parent leaves the feed; so does a cancelled
-    one, and after a cancel its children were seen both lingering and gone, 2026-10-18).
+    held while its parent is in the working book, otherwise IBKR's own status word with the
+    link sentence beside it — a fill is never inferred from an absence (a filled parent
+    leaves the feed; so does a cancelled one, and after a cancel its children were seen both
+    lingering and gone, 2026-10-18). IBKR's word stays because it carries what the link
+    cannot: `Submitted` is a released child WORKING (seen 2026-10-19 on a live row), and
+    `PreSubmitted` a released stop not yet triggered or a child whose parent is simply gone.
     Every other order shows IBKR's own status word."""
     if order.parent_order_id is None:
         return order.status
     if order.parent_order_id in book_ids:
         return f"held (parent {order.parent_order_id})"
-    return f"parent {order.parent_order_id} not in the book"
+    return f"{order.status} · parent {order.parent_order_id} not in the book"
 
 
 def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:

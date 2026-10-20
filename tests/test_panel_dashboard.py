@@ -3205,5 +3205,12 @@ def test_status_words_for_a_child_depend_only_on_whether_its_parent_is_in_the_bo
     child = _order(order_id="2", side="SELL", status="PreSubmitted", parent_order_id="1")
     held = pdash.orders_frame(_snapshot(orders=(parent, child)))["Status"].tolist()
     assert held == ["Submitted", "held (parent 1)"]
+    # A child whose parent is not in the book keeps IBKR's own word for itself: `Submitted` is a
+    # released child WORKING (seen 2026-10-19 on the operator's own ES row), `PreSubmitted` a
+    # released stop not yet triggered or a held child whose parent left the feed — the tab says
+    # both halves and still infers no fill from the absence.
     orphan = pdash.orders_frame(_snapshot(orders=(child,)))["Status"].tolist()
-    assert orphan == ["parent 1 not in the book"]
+    assert orphan == ["PreSubmitted · parent 1 not in the book"]
+    released = _order(order_id="3", side="SELL", status="Submitted", parent_order_id="1")
+    working = pdash.orders_frame(_snapshot(orders=(released,)))["Status"].tolist()
+    assert working == ["Submitted · parent 1 not in the book"]
