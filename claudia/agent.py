@@ -579,6 +579,13 @@ def _operator_identity(value: object) -> str:
     return text if _OPERATOR_IDENTITY_RE.match(text) else ""
 
 
+WEBSOCKET_SOURCE = "broker record via the execution WebSocket"
+TRADES_WINDOW_SOURCE = (
+    "broker record read from IBKR's trades window at this start — a fill made while ClaudIA "
+    "was not running, or not reported before"
+)
+
+
 def _operator_line(text: str) -> str:
     """Externally-authored prose, flattened to one line for the operator channel.
 
@@ -2912,16 +2919,20 @@ class ClaudIAAgent:
             return ""
         return "\n".join([_REFUSED_ORDER_HEADER, *lines])
 
-    def note_execution(self, report_text: str) -> None:
-        """Queue a fill reported by IBKR's WebSocket for the next turn's operator message.
+    def note_execution(self, report_text: str, *, source: str = WEBSOCKET_SOURCE) -> None:
+        """Queue a fill reported by IBKR for the next turn's operator message.
 
         The execution listener delivers the report to every session as IBKR sends it
         (2026-09-04); this puts the same text — the broker's record, not model output — into
         the non-spoofable channel so the model knows about the fill on the user's next
         message without being asked. Delivered once, then cleared, like every other note.
+
+        `source` is the sourcing clause, a parameter because two inputs share this renderer
+        (gap #99, 2026-10-20): the WebSocket by default, and the start's catch-up, which reads
+        IBKR's trades window and must not be described as the WebSocket.
         """
         self._pending_operator_notes.append(
-            "IBKR reported an execution (broker record via the execution WebSocket; not your "
+            f"IBKR reported an execution ({source}; not your "
             f"action, not something you placed or verified this turn): "
             f"{_operator_line(report_text)}"
         )

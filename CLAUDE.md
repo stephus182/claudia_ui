@@ -47,7 +47,12 @@ claudia/execution_listener.py — WebSocket execution/P&L capture, live-ledger f
                               session as an IBKR-authored chat message + log toast + operator note
                               — once: only if it is neither on a statement nor already reported
                               (`news_rule`, gap #68, 2026-10-02); if that cannot be checked,
-                              nothing is reported or recorded and the System log says so
+                              nothing is reported or recorded and the System log says so.
+                              Since 2026-10-20 (gap #99) a start also reads IBKR's trades window
+                              once the Flex pull has settled — the Fills tab's read through the
+                              same rule — and the fills nobody was told of are ONE IBKR-authored
+                              line pointing at the Fills tab; the listener starts after that, so
+                              IBKR's arbitrary replay on the subscription has nothing left to say
 claudia/gdrive_sync.py      — GDriveSync: download claudia.db at start / upload at stop
 claudia/session_reporter.py — auto-generated Markdown session report (tool calls, decisions)
 claudia/status.py           — ConnectivityChecker: IBKR/GDrive/TV polling, TCP health

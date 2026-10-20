@@ -52,7 +52,7 @@ from ibkr_core_mcp import (
 )
 from ibkr_core_mcp.gateway import GatewayManager
 
-from claudia.agent import ClaudIAAgent, warn_if_model_lacks_operator_channel
+from claudia.agent import TRADES_WINDOW_SOURCE, ClaudIAAgent, warn_if_model_lacks_operator_channel
 from claudia.briefing import (
     Briefing,
     build_closures,
@@ -67,6 +67,8 @@ from claudia.execution_listener import (
     ExecutionListener,
     ExecutionReport,
     format_execution_report,
+    new_fills_text,
+    news_among,
     news_rule,
 )
 from claudia.flex_sync import (
@@ -81,6 +83,7 @@ from claudia.gateway_preflight import warn_if_session_borrowed
 from claudia.gateway_session import SessionPhase, get_session
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
+from claudia.live_realised import fetch_fills
 from claudia.opening_status import (
     PULL_RUNNING_NOTE,
     build_trade_lines,
@@ -683,23 +686,34 @@ def _make_fill_subscriber(
         agent = _session.get("agent")
         if agent is not None:
             agent.note_execution(text)
-        if store is not None:
-            try:
-                store.add_decision(
-                    session_id=session_id,
-                    decision_type="execution_reported",
-                    summary_text=headline,
-                    symbol=report.symbol or None,
-                    metadata={"execution": report.as_dict()},
-                )
-            except Exception:
-                # The screen already has the fill; a failed row is a logging loss, not a
-                # reason to raise inside the listener's delivery loop.
-                log.exception(
-                    "Could not record execution %s (session %s)", report.execution_id, session_id
-                )
+        _record_execution_reported(store, session_id, report, source="websocket")
 
     return _on_fill
+
+
+def _record_execution_reported(
+    store: ConversationStore | None, session_id: str, report: ExecutionReport, *, source: str
+) -> None:
+    """The `execution_reported` row, written by both inputs — the WebSocket's delivery and
+    the start's catch-up (gap #99) — so `reported_execution_ids` reads one shape.
+
+    `metadata.execution.execution_id` is what that query reads; `metadata.source` names the
+    input (`"websocket"` / `"trades_window"`) for the record, and decides nothing. Never
+    raises: the screen already has the fill, and a failed row is a logging loss, not a
+    reason to raise inside a delivery loop.
+    """
+    if store is None:
+        return
+    try:
+        store.add_decision(
+            session_id=session_id,
+            decision_type="execution_reported",
+            summary_text=format_execution_report(report).splitlines()[0].replace("**", ""),
+            symbol=report.symbol or None,
+            metadata={"execution": report.as_dict(), "source": source},
+        )
+    except Exception:
+        log.exception("Could not record execution %s (session %s)", report.execution_id, session_id)
 
 
 def _make_fill_blocked_subscriber(syslog: SystemLog) -> Callable[[str], Awaitable[None]]:
@@ -717,6 +731,58 @@ def _make_fill_blocked_subscriber(syslog: SystemLog) -> Callable[[str], Awaitabl
         syslog.say(text.replace("**", ""), "error")
 
     return _on_blocked
+
+
+async def _report_new_fills(
+    chat: pn.chat.ChatInterface,
+    syslog: SystemLog,
+    agent: Any,
+    session_id: str,
+    store: ConversationStore | None,
+    toolkit: ClaudeToolkit,
+    ibkr_offline: bool,
+    *,
+    is_news: Callable[[str], bool],
+) -> None:
+    """Fills nobody was told of, found at start — one message, the Fills tab is the detail
+    (gap #99, operator 2026-10-20). Never raises.
+
+    The WebSocket is the listener's only input, and what IBKR replays on it at a start is
+    measured as arbitrary (core register F41): ten fills of 2026-10-08 reached the chat 22
+    hours late, and only because the replay beat the Flex pull by fourteen seconds. So this
+    reads the same window the Fills tab reads — `fetch_fills`, IBKR's `/iserver/account/trades`,
+    warm-up included — and asks the listener's own rule (`is_news`: not on a statement, not
+    in an `execution_reported` row) of each execution. Run once the store is as settled as
+    this start can make it (`_init_session`, after the Flex pull has landed, failed or been
+    skipped), so yesterday's fills the statement settles are not news; today's are.
+
+    One chat message authored IBKR with the count (silence when there is nothing — never
+    "0 new fills"), one warning line (the toast), an operator note per fill with the
+    trades-window clause, an `execution_reported` row per fill so each is reported once
+    across restarts. When it cannot run — IBKR offline, the read failing, the rule unable to
+    read a store — one ERROR line says so, nothing is reported and nothing recorded: unknown
+    is not "no fills". The listener starts after this, whatever it did.
+    """
+    if ibkr_offline:
+        syslog.say("New fills not checked — IBKR not connected. Nothing reported.", "error")
+        return
+    try:
+        fills = await asyncio.to_thread(fetch_fills, toolkit.client)
+        news = await asyncio.to_thread(news_among, fills, is_news)
+    except Exception as exc:
+        syslog.say(f"New fills could not be checked: {exc}. Nothing reported.", "error")
+        return
+    if not news:
+        log.info("New fills at start: none (session %s)", session_id)
+        return
+    reports = [ExecutionReport.from_fill(fill) for fill in news]
+    text = new_fills_text(len(reports))
+    chat.send(text, user="IBKR", respond=False)
+    syslog.say(text.replace("**", ""), "warning")
+    for report in reports:
+        if agent is not None:
+            agent.note_execution(format_execution_report(report), source=TRADES_WINDOW_SOURCE)
+        _record_execution_reported(store, session_id, report, source="trades_window")
 
 
 def _build_action_bar(
@@ -881,8 +947,11 @@ async def _maybe_background_flex_sync(
     session_id: str | None = None,
     decision: FlexPullDecision | None = None,
     on_done: Callable[[], Awaitable[None]] | None = None,
-) -> None:
+) -> bool:
     """Startup Flex sync: the decision (`_flex_pull_decision`) + the background sync.
+
+    Returns whether a pull was spawned (gap #99, 2026-10-20): `False` means the store is as
+    settled as this start can make it right now; `True` means it is once `on_done` runs.
 
     The decision (fast sqlite, threaded) is taken by `_flex_pull_decision` — passed in by a
     caller that already took it before sending the opening status (gap #77), or taken here
@@ -909,7 +978,7 @@ async def _maybe_background_flex_sync(
     if decision is None:
         decision = await _flex_pull_decision(toolkit, ibkr_offline)
     if not decision.due:
-        return
+        return False
 
     async def _background_flex_sync() -> None:
         """Run the Flex trade sync off the critical path, then back up store.db to Drive.
@@ -999,6 +1068,7 @@ async def _maybe_background_flex_sync(
             log.error("Background Flex sync task died", exc_info=t.exception())
 
     task.add_done_callback(_log_flex_done)
+    return True
 
 
 # ── Session-end cleanup ───────────────────────────────────────────────────────
@@ -1351,8 +1421,10 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
         """Bring one session fully online, in order, as a background task.
 
         Drive DB download → store open → doc load + versioning → agent construction →
-        connectivity checker → execution listener → opening status → TradingView connect →
-        background Flex sync. Sets `_init_done` when finished; `_on_user_input` waits on it.
+        connectivity checker → execution listener built and subscribed → opening status →
+        TradingView connect → background Flex sync → once it has settled, the new-fills
+        catch-up and only then the listener's start (gap #99). Sets `_init_done` when
+        finished; `_on_user_input` waits on it.
 
         The Drive download runs under the process-wide `_init_lock`. `asyncio.to_thread`
         opens a yield window the old synchronous path did not have, so without the lock a
@@ -1474,13 +1546,15 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
             _session["unsubscribe"] = _connectivity_checker.subscribe(
                 _make_alert_subscriber(syslog)
             )
+            is_news = news_rule(cfg.sqlite_path, _get_store())
             if _execution_listener is None:
                 _execution_listener = ExecutionListener(
-                    cfg.gateway_url,
-                    toolkit._store,
-                    is_news=news_rule(cfg.sqlite_path, _get_store()),
+                    cfg.gateway_url, toolkit._store, is_news=is_news
                 )
-            _execution_listener.start()
+            # Not started here: it starts once this start's catch-up has run (gap #99,
+            # `_after_flex_settled` below), so fills found at start are one message and
+            # IBKR's replay on the subscription has nothing left to report.
+            listener = _execution_listener
             _session["unsubscribe_fills"] = _execution_listener.subscribe(
                 _make_fill_subscriber(chat, syslog, _session, session_id, store),
                 _make_fill_blocked_subscriber(syslog),
@@ -1538,11 +1612,34 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
                 else "**ClaudIA is ready** — connected to IBKR."
             )
 
-            async def _after_pull() -> None:
-                """Rewrite the dataset line and re-stamp the model's context (gap #77)."""
-                await _refresh_opening_after_pull(opening, agent, toolkit, ibkr_offline)
+            async def _after_flex_settled() -> None:
+                """The store is as settled as this start can make it: report the fills
+                nobody was told of, then listen (gap #99). The listener starts whatever
+                the catch-up did — it never raises, and this is the one guard if it does."""
+                try:
+                    await _report_new_fills(
+                        chat,
+                        syslog,
+                        agent,
+                        session_id,
+                        store,
+                        toolkit,
+                        ibkr_offline,
+                        is_news=is_news,
+                    )
+                except Exception:
+                    log.exception("New fills at start failed (session %s)", session_id)
+                finally:
+                    listener.start()
 
-            await _maybe_background_flex_sync(
+            async def _after_pull() -> None:
+                """Rewrite the dataset line and re-stamp the model's context (gap #77), then
+                the catch-up and the listener (gap #99) — the pull is over, landed or failed."""
+                if opening is not None:
+                    await _refresh_opening_after_pull(opening, agent, toolkit, ibkr_offline)
+                await _after_flex_settled()
+
+            spawned = await _maybe_background_flex_sync(
                 syslog,
                 toolkit,
                 ibkr_offline,
@@ -1551,8 +1648,10 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
                 # The decision was taken before the opening line was sent; a stub in the
                 # tests hands back no message, and then the sync decides for itself.
                 decision=opening.pull if opening is not None else None,
-                on_done=_after_pull if opening is not None else None,
+                on_done=_after_pull,
             )
+            if not spawned:
+                await _after_flex_settled()
         except Exception as exc:
             log.exception("Session init failed (session %s)", session_id)
             _session["error"] = str(exc)

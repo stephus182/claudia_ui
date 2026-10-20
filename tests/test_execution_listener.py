@@ -706,6 +706,29 @@ def test_execution_report_from_todays_real_fill():
     assert report.exchange == "CME"
     assert report.origin == "via ClaudIA (CLAUDIA-1788538622110)"
     assert report.execution_id == "00010181.6a9a4b19.01.01"
+    # The same execution as `/iserver/account/trades` returns it (gap #99: the start's
+    # catch-up reads that window) gives the same report, field for field — one builder.
+    assert ExecutionReport.from_fill(_todays_fill_as_live_fill()) == report
+
+
+def _todays_fill_as_live_fill():
+    """`_TODAYS_FILL` in the Fills tab's typed REST shape: the side as a signed quantity."""
+    from claudia.live_realised import LiveFill
+
+    return LiveFill(
+        execution_id="00010181.6a9a4b19.01.01",
+        conid=649180671,
+        symbol="ES",
+        asset_class="FUT",
+        signed_quantity=1.0,
+        price=7732.0,
+        commission=2.25,
+        multiplier=50.0,
+        trade_time="20260904-16:47:05",
+        exchange="CME",
+        order_ref="CLAUDIA-1788538622110",
+        description="Sep18 '26",
+    )
 
 
 def test_execution_report_handles_sold_external_and_missing_fields():
@@ -719,6 +742,16 @@ def test_execution_report_handles_sold_external_and_missing_fields():
     assert report.size == "?" and report.price == "?" and report.time_et == ""
     assert report.contract == "AAPL"
     assert report.origin == "external (TWS / mobile / web portal)"
+    # A REST fill: a negative signed quantity is SOLD of its magnitude; no description, no
+    # order ref and no time → the ticker alone, external, a blank time.
+    from claudia.live_realised import LiveFill
+
+    sold = ExecutionReport.from_fill(
+        LiveFill("E9", 1, "AAPL", "STK", -5.0, 190.5, 1.0, 1.0, trade_time="")
+    )
+    assert sold.verb == "SOLD" and sold.size == "5" and sold.price == "190.50"
+    assert sold.contract == "AAPL" and sold.time_et == ""
+    assert sold.origin == "external (TWS / mobile / web portal)"
 
 
 def test_format_execution_report_is_one_bold_line_plus_provenance():
@@ -1009,6 +1042,24 @@ def test_the_news_rule_is_neither_on_a_statement_nor_already_reported(tmp_path):
         True,
         True,
     ]
+
+    # The catch-up at start (gap #99) applies the same rule to IBKR's trades window and
+    # keeps the news oldest first — `fresh` traded before `placeholder`, so it comes first
+    # whatever order IBKR returned the rows in.
+    from claudia.execution_listener import news_among
+    from claudia.live_realised import LiveFill
+
+    def fill(execution_id: str, trade_time: str) -> LiveFill:
+        """One share of F at 7.00, with the given id and UTC time."""
+        return LiveFill(execution_id, 1, "F", "STK", 1.0, 7.0, 1.0, 1.0, trade_time)
+
+    window = [
+        fill("placeholder", "20261020-15:00:00"),
+        fill("settled", "20261019-15:00:00"),
+        fill("fresh", "20261020-14:00:00"),
+        fill("reported", "20261020-14:30:00"),
+    ]
+    assert [f.execution_id for f in news_among(window, is_news)] == ["fresh", "placeholder"]
 
 
 def test_the_news_rule_raises_when_the_statement_record_cannot_be_read(tmp_path):

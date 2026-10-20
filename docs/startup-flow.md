@@ -167,9 +167,11 @@ live-verified).
 
 **File:** `claudia/execution_listener.py` → `ExecutionListener`
 
-Like `ConnectivityChecker`, this is a **process-level singleton** — constructed and started
+Like `ConnectivityChecker`, this is a **process-level singleton** — constructed and subscribed
 right after the connectivity checker (`claudia/panel_app.py`, `_init_session` step 8), before the
-IBKR ping check in Phase 5.
+IBKR ping check in Phase 5, but **started only after Phase 6 has settled** (gap #99, 2026-10-20):
+once the start's catch-up has reported the fills nobody was told of, so that whatever IBKR replays
+on the subscription is already recorded and stays silent.
 
 - Subscribes to IBKR's execution WebSocket feed (any order origin, not just ClaudIA's own)
 - **Since 2026-09-04, on each trade execution it first tells every session** (each session
@@ -249,6 +251,20 @@ Sync is **skipped** when any of (operator rule 2026-09-28, gap #79):
    `docs/flex-query-setup.md` § When a day's statement becomes available.
 
 On sync success: `store.db` is backed up to Drive `account_data/` when its fingerprint moved.
+
+**Then, whether the pull landed, failed or was skipped — new fills at start (gap #99, 2026-10-20).**
+`_maybe_background_flex_sync` returns whether it spawned a pull; `_after_flex_settled` runs at
+once when it did not, and from the pull's `on_done` when it did. It reads IBKR's trades window
+(`live_realised.fetch_fills`, the Fills tab's read, warm-up included) and asks the listener's own
+news rule of each execution — not on a statement, not in an `execution_reported` row — so
+yesterday's fills the statement settles are not news and today's are. The result is ONE chat
+line authored IBKR (`**N new fills** — check the Fills tab for the details.`), one toast, an
+operator note per fill naming the trades window as its source, and an `execution_reported` row
+per fill (`metadata.source = "trades_window"`); silence when there is nothing. An offline start,
+a failed read or an unreadable store give one error line and nothing else. The listener
+(Phase 4.5) starts after it in every case. Why: what IBKR replays on the subscription is
+measured as arbitrary — the ten fills of 2026-10-08 reached the chat the next day only because
+the replay beat the pull by fourteen seconds.
 
 ---
 

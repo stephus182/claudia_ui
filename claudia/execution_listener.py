@@ -41,7 +41,7 @@ import logging
 import os
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
@@ -54,7 +54,7 @@ from ibkr_core_mcp.order_confirm import price_text_safe
 from ibkr_core_mcp.streaming import IBKRWebSocket, PnLUpdate, TradeExecution
 
 from claudia.dashboard_data import connect, settled_execution_ids
-from claudia.live_realised import execution_time_et
+from claudia.live_realised import LiveFill, execution_time_et
 
 if TYPE_CHECKING:
     from ibkr_core_mcp import ClaudeToolkit, SQLiteStore
@@ -129,42 +129,90 @@ class ExecutionReport:
 
     @classmethod
     def from_event(cls, event: TradeExecution) -> ExecutionReport:
-        """Map IBKR's event verbatim. Today's real fill: `B 1 ES Sep18 '26 @ 7732.0`,
+        """Map IBKR's WebSocket event verbatim. Today's real fill: `B 1 ES Sep18 '26 @ 7732.0`,
         `20260904-16:47:05`, ref `CLAUDIA-1788538622110`, CME → BOUGHT 1 ES Sep18 '26 @
         7,732.00 · 2026-09-04 12:47:05 ET · CME · via ClaudIA."""
-        side = (event.side or "").strip().upper()
-        verb = {"B": "BOUGHT", "BUY": "BOUGHT", "S": "SOLD", "SELL": "SOLD"}.get(side, side or "?")
-        size = _plain_number(event.size) if isinstance(event.size, (int, float)) else "?"
-        price = price_text_safe(event.price) if isinstance(event.price, (int, float)) else "?"
-        symbol = (event.symbol or "").strip()
-        desc = (event.contract_description_1 or "").strip()
+        return cls._build(
+            execution_id=event.execution_id,
+            symbol=event.symbol,
+            side=event.side,
+            size=event.size,
+            price=event.price,
+            trade_time=event.trade_time,
+            order_ref=event.order_ref,
+            exchange=event.exchange,
+            description=event.contract_description_1,
+        )
+
+    @classmethod
+    def from_fill(cls, fill: LiveFill) -> ExecutionReport:
+        """Map a `/iserver/account/trades` row — the Fills tab's typed shape — through the
+        same builder as the WebSocket event, so the two sources cannot describe one execution
+        differently (gap #99: the catch-up at start reads that window). The REST shape carries
+        the side as the sign of the quantity and the month text as `description`; every other
+        field is the same IBKR field under the same name."""
+        return cls._build(
+            execution_id=fill.execution_id,
+            symbol=fill.symbol,
+            side="B" if fill.signed_quantity > 0 else "S",
+            size=abs(fill.signed_quantity),
+            price=fill.price,
+            trade_time=fill.trade_time,
+            order_ref=fill.order_ref,
+            exchange=fill.exchange,
+            description=fill.description,
+        )
+
+    @classmethod
+    def _build(
+        cls,
+        *,
+        execution_id: str,
+        symbol: str | None,
+        side: str | None,
+        size: float | None,
+        price: float | None,
+        trade_time: str | None,
+        order_ref: str | None,
+        exchange: str | None,
+        description: str | None,
+    ) -> ExecutionReport:
+        """The one mapping behind both sources: IBKR's values, nothing invented."""
+        side_text = (side or "").strip().upper()
+        verb = {"B": "BOUGHT", "BUY": "BOUGHT", "S": "SOLD", "SELL": "SOLD"}.get(
+            side_text, side_text or "?"
+        )
+        size_text = _plain_number(size) if isinstance(size, (int, float)) else "?"
+        price_text = price_text_safe(price) if isinstance(price, (int, float)) else "?"
+        symbol_text = (symbol or "").strip()
+        desc = (description or "").strip()
         # IBKR's documented STK shape has contract_description_1 == symbol ("AMD" / "AMD");
         # the measured FUT shape has symbol "ES" + description "Sep18 '26". Join only when
         # the description does not already start with the ticker (review 2026-09-04, #4).
-        if desc and (not symbol or desc.startswith(symbol)):
+        if desc and (not symbol_text or desc.startswith(symbol_text)):
             contract = desc
         else:
-            contract = " ".join(p for p in (symbol, desc) if p) or "?"
+            contract = " ".join(p for p in (symbol_text, desc) if p) or "?"
         # One clock rule with the Fills tab (`live_realised.execution_time_et`, gap #68):
         # IBKR's documented format is YYYYMMDD-HH:mm:ss UTC; anything else is left blank.
         # With its date since 2026-10-02: a fill of an earlier day, reported late, read as
         # today's. A clock reading in New York, not a trade date (gap #69).
-        time_et = execution_time_et(event.trade_time or "", with_date=True)
-        ref = (event.order_ref or "").strip()
+        time_et = execution_time_et(trade_time or "", with_date=True)
+        ref = (order_ref or "").strip()
         origin = (
             f"via ClaudIA ({ref})"
             if ref.upper().startswith("CLAUDIA-")
             else "external (TWS / mobile / web portal)"
         )
         return cls(
-            execution_id=event.execution_id,
-            symbol=symbol,
+            execution_id=execution_id,
+            symbol=symbol_text,
             verb=verb,
-            size=size,
+            size=size_text,
             contract=contract,
-            price=price,
+            price=price_text,
             time_et=time_et,
-            exchange=(event.exchange or "").strip(),
+            exchange=(exchange or "").strip(),
             origin=origin,
         )
 
@@ -211,6 +259,26 @@ def news_rule(sqlite_path: str | Path, conversations: ConversationStore) -> Call
         return not conversations.reported_execution_ids([execution_id])
 
     return is_news
+
+
+def news_among(fills: Iterable[LiveFill], is_news: Callable[[str], bool]) -> tuple[LiveFill, ...]:
+    """The fills nobody has been told of, oldest first — the catch-up at start (gap #99).
+
+    `fills` is IBKR's trades window as the Fills tab reads it (`live_realised.fetch_fills`);
+    `is_news` is `news_rule`'s function, so what counts as news is decided in exactly one
+    place for both inputs. Ordered by IBKR's `trade_time` then id, whatever order IBKR
+    returned the rows in. **Raises** when the rule cannot tell: the caller then reports
+    nothing and says so — unknown is not "no fills".
+    """
+    ordered = sorted(fills, key=lambda f: (f.trade_time, f.execution_id))
+    return tuple(f for f in ordered if is_news(f.execution_id))
+
+
+def new_fills_text(count: int) -> str:
+    """The one chat line for fills found at start (operator 2026-10-20): the count and a
+    pointer to the Fills tab, which holds the detail. Never called with zero — silence then."""
+    noun = "fill" if count == 1 else "fills"
+    return f"**{count} new {noun}** — check the Fills tab for the details."
 
 
 def format_pnl_snapshot(latest: dict[str, Any] | None) -> str:

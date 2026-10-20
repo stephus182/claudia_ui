@@ -164,7 +164,20 @@ def flex_sync(request):
     with patch(
         "claudia.panel_app._maybe_background_flex_sync", new_callable=AsyncMock
     ) as mock_seam:
+        mock_seam.return_value = False  # "no pull spawned": the store is settled at once
         yield mock_seam
+
+
+@pytest.fixture(autouse=True)
+def new_fills(request):
+    """Autouse seam for the start's catch-up (gap #99) in _init_session: an AsyncMock, so an
+    init-driving test makes no trades read. Tests marked @pytest.mark.real_new_fills get
+    the REAL function (the catch-up's own tests)."""
+    if request.node.get_closest_marker("real_new_fills"):
+        yield None
+        return
+    with patch("claudia.panel_app._report_new_fills", new_callable=AsyncMock) as seam:
+        yield seam
 
 
 @pytest.fixture(autouse=True)
@@ -1265,9 +1278,10 @@ async def test_flex_sync_skips_when_the_store_holds_the_previous_weekdays_statem
         patch("claudia.panel_app.statement_through", return_value=date(2026, 9, 25)),
         caplog.at_level(logging.INFO),
     ):
-        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+        spawned = await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
         await _drain_flex_sync()
     toolkit.execute.assert_not_called()
+    assert spawned is False  # the caller's cue that the store is settled now (gap #99)
     assert any(
         "Flex sync skipped" in r.message and "2026-09-25" in r.message for r in caplog.records
     )
@@ -1288,9 +1302,10 @@ async def test_flex_sync_runs_when_the_previous_weekdays_statement_is_missing(ca
         patch("claudia.panel_app.statement_through", return_value=date(2026, 9, 25)),
         caplog.at_level(logging.INFO),
     ):
-        await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
+        spawned = await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
         await _drain_flex_sync()
     toolkit.execute.assert_any_call("sync_flex_trades", {})
+    assert spawned is True  # the store settles when `on_done` runs, not before (gap #99)
     toolkit._store.get_trade_date_coverage.assert_not_called()
     assert any(
         "Flex sync due" in r.message and "2026-09-25" in r.message and "2026-09-28" in r.message
@@ -3469,20 +3484,64 @@ async def test_fill_subscriber_posts_an_ibkr_authored_message_a_log_line_and_an_
     assert kwargs["decision_type"] == "execution_reported"
     assert kwargs["session_id"] == "s1" and kwargs["symbol"] == "ES"
     assert kwargs["metadata"]["execution"]["execution_id"] == "00010181.6a9a4b19.01.01"
+    assert kwargs["metadata"]["source"] == "websocket"  # the row names its input (gap #99)
 
 
+@pytest.mark.real_new_fills
 @pytest.mark.asyncio
-async def test_a_blocked_fill_report_is_an_error_in_the_system_log():
-    """Fill reporting stopped because a store could not be read: an ERROR line, which is the
-    level that raises the toast — a silent stop would look like "no fills"."""
-    from claudia.panel_app import _make_fill_blocked_subscriber
+@pytest.mark.parametrize("case", ["listener_blocked", "offline", "read_failed", "rule_raised"])
+async def test_a_blocked_fill_report_is_an_error_in_the_system_log(case):
+    """Fill reporting that could not run is an ERROR line, the level that raises the toast —
+    a silent stop would look like "no fills". The listener's blocked path, and the three ways
+    the start's catch-up cannot run (gap #99): IBKR offline, the read failing, the news rule
+    unable to read a store — nothing reported and nothing recorded in each."""
+    from claudia.live_realised import LiveFill
+    from claudia.panel_app import _make_fill_blocked_subscriber, _report_new_fills
+    from claudia.panel_markdown import safe_markdown
     from claudia.panel_system_log import SystemLog
 
     syslog = SystemLog()
     with patch.object(syslog, "say", wraps=syslog.say) as say:
-        await _make_fill_blocked_subscriber(syslog)("**Fill reporting stopped.** unreadable")
+        if case == "listener_blocked":
+            await _make_fill_blocked_subscriber(syslog)("**Fill reporting stopped.** unreadable")
+            say.assert_called_once_with("Fill reporting stopped. unreadable", "error")
+            return
 
-    say.assert_called_once_with("Fill reporting stopped. unreadable", "error")
+        def raising_rule(execution_id: str) -> bool:
+            """The news rule when a store cannot be read: it raises, never guesses."""
+            raise OSError("claudia.db unreadable")
+
+        chat = pn.chat.ChatInterface(renderers=[safe_markdown])
+        store, toolkit = MagicMock(), MagicMock()
+        one = (LiveFill("E1", 1, "F", "STK", 1.0, 7.0, 1.0, 1.0, "20261020-14:00:00"),)
+        read = MagicMock(
+            side_effect=RuntimeError("no bridge") if case == "read_failed" else None,
+            return_value=one,
+        )
+        with patch("claudia.panel_app.fetch_fills", read):
+            await _report_new_fills(
+                chat,
+                syslog,
+                MagicMock(),
+                "s1",
+                store,
+                toolkit,
+                case == "offline",
+                is_news=raising_rule if case == "rule_raised" else lambda execution_id: True,
+            )
+    say.assert_called_once()
+    text, level = say.call_args.args
+    assert level == "error" and text.startswith("New fills")
+    reason = {
+        "offline": "IBKR not connected",
+        "read_failed": "no bridge",
+        "rule_raised": "claudia.db unreadable",
+    }[case]
+    assert reason in text and "Nothing reported" in text
+    if case == "offline":
+        read.assert_not_called()  # no read against a gateway that is not there
+    assert chat.objects == []
+    store.add_decision.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -3499,6 +3558,106 @@ async def test_fill_subscriber_without_an_agent_still_reports_on_screen():
     )
     assert chat.objects[0].user == "IBKR"
     assert len(syslog.entries) == 1
+
+
+@pytest.mark.real_new_fills
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [3, 1, 0])
+async def test_new_fills_at_start_are_one_message_a_log_line_a_note_and_a_row_per_fill(count):
+    """Fills nobody was told of, found at start (gap #99, operator 2026-10-20): ONE chat
+    message by 'IBKR' with the count and a pointer to the Fills tab, which holds the detail;
+    one warning line (the toast); an operator note per fill saying it was read from IBKR's
+    trades window, never "WebSocket"; an `execution_reported` row per fill, oldest first, so
+    each is reported once across restarts. Silence, and no row, when there is nothing."""
+    from claudia.agent import TRADES_WINDOW_SOURCE
+    from claudia.live_realised import LiveFill
+    from claudia.panel_app import _report_new_fills
+    from claudia.panel_markdown import safe_markdown
+    from claudia.panel_system_log import SystemLog
+
+    fills = tuple(
+        LiveFill(f"E{i}", 1, "F", "STK", 1.0, 7.0 + i, 1.0, 1.0, f"20261020-14:0{i}:00")
+        for i in range(count)
+    )
+    chat = pn.chat.ChatInterface(renderers=[safe_markdown])
+    syslog = SystemLog()
+    agent, store, toolkit = MagicMock(), MagicMock(), MagicMock()
+    with patch("claudia.panel_app.fetch_fills", return_value=fills) as read:
+        await _report_new_fills(
+            chat,
+            syslog,
+            agent,
+            "s1",
+            store,
+            toolkit,
+            False,
+            is_news=lambda execution_id: True,
+        )
+    read.assert_called_once_with(toolkit.client)  # the Fills tab's read, warm-up included
+    if count == 0:
+        assert chat.objects == [] and syslog.entries == []
+        agent.note_execution.assert_not_called()
+        store.add_decision.assert_not_called()
+        return
+    noun = "fill" if count == 1 else "fills"
+    line = f"**{count} new {noun}** — check the Fills tab for the details."
+    assert len(chat.objects) == 1
+    assert chat.objects[0].user == "IBKR" and chat.objects[0].object == line
+    assert len(syslog.entries) == 1 and line.replace("**", "") in syslog.entries[0]
+    notes = agent.note_execution.call_args_list
+    assert len(notes) == count
+    assert all(c.kwargs["source"] == TRADES_WINDOW_SOURCE for c in notes)
+    assert "FILLED: BOUGHT 1 F @ 7.00" in notes[0].args[0]
+    rows = store.add_decision.call_args_list
+    assert [r.kwargs["metadata"]["execution"]["execution_id"] for r in rows] == [
+        f"E{i}" for i in range(count)
+    ]
+    assert {r.kwargs["decision_type"] for r in rows} == {"execution_reported"}
+    assert {r.kwargs["metadata"]["source"] for r in rows} == {"trades_window"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["skipped", "spawned", "raised"])
+async def test_init_reports_new_fills_once_flex_has_settled_then_starts_the_listener(
+    backend_singletons, flex_sync, new_fills, path
+):
+    """The catch-up (gap #99) runs when the store is as settled as this start can make it —
+    at once when the pull is skipped, from `on_done` once a pull is over — and the listener
+    starts after it in every path: a raising catch-up neither fails the session nor stops
+    the listener."""
+    order: list[str] = []
+    flex_sync.return_value = path == "spawned"
+    new_fills.side_effect = (
+        RuntimeError("boom") if path == "raised" else (lambda *a, **k: order.append("report"))
+    )
+    backend_singletons.listener_cls.return_value.start.side_effect = lambda: order.append("start")
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch(
+            "claudia.panel_app._send_opening_status",
+            new=AsyncMock(return_value=(None, False, None)),
+        ),
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        if path == "spawned":
+            assert order == []  # nothing until the pull is over
+            await flex_sync.await_args.kwargs["on_done"]()
+
+    assert order == (["start"] if path == "raised" else ["report", "start"])
+    new_fills.assert_awaited_once()
+    assert not any("init failed" in str(getattr(m, "object", "")) for m in chat.objects)
 
 
 @pytest.mark.asyncio

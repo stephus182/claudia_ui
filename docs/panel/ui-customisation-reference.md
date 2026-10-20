@@ -264,6 +264,10 @@ WebSocket goes to the **chat**, authored **IBKR** (not ClaudIA, not System), *an
 with a toast, *and* into the agent's operator channel. A fill is the event a trader must not
 miss, and the author label says whose record it is: the broker's, not the assistant's. Details
 and the four surfaces: `docs/order-api-reference.md` § Automatic execution reports.
+The same exception covers the one line a start sends for the fills nobody was told of
+(gap #99, 2026-10-20): `**N new fills** — check the Fills tab for the details.`, authored
+**IBKR** because the count is IBKR's trades record and nothing else, with its toast; the detail
+stays on the Fills tab, which already holds it.
 "Fill reporting stopped" — an execution that could not be checked against the statement and
 the record of reported fills — is **not** a fill and follows the rule: an error line in the
 log, with its toast (2026-10-02).

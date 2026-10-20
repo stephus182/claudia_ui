@@ -4196,6 +4196,16 @@ def test_note_execution_queues_one_operator_note(agent):
     note = agent._pending_operator_notes[0]
     assert note.startswith("IBKR reported an execution")
     assert "BOUGHT 1 ES Sep18 '26 @ 7,732.00" in note
+    # The sourcing clause names the input: the WebSocket by default; the start's catch-up
+    # (gap #99) reads IBKR's trades window and says so, never "WebSocket" for a REST read.
+    assert "via the execution WebSocket" in note
+    agent.note_execution(
+        "**FILLED: SOLD 1 F @ 7.46** · 09:31:00 ET · NYSE",
+        source="broker record read from IBKR's trades window at this start",
+    )
+    second = agent._pending_operator_notes[1]
+    assert "IBKR's trades window at this start" in second
+    assert "WebSocket" not in second
 
 
 async def test_execution_note_reaches_the_model_once_on_the_next_turn():

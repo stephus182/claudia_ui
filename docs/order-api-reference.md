@@ -917,6 +917,28 @@ Detached on End Session and on the destroy hook together with the alert subscrip
 WebSocket is down there is no report and nothing is invented; the red IBKR light and the
 dashboard's 15 s refresh remain.
 
+**New fills at start (gap #99, 2026-10-20).** The WebSocket is the only input above, and what
+IBKR replays on it at a start is measured as arbitrary (the core's behaviours reference,
+WebSocket `str`): the ten fills of 2026-10-08 reached the chat on 10-09 only because the replay
+beat the Flex pull by fourteen seconds — once the pull lands, the news rule reads them as
+settled. So every start, once the pull has landed, failed or been skipped
+(`panel_app._after_flex_settled`), `_report_new_fills` reads IBKR's trades window —
+`live_realised.fetch_fills`, the Fills tab's read, `/iserver/account/trades` with its two-call
+warm-up — and asks the listener's own rule of each execution (`execution_listener.news_among`:
+not on a statement, not in an `execution_reported` row, oldest first). The fills nobody was
+told of are **one** chat line authored IBKR, `**N new fills** — check the Fills tab for the
+details.` (operator 2026-10-20: the tab already holds the detail), one `warning` toast, one
+operator note per fill whose sourcing clause names the trades window (`agent.note_execution(…,
+source=TRADES_WINDOW_SOURCE)` — never "WebSocket" for a REST read), and one `execution_reported`
+row per fill through the same `_record_execution_reported` the live path uses, with
+`metadata.source` = `trades_window` / `websocket`. Each report is built by
+`ExecutionReport.from_fill`, the same `_build` as `from_event`, so the two sources cannot
+describe one execution differently. Silence when there is nothing; an offline start, a failed
+read or an unreadable store give one `error` line, nothing reported, nothing recorded. The
+listener starts **after** this, so whatever IBKR then replays is already recorded and stays
+silent. Not covered: the WebSocket going silent during a session (core register F41, parked by
+the operator until seen again). Design: `docs/plans/2026-10-20-new-fills-at-start-design.md`.
+
 **Rules the review of 2026-09-04 added, each with a test:** every fill is reported, including
 the ones the listener's P&L capture round consumes from the same queue (a bracket's second leg
 within 10 s of the first was silently dropped — reproduced with the real capture loop before
