@@ -30,7 +30,9 @@
 refused — the settings still load — and ClaudIA cannot reach the model: the startup line and the
 System log say so with the `chmod 600` fix. A secret is read from the file only: one exported in your
 shell is removed at startup with a warning naming it, and an editor must not inject the file into its
-terminal (VS Code: `python.terminal.useEnvFile` off), or every process started there inherits it.
+terminal (VS Code: `python.terminal.useEnvFile` off), or every process started there inherits it. The
+path from the file to the object that uses each secret — and to every child process that never
+sees one — is drawn in `docs/security-architecture.md` § 6.7.
 
 ## `CLAUDIA_MODEL` — all three requirements must hold
 

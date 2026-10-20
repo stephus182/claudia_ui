@@ -163,7 +163,7 @@ intention with no enforcement yet, and the audit is the record of why.
 | **CLA-SEC-012** | The cross-repo contract is pinned in both directions, at a named revision | One import list — held equal to what ClaudIA actually imports, `TYPE_CHECKING` and function-local imports included (since 2026-09-30, gap #84: two runtime imports had been outside it) — every attribute ClaudIA reads through a name ending in `toolkit` — every read today — checked on a real `ClaudeToolkit`, and the three private collaborators it reaches past it (`_store`, `_config`, `_cache`) pinned by identity (gap #87; the tests' MagicMock toolkits answer to any name), three gated entry points, the registry as the only source of tool claims, two core behaviours a ClaudIA invariant rests on, the Gate 1 policy (`LAPolicyDeviceOwnerAuthentication` at both LocalAuthentication calls — the device-password recovery; gap #60, 2026-09-28), and `core-ref.txt` as the single source of the supported core revision | `test_cross_repo_contract.py`, including the pinned release's shape, that the *installed* distribution version equals it, and a rule that no other file in the repository names one | BUILT (§ 7) |
 
 | **CLA-SEC-013** | The set of model-directed outbound channels is closed and known | One local tool (`fetch_web_page`) and the core's `WEB_FETCH`/`NETWORK` set; no local tool may carry a request body | `test_outbound_sink_inventory.py`: ClaudIA's outbound tools detected **structurally** (a schema taking a `url`/`domain`/`endpoint`/`webhook`), the core's computed from the registry, and the SSRF guard's scope pinned as *destination*, not payload | BUILT (2026-09-14) — it pins the surface, **not** the exfiltration itself, which is an accepted residual (§ 9) |
-| **CLA-SEC-014** | A secret is read from the protected `.env` into the object that uses it and never placed in a process environment; an inherited one is removed at startup by name | `claudia/env_file.py` over the core's `load_env_file` (its invariant 12): the Anthropic SDK's two names added to the core's, `ENV_FILE` the repository root's, `core_config()` handing the names through, `dotenv.load_dotenv` replaced process-wide after the first read (`crawl4ai` calls it bare at import, from inside the venv's tree), `AsyncAnthropic(api_key=…)` or `Setup required` | `test_secrets_out_of_environment.py`: a **real child** started after the loader reports no secret; the removal names the variable, never the value; a later `load_dotenv` by anyone exports no secret (against python-dotenv's genuine function); a refused or keyless file is reported with the `chmod 600` fix and refuses the agent; `core_config()` exports no Anthropic key (the live defect of 2026-10-16); structural: no dotenv loader outside the loader, every Anthropic client built with `api_key=`, `Config.from_env` only in the loader; the suite reads a stand-in `.env` of its own and the real one cannot be opened by any test | BUILT (2026-10-16; live-verified the same day, `docs/project-status.md` § Live Test Log) |
+| **CLA-SEC-014** | A secret is read from the protected `.env` into the object that uses it and never placed in a process environment; an inherited one is removed at startup by name | `claudia/env_file.py` over the core's `load_env_file` (its invariant 12): the Anthropic SDK's two names added to the core's, `ENV_FILE` the repository root's, `core_config()` handing the names through, `dotenv.load_dotenv` replaced process-wide after the first read (`crawl4ai` calls it bare at import, from inside the venv's tree), `AsyncAnthropic(api_key=…)` or `Setup required`; the whole path drawn in § 6.7 | `test_secrets_out_of_environment.py`: a **real child** started after the loader reports no secret; the removal names the variable, never the value; a later `load_dotenv` by anyone exports no secret (against python-dotenv's genuine function); a refused or keyless file is reported with the `chmod 600` fix and refuses the agent; `core_config()` exports no Anthropic key (the live defect of 2026-10-16); structural: no dotenv loader outside the loader, every Anthropic client built with `api_key=`, `Config.from_env` only in the loader; the suite reads a stand-in `.env` of its own and the real one cannot be opened by any test | BUILT (2026-10-16; live-verified the same day, `docs/project-status.md` § Live Test Log) |
 
 `pytest tests/security` runs the set in under four seconds (3.7s measured 2026-09-14); it is part of every unit run, of
 the pre-push hook, and of CI.
@@ -338,6 +338,91 @@ A refusal is recorded and fails the run at session end even if swallowed
 (`test_no_desktop_reached.py`, every test of which is safe on a broken guard).
 
 ---
+
+### 6.7 Secrets — the one path from `.env` to the object that uses it
+
+The rule (CLA-SEC-014, gap #103 with #100, 2026-10-16; the core's invariant 12, register F48):
+a secret is read from the protected `.env` into the object that uses it and is never placed in a
+process environment. Until then `load_dotenv` copied the whole file into this process's
+environment at seven sites, and every child inherited it. Two charts, two levels: the invariant,
+then the loader that keeps it. Red is a secret, green a setting, amber a guard.
+
+**The invariant — where a secret may go.**
+
+```mermaid
+flowchart LR
+    classDef secret fill:#fde3e1,stroke:#b42318,color:#111827
+    classDef setting fill:#e3f5e8,stroke:#1a7f37,color:#111827
+    classDef guard fill:#fff3d6,stroke:#b54708,color:#111827
+
+    FILE[("<b>.env</b> — mode 0600<br/>settings and secrets")]:::secret
+    INH["Inherited environment<br/>shell profile · editor · launchd"]
+    GUARD["Secret names removed at startup<br/>the warning names the variable, never the value"]:::guard
+    LOAD["<b>env_file.load()</b><br/>the one loader, once per entry point"]
+    SECRETS["<b>SecretStr objects</b><br/>Anthropic client · core Config (Flex, Firecrawl)<br/>unwrapped only where sent"]:::secret
+    ENV["<b>os.environ</b><br/>settings only"]:::setting
+    CHILDREN["Every child process<br/>sidecar · docker CLI · osascript · pgrep · Gate 2 dialog<br/>nothing to inherit"]:::setting
+
+    INH --> GUARD --> LOAD
+    FILE --> LOAD
+    LOAD -->|secrets| SECRETS
+    LOAD -->|settings| ENV --> CHILDREN
+    SECRETS -. never .-x ENV
+```
+
+- **Two outputs and nothing else.** A secret becomes a `SecretStr` (masked in every repr and log)
+  and is unwrapped at the one site that sends it; a setting reaches `os.environ` exactly as
+  `load_dotenv(override=False)` placed it, only where unset. A child process inherits the
+  environment, so it inherits settings and no secret — the sidecar's allowlist and `_docker_env`
+  stay as defence in depth.
+- **A copy from outside is removed, not trusted.** A secret inherited from a shell profile, an
+  editor's `useEnvFile` or a parent process is deleted at startup by name, with a warning that
+  names the variable and never its value.
+- **The core keeps its contract and writes nothing.** `Config.from_env` still reads a user-set
+  secret from the environment (the MCP server's documented way) and never writes one back;
+  `core_config()` hands ClaudIA's secret names through, because with the core's names alone the
+  Anthropic key was exported as a setting the moment the toolkit's `Config` was built (found live
+  2026-10-16).
+
+**The loader — what `env_file.load()` does.**
+
+```mermaid
+flowchart TB
+    classDef secret fill:#fde3e1,stroke:#b42318,color:#111827
+    classDef setting fill:#e3f5e8,stroke:#1a7f37,color:#111827
+    classDef guard fill:#fff3d6,stroke:#b54708,color:#111827
+
+    START["env_file.load()"] --> RM["Remove inherited secret names"]:::guard
+    RM --> CORE["ibkr_core_mcp.config.load_env_file(ENV_FILE, secret_names)<br/>secret_names = the core's + the Anthropic SDK's two"]
+    CORE --> MODE{"file accessible to<br/>group or others?"}
+    MODE -->|yes| REFUSED["Secrets refused, settings still load<br/>message: chmod 600 .env"]:::guard
+    REFUSED --> SETUP["Startup line and System log: Setup required<br/>every agent refuses to build"]:::guard
+    MODE -->|no| OK["Settings → os.environ where unset<br/>Secrets → SecretStr, written nowhere"]:::setting
+    OK --> HELD["anthropic_api_key() · core_config()"]:::secret
+    START -. after the read .-> PATCH["dotenv.load_dotenv replaced process-wide<br/>a later bare call (crawl4ai at import)<br/>exports settings, never a secret"]:::guard
+```
+
+- **The file check is the core's.** Any permission bit for group or others (0o077, OpenSSH's
+  standard for a key file) refuses the secrets, not the settings, so each feature needing one
+  reports "not configured" at its point of use.
+- **A refusal is not a crash.** ClaudIA starts, says why on the terminal and in the System log with
+  the `chmod 600` fix, and every agent built in that state raises `Setup required`, which the chat
+  shows. A file with no key is reported the same way.
+- **A later `load_dotenv` by anyone cannot undo it.** `crawl4ai` calls a bare `load_dotenv()` at
+  import, and the venv sits inside the repository, so its search finds this file; after `load()`
+  the function it finds exports settings and never a secret.
+
+**Not in the charts, by design.** The keepalive daemon (`scripts/ibkr-keepalive.sh`, launchd,
+always on) is another process: it reads the one `IBKR_GATEWAY_URL` line it needs and never sources
+the file, which would also run it as shell code. The test suite points `ENV_FILE` at a stand-in
+with a placeholder key, and an open of the real `.env` is refused (CLA-SEC-009, § 6.6); the proof
+of the invariant is a real child started after the loader, reporting no secret name
+(`tests/security/test_secrets_out_of_environment.py`). The structural tests refuse a new dotenv
+loader and an Anthropic client built without `api_key=`.
+
+**Known limit (§ 9).** The file is plaintext at rest, mode 0600; the process is unsandboxed and runs
+as the operator, so code running inside it can still read the file. Encryption at rest is deferred
+by the operator.
 
 ## 7. CI as a security instrument
 
