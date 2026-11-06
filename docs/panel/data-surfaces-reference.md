@@ -230,6 +230,47 @@ Ctrl / Shift for multiple), `False`, `'checkbox'`, `'checkbox-single'` (no selec
 **Row content.** `row_content=callable(row) → pane` renders an expandable detail region under the
 row; `embed_content=True` pre-renders every row's content **[S]**.
 
+**Grouped rows — measured 2026-11-06 for the Orders tab (gap #105) [P].** `groupby=[col]` is
+Tabulator's row grouping: one band per value, with an arrow that folds it; groups start open and
+are drawn in the order their first row appears. A click on a column header keeps every group
+together but sorts the rows inside it **and re-orders the groups** (after a sort by one column a
+group's first data row was no longer first, and the bands had changed places) — so a row that
+must be recognised is marked in the row itself, never by its position. What the scraped page
+does not say, each probed on 1.9.3 (Tabulator 6.4.0):
+
+- **The band reads `<column name>: <value> (N items)`.** The prefix is Panel's own — the view's
+  `groupBy` getter builds `${column}: ${value}` (`panel/models/tabulator.ts`) — so the grouping
+  column's *name* is text the user reads. Name it for the band, and hide the column itself with
+  `hidden_columns`.
+- **The count's words are Tabulator's language table**, plain JSON through `configuration`:
+  `{"locale": "en", "langs": {"en": {"groups": {"item": "order", "items": "orders"}}}}` gives
+  `(3 orders)` (https://tabulator.info/docs/6.4/localize, "copy for the auto generated item count
+  in group header").
+- **The band's value is drawn as HTML**, the cells as text: `<i>` in a group value rendered
+  italic, and the same markup in a cell stayed literal. Tabulator documents that a group header
+  is "a DOM node, a text string or an HTML string" (https://tabulator.info/docs/6.4/group).
+  Escape any group value built from outside strings (`html.escape`); the escaped value displays
+  as the literal text.
+- **A folded group re-opens whenever `value` is reassigned** — an equal frame included (folded,
+  three reassignments at 2 s, open again). Reassign only when the frame changed
+  (`if not frame.equals(table.value)`); a fold then holds until the data changes. The Styler's
+  rules survive the reassignment (gotcha 19).
+- **No native route puts the fold arrow on a real data row.** `row_content` draws its expand
+  icon on *every* row unconditionally (`_expand_render`) and gives each expanded row a second
+  table with its own headings. `hierarchical=True` builds a synthetic top row per index value
+  (`group_data` / `summarize`: the first record's value, or `min` / `max` / `sum` / `mean`), so a
+  real row is either repeated beneath a copy of itself or replaced by a computed total — Qty 3
+  for a 1-lot bracket, a false figure on a trading screen. `groupby` is the only fold that keeps
+  every row a real row; its arrow sits on the band.
+- **Free band wording is possible and not used.** `pn.io.JSCode` placeholders are compiled
+  anywhere in `configuration` (`transformJsPlaceholders`), so `configuration={"groupHeader":
+  JSCode("(function(value, count, data, group){…})")}` works; Panel's page documents `JSCode` for
+  formatters and editors only, and it is `new Function` in the page. The column name and the
+  language table give a readable band with no JavaScript.
+
+Probe, renders and the two Tabulator pages: `docs/plans/probes/2026-11-06-orders-tab-nesting/`,
+`.firecrawl/tabulator-6.4/`.
+
 **Static configuration.** `configuration={...}` passes options Panel does not expose straight to
 the Tabulator library — `clipboard`, `rowHeight`, `columnDefaults: {headerSort: False}` are the
 documented examples **[S]**. Measured on 1.9.3 **[P]**: it is a **constructor-only argument**,
@@ -616,6 +657,13 @@ Every item is scraped or probed, not inferred:
 | 31 | `configuration=` is a **constructor-only** argument on 1.9.3, stored as `_configuration`; there is no `configuration` attribute to read or set afterwards (`tables.py:1395,1405`) | **[P]** |
 | 32 | A click on a `buttons` column leaves `event.value` unset — the widget fills `value` from the frame for data columns only (`tables.py:1488-1492`); read the row by `event.row` | **[P]** |
 | 33 | `on_edit` callbacks run **once per edit, after** the frame changed (the browser's `pre` event is consumed internally); `event.old` is the previous cell value from the widget's own copy (`tables.py:1495-1506`) | **[P]** |
+| 34 | A `groupby` band reads `<column name>: <value> (N items)` — the prefix is Panel's (`tabulator.ts`, the `groupBy` getter), so the grouping column's NAME is user-facing text; hide the column with `hidden_columns` | **[P]** |
+| 35 | The band's count words come from Tabulator's language table: `configuration={"locale": "en", "langs": {"en": {"groups": {"item": …, "items": …}}}}` — JSON, no JavaScript | **[S]** + **[P]** |
+| 36 | A band's value is inserted as **HTML** (markup in a group value was rendered); cells are text. `html.escape` any group value built from outside strings | **[P]** |
+| 37 | Folded groups **re-open whenever `value` is reassigned**, an equal frame included — reassign only when the frame changed (`frame.equals(table.value)`) | **[P]** |
+| 38 | No native fold arrow sits on a real data row: `row_content` draws its icon on every row, `hierarchical` builds a synthetic top row (a copy of the first record, or a computed total). `groupby` is the only fold that keeps every row real | **[P]** |
+| 39 | pandas 3's string dtype turns a `None` in a text column into NaN: test "has a value" with `pd.isna`, never `is not None` (a probe labelled every row Child) | **[P]** |
+| 40 | With `groupby`, a header sort re-orders the rows inside each band **and the bands themselves** — mark a row that must be recognised in the row (a style, a column), never by its position | **[P]** |
 
 ---
 

@@ -400,10 +400,18 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   no Touch ID is spent on an order IBKR has already refused. Both cards end
   at the core's bracket dialog (`SEND TO IBKR`); the cores are `_execute_staged_bracket_core`
   and `_execute_attach_core`, one `trade_staged` row per leg naming its parent and siblings; a
-  held child is said to be held, never "working". On the Orders tab a child reads
-  `held (parent N)` while its parent is in the book, otherwise IBKR's own status word with
-  `· parent N not in the book` beside it (`Submitted` there is a released child working — seen
-  live 2026-10-19 — and a fill is never inferred), and it inherits its parent's origin. A cancel
+  held child is said to be held, never "working". On the Orders tab each bracket is one band,
+  folded by its arrow and open by default (gap #105, operator 2026-11-06): the parent's row in
+  bold, a `Role` column (Parent / Child / Single order), BUY green and SELL red on every order.
+  A child reads `held (parent N)` while its parent is in the book; once the parent has left it,
+  IBKR's own status word for the child with `· parent N executed` or `· parent N cancelled`
+  when IBKR's status read of that parent says so (`ParentStatusCache`, one read per absent
+  parent), and `· parent N not in the book` when it gave no final word — a parent leaves the
+  book when it fills and when it is cancelled alike, so a fill is never inferred from an
+  absence (`Submitted` there is a released child working, seen live 2026-10-19). A child
+  inherits its parent's origin. The table is redrawn only when the book changed, because
+  reassigning its frame re-opens every folded band; a header sort re-orders rows and bands, so
+  the parent is told by its bold row and its Role, never by its place. A cancel
   or modify of a bracket leg says what IBKR does to the other legs before Touch ID, and the cancel
   details carry the two OCA keys the core's dialog draws its ⚠ rows from (2026-10-19). **Never
   approximate it with two independent proposals** (user rule 2026-09-07, a non-overridable
@@ -644,7 +652,7 @@ the fix that established this (75,480 → 2,910 tokens/session).
   of our own): `docs/panel/component-model-reference.md`
 - Panel data surfaces — Tabulator/Number/ECharts, the `pn.extension()` gate, side windows,
   stream/patch + connectivity, the editing / buttons / selection toolkit for a write surface
-  (§2.2.1, scraped and probed 2026-10-08), and 33 measured gotchas (16 onwards found live against the
+  (§2.2.1, scraped and probed 2026-10-08), and 40 measured gotchas (16 onwards found live against the
   account): `docs/panel/data-surfaces-reference.md`
 - **Live dashboard** (KPI strip · Positions · P&L, shipped 2026-08-04): the three modules in
   the diagram above. Read `claudia/dashboard_data.py`'s module docstring first — it carries the

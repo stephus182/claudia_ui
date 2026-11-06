@@ -2082,7 +2082,7 @@ def test_orders_frame_has_a_name_column_after_symbol_and_uses_the_local_symbol()
     )
     stk = _order(conid=265598, sec_type="STK", company_name="APPLE INC", description1="AAPL")
     frame = pdash.orders_frame(_snapshot(orders=(fut, stk), identities={649180671: _es_identity()}))
-    assert list(frame.columns)[:3] == ["Order", "Symbol", "Name"]
+    assert list(frame.columns)[:4] == ["Order", "Role", "Symbol", "Name"]
     assert list(frame["Symbol"]) == ["ESU6", "AAPL"]
     assert list(frame["Name"]) == ["E-mini S&P 500 · Sep18'26", "APPLE INC"]
 
@@ -3197,20 +3197,160 @@ def test_ytd_appends_the_pending_point_after_the_weekly_regrouping():
 # ── Brackets on the book (gap #36, 2026-10-18) ───────────────────────────────
 
 
-def test_status_words_for_a_child_depend_only_on_whether_its_parent_is_in_the_book():
-    """Two states for a child, read off the feed and nothing else: held while its parent is
-    in the working book, otherwise "not in the book" — a fill is never inferred from an
-    absence (a filled parent leaves the feed; so does a cancelled one)."""
+def test_status_words_for_a_child_say_what_ibkr_reports_of_its_parent():
+    """A child is held while its parent is in the working book. Once the parent is gone the
+    tab says what IBKR's own status read of that parent answered (gap #105, operator
+    2026-11-06: "parent executed") — and "not in the book" when IBKR gave no final word,
+    because a cancelled parent leaves the feed too and a fill is never inferred from an
+    absence."""
     parent = _order(order_id="1", origin="CLAUDIA-7")
     child = _order(order_id="2", side="SELL", status="PreSubmitted", parent_order_id="1")
     held = pdash.orders_frame(_snapshot(orders=(parent, child)))["Status"].tolist()
     assert held == ["Submitted", "held (parent 1)"]
     # A child whose parent is not in the book keeps IBKR's own word for itself: `Submitted` is a
     # released child WORKING (seen 2026-10-19 on the operator's own ES row), `PreSubmitted` a
-    # released stop not yet triggered or a held child whose parent left the feed — the tab says
-    # both halves and still infers no fill from the absence.
+    # released stop not yet triggered or a held child whose parent left the feed.
     orphan = pdash.orders_frame(_snapshot(orders=(child,)))["Status"].tolist()
     assert orphan == ["PreSubmitted · parent 1 not in the book"]
-    released = _order(order_id="3", side="SELL", status="Submitted", parent_order_id="1")
-    working = pdash.orders_frame(_snapshot(orders=(released,)))["Status"].tolist()
-    assert working == ["Submitted · parent 1 not in the book"]
+
+    def status_with(parent_status: str) -> str:
+        """The Status cell of a working child whose absent parent IBKR reports as given."""
+        released = _order(
+            order_id="3",
+            side="SELL",
+            status="Submitted",
+            parent_order_id="1",
+            parent_status=parent_status,
+        )
+        return str(pdash.orders_frame(_snapshot(orders=(released,)))["Status"].iloc[0])
+
+    assert status_with("") == "Submitted · parent 1 not in the book"
+    assert status_with("Filled") == "Submitted · parent 1 executed"
+    assert status_with("Cancelled") == "Submitted · parent 1 cancelled"
+    # A parent IBKR still reports as working is simply absent from this book: no claim.
+    assert status_with("Submitted") == "Submitted · parent 1 not in the book"
+
+
+# ── The Orders tab folds a bracket under one band (gap #105, operator 2026-11-06) ─────────
+
+
+def _bracket_book():
+    """A book in the feed's own arbitrary order: a child before its parent, a single order
+    between them, and a released pair whose parent IBKR reports filled."""
+    return (
+        _order(
+            order_id="12", symbol="MES", side="SELL", status="PreSubmitted", parent_order_id="11"
+        ),
+        _order(order_id="50", symbol="AAPL"),
+        _order(order_id="11", symbol="MES", origin="CLAUDIA-7"),
+        _order(
+            order_id="13", symbol="MES", side="SELL", status="PreSubmitted", parent_order_id="11"
+        ),
+        _order(
+            order_id="41",
+            symbol="ES",
+            status="Submitted",
+            parent_order_id="40",
+            parent_status="Filled",
+        ),
+        _order(
+            order_id="42",
+            symbol="ES",
+            status="PreSubmitted",
+            parent_order_id="40",
+            parent_status="Filled",
+        ),
+    )
+
+
+def test_the_orders_frame_names_each_role_and_keeps_a_bracket_together():
+    """Each row says parent, child or single order (the operator's words), a bracket's rows
+    share one band value, and the frame is ordered for the band: brackets first, the parent
+    above its children, single orders last — whatever order the feed gave."""
+    frame = pdash.orders_frame(_snapshot(orders=_bracket_book()))
+    assert frame["Order"].tolist() == ["11", "12", "13", "41", "42", "50"]
+    assert frame["Role"].tolist() == ["Parent", "Child", "Child", "Child", "Child", "Single order"]
+    assert frame["Bracket"].tolist() == [
+        "11 · MES",
+        "11 · MES",
+        "11 · MES",
+        "40 · ES · parent executed",
+        "40 · ES · parent executed",
+        "none",
+    ]
+
+
+def test_the_band_value_is_escaped_because_tabulator_draws_it_as_html():
+    """Tabulator sets a group header from an HTML string (measured 2026-11-06: markup in a
+    group value rendered as italic), and the value carries IBKR's symbol — so it is escaped
+    here, at the one place it is built. The cells are not affected: they are drawn as text."""
+    order = _order(order_id="7", symbol="<i>X</i>", origin="CLAUDIA-7")
+    child = _order(order_id="8", symbol="<i>X</i>", parent_order_id="7")
+    frame = pdash.orders_frame(_snapshot(orders=(order, child)))
+    assert frame["Bracket"].tolist() == ["7 · &lt;i&gt;X&lt;/i&gt;"] * 2
+    assert frame["Symbol"].tolist() == ["<i>X</i>"] * 2
+
+
+def test_the_orders_table_folds_each_bracket_under_a_band_that_counts_orders(view):
+    """Rows are grouped by the band column — Tabulator's own fold, with its arrow — and that
+    column is not shown as a column. The band reads `Bracket: <value> (N orders)`: the prefix
+    is the column's name (Panel's text) and the count's word comes from Tabulator's language
+    table (https://tabulator.info/docs/6.4/localize)."""
+    assert view._orders.groupby == ["Bracket"]
+    assert view._orders.hidden_columns == ["Bracket"]
+    assert "Bracket" in pdash._ORDER_COLUMNS
+    assert view._orders._configuration["locale"] == "en"
+    assert view._orders._configuration["langs"]["en"]["groups"] == {
+        "item": "order",
+        "items": "orders",
+    }
+
+
+def test_the_orders_table_has_no_fixed_height(view):
+    """The bands add a line per bracket, and a fixed 300 px table hid the last orders behind
+    its own scroll bar (render-checked 2026-11-06: nine orders in five bands). A working order
+    must never be off screen by default, so the table grows with its rows and the page
+    scrolls — the rule the operator set for the Fills table on 2026-10-20 (gap #104)."""
+    assert view._orders.height is None
+
+
+def test_the_orders_table_sets_the_parent_in_bold_and_colours_every_side(view):
+    """The parent's whole row is bold and no other row is; BUY is green and SELL red on every
+    order (the Fills tab's pair), parent, child or single."""
+    view.refresh(_snapshot(orders=_bracket_book()), now=_NOW)
+    frame = view._orders.value
+    styler = view._orders.style
+    styler._compute()
+    bold_rows = {
+        row for (row, _col), styles in styler.ctx.items() if ("font-weight", "bold") in styles
+    }
+    assert bold_rows == {0}  # the parent, order 11
+    side = list(frame.columns).index("Side")
+    colours = {
+        frame["Order"].iloc[row]: dict(styles).get("color")
+        for (row, col), styles in styler.ctx.items()
+        if col == side
+    }
+    assert colours == {
+        "11": palette.UP_COLOR,
+        "12": palette.DOWN_COLOR,
+        "13": palette.DOWN_COLOR,
+        "41": palette.UP_COLOR,
+        "42": palette.UP_COLOR,
+        "50": palette.UP_COLOR,
+    }
+
+
+def test_the_orders_table_is_redrawn_only_when_the_book_changes(view):
+    """A folded band springs open when the frame is reassigned (measured 2026-11-06: folded,
+    three reassignments of an equal frame, open again), and the poller publishes every 15 s —
+    so an unchanged book leaves the table alone and a fold holds until an order changes."""
+    book = _bracket_book()
+    view.refresh(_snapshot(orders=book), now=_NOW)
+    drawn = view._orders.value
+    view.refresh(_snapshot(orders=book), now=_NOW + timedelta(seconds=15))
+    assert view._orders.value is drawn
+    changed = (*book[:-1], replace(book[-1], status="Submitted"))
+    view.refresh(_snapshot(orders=changed), now=_NOW + timedelta(seconds=30))
+    assert view._orders.value is not drawn
+    assert view._orders.value["Status"].iloc[4] == "Submitted · parent 40 executed"

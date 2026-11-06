@@ -2203,10 +2203,14 @@ class _StatusSource:
     """`/iserver/account/order/status` stand-in, as strict as the real one: it answers only
     the ids it knows, returns IBKR's `tif` key, counts calls, and can be told to fail."""
 
-    def __init__(self, tifs: dict[str, Any], fail: bool = False) -> None:
-        """`tifs` maps order id -> the `tif` value IBKR reports (None = key absent)."""
+    def __init__(
+        self, tifs: dict[str, Any], fail: bool = False, words: dict[str, str] | None = None
+    ) -> None:
+        """`tifs` maps order id -> the `tif` value IBKR reports (None = key absent); `words`
+        maps order id -> IBKR's `order_status` word (`Submitted` when not given)."""
         self.tifs = tifs
         self.fail = fail
+        self.words = words or {}
         self.calls: list[str] = []
 
     def get_order_status(self, order_id: str) -> dict[str, Any]:
@@ -2215,7 +2219,7 @@ class _StatusSource:
         if self.fail:
             raise ConnectionError("HTTP 503")
         tif = self.tifs[order_id]
-        return {"order_id": order_id, "order_status": "Submitted"} | (
+        return {"order_id": order_id, "order_status": self.words.get(order_id, "Submitted")} | (
             {} if tif is None else {"tif": tif}
         )
 
@@ -2302,6 +2306,54 @@ def test_orders_that_left_the_book_are_dropped_from_the_cache():
     cache.resolve(dd.parse_orders([_F_DAY_ROW, other]), source, now=0.0)
     cache.resolve(dd.parse_orders([other]), source, now=15.0)
     assert cache.cached_order_ids() == {"9"}
+
+
+# ── What IBKR reports of a parent that left the book (gap #105, operator 2026-11-06) ────
+
+
+def _children_of(parent_id: int, *child_ids: int) -> list[dict[str, Any]]:
+    """Live-order rows of attached children, as the feed carries them: `parentId`, no ref."""
+    return [dict(_F_DAY_ROW, orderId=c, parentId=parent_id, order_ref=None) for c in child_ids]
+
+
+def test_a_parent_that_left_the_book_is_read_once_and_its_final_word_kept():
+    """A parent leaves the book when it fills and when it is cancelled, so the absence says
+    nothing: IBKR's own status read of that parent does. One read serves every child, a final
+    word is kept, a parent still in the book is never asked about, and a parent no child
+    refers to any more is forgotten."""
+    cache, source = dd.ParentStatusCache(), _StatusSource({"1": "DAY"}, words={"1": "Filled"})
+    orphans = dd.parse_orders(_children_of(1, 2, 3))
+    assert [o.parent_status for o in cache.resolve(orphans, source, now=0.0)] == ["Filled"] * 2
+    assert [o.parent_status for o in cache.resolve(orphans, source, now=15.0)] == ["Filled"] * 2
+    assert source.calls == ["1"]
+
+    in_book = dd.parse_orders([dict(_F_DAY_ROW, orderId=1), *_children_of(1, 2)])
+    quiet = _StatusSource({"1": "DAY"}, words={"1": "Filled"})
+    assert [o.parent_status for o in dd.ParentStatusCache().resolve(in_book, quiet, now=0.0)] == [
+        "",
+        "",
+    ]
+    assert quiet.calls == []
+
+    cache.resolve(dd.parse_orders([_F_DAY_ROW]), source, now=30.0)
+    assert cache.cached_parent_ids() == set()
+
+
+@pytest.mark.parametrize("fail", [True, False])
+def test_a_parent_with_no_final_word_is_asked_again_only_after_the_spacing(fail):
+    """A failed read, or a parent IBKR still reports as working, gives no word — the child
+    keeps "" and the tab says "not in the book" — and the read is spaced, not repeated on
+    every 15 s poll (IBKR's limits are per endpoint)."""
+    cache = dd.ParentStatusCache()
+    source = _StatusSource({"1": "DAY"}, fail=fail, words={"1": "Submitted"})
+    orphans = dd.parse_orders(_children_of(1, 2))
+    assert cache.resolve(orphans, source, now=0.0)[0].parent_status == ""
+    assert cache.resolve(orphans, source, now=15.0)[0].parent_status == ""
+    assert source.calls == ["1"]
+    source.fail, source.words = False, {"1": "Cancelled"}
+    later = cache.resolve(orphans, source, now=dd.PARENT_STATUS_RETRY_SECONDS)
+    assert later[0].parent_status == "Cancelled"
+    assert source.calls == ["1", "1"]
 
 
 # ── The Fills tab's Name column (gap #68, operator 2026-09-25) ─────────────────

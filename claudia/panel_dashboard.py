@@ -55,6 +55,7 @@ caused once (`dashboard_data.parse_ledger`).
 
 from __future__ import annotations
 
+import html
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -71,6 +72,7 @@ from bokeh.models.widgets.tables import NumberFormatter
 
 from claudia.dashboard_data import (
     FUTURES_CLASSES,
+    PARENT_STATUS_WORDS,
     RECONCILE_TOLERANCE,
     DashboardSnapshot,
     LiveOrder,
@@ -1021,8 +1023,18 @@ _POSITION_TOOLTIPS = {
 _EMPTY = DashboardSnapshot(as_of=datetime.min.replace(tzinfo=UTC))
 
 
+_ORDER_GROUP_COLUMN = "Bracket"
+"""The column the Orders table is grouped by — one band per bracket, folded and unfolded by
+Tabulator's own arrow (gap #105, operator 2026-11-06). Never shown as a column: Panel prints
+its NAME on the band, `Bracket: <value> (N orders)`, so the name is part of what the trader
+reads (`panel/models/tabulator.ts`, the `groupBy` getter, 1.9.3)."""
+
+_NO_BRACKET = "none"
+"""The band value of an order that belongs to no bracket: the band reads `Bracket: none`."""
+
 _ORDER_COLUMNS = [
     "Order",
+    "Role",
     "Symbol",
     "Name",
     "Side",
@@ -1035,6 +1047,7 @@ _ORDER_COLUMNS = [
     "Outside RTH",
     "Status",
     "Origin",
+    _ORDER_GROUP_COLUMN,
 ]
 
 _ORDER_NUMERIC = ["Qty", "Filled", "Limit", "Stop"]
@@ -1052,6 +1065,8 @@ than omitting it.
 
 _ORDER_TOOLTIPS = {
     "Order": "IBKR's order id — the identity `propose_cancel` / `propose_modify` need.",
+    "Role": "Parent: an order with attached orders in this book. Child: an order attached to "
+    "a parent (a profit taker or a stop). Single order: neither.",
     "Symbol": "IBKR's ticker; for a future the exchange local symbol (ESU6) once its contract "
     "info has been read, so the month is in the symbol itself (2026-09-10).",
     "Name": "IBKR's companyName; for a future the contract month follows, from IBKR's "
@@ -1068,8 +1083,10 @@ _ORDER_TOOLTIPS = {
     "for this order (measured on futures rows) — not 'No'.",
     "Status": (
         "IBKR's own status string, verbatim. For an attached child (gap #36): "
-        "`held (parent N)` while its parent is in this book, `parent N not in the book` "
-        "otherwise — read off the feed, never a fill inferred from an absence."
+        "`held (parent N)` while its parent is in this book. Once the parent has left it: "
+        "`parent N executed` or `parent N cancelled` when IBKR's status read of that parent "
+        "says so, `parent N not in the book` when it gave no final word — never a fill "
+        "inferred from an absence."
     ),
     "Origin": "ClaudIA for orders staged through this app; external for TWS, mobile or the "
     "web portal — those cannot be modified or cancelled through the API.",
@@ -1087,20 +1104,35 @@ def _yes_no_or_dash(value: bool | None) -> str:
     return "Yes" if value else "No"
 
 
+def _parent_word(order: LiveOrder) -> str:
+    """What the tab says of a child's absent parent, from IBKR's own status read of it:
+    "executed" or "cancelled" (`dashboard_data.PARENT_STATUS_WORDS`, the one definition),
+    and "not in the book" for every other answer, a missing one included."""
+    return PARENT_STATUS_WORDS.get(order.parent_status, "not in the book")
+
+
 def _status_text(order: LiveOrder, book_ids: frozenset[str]) -> str:
-    """Two states for a child, read off the feed and nothing else (gap #36, 2026-10-18):
-    held while its parent is in the working book, otherwise IBKR's own status word with the
-    link sentence beside it — a fill is never inferred from an absence (a filled parent
-    leaves the feed; so does a cancelled one, and after a cancel its children were seen both
-    lingering and gone, 2026-10-18). IBKR's word stays because it carries what the link
-    cannot: `Submitted` is a released child WORKING (seen 2026-10-19 on a live row), and
-    `PreSubmitted` a released stop not yet triggered or a child whose parent is simply gone.
-    Every other order shows IBKR's own status word."""
+    """A child is held while its parent is in the working book; otherwise IBKR's own status
+    word for the child, then what IBKR reports of the parent (gap #36, 2026-10-18; gap #105,
+    2026-11-06). A fill is never inferred from an absence — a filled parent leaves the feed,
+    and so does a cancelled one (after a cancel its children were seen both lingering and
+    gone, 2026-10-18) — so "executed" and "cancelled" come from IBKR's status read of the
+    parent (`LiveOrder.parent_status`) and nothing else. IBKR's word for the child stays
+    because it carries what the link cannot: `Submitted` is a released child WORKING (seen
+    2026-10-19 on a live row), `PreSubmitted` a released stop not yet triggered or a child
+    whose parent is simply gone. Every other order shows IBKR's own status word."""
     if order.parent_order_id is None:
         return order.status
     if order.parent_order_id in book_ids:
         return f"held (parent {order.parent_order_id})"
-    return f"{order.status} · parent {order.parent_order_id} not in the book"
+    return f"{order.status} · parent {order.parent_order_id} {_parent_word(order)}"
+
+
+def _order_role(order: LiveOrder, parent_ids: frozenset[str]) -> str:
+    """Parent, Child or Single order — the operator's three words (2026-11-06)."""
+    if order.order_id in parent_ids:
+        return "Parent"
+    return "Child" if order.parent_order_id is not None else "Single order"
 
 
 def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
@@ -1115,12 +1147,61 @@ def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
     established — see `orders_status_line`. Drawing an empty table for a failed lookup
     would tell a trader they have nothing resting, which is the most dangerous sentence
     this panel could say by accident.
+
+    **Ordered for the bands (gap #105).** The table is grouped by the last column, and
+    Tabulator draws groups in the order their first row appears and rows in the frame's
+    order: so brackets come first (in the feed's order), each parent above its children,
+    and the orders that belong to no bracket last. Children whose parent has left the book
+    stay together under that parent's id, with what IBKR reports of it. That is the order
+    as drawn; a click on a column header sorts the rows inside each band and the bands
+    themselves (measured 2026-11-06), so after a sort the parent is told by its bold row
+    and its Role, not by its place.
+
+    **The band value is escaped.** Tabulator builds a group header from an HTML string
+    (measured 2026-11-06: markup in a group value was rendered), and the value carries
+    IBKR's symbol; the cells themselves are drawn as text and are left as they are.
     """
-    book_ids = frozenset(o.order_id for o in (snapshot.orders or ()))
+    orders = list(snapshot.orders or ())
+    book_ids = frozenset(o.order_id for o in orders)
+    parent_ids = frozenset(o.parent_order_id for o in orders if o.parent_order_id is not None)
+
+    def symbol(o: LiveOrder) -> str:
+        """The symbol as the Symbol column shows it (a future's local symbol once read)."""
+        return display_symbol(o.symbol, o.sec_type, o.conid, snapshot.identities)
+
+    def bracket_id(o: LiveOrder) -> str | None:
+        """The parent's order id for a parent and for its children; None for a single order."""
+        if o.order_id in parent_ids:
+            return o.order_id
+        return o.parent_order_id
+
+    first_seen: dict[str, int] = {}
+    for position, o in enumerate(orders):
+        key = bracket_id(o)
+        if key is not None:
+            first_seen.setdefault(key, position)
+
+    def band(o: LiveOrder) -> str:
+        """The band value: the parent's id and symbol, plus IBKR's word when it left the book."""
+        key = bracket_id(o)
+        if key is None:
+            return _NO_BRACKET
+        if key in book_ids:
+            parent = next(p for p in orders if p.order_id == key)
+            return html.escape(f"{key} · {symbol(parent)}")
+        return html.escape(f"{key} · {symbol(o)} · parent {_parent_word(o)}")
+
+    def rank(item: tuple[int, LiveOrder]) -> tuple[bool, int, bool, int]:
+        """Brackets before single orders, in the feed's order; a parent above its children."""
+        position, o = item
+        key = bracket_id(o)
+        return (key is None, first_seen.get(key or "", 0), o.order_id not in parent_ids, position)
+
     rows = [
         {
             "Order": o.order_id,
-            "Symbol": display_symbol(o.symbol, o.sec_type, o.conid, snapshot.identities),
+            "Role": _order_role(o, parent_ids),
+            "Symbol": symbol(o),
             "Name": order_display_name(o),
             "Side": o.side,
             "Qty": o.quantity,
@@ -1134,8 +1215,9 @@ def orders_frame(snapshot: DashboardSnapshot) -> pd.DataFrame:
             "Outside RTH": _yes_no_or_dash(o.outside_rth),
             "Status": _status_text(o, book_ids),
             "Origin": "ClaudIA" if o.is_claudia_staged else "external",
+            _ORDER_GROUP_COLUMN: band(o),
         }
-        for o in (snapshot.orders or ())
+        for _position, o in sorted(enumerate(orders), key=rank)
     ]
     return pd.DataFrame(rows, columns=_ORDER_COLUMNS)
 
@@ -1261,6 +1343,12 @@ def _side_style(value: Any) -> str:
     if value == "SELL":
         return f"color: {DOWN_COLOR}"
     return ""
+
+
+def _parent_row_style(row: pd.Series) -> list[str]:
+    """The parent's whole row in bold (operator 2026-11-06), every other row untouched."""
+    weight = "font-weight: bold" if row.get("Role") == "Parent" else ""
+    return [weight] * len(row)
 
 
 def fills_status_line(snapshot: DashboardSnapshot, stale: bool = False) -> str:
@@ -1794,7 +1882,12 @@ class DashboardView:
             show_index=False,
             layout="fit_data_stretch",
             sizing_mode="stretch_width",
-            height=300,
+            # No fixed height (gap #105): each bracket adds a band, and at 300 px the last
+            # orders sat behind the table's own scroll bar (render-checked 2026-11-06, nine
+            # orders in five bands). The table grows with its rows and the page scrolls — the
+            # rule the operator set for the Fills table (2026-10-20, gap #104) — so a working
+            # order is never off screen by default.
+            height=None,
             formatters={
                 "Qty": NumberFormatter(format=_QTY_FORMAT),
                 "Filled": NumberFormatter(format=_QTY_FORMAT),
@@ -1803,7 +1896,25 @@ class DashboardView:
             },
             text_align=dict.fromkeys(_ORDER_NUMERIC, "right"),
             header_tooltips=dict(_ORDER_TOOLTIPS),
+            # One band per bracket, folded by Tabulator's own arrow (gap #105). Folding
+            # changes what is displayed and nothing else: it binds no handler and reaches no
+            # order path, so `disabled=True` and Hard Rule 1 stand as they were. The band
+            # column is grouped by and never shown; the count's word is Tabulator's
+            # language table (https://tabulator.info/docs/6.4/localize), "orders" for
+            # "items" — a documented JSON option, no JavaScript.
+            groupby=[_ORDER_GROUP_COLUMN],
+            hidden_columns=[_ORDER_GROUP_COLUMN],
+            configuration={
+                "locale": "en",
+                "langs": {"en": {"groups": {"item": "order", "items": "orders"}}},
+            },
         )
+        # The Fills tab's Styler mechanism (applied once; it rebinds to every new frame):
+        # the parent's row in bold, BUY green and SELL red on every order.
+        orders_styler = self._orders.style
+        assert orders_styler is not None  # noqa: S101 - narrowing for mypy, as above
+        orders_styler.apply(_parent_row_style, axis=1)
+        orders_styler.map(_side_style, subset=["Side"])
         self._orders_status = safe_markdown("_Orders: waiting for the first poll…_")
 
         # The Fills tab (gap #68): the same Hard Rule 1 shape, disabled=True and NO
@@ -2076,7 +2187,13 @@ class DashboardView:
         the whole time: a resting limit order is not a position, and it only reaches that
         table on a fill.)
         """
-        self._orders.value = orders_frame(snapshot)
+        # Redrawn only when the book changed (gap #105): reassigning the frame re-opens every
+        # folded band (measured 2026-11-06 — folded, three reassignments of an equal frame,
+        # open again), and the poller publishes every 15 s. So a fold holds while nothing
+        # changes, and any change in the book shows every bracket open again.
+        frame = orders_frame(snapshot)
+        if not frame.equals(self._orders.value):
+            self._orders.value = frame
         self._orders_status.object = orders_status_line(snapshot)
 
     def _refresh_fills(self, snapshot: DashboardSnapshot, stale: bool) -> None:

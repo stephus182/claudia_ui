@@ -70,6 +70,7 @@ from claudia.dashboard_data import (
     LiveOrder,
     OrderSource,
     OrderStatusSource,
+    ParentStatusCache,
     Position,
     PositionSource,
     QuoteSource,
@@ -181,6 +182,9 @@ class DashboardPoller:
         self._fill_cache_key: tuple[Any, ...] = (object(), None, None)
         # Each working order's TIF, read from order status once (gap #70) — see `TifCache`.
         self._tif_cache = TifCache()
+        # What IBKR reports of a parent that left the book while its children stayed
+        # (gap #105) — see `ParentStatusCache`.
+        self._parent_status_cache = ParentStatusCache()
         self._task: asyncio.Task[None] | None = None
 
     # ── Public, synchronous ─────────────────────────────────────────────────
@@ -305,6 +309,11 @@ class DashboardPoller:
             # "CLOSE" for a DAY stock order (gap #70). A failed read costs the TIF only.
             orders = await asyncio.to_thread(
                 self._tif_cache.resolve, orders, self._client, time.monotonic()
+            )
+            # A child whose parent left the book says nothing of why: IBKR's status read of
+            # that parent does (gap #105). A failed read costs that word only.
+            orders = await asyncio.to_thread(
+                self._parent_status_cache.resolve, orders, self._client, time.monotonic()
             )
         pending = flex.get("pending")
         identities = await asyncio.to_thread(

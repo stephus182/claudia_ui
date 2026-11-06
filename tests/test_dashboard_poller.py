@@ -150,6 +150,7 @@ class FakeClient:
         self.status_calls: list[str] = []
         self.status_fails = False
         self.status_tifs: dict[str, str] = {"314390101": "GTC"}
+        self.status_words: dict[str, str] = {}
         self.trades = trades
         self._positions = [_POSITION] if positions is None else positions
         self._accounts = (
@@ -198,7 +199,11 @@ class FakeClient:
         self.status_calls.append(str(order_id))
         if self.status_fails:
             raise ConnectionError("HTTP 503")
-        return {"order_id": str(order_id), "tif": self.status_tifs[str(order_id)]}
+        return {
+            "order_id": str(order_id),
+            "tif": self.status_tifs[str(order_id)],
+            "order_status": self.status_words.get(str(order_id), "Submitted"),
+        }
 
     def get_trades(self):
         """Return the canned executions, or raise if configured to.
@@ -698,6 +703,28 @@ async def test_the_tif_is_read_once_across_polls(db):
         await p._poll_once()
     assert p.snapshot().orders[0].tif == "DAY"
     assert client.status_calls == ["314390101"]
+
+
+class _ReleasedChild(FakeClient):
+    """A book holding one attached child whose parent is no longer in it."""
+
+    def get_live_orders(self):
+        """The child row as the feed carries it: `parentId`, and no parent row."""
+        self.order_calls += 1
+        return [dict(_ORDER, parentId=900, order_ref=None)]
+
+
+async def test_the_order_book_carries_what_ibkr_reports_of_an_absent_parent(db):
+    """Gap #105: a child whose parent left the book carries IBKR's status word for that
+    parent — read once across polls, like the TIF."""
+    client = _ReleasedChild()
+    client.status_tifs["900"] = "DAY"
+    client.status_words = {"900": "Filled"}
+    p = _poller(db, client)
+    for _ in range(3):
+        await p._poll_once()
+    assert p.snapshot().orders[0].parent_status == "Filled"
+    assert client.status_calls.count("900") == 1
 
 
 async def test_a_failed_tif_read_leaves_the_book_up_with_the_tif_unknown(db):
