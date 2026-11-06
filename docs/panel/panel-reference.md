@@ -123,6 +123,41 @@ session in the store, generates the session report and uploads `claudia.db` — 
 `asyncio.to_thread` — and returns a one-line status string. **No UI calls** (it serves the
 destroy path as well as the End Session button).
 
+### 3.7 Process-wide services are started by the first session — a known limit (gap #106, parked)
+
+The gateway session, the connectivity checker, the execution listener and the dashboard poller
+are one per process, constructed and started inside whichever session initialises first
+(`_init_session`). Each runs as an `asyncio` task, and a task copies the context it is created
+in — so it carries **that session's document as Panel's current one** (`pn.state.curdoc`, a
+context variable) for its whole life. Measured 2026-11-06, live and on a two-tab scratch app:
+
+- **When that first session is destroyed, a delivery that builds a Panel object fails.**
+  `chat.send` enters Panel's `hold()`, which schedules on `state.curdoc`; on a destroyed
+  document Bokeh raises `'DocumentCallbackManager' object has no attribute '_change_callbacks'`.
+  Two real fills went unannounced that way: the listener logs a raising subscriber and carries
+  on, so nothing reached the chat, the System log or the store.
+- **How a first session comes to die early.** At 16 starts in the store's history two sessions
+  began within seconds of each other and the first ended 19–31 s later with no message — §3.3's
+  destroy delay for an abandoned page. On 2026-11-06 ClaudIA had been restarted 30 s after a
+  stop with its page left open (the page retries its connection for about a minute,
+  `pn.config.reconnect`), and a fresh load followed two seconds later. That fits the
+  timestamps; the two-session sequence was not reproduced on the scratch app.
+- **What cures it, measured with the task left as it is:** the session's subscriber states its
+  own document first — `pn.state.curdoc = doc`, Panel's documented setter — and both the chat
+  message and the toast arrive. Bokeh's `doc.add_next_tick_callback` does **not** cure it (the
+  callback inherits the same context), and a task created with an empty context delivers chat
+  messages but loses toasts (`pn.state.notifications` is `None` with no current document). A
+  bare `bokeh.document.Document` does not reproduce the failure: a test needs a served document.
+- **Not built — parked by the operator (2026-11-06).** Since fills were first recorded
+  (2026-10-02) those two were the only executions made while ClaudIA was open, and an
+  unannounced fill is still on the Fills and Positions tabs. **The running rule instead: close
+  ClaudIA's page before restarting it, and open one fresh tab after.**
+
+Panel's own guidance on work that outlives a session is "Schedule Global Tasks": such tasks are
+a different thing from per-session callbacks and "must not be declared in the application code
+itself" (https://panel.holoviz.org/how_to/callbacks/schedule.html, scraped 2026-11-06).
+Evidence: `docs/plans/probes/2026-11-06-fill-delivery-session-context/` (local-only).
+
 ---
 
 ## 4. Layout tree
@@ -240,7 +275,8 @@ still registers in `pn.state._periodic[curdoc]`, preserving session auto-cleanup
 The watchdog doc-change alert fires in a plain OS thread. The verified bridge is
 `loop.call_soon_threadsafe(partial(chat.send, ...))`, guarded by `except RuntimeError` for a
 closed loop. [`panel_app.py:804-816`](../../claudia/panel_app.py#L804-L816); probe
-`docs/probes/d4_probe.py`.
+`docs/probes/d4_probe.py`. A process-wide *task* is a different case from this OS thread: it
+inherits the document of the session that created it (§3.7).
 
 ### File upload: standalone `FileInput`, not `ChatInterface(widgets=[...])`
 `ChatInterface`'s native file tab **unpacks its upload wrapper before the callback sees it** —

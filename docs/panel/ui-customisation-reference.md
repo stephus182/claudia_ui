@@ -278,6 +278,23 @@ is the status-bar analogue at the very bottom.
 slot; two `widgets=` render as a tab strip, not a "+"; and a button that opens the OS picker
 needs a browser-side workaround. The file picker keeps its widget and moved down instead.
 
+### 2.7 The Orders tab's bands (2026-11-06)
+
+The Orders table folds each bracket under one band (`panel_dashboard.py`; the measured Tabulator
+facts are in `data-surfaces-reference.md` §2.2, *Grouped rows*). Four settings, each in one place:
+
+| What you see | Where it is set | To change it |
+|---|---|---|
+| The band's prefix, `Bracket:` | the NAME of the grouping column, `_ORDER_GROUP_COLUMN` — Panel prints `<column name>: <value>` | rename the constant |
+| The band's value (`<parent id> · <symbol>`, `… · parent executed`, `none`) | `orders_frame`, escaped there because Tabulator draws it as HTML | edit the three f-strings; keep the `html.escape` |
+| The count's word, `(3 orders)` | Tabulator's language table, `configuration={"locale": "en", "langs": …}` on the Orders `Tabulator` | edit `item` / `items` |
+| The parent in bold; BUY green, SELL red | the Styler on the Orders `Tabulator`: `_parent_row_style`, `_side_style` (the palette's up/down pair) | edit the two functions |
+
+Two things are not settings. A different count wording per band (say "2 child orders" on one and
+"1 order" on another) cannot come from the language table, which holds one pair of words for the
+whole table; and the table is redrawn only when the book changed, because a redraw re-opens
+every folded band.
+
 ---
 
 ## 3. Research findings the implementation rests on
@@ -303,6 +320,9 @@ Bokeh's dark theme from the design (`panel/pane/holoviews.py:574-575`). What doe
 `Tabulator` — its themes are its own list (`panel/models/tabulator.py:26-30`; the dark skin is
 `"midnight"`) and must be passed explicitly. Whether the positions/orders tables need it is
 settled by looking, not by assuming (see the phase-1 smoke note in §1's status line once run).
+Looked at on 2026-11-06, on a scratch page carrying the Orders table's own settings: under
+`?theme=dark` the table keeps Tabulator's light `simple` skin on the dark page, and no table
+theme is set in `panel_dashboard.py`. Not yet looked at in ClaudIA itself.
 
 ### 3.2 Avatars
 

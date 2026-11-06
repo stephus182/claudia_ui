@@ -4,7 +4,8 @@
 windows, and the wiring that lets the chatbot drive them (or lets them run on their own).**
 Living document — started 2026-07-24, **substantially updated 2026-08-04** when the live
 dashboard shipped the first `Tabulator`, the first `Number` tiles, the first `pn.extension` call
-and the first notifications.
+and the first notifications. Grouped rows were measured and written up on **2026-11-06** (§2.2,
+gotchas 34–40), when the Orders table began folding each bracket under one band.
 
 It began as a starting point rather than a design, and that is still true of §4–§6. What has
 changed is that §1, §3, §7 and §8 are now records of shipped behaviour rather than a menu — the
@@ -26,7 +27,7 @@ CLAUDE.md's "API Docs First" rule applies. Every claim below carries its evidenc
 
 | Tag | Meaning |
 |---|---|
-| **[S]** | **Scraped** from the official Panel docs on **2026-07-24**, and the Tabulator page again on **2026-10-08** (capture `.firecrawl/panel-tabulator/`, git-ignored); URL in §10 |
+| **[S]** | **Scraped** from the official Panel docs on **2026-07-24**, and the Tabulator page again on **2026-10-08** (capture `.firecrawl/panel-tabulator/`, git-ignored); Tabulator's own grouping and localisation pages on **2026-11-06** (`.firecrawl/tabulator-6.4/`, git-ignored); URLs in §10 |
 | **[P]** | **Probed** against the *installed* panel 1.9.3 in `.venv` — the source of truth for our runtime behavior |
 | **[C]** | **Code** in this repo, cited `file:line` |
 | **[?]** | **Unverified** — a proposal, an open question, or something that needs a live check before it is relied on |
@@ -42,7 +43,7 @@ disagreement is called out (there is one — §6.5).
 |---|---|
 | Candlestick chart | **Shipped.** HoloViews/hvplot (`pn.pane.HoloViews`, superseded 2026-08-03 — §1.1 D1), cache-backed, own Load button, STK only. [`panel_chart.py`](../../claudia/panel_chart.py) **[C]** |
 | Status lights | **Shipped** as `pn.indicators.BooleanStatus` ×3, **retired 2026-09-03** for the action bar's `Button(color=…)` — the button's colour is the light and a click reconnects (`panel_action_bar.py`) **[C]** |
-| Tables | **Shipped 2026-08-04.** One `Tabulator` — the dashboard's positions table: `disabled=True`, `formatters`, `text_align`, `header_filters`, `header_tooltips`, `pagination='local'`, and `.style.map` for signed P&L. [`panel_dashboard.py`](../../claudia/panel_dashboard.py) **[C]** |
+| Tables | **Shipped 2026-08-04; three since 2026-09-25**, each a `Tabulator`, each `disabled=True` with no click or edit handler (Hard Rule 1, asserted over every table the tabs contain). **Positions** (2026-08-04): `formatters`, `text_align`, `header_filters`, `header_tooltips`, `pagination='local'`, `.style.map` for signed P&L. **Working orders** (2026-08-05): since 2026-11-06 grouped by bracket — one band each, the parent's row bold, a Role column, a side colour on every order, no fixed height, redrawn only when the book changed (§2.2 *Grouped rows*). **Fills** (2026-09-25): side colours. [`panel_dashboard.py`](../../claudia/panel_dashboard.py) **[C]** |
 | Value indicators | **Shipped 2026-08-04.** Six `pn.indicators.Number` KPI tiles with sign-threshold `colors` **[C]** |
 | Second chart | **Shipped 2026-08-04.** Realised-P&L cumulative area + daily bars, a second `pn.pane.HoloViews` **[C]** |
 | Notifications | **Shipped 2026-08-04.** `pn.state.notifications` toasts on the fresh↔stale transition only **[C]** |
@@ -604,7 +605,9 @@ the agent to function.
    verified `call_soon_threadsafe` bridge (§5.3). The tape is still unbuilt, but the feed's seam
    exists since 2026-09-04: `ExecutionListener.subscribe` delivers each fill to every session,
    which today shows it as an IBKR-authored chat message + toast (`docs/order-api-reference.md`
-   § Automatic execution reports). A tape would be one more subscriber.
+   § Automatic execution reports). A tape would be one more subscriber. Since 2026-09-25 the
+   **Fills tab** lists the executions not yet on a statement — read from IBKR's trades endpoint by
+   the poller, not streamed from the listener; a streamed tape is still unbuilt.
 4. **Indicator overlays on the candlestick** — **volume subplot, MA (SMA) overlay, and zoom sync
    between the two rows shipped 2026-08-03** (the SMA overlay was **removed 2026-09-23**: hard-coded at
    20 periods with no setting, and not a period the operator's own rules use; indicators return only
@@ -687,7 +690,9 @@ Every item is scraped or probed, not inferred:
    `_on_click_callbacks`/`_on_edit_callbacks`, and `style.ctx` after `style._compute()` (which is
    how the P&L colouring is tested). `stream`/`patch` round-trips are still unexercised here: the
    dashboard replaces `value` wholesale, because the position book is small and a full replace
-   cannot drift from the source the way an incremental patch can.
+   cannot drift from the source the way an incremental patch can. The Orders table replaces it
+   only when the new frame differs from the one drawn (2026-11-06): a wholesale replace re-opens
+   every folded group (gotcha 37).
 
 ---
 
@@ -742,6 +747,8 @@ not duplicate — the styling/template URL index in `ui-design-reference.md` §9
 | Concurrency | https://panel.holoviz.org/how_to/concurrency/index.html |
 | Caching (`pn.cache`, memoization) | https://panel.holoviz.org/how_to/caching/index.html · https://panel.holoviz.org/how_to/caching/memoization.html |
 | Tabulator JS options (for `configuration`) | https://tabulator.info/docs/6.4/options |
+| Tabulator row grouping (the group header, the open state) — scraped **2026-11-06** | https://tabulator.info/docs/6.4/group |
+| Tabulator localisation (the `groups` item words) — scraped **2026-11-06** | https://tabulator.info/docs/6.4/localize |
 | Apache ECharts option reference | https://echarts.apache.org/en/index.html |
 | jsPanel options (for `FloatPanel.config`) | https://jspanel.de/#options/overview |
 
