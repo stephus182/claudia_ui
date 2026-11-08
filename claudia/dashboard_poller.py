@@ -182,6 +182,21 @@ class DashboardPoller:
         # Each working order's TIF, read from order status once (gap #70) — see `TifCache`.
         self._tif_cache = TifCache()
         self._task: asyncio.Task[None] | None = None
+        # Set once the first poll has completed, read or failed — see `polled()`.
+        self._first_poll_done = asyncio.Event()
+
+    async def polled(self) -> DashboardSnapshot:
+        """The snapshot, once the first poll has completed — read or failed.
+
+        The startup briefing reads the book from here (operator 2026-11-08: "It should read
+        the book"), because `snapshot()` before that first poll is the empty "not polled yet"
+        one, and the session's first tab was always built from it. A failed or raising first
+        poll still wakes the waiter, on a snapshot whose `error` says so: a waiter left hanging
+        would leave the briefing silent, and its silence now means "no position with an
+        expiry". Returns at once after the first poll.
+        """
+        await self._first_poll_done.wait()
+        return self._snapshot
 
     # ── Public, synchronous ─────────────────────────────────────────────────
 
@@ -236,20 +251,37 @@ class DashboardPoller:
         then be silently frozen is the one showing money.
         """
         try:
-            await self._poll_once()
+            await self._poll_counted()
         except Exception as exc:
             log.warning("DashboardPoller initial poll error: %s", exc)
         while True:
             try:
                 await asyncio.sleep(self._interval)
-                await self._poll_once()
+                await self._poll_counted()
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 log.warning("DashboardPoller poll error: %s", exc)
 
-    async def _poll_once(self) -> None:
-        """Run one full poll: Flex windows first, then the IBKR account data.
+    async def _poll_counted(self) -> None:
+        """One poll; the book counts as read (`polled()`) once a poll ran against a session
+        state that HAD been read. `UNREAD` is the owner's initial state — no evidence, never
+        re-entered (gap #26) — and a poll made against it skipped the account read, so it is
+        not a read of the book: the first poll at every start was one (live 2026-11-08). A poll
+        that raised, or was cancelled, wakes the waiter too: its snapshot's error says so.
+        """
+        from claudia.gateway_session import SessionPhase
+
+        phase: Any = None
+        try:
+            phase = await self._poll_once()
+        finally:
+            if phase is not SessionPhase.UNREAD:
+                self._first_poll_done.set()
+
+    async def _poll_once(self) -> Any:
+        """Run one full poll: Flex windows first, then the IBKR account data, and return the
+        session phase the poll acted on.
 
         The session state is read FIRST, because it decides how much of the poll can
         run — but the Flex half still executes on every path. It is a local SQLite read
@@ -279,7 +311,7 @@ class DashboardPoller:
         if not state.is_live:
             flex = self._flex_sections(await asyncio.to_thread(self._read_flex, None))
             self._publish_stale(flex, f"IBKR not usable: {state.detail}")
-            return
+            return state.phase
 
         try:
             ledger, positions = await asyncio.to_thread(self._read_account)
@@ -287,7 +319,7 @@ class DashboardPoller:
             log.warning("Dashboard account poll failed: %s", exc)
             flex = self._flex_sections(await asyncio.to_thread(self._read_flex, None))
             self._publish_stale(flex, f"IBKR unavailable: {exc}")
-            return
+            return state.phase
 
         # Positions in hand, so the reconstruction can be trust-checked against them.
         reconstruction = await asyncio.to_thread(self._reconstruct, positions, ledger)
@@ -319,6 +351,7 @@ class DashboardPoller:
             error=None,
             **flex,
         )
+        return state.phase
 
     def _publish_stale(self, flex: dict[str, Any], error: str) -> None:
         """Republish the previous account data, unaged, with `error` attached.

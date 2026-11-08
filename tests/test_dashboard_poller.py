@@ -496,6 +496,119 @@ async def test_positions_are_paged_through_the_data_layer(db):
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 
+async def test_polled_waits_for_the_first_poll_then_returns_its_snapshot(db):
+    """The startup briefing reads the book from the first COMPLETED poll (operator
+    2026-11-08) — never from the pre-poll snapshot, whose empty positions mean "not looked"."""
+    p = _poller(db, FakeClient(), interval=60)
+    waiter = asyncio.create_task(p.polled())
+    await asyncio.sleep(0)
+    assert not waiter.done(), "polled() returned before any poll had run"
+    p.start()
+    try:
+        snap = await asyncio.wait_for(waiter, timeout=5)
+    finally:
+        p.stop()
+    assert snap.error is None
+    assert [pos.symbol for pos in snap.positions] == ["ESU6"]
+
+
+async def test_polled_also_completes_when_the_first_poll_fails(db):
+    """A failed first read wakes the waiter too, carrying its error — the briefing then says
+    "could not be read". A waiter left hanging would leave the opening silent, and silence
+    now means "no position with an expiry"."""
+    p = _poller(db, FakeClient(fail_from=1), interval=60)
+    p.start()
+    try:
+        snap = await asyncio.wait_for(p.polled(), timeout=5)
+    finally:
+        p.stop()
+    assert snap.error is not None
+
+
+async def test_polled_wakes_even_when_the_first_poll_raises_outright(db):
+    """A bug in `_poll_once` itself is logged by the loop; the waiter must still wake (on
+    the pre-poll snapshot, whose error the briefing reads as "could not be read")."""
+    p = _poller(db, FakeClient(), interval=60)
+
+    async def _boom():
+        """Raise on every poll."""
+        raise RuntimeError("kaboom")
+
+    p._poll_once = _boom
+    p.start()
+    try:
+        snap = await asyncio.wait_for(p.polled(), timeout=5)
+    finally:
+        p.stop()
+    assert snap.error is not None
+
+
+def _owner_reading(*phases):
+    """A session owner whose state() walks through `phases`, then stays on the last one."""
+    from claudia.gateway_session import SessionPhase
+
+    def _state(phase):
+        """A session state double in `phase`."""
+        state = MagicMock()
+        state.phase = phase
+        state.is_live = phase is SessionPhase.LIVE
+        state.detail = f"phase {phase.value}"
+        return state
+
+    states = [_state(p) for p in phases]
+    owner = MagicMock()
+    owner.state.side_effect = lambda: states.pop(0) if len(states) > 1 else states[0]
+    return owner
+
+
+async def test_polled_waits_past_a_poll_made_before_the_session_was_read(db):
+    """Live 2026-11-08 16:51: the first poll at start ran while the session owner was still
+    UNREAD ("The session has not been read yet"), skipped the account read, and the briefing
+    said "could not be read" about a read that never happened — while the dashboard read the
+    book live one poll later. A poll made against UNREAD is not a read of the book (the gap #26
+    rule: UNREAD is no evidence); `polled()` waits for the first poll made against a state that
+    was read."""
+    from claudia.gateway_session import SessionPhase
+
+    owner = _owner_reading(SessionPhase.UNREAD, SessionPhase.LIVE)
+    p = _poller(db, FakeClient(), interval=0.01, session=owner)
+    p.start()
+    try:
+        snap = await asyncio.wait_for(p.polled(), timeout=5)
+    finally:
+        p.stop()
+    assert snap.error is None, snap.error
+    assert [pos.symbol for pos in snap.positions] == ["ESU6"]
+
+
+async def test_polled_counts_a_session_known_down_as_a_read_that_failed(db):
+    """DOWN is evidence — the gateway holds no session — so a poll against it IS the read,
+    and its error reaches the briefing as "could not be read", at once."""
+    from claudia.gateway_session import SessionPhase
+
+    owner = _owner_reading(SessionPhase.DOWN)
+    p = _poller(db, FakeClient(), interval=60, session=owner)
+    p.start()
+    try:
+        snap = await asyncio.wait_for(p.polled(), timeout=5)
+    finally:
+        p.stop()
+    assert snap.error is not None and "phase down" in snap.error
+
+
+async def test_polled_returns_at_once_after_the_first_poll(db):
+    """A later tab reads the book the poller already holds, without waiting for the next
+    poll (the interval here is a minute)."""
+    p = _poller(db, FakeClient(), interval=60)
+    p.start()
+    try:
+        await asyncio.wait_for(p.polled(), timeout=5)
+        snap = await asyncio.wait_for(p.polled(), timeout=0.1)
+    finally:
+        p.stop()
+    assert snap.error is None
+
+
 async def test_start_is_idempotent_and_restarts_a_finished_task(db):
     """Matches ConnectivityChecker.start(): no double task, but a dead one is replaced."""
     p = _poller(db, FakeClient(), interval=60)

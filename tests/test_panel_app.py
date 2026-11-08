@@ -136,17 +136,29 @@ def backend_singletons():
     reset: several tests exercise the real construction path, and a real poller that is
     never started performs no I/O at all. The reset is what matters — a poller leaked
     from an earlier test would make the next test's construction assertion pass or fail
-    depending on execution order."""
+    depending on execution order.
+
+    The briefing's positions task (`_add_expiries_when_read`, 2026-11-08) is stood in for too:
+    it waits on that real poller's first poll, which runs against a mock client and lands at
+    an arbitrary moment — racing every exact-text assertion on the opening message. Its own
+    tests drive the real function, handed out here as `add_expiries_when_read`."""
     import claudia.panel_app as pa
 
+    real_add_expiries_when_read = pa._add_expiries_when_read
     pa._connectivity_checker = None
     pa._execution_listener = None
     pa._dashboard_poller = None
     with (
         patch("claudia.panel_app.ConnectivityChecker") as checker_cls,
         patch("claudia.panel_app.ExecutionListener") as listener_cls,
+        patch("claudia.panel_app._add_expiries_when_read", new=AsyncMock()) as expiries_task,
     ):
-        yield SimpleNamespace(checker_cls=checker_cls, listener_cls=listener_cls)
+        yield SimpleNamespace(
+            checker_cls=checker_cls,
+            listener_cls=listener_cls,
+            expiries_task=expiries_task,
+            add_expiries_when_read=real_add_expiries_when_read,
+        )
     pa._connectivity_checker = None
     pa._execution_listener = None
     pa._dashboard_poller = None
@@ -3818,11 +3830,27 @@ def test_a_failing_store_degrades_the_closures_section_rather_than_the_whole_bri
     """A calendar read that raises must NOT blank the briefing — it must say so.
 
     The store failure is caught by the INNER handler (`mkt = None`), so `build_closures`
-    renders `Unavailable`. Returning "" here would throw away the expiries section too,
-    and would tell the operator nothing about why. Hard rule 2 in the wiring: a failed
+    renders `Unavailable`. Returning "" here would drop the closures line and tell the
+    operator nothing about why. Hard rule 2 in the wiring: a failed
     read is reported, not silently dropped.
+
+    Pinned to a weekday: on a Saturday or Sunday the weekend verdict needs no calendar
+    (gap #78), so the real date would decide the outcome. It passed on weekends only while
+    the positions part — "not polled yet" — sat in the same text (until 2026-11-08).
     """
+    from datetime import date as real_date
+
     import claudia.panel_app as pa
+
+    class _Wednesday(real_date):
+        """`date` whose today() is a weekday, so the holiday branch is the one exercised."""
+
+        @classmethod
+        def today(cls) -> "_Wednesday":
+            """Wednesday 2026-11-04."""
+            return cls(2026, 11, 4)
+
+    monkeypatch.setattr(pa, "date", _Wednesday)
 
     class _Boom:
         """A toolkit whose store access raises — the calendar half fails, nothing else."""
@@ -3832,31 +3860,18 @@ def test_a_failing_store_degrades_the_closures_section_rather_than_the_whole_bri
             """Always raises, standing in for an unreadable market calendar."""
             raise RuntimeError("store exploded")
 
-    monkeypatch.setattr(pa, "_dashboard_poller", None)
     text = pa._build_briefing_text(_Boom())  # type: ignore[arg-type]
     assert text != ""
     assert "⚠" in text
-    assert "could not be read" in text or "unavailable" in text
+    assert "could not be read" in text
 
 
-def test_build_briefing_text_never_names_a_contract_from_an_untrusted_snapshot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Pins the "no trust guard needed" comment at the layer where the claim is actually
-    made — `_build_briefing_text` — rather than one layer down in `briefing.py`.
-
-    A REAL `DashboardSnapshot` with `error` set (the IBKR half of the poll failed) next
-    to a non-empty, real `identities` mapping — the shape `_publish_stale` produces when
-    a mid-session poll fails after identities were already resolved on an earlier good
-    poll (`dashboard_poller._publish_stale` carries `identities=previous.identities`
-    forward unconditionally, independent of `error`). `positions_for_briefing` must key
-    on `error` alone and discard the positions, and `build_expiries` must return
-    `Degraded` before it ever consults `identities` — so the briefing must come back
-    warning, and the identity's `local_symbol`/`name` must never reach the rendered
-    text, even though the mapping handed to `_build_briefing_text` genuinely has them.
-    """
-    from datetime import UTC, datetime
-
+def test_build_expiries_text_never_names_a_contract_from_an_untrusted_snapshot() -> None:
+    """A REAL `DashboardSnapshot` with `error` set (the IBKR half of the poll failed) next to
+    a non-empty, real `identities` mapping — the shape `_publish_stale` produces when a poll
+    fails after identities were resolved on an earlier good one. `positions_for_briefing`
+    keys on `error` alone, so `build_expiries` returns `Unavailable` before it ever consults
+    `identities`: the positions part warns, and the identity's strings never reach it."""
     import claudia.panel_app as pa
     from claudia.contract_identity import ContractIdentity
     from claudia.dashboard_data import DashboardSnapshot
@@ -3876,23 +3891,108 @@ def test_build_briefing_text_never_names_a_contract_from_an_untrusted_snapshot(
         error="IBKR session not authenticated (401)",
         identities={495512563: identity},
     )
-    poller = MagicMock()
-    poller.snapshot.return_value = snapshot
-
-    class _Toolkit:
-        """A minimal toolkit whose calendar read is irrelevant to this seam."""
-
-        @property
-        def _store(self):
-            """No calendar available — the closures section is not what this test pins."""
-            raise RuntimeError("no calendar in this test")
-
-    monkeypatch.setattr(pa, "_dashboard_poller", poller)
-    text = pa._build_briefing_text(_Toolkit())  # type: ignore[arg-type]
+    text = pa._build_expiries_text(snapshot, connected=True)
 
     assert "⚠" in text
     assert "ESU6" not in text
     assert "E-mini S&P 500" not in text
+
+
+def _future_position(expiry: str = "20991218"):
+    """A real FUT `Position` with an expiry, for the positions part's tests."""
+    from claudia.dashboard_data import Position
+
+    return Position(
+        conid=495512563,
+        symbol="ESZ6",
+        description="E-mini S&P 500",
+        asset_class="FUT",
+        quantity=2.0,
+        average_cost=450000.0,
+        market_price=4500.0,
+        market_value=900000.0,
+        unrealised_pnl=0.0,
+        realised_pnl=0.0,
+        currency="USD",
+        expiry=expiry,
+    )
+
+
+def test_build_expiries_text_lists_a_future_from_a_healthy_read() -> None:
+    """Operator 2026-11-08: "if there is a FUT position then check and message" — any held
+    future, however far its expiry."""
+    import claudia.panel_app as pa
+    from claudia.dashboard_data import DashboardSnapshot
+
+    snapshot = DashboardSnapshot(
+        as_of=datetime(2026, 11, 8, 21, 0, tzinfo=UTC), positions=(_future_position(),)
+    )
+    text = pa._build_expiries_text(snapshot, connected=True)
+    assert text.startswith("**Positions with an expiry:**")
+    assert "ESZ6" in text and "expires 2099-12-18" in text
+
+
+def test_build_expiries_text_says_nothing_when_no_position_has_an_expiry() -> None:
+    """Operator 2026-11-08: "if no positions then no message" — a healthy read of a book
+    with no position that expires adds nothing to the opening message."""
+    import claudia.panel_app as pa
+    from claudia.dashboard_data import DashboardSnapshot
+
+    snapshot = DashboardSnapshot(as_of=datetime(2026, 11, 8, 21, 0, tzinfo=UTC), positions=())
+    assert pa._build_expiries_text(snapshot, connected=True) == ""
+
+
+def test_build_expiries_text_asks_to_connect_when_ibkr_is_not_connected() -> None:
+    """Operator 2026-11-08: "Message should be pls connect to IB" — when the first validated
+    read finds IBKR not connected, the part says so and what to do, and names no contract."""
+    import claudia.panel_app as pa
+    from claudia.dashboard_data import DashboardSnapshot
+
+    snapshot = DashboardSnapshot(
+        as_of=datetime(2026, 11, 8, 21, 0, tzinfo=UTC),
+        positions=(_future_position(),),
+        error="IBKR not usable: The gateway holds no session.",
+    )
+    text = pa._build_expiries_text(snapshot, connected=False)
+    assert "⚠" in text
+    assert "IBKR is not connected; connect to IBKR, then restart ClaudIA" in text
+    assert "ESZ6" not in text
+
+
+def test_build_expiries_text_does_not_blame_the_connection_for_a_failed_read() -> None:
+    """Connected, but the positions read itself failed: "could not be read", not "connect"."""
+    import claudia.panel_app as pa
+    from claudia.dashboard_data import DashboardSnapshot
+
+    snapshot = DashboardSnapshot(
+        as_of=datetime(2026, 11, 8, 21, 0, tzinfo=UTC),
+        positions=(),
+        error="IBKR unavailable: HTTP 503",
+    )
+    text = pa._build_expiries_text(snapshot, connected=True)
+    assert "could not be read" in text
+    assert "connect to IBKR" not in text
+
+
+def test_build_expiries_text_warns_rather_than_falls_silent_when_it_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Silence means "no position with an expiry", so an unanticipated failure here must
+    never return "" — hard rule 2: a failed read is never "nothing"."""
+    import claudia.panel_app as pa
+    from claudia.dashboard_data import DashboardSnapshot
+
+    def _explode(*_args: object, **_kwargs: object) -> object:
+        """Stand in for an unanticipated failure inside the builder."""
+        raise RuntimeError("builder exploded")
+
+    monkeypatch.setattr(pa, "build_expiries", _explode)
+    snapshot = DashboardSnapshot(
+        as_of=datetime(2026, 11, 8, 21, 0, tzinfo=UTC), positions=(_future_position(),)
+    )
+    text = pa._build_expiries_text(snapshot, connected=True)
+    assert text and "⚠" in text
+    assert "ESZ6" not in text
 
 
 def test_build_briefing_text_returns_empty_string_when_rendering_itself_raises(
@@ -3902,7 +4002,7 @@ def test_build_briefing_text_returns_empty_string_when_rendering_itself_raises(
 
     The OUTER handler is the last line of defence: if anything the inner handlers do not
     anticipate raises, the helper returns "" and the session still opens. Patching
-    `render_briefing` is how we reach that handler — the inner one already absorbs the
+    `render_closures` is how we reach that handler — the inner one already absorbs the
     store, which is why a store failure alone does NOT exercise this path.
     """
     import claudia.panel_app as pa
@@ -3912,7 +4012,7 @@ def test_build_briefing_text_returns_empty_string_when_rendering_itself_raises(
         raise RuntimeError("render exploded")
 
     monkeypatch.setattr(pa, "_dashboard_poller", None)
-    monkeypatch.setattr(pa, "render_briefing", _explode)
+    monkeypatch.setattr(pa, "render_closures", _explode)
     assert pa._build_briefing_text(object()) == ""  # type: ignore[arg-type]
 
 
@@ -3958,8 +4058,7 @@ async def test_send_opening_status_appends_a_present_briefing_as_a_further_part(
         ),
         patch(
             "claudia.panel_app._build_briefing_text",
-            return_value="**Expiring soon:**\n- ESZ6 (E-mini S&P 500) — +2 — expires "
-            "2026-09-18, 3 days",
+            return_value="All tracked exchanges open today.",
         ),
     ):
         _configure_loader(mock_loader_cls)
@@ -3973,9 +4072,53 @@ async def test_send_opening_status_appends_a_present_briefing_as_a_further_part(
     # A present briefing is a THIRD \n\n-joined part, after the trade line and the
     # TradingView line — not merged into either, and not dropped.
     assert status[0] == (
-        "_trade status line_\n\n_TradingView: connected._\n\n"
-        "**Expiring soon:**\n- ESZ6 (E-mini S&P 500) — +2 — expires 2026-09-18, 3 days"
+        "_trade status line_\n\n_TradingView: connected._\n\nAll tracked exchanges open today."
     )
+
+
+@pytest.mark.asyncio
+async def test_init_hands_the_opening_message_and_the_poller_to_the_positions_task(
+    backend_singletons,
+):
+    """The wiring: after the opening message is sent, init starts the positions task with
+    that message and the process-wide poller — and records where the closures line sits."""
+    import claudia.panel_app as pa
+
+    mock_toolkit = MagicMock()
+    mock_toolkit.tools = []
+    mock_store = _make_mock_store()
+
+    with (
+        patch.dict(os.environ, _NO_GDRIVE),
+        patch("claudia.panel_app._get_toolkit", return_value=mock_toolkit),
+        patch("claudia.panel_app._get_store", return_value=mock_store),
+        patch("claudia.panel_app.ContextLoader") as mock_loader_cls,
+        patch("claudia.panel_app._write_version_snapshot"),
+        patch("claudia.panel_app.ClaudIAAgent") as mock_agent_cls,
+        patch("claudia.panel_app.gather_session_state", new=AsyncMock(return_value=("", False))),
+        patch(
+            "claudia.panel_app.build_trade_lines", return_value=("trade status line", "TRADE CTX")
+        ),
+        patch(
+            "claudia.panel_app._build_briefing_text",
+            return_value="All tracked exchanges open today.",
+        ),
+        patch.object(pa, "DashboardPoller") as poller_cls,
+    ):
+        _configure_loader(mock_loader_cls)
+        mock_agent_cls.return_value.handle_message = AsyncMock()
+        chat = _build_chat_app()
+        await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
+        await asyncio.sleep(0)
+
+    backend_singletons.expiries_task.assert_awaited_once()
+    opening, poller, session = backend_singletons.expiries_task.await_args.args
+    assert poller is poller_cls.return_value
+    from claudia.gateway_session import get_session
+
+    assert session is get_session()
+    assert opening.parts[opening.briefing_index] == "All tracked exchanges open today."
+    assert "trade status line" in opening.message.object
 
 
 @pytest.mark.asyncio
@@ -4274,6 +4417,126 @@ def test_replace_dataset_line_rewrites_only_that_part_of_the_same_message():
     )
     opening.replace_dataset_line("new dataset line")
     assert msg.object == "_new dataset line_\n\n_TradingView: connected._\n\nbriefing"
+
+
+def _opening_with_a_briefing_line():
+    """An opening message as `_send_opening_status` sends it: dataset, TradingView, closures."""
+    from claudia.panel_app import OpeningMessage
+
+    parts = ["_dataset_", "_TradingView: connected._", "All tracked exchanges open today."]
+    msg = _SentMessage("\n\n".join(parts))
+    return msg, OpeningMessage(
+        message=msg, parts=parts, dataset_index=0, pull=None, briefing_index=2
+    )
+
+
+def test_add_expiries_inserts_the_positions_part_before_the_closures_line():
+    """The positions part lands where the briefing always put it — before the closures line
+    — in the same message, its text replaced in place (#77's mechanism, no new chat line)."""
+    msg, opening = _opening_with_a_briefing_line()
+    opening.add_expiries("**Positions with an expiry:**\n- ESZ6 …")
+    assert msg.object == (
+        "_dataset_\n\n_TradingView: connected._\n\n**Positions with an expiry:**\n- ESZ6 …"
+        "\n\nAll tracked exchanges open today."
+    )
+
+
+def test_add_expiries_with_nothing_to_say_leaves_the_message_untouched():
+    """No position with an expiry → no line, and no repaint."""
+    msg, opening = _opening_with_a_briefing_line()
+    before = msg.object
+    opening.add_expiries("")
+    assert msg.object == before
+    assert len(opening.parts) == 3
+
+
+def test_add_expiries_without_a_briefing_line_appends_it():
+    """When the briefing's closures line was skipped (its builder's catch-all), the positions
+    part still lands — at the end — rather than before the TradingView line."""
+    from claudia.panel_app import OpeningMessage
+
+    msg = _SentMessage("_dataset_\n\n_TradingView: connected._")
+    opening = OpeningMessage(
+        message=msg, parts=["_dataset_", "_TradingView: connected._"], dataset_index=0, pull=None
+    )
+    opening.add_expiries("**Positions with an expiry:**")
+    assert msg.object == "_dataset_\n\n_TradingView: connected._\n\n**Positions with an expiry:**"
+
+
+def test_the_dataset_line_is_still_found_after_the_positions_part_lands():
+    """The Flex pull's rewrite (#77) can land after the positions part: it must still
+    rewrite the dataset line, not the part that moved."""
+    msg, opening = _opening_with_a_briefing_line()
+    opening.add_expiries("POSITIONS")
+    opening.replace_dataset_line("fresh dataset")
+    assert msg.object.split("\n\n") == [
+        "_fresh dataset_",
+        "_TradingView: connected._",
+        "POSITIONS",
+        "All tracked exchanges open today.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_positions_part_waits_for_the_first_read_of_the_book(backend_singletons):
+    """The cause of the 2026-11-08 finding: the briefing read the poller's snapshot before its
+    first poll had landed. Now nothing is said until the read completes, then the book read
+    decides — and the opening message never waited for it (hard rule 1)."""
+    from claudia.dashboard_data import DashboardSnapshot
+
+    read = asyncio.Event()
+    snapshot = DashboardSnapshot(
+        as_of=datetime(2026, 11, 8, 21, 0, tzinfo=UTC), positions=(_future_position(),)
+    )
+
+    class _Poller:
+        """`polled()` resolves only once the test says the first poll has landed."""
+
+        async def polled(self):
+            """Wait for the first completed poll, then hand back its snapshot."""
+            await read.wait()
+            return snapshot
+
+    session = MagicMock()
+    session.state.return_value.is_live = True
+    msg, opening = _opening_with_a_briefing_line()
+    before = msg.object
+    task = asyncio.create_task(
+        backend_singletons.add_expiries_when_read(opening, _Poller(), session)
+    )
+    await asyncio.sleep(0)
+    assert msg.object == before, "something was said before the book was read"
+    read.set()
+    await asyncio.wait_for(task, timeout=1)
+    assert "**Positions with an expiry:**" in msg.object
+    assert msg.object.index("ESZ6") < msg.object.index("All tracked exchanges open today.")
+
+
+@pytest.mark.asyncio
+async def test_the_positions_part_asks_to_connect_when_the_session_is_not_live(backend_singletons):
+    """The session owner — the one source the status dot and the dashboard ask — decides
+    "not connected"; the part then asks to connect rather than reporting a failed read."""
+    from claudia.dashboard_data import DashboardSnapshot
+
+    snapshot = DashboardSnapshot(
+        as_of=datetime(2026, 11, 8, 21, 0, tzinfo=UTC), positions=(), error="IBKR not usable: down"
+    )
+
+    class _Poller:
+        """The first validated read has landed: IBKR is down."""
+
+        async def polled(self):
+            """Hand back the read at once."""
+            return snapshot
+
+    session = MagicMock()
+    session.state.return_value.is_live = False
+    msg, opening = _opening_with_a_briefing_line()
+    await backend_singletons.add_expiries_when_read(opening, _Poller(), session)
+    assert "connect to IBKR, then restart ClaudIA" in msg.object
+    assert msg.object.index("connect to IBKR") < msg.object.index(
+        "All tracked exchanges open today."
+    )
 
 
 def test_the_dataset_line_keeps_its_place_after_an_ibkr_caveat():

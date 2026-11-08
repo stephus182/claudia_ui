@@ -6,11 +6,27 @@ same property that makes them safe to call during session start.
 
 from __future__ import annotations
 
-import dataclasses
+from collections.abc import Callable
 from datetime import date
+from typing import Any
 
 from claudia import briefing as br
 from claudia.contract_identity import ContractIdentity
+
+_NO_POSITIONS: br.ExpirySection = br.Ready(items=())
+_NO_CLOSURES: br.ClosureSection = br.Ready(items=())
+
+
+def _render(
+    expiries: br.ExpirySection = _NO_POSITIONS,
+    closures: br.ClosureSection = _NO_CLOSURES,
+    escape: Callable[[str], str] = str,
+) -> str:
+    """Both sections as the opening message reads once the book is in: the positions part
+    (when it has something to say) before the closures line — the order `OpeningMessage.
+    add_expiries` inserts them in."""
+    parts = (br.render_expiries(expiries, escape), br.render_closures(closures, escape))
+    return "\n\n".join(p for p in parts if p)
 
 
 def test_closures_lists_only_exchanges_closed_today() -> None:
@@ -114,48 +130,36 @@ def test_expiries_reports_a_future_inside_the_horizon() -> None:
     assert item.days_left == 3
 
 
-def test_expiries_excludes_a_future_beyond_the_horizon() -> None:
-    """Dec is months away and would be permanent noise in the briefing. This does NOT pin
-    the horizon_days boundary despite the name — Dec is months out, not one day past the
-    cutoff. See test_expiries_excludes_a_contract_one_day_past_the_horizon for that."""
+def test_expiries_lists_a_future_months_away_too() -> None:
+    """Operator 2026-11-08: "Every FUT position" — not only those due within the week. A
+    December contract three months out is listed with its days left."""
     rows = [_Row("ES", "ES       DEC2026", -1.0, "20261218")]
-    assert br.build_expiries(rows, today=date(2026, 9, 15)) == br.Ready(items=())
+    out = br.build_expiries(rows, today=date(2026, 9, 15))
+    assert isinstance(out, br.Ready)
+    (item,) = out.items
+    assert item.expiry == date(2026, 12, 18)
+    assert item.days_left == 94
 
 
 def test_expiries_includes_a_contract_expiring_today() -> None:
     """Pins the lower boundary: days_left == 0 (expires TODAY) must be INCLUDED — this is
     exactly the day a roll warning matters most."""
     rows = [_Row("ES", "ES       SEP2026", -1.0, "20260915")]
-    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
+    out = br.build_expiries(rows, today=date(2026, 9, 15))
     assert isinstance(out, br.Ready)
     (item,) = out.items
     assert item.days_left == 0
 
 
-def test_expiries_includes_a_contract_exactly_at_the_horizon() -> None:
-    """Pins the inclusive upper boundary: days_left == horizon_days (7) must be INCLUDED."""
-    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260922")]
-    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
+def test_expiries_lists_a_held_contract_past_its_expiry() -> None:
+    """A contract still in the book after its expiry (days_left == -1, non-flat) is listed:
+    it is a position held, and the one the operator most needs to hear about. Until
+    2026-11-08 it was excluded as "what already lapsed"; "every FUT position" reverses that."""
+    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260914")]
+    out = br.build_expiries(rows, today=date(2026, 9, 15))
     assert isinstance(out, br.Ready)
     (item,) = out.items
-    assert item.days_left == 7
-
-
-def test_expiries_excludes_a_contract_one_day_past_the_horizon() -> None:
-    """Pins the off-by-one just past the boundary: days_left == horizon_days + 1 (8) must
-    be EXCLUDED. This is the case test_expiries_excludes_a_future_beyond_the_horizon's
-    December example does not actually exercise."""
-    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260923")]
-    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
-    assert out == br.Ready(items=())
-
-
-def test_expiries_excludes_a_contract_that_expired_yesterday() -> None:
-    """Pins the lower exclusion: days_left == -1 (expired YESTERDAY, still non-flat in the
-    payload) must be EXCLUDED — a briefing reports what's ahead, not what already lapsed."""
-    rows = [_Row("ES", "ES       SEP2026", -1.0, "20260914")]
-    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
-    assert out == br.Ready(items=())
+    assert item.days_left == -1
 
 
 def test_expiries_sorts_by_days_left_then_symbol() -> None:
@@ -168,7 +172,7 @@ def test_expiries_sorts_by_days_left_then_symbol() -> None:
         _Row("CL", "CL       OCT2026", -1.0, "20260918"),  # days_left 3
         _Row("ZB", "ZB       SEP2026", -1.0, "20260916"),  # days_left 1, tie with ES
     ]
-    out = br.build_expiries(rows, today=date(2026, 9, 15), horizon_days=7)
+    out = br.build_expiries(rows, today=date(2026, 9, 15))
     assert isinstance(out, br.Ready)
     assert [c.symbol for c in out.items] == ["ES", "ZB", "CL", "NQ"]
     assert [c.days_left for c in out.items] == [1, 1, 3, 5]
@@ -218,12 +222,13 @@ def test_expiries_ignores_a_stock_even_with_a_non_empty_identities_mapping() -> 
     assert out == br.Ready(items=())
 
 
-def test_expiries_degraded_when_positions_have_not_been_polled() -> None:
-    """The poller may not have published its first snapshot yet. That is not "nothing
-    expiring" — it is "we have not looked"."""
+def test_expiries_unavailable_when_the_positions_could_not_be_read() -> None:
+    """The section is built only once the dashboard's first read of the book has completed
+    (2026-11-08), so positions withheld by the guard mean that read failed — "could not be
+    read", never "nothing", and never the old "not polled yet"."""
     out = br.build_expiries(None, today=date(2026, 9, 15))
-    assert isinstance(out, br.Degraded)
-    assert "polled" in out.reason.lower()
+    assert isinstance(out, br.Unavailable)
+    assert "could not be read" in out.reason
 
 
 def test_expiries_skips_an_unparseable_expiry_without_failing_the_section() -> None:
@@ -339,7 +344,7 @@ def test_a_real_position_and_identity_reach_the_rendered_text_with_the_local_sym
     """End to end through REAL types, not hand-written doubles for either: a real
     `dashboard_data.Position` keyed by a real conid, resolved against a real
     `ContractIdentity`, through `positions_for_briefing` -> `build_expiries` ->
-    `render_briefing`. Closes gap #37 on the briefing surface the same way it is already
+    `render_expiries`. Closes gap #37 on the briefing surface the same way it is already
     closed on Positions/Orders/proposal cards/Gate 2."""
     from datetime import UTC, datetime
 
@@ -376,9 +381,7 @@ def test_a_real_position_and_identity_reach_the_rendered_text_with_the_local_sym
 
     positions = br.positions_for_briefing(snap)
     section = br.build_expiries(positions, today=date(2026, 9, 15), identities=snap.identities)
-    text = br.render_briefing(
-        br.Briefing(expiries=section, closures=br.Ready(items=())), escape=str
-    )
+    text = _render(expiries=section, escape=str)
 
     assert "ESU6" in text
     assert "E-mini S&P 500" in text
@@ -387,7 +390,7 @@ def test_a_real_position_and_identity_reach_the_rendered_text_with_the_local_sym
 
 def test_render_names_the_expiring_contract_and_the_closed_exchange() -> None:
     """The happy path names the contract, the date, the days left and the exchange."""
-    b = br.Briefing(
+    text = _render(
         expiries=br.Ready(
             items=(
                 br.ExpiringContract(
@@ -400,8 +403,8 @@ def test_render_names_the_expiring_contract_and_the_closed_exchange() -> None:
             )
         ),
         closures=br.Ready(items=(br.ClosedExchange(code="XTKS", label="TSE Tokyo"),)),
+        escape=str,
     )
-    text = br.render_briefing(b, escape=str)
     assert "ES" in text
     assert "2026-09-18" in text
     assert "3 days" in text
@@ -426,7 +429,7 @@ def test_render_formats_quantity_without_scientific_notation_or_rounding() -> No
         1.5: "+1.5",
     }
     for quantity, expected in cases.items():
-        b = br.Briefing(
+        text = _render(
             expiries=br.Ready(
                 items=(
                     br.ExpiringContract(
@@ -439,8 +442,8 @@ def test_render_formats_quantity_without_scientific_notation_or_rounding() -> No
                 )
             ),
             closures=br.Ready(items=()),
+            escape=str,
         )
-        text = br.render_briefing(b, escape=str)
         assert f"— {expected} —" in text, f"quantity {quantity}: expected {expected!r} in {text!r}"
 
 
@@ -448,7 +451,7 @@ def test_render_singularises_one_day_left() -> None:
     """`f"{c.days_left} days"` renders "1 days" for a same-day-tomorrow expiry — a UI-feel
     defect the operator called out (code review 2026-09-15). days_left == 1 must read
     "1 day"."""
-    b = br.Briefing(
+    text = _render(
         expiries=br.Ready(
             items=(
                 br.ExpiringContract(
@@ -461,19 +464,48 @@ def test_render_singularises_one_day_left() -> None:
             )
         ),
         closures=br.Ready(items=()),
+        escape=str,
     )
-    text = br.render_briefing(b, escape=str)
     assert "1 day" in text
     assert "1 days" not in text
 
 
-def test_render_says_plainly_when_there_is_genuinely_nothing() -> None:
-    """A clean read that found nothing says so, and says nothing about availability."""
-    b = br.Briefing(expiries=br.Ready(items=()), closures=br.Ready(items=()))
-    text = br.render_briefing(b, escape=str)
-    assert "No position expiring" in text
-    assert "All tracked exchanges open" in text
-    assert "unavailable" not in text.lower()
+def test_render_says_nothing_when_no_position_has_an_expiry() -> None:
+    """Operator 2026-11-08: "if no positions then no message". A clean read that found no
+    position with an expiry renders no line at all; the closures line is unaffected."""
+    assert br.render_expiries(br.Ready(items=()), escape=str) == ""
+    text = _render(expiries=br.Ready(items=()), closures=br.Ready(items=()))
+    assert text == "All tracked exchanges open today."
+
+
+def test_render_heads_the_list_as_positions_with_an_expiry() -> None:
+    """Every position with an expiry is listed, due soon or not, so the heading names what is
+    listed rather than claiming it is all expiring soon."""
+    item = br.ExpiringContract(
+        symbol="MESZ6",
+        description="Micro E-mini S&P 500",
+        expiry=date(2026, 12, 18),
+        days_left=40,
+        quantity=1.0,
+    )
+    text = br.render_expiries(br.Ready(items=(item,)), escape=str)
+    assert text.splitlines()[0] == "**Positions with an expiry:**"
+    assert "expires 2026-12-18, 40 days" in text
+
+
+def test_render_says_a_held_contract_has_expired() -> None:
+    """A position held past its expiry reads "expired …, N days ago", never "expires"."""
+    for days_left, ago in ((-1, "1 day ago"), (-3, "3 days ago")):
+        item = br.ExpiringContract(
+            symbol="ESU6",
+            description="E-mini S&P 500",
+            expiry=date(2026, 9, 14),
+            days_left=days_left,
+            quantity=-1.0,
+        )
+        text = br.render_expiries(br.Ready(items=(item,)), escape=str)
+        assert f"expired 2026-09-14, {ago}" in text, text
+        assert "expires" not in text
 
 
 def test_ibkr_supplied_strings_are_escaped_not_rendered_as_markup() -> None:
@@ -483,7 +515,7 @@ def test_ibkr_supplied_strings_are_escaped_not_rendered_as_markup() -> None:
     """
     from claudia.panel_markdown import escape_markup
 
-    b = br.Briefing(
+    text = _render(
         expiries=br.Ready(
             items=(
                 br.ExpiringContract(
@@ -496,8 +528,8 @@ def test_ibkr_supplied_strings_are_escaped_not_rendered_as_markup() -> None:
             )
         ),
         closures=br.Ready(items=()),
+        escape=escape_markup,
     )
-    text = br.render_briefing(b, escape=escape_markup)
     assert "<script>" not in text
     assert "<img" not in text
     assert "alert(1)" in text, "escaped, not deleted — the operator still sees the value"
@@ -511,44 +543,42 @@ def test_closure_labels_are_escaped_too() -> None:
     """
     from claudia.panel_markdown import escape_markup
 
-    b = br.Briefing(
+    text = _render(
         expiries=br.Ready(items=()),
         closures=br.Ready(items=(br.ClosedExchange(code="XTKS", label="<b>TSE Tokyo</b>"),)),
+        escape=escape_markup,
     )
-    text = br.render_briefing(b, escape=escape_markup)
     assert "<b>" not in text
     assert "TSE Tokyo" in text
 
 
-def test_a_degraded_section_is_never_rendered_as_an_empty_one() -> None:
-    """THE invariant, asserted over EVERY section on Briefing rather than one of them.
+def test_an_unreadable_section_is_never_rendered_as_an_empty_one() -> None:
+    """THE invariant, asserted over EVERY public section renderer rather than one of them.
 
     Hard rule 2 (operator, 2026-09-15): a failed read must never read as "nothing today" —
-    called the worst possible outcome. The check is structural, so a third section added
-    later is covered without anyone remembering to extend this test.
+    called the worst possible outcome. Since 2026-11-08 the positions part says NOTHING when
+    the book holds no position with an expiry, so silence is its "nothing" and a failed read
+    must never be silent. The check is structural: a renderer added later fails here until it
+    is given its own "nothing" here.
     """
-    empty = br.Briefing(expiries=br.Ready(items=()), closures=br.Ready(items=()))
-    fields = dataclasses.fields(br.Briefing)
-    assert fields, "Briefing has no sections — the invariant would be vacuous"
-
-    # The positive sentence each section emits when it looked and genuinely found nothing.
-    # A degraded section of that name must never produce its own sentence.
-    positive = {"expiries": "No position expiring", "closures": "All tracked exchanges open"}
-    assert set(positive) == {f.name for f in fields}, (
-        "a section was added or renamed — give it its positive sentence here so the "
+    renderer = Callable[[Any, Callable[[str], str]], str]
+    nothing: dict[renderer, str] = {
+        br.render_expiries: "",
+        br.render_closures: "All tracked exchanges open today.",
+    }
+    public = {name for name in dir(br) if name.startswith("render_")}
+    assert public == {r.__name__ for r in nothing}, (
+        "a section renderer was added or renamed — give it its 'nothing' here so the "
         "invariant keeps covering every section"
     )
-
-    for field in fields:
-        for bad in (br.Degraded(reason="poller asleep"), br.Unavailable(reason="no calendar")):
-            b = dataclasses.replace(empty, **{field.name: bad})
-            text = br.render_briefing(b, escape=str)
-            assert "⚠" in text, f"{field.name}={type(bad).__name__} rendered no warning"
-            assert bad.reason in text, f"{field.name}: the reason was dropped"
-            assert positive[field.name] not in text, (
-                f"{field.name}={type(bad).__name__} rendered as a positive empty result — "
-                "this is hard rule 2 violated"
-            )
+    for render, empty in nothing.items():
+        assert render(br.Ready(items=()), str) == empty
+        bad = br.Unavailable(reason="no calendar")
+        text = render(bad, str)
+        assert text, f"{render.__name__}: an unreadable section rendered as silence"
+        assert "⚠" in text, f"{render.__name__}: rendered no warning"
+        assert bad.reason in text, f"{render.__name__}: the reason was dropped"
+        assert text != empty, f"{render.__name__}: rendered as a positive empty result"
 
 
 class _Snap:
@@ -565,7 +595,8 @@ class _Snap:
 def test_guard_returns_none_when_the_poller_has_not_polled() -> None:
     """The poller serves empty_snapshot(error="Dashboard has not polled yet.") before its
     first poll — positions is () but nothing was read. Passing that () through would
-    render "No position expiring", which is hard rule 2 violated in the wiring."""
+    render as silence — "no position with an expiry" — which is hard rule 2 violated in the
+    wiring."""
     snap = _Snap(positions=(), error="Dashboard has not polled yet.")
     assert br.positions_for_briefing(snap) is None
 
@@ -617,29 +648,24 @@ def test_guard_returns_none_when_stale_positions_are_republished_alongside_an_er
 
     assert br.positions_for_briefing(snap) is None
 
-    text = br.render_briefing(
-        br.Briefing(
-            expiries=br.build_expiries(br.positions_for_briefing(snap), today=date(2026, 9, 15)),
-            closures=br.Ready(items=()),
-        ),
+    text = _render(
+        expiries=br.build_expiries(br.positions_for_briefing(snap), today=date(2026, 9, 15)),
         escape=str,
     )
     assert "⚠" in text
     assert "ESZ6" not in text
 
 
-def test_degraded_reason_from_the_guard_survives_into_the_render() -> None:
-    """End to end for the rule: unpolled snapshot in, warning out — never "nothing"."""
+def test_an_unreadable_snapshot_renders_a_warning_never_silence() -> None:
+    """End to end for the rule: a snapshot the guard withholds in, warning out — never the
+    silence that now means "no position with an expiry"."""
     snap = _Snap(positions=(), error="Dashboard has not polled yet.")
-    text = br.render_briefing(
-        br.Briefing(
-            expiries=br.build_expiries(br.positions_for_briefing(snap), today=date(2026, 9, 15)),
-            closures=br.Ready(items=()),
-        ),
+    text = _render(
+        expiries=br.build_expiries(br.positions_for_briefing(snap), today=date(2026, 9, 15)),
         escape=str,
     )
     assert "⚠" in text
-    assert "No position expiring" not in text
+    assert "**Positions with an expiry:**" not in text, "a withheld read rendered as a list"
 
 
 def test_the_real_snapshot_type_satisfies_the_guard_protocol() -> None:
@@ -658,7 +684,7 @@ def test_the_real_snapshot_type_satisfies_the_guard_protocol() -> None:
 def test_a_real_position_survives_the_whole_chain_to_the_rendered_text() -> None:
     """The positive path, pinned against the REAL frozen `Position`, not `_Row`.
 
-    Every other positive-path test in this file (build_expiries, render_briefing) uses
+    Every other positive-path test in this file (build_expiries, render_expiries) uses
     `_Row`, a plain mutable class that is structurally EASIER to satisfy than the real,
     frozen `dashboard_data.Position` — that gap is exactly how the `ExpiringRow` mismatch
     survived: every test stayed green on the double while the real chain would have
@@ -668,7 +694,7 @@ def test_a_real_position_survives_the_whole_chain_to_the_rendered_text() -> None
     `.expiry` — a field that stopped matching `ExpiringRow` would leave every `positions=()`
     test green while a real, non-empty snapshot broke. This test closes that hole: a real
     `Position` in a real `DashboardSnapshot`, run through the full
-    `positions_for_briefing` -> `build_expiries` -> `render_briefing` chain, asserting the
+    `positions_for_briefing` -> `build_expiries` -> `render_expiries` chain, asserting the
     contract actually appears in the rendered text.
     """
     from datetime import UTC, datetime
@@ -693,11 +719,9 @@ def test_a_real_position_survives_the_whole_chain_to_the_rendered_text() -> None
 
     out = br.positions_for_briefing(snap)
     section = br.build_expiries(out, today=date(2026, 9, 15))
-    text = br.render_briefing(
-        br.Briefing(expiries=section, closures=br.Ready(items=())), escape=str
-    )
+    text = _render(expiries=section, escape=str)
 
-    assert "**Expiring soon:**" in text
+    assert "**Positions with an expiry:**" in text
     assert "ESZ6" in text
     assert "2026-09-18" in text
 
@@ -764,13 +788,13 @@ def test_a_weekday_still_gets_the_holiday_verdict() -> None:
 def test_a_saturday_renders_as_a_weekend_closure() -> None:
     """The sentence the operator reads on a Saturday: closed on the regular schedule,
     with CME's own hours quoted — and never the weekday "open today" sentence."""
-    b = br.Briefing(
+    text = _render(
         expiries=br.Ready(items=()),
         closures=br.Weekend(
             day="Saturday", open_today=(), globex_hours="Sun 5:00 PM – Fri 4:00 PM"
         ),
+        escape=str,
     )
-    text = br.render_briefing(b, escape=str)
     assert "Saturday — weekend" in text
     assert "every tracked exchange closed" in text
     assert "Sun 5:00 PM – Fri 4:00 PM CT" in text
@@ -779,15 +803,15 @@ def test_a_saturday_renders_as_a_weekend_closure() -> None:
 
 def test_a_sunday_renders_its_exception_and_the_globex_reopen() -> None:
     """Sunday is a session day for Tadawul and the evening Globex open; both are said."""
-    b = br.Briefing(
+    text = _render(
         expiries=br.Ready(items=()),
         closures=br.Weekend(
             day="Sunday",
             open_today=("Tadawul (Sun–Thu week)",),
             globex_hours="Sun 5:00 PM – Fri 4:00 PM",
         ),
+        escape=str,
     )
-    text = br.render_briefing(b, escape=str)
     assert "Sunday — weekend" in text
     assert "except Tadawul (Sun–Thu week)" in text
     assert "reopens this evening" in text
@@ -796,10 +820,10 @@ def test_a_sunday_renders_its_exception_and_the_globex_reopen() -> None:
 
 def test_a_weekend_without_hours_says_nothing_about_globex_rather_than_guessing() -> None:
     """No schedule string in hand → no hour on screen (a clock claim is never invented)."""
-    b = br.Briefing(
+    text = _render(
         expiries=br.Ready(items=()),
         closures=br.Weekend(day="Saturday", open_today=(), globex_hours=None),
+        escape=str,
     )
-    text = br.render_briefing(b, escape=str)
     assert "Saturday — weekend" in text
     assert "PM" not in text and "Globex" not in text

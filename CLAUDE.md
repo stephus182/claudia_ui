@@ -28,8 +28,12 @@ claudia/order_flow.py       — framework-agnostic order-execution cores → ibk
 claudia/opening_status.py   — UI-free opening-status builders (session state + trade line; no account
                               figures); the trade line carries the startup pull's state and is rewritten
                               in place by panel_app once the pull lands (gap #77, 2026-09-26)
-claudia/briefing.py         — startup briefing: expiring positions + today's exchange closures,
-                              pure builders, no network (section state is Ready/Weekend/Degraded/Unavailable
+claudia/briefing.py         — startup briefing: today's exchange closures, sent with the opening
+                              message, and every position with an expiry, added in place once the
+                              dashboard's first read after the session is validated lands (none: no
+                              line; not connected: "connect to IBKR, then restart ClaudIA"; a failed
+                              read: ⚠ — operator 2026-11-08, gap #113: "It should read the book"); pure
+                              builders, no network (section state is Ready/Weekend/Unavailable
                               so a failed read can never render as "nothing today"; a Saturday or
                               Sunday is decided by the regular weekly schedule before any holiday
                               list is read — operator rule 2026-09-26, gap #78: no exchange opens

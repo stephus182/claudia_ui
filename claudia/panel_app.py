@@ -54,11 +54,12 @@ from ibkr_core_mcp.gateway import GatewayManager
 
 from claudia.agent import TRADES_WINDOW_SOURCE, ClaudIAAgent, warn_if_model_lacks_operator_channel
 from claudia.briefing import (
-    Briefing,
+    Unavailable,
     build_closures,
     build_expiries,
     positions_for_briefing,
-    render_briefing,
+    render_closures,
+    render_expiries,
 )
 from claudia.context_loader import ContextLoader
 from claudia.conversation_store import ConversationStore
@@ -424,68 +425,77 @@ async def _connect_tradingview(agent: ClaudIAAgent) -> bool:
 
 
 def _build_briefing_text(toolkit: ClaudeToolkit) -> str:
-    """Render the startup briefing, or "" when anything unanticipated goes wrong.
+    """The briefing part sent with the opening message — today's exchange closures — or ""
+    when anything unanticipated goes wrong.
 
     Returning "" rather than raising is this function's contribution to hard rule 1
     (2026-09-15, NEVER BREAK STARTUP): it never lets a briefing failure propagate past
-    itself. The rule as a whole is not a property this function guarantees alone —
-    `_send_opening_status` has no guard of its own around the call, so the outer except
-    below is backstopped by `_init_session`'s generic catch-all for the (very unlikely)
-    case that the `log.warning` call in that except block itself raised. That is the same
-    composition `gather_session_state` and `build_trade_lines` already rely on, not a new
-    pattern. A reader relaxing `_init_session`'s catch-all on the belief that this function
-    is unconditionally non-raising would be wrong.
+    itself; `_init_session`'s generic catch-all backstops the (very unlikely) case that the
+    `log.warning` below itself raised.
 
-    Note the two handlers are not interchangeable. The inner one turns an unreadable
-    calendar into `mkt = None`, so `build_closures` reports `Unavailable` and the
-    expiries section still renders — a failed read is shown, not swallowed. The outer one
-    is the last line of defence for anything unanticipated, and only it yields "".
+    The two handlers are not interchangeable. The inner one turns an unreadable calendar into
+    `mkt = None`, so `build_closures` reports `Unavailable` — a failed read is shown, not
+    swallowed. The outer one is the last line of defence, and only it yields "".
 
-    Reads only what is already in this process — no network call happens here, unconditionally.
-    `get_market_calendar_context()` is called with no arguments, exactly as `opening_status`
-    calls it, so **when the calendar read succeeds** it hits the process-wide
-    `_market_calendar_cache` that `build_trade_lines` has already populated on this path: a
-    cache hit, not a second computation. A *failing* read is deliberately not cached
-    (`ibkr_core_mcp/store.py`'s `get_market_calendar_context` returns its error-marker dict
-    before the line that populates `_market_calendar_cache`, verified 2026-09-15 by
-    monkeypatching `exchange_calendars.get_calendar` to raise and counting calls) — so a
-    transient failure isn't frozen in for the rest of the day, at the cost that this
-    function repeats `build_trade_lines`'s work every time the calendar library is
-    unhealthy, not just on the first failure. Still not a hard-rule-1 problem:
-    `exchange_calendars` is local with no network, runs in a worker thread via
-    `asyncio.to_thread`, and the failure is caught.
+    The positions part is NOT built here (2026-11-08): this runs a moment after the dashboard
+    poller starts, before its first read of the book has landed, so every first tab after a
+    start read "positions have not been polled yet". `_add_expiries_when_read` adds it once
+    the book is read.
 
-    `escape` is passed as `escape_markup` even though `chat.send` already renders through
-    `renderers=[safe_markdown]`, which itself escapes. Checked 2026-09-15: the two do not
-    double-escape each other — the resulting bokeh model text was byte-identical with and
-    without the extra `escape_markup` pass, against `"E-mini S&P 500"`, raw `<script>`
-    payloads and markdown-injection strings. So this is redundant defence-in-depth per
-    `docs/security-architecture.md` §10, not a correctness requirement, and it is harmless.
+    No network call happens here. `get_market_calendar_context()` is called with no
+    arguments, exactly as `opening_status` calls it, so a successful read is a hit on the
+    process-wide `_market_calendar_cache` that `build_trade_lines` already populated; a
+    failing read is deliberately not cached (verified 2026-09-15), at the cost of repeating
+    the work while `exchange_calendars` is unhealthy — local, in a worker thread, caught.
+
+    `escape` is `escape_markup` although `chat.send` already renders through `safe_markdown`
+    — measured 2026-09-15 not to double-escape: defence in depth per
+    `docs/security-architecture.md` §10.
     """
     try:
-        snapshot = _dashboard_poller.snapshot() if _dashboard_poller is not None else None
-        positions = positions_for_briefing(snapshot)
-        # No trust guard of its own: identities only ever label positions that already
-        # passed positions_for_briefing above, and when positions are untrusted (error
-        # set, or no snapshot yet) build_expiries returns Degraded before it ever looks
-        # at identities — so a stale/failed identities mapping can only ever be paired
-        # with positions that were already withheld.
-        identities = snapshot.identities if snapshot is not None else None
         try:
             mkt = toolkit._store.get_market_calendar_context()
         except Exception:
             mkt = None
-        today = date.today()
-        return render_briefing(
-            Briefing(
-                expiries=build_expiries(positions, today=today, identities=identities),
-                closures=build_closures(mkt, today=today),
+        return render_closures(build_closures(mkt, today=date.today()), escape=escape_markup)
+    except Exception as exc:
+        log.warning("briefing skipped: %s: %s", type(exc).__name__, exc)
+        return ""
+
+
+_NOT_CONNECTED = "IBKR is not connected; connect to IBKR, then restart ClaudIA"
+"""The positions part's reason when the first validated read found no live session
+(operator 2026-11-08: "Message should be pls connect to IB" — and "Ask to connect only")."""
+
+
+def _build_expiries_text(snapshot: Any, connected: bool) -> str:
+    """The briefing's positions part from the first validated read of the book: every
+    position with an expiry, or "" when there is none (operator 2026-11-08: "if no positions
+    then no message; if there is a FUT position then check and message"). `connected` is the
+    session owner's answer: not connected, the part asks to connect instead of reading.
+
+    `snapshot` is the poller's, taken once its first poll has completed. `positions_for_
+    briefing` keys on its `error`, so a failed read renders "⚠ could not be read" and the
+    identities carried forward next to an error never label a withheld position. **Never
+    returns "" on a failure**: silence is this part's "nothing", so an unanticipated failure
+    renders the warning instead (hard rule 2: a failed read is never "nothing").
+    """
+    try:
+        if not connected:
+            return render_expiries(Unavailable(reason=_NOT_CONNECTED), escape=escape_markup)
+        return render_expiries(
+            build_expiries(
+                positions_for_briefing(snapshot),
+                today=date.today(),
+                identities=snapshot.identities,
             ),
             escape=escape_markup,
         )
     except Exception as exc:
-        log.warning("briefing skipped: %s: %s", type(exc).__name__, exc)
-        return ""
+        log.warning("briefing positions part failed: %s: %s", type(exc).__name__, exc)
+        return render_expiries(
+            Unavailable(reason="the briefing could not be built"), escape=escape_markup
+        )
 
 
 @dataclass(frozen=True)
@@ -515,12 +525,23 @@ class OpeningMessage:
     parts: list[str]
     dataset_index: int | None
     pull: FlexPullDecision | None
+    briefing_index: int | None = None
+    """Where the briefing's closures line sits, or None when it was skipped."""
 
     def replace_dataset_line(self, text: str) -> None:
         """Swap the dataset part for `text` (italicised like the original) and repaint."""
         if self.dataset_index is None:
             return
         self.parts[self.dataset_index] = f"_{text}_"
+        self.message.object = "\n\n".join(self.parts)
+
+    def add_expiries(self, text: str) -> None:
+        """Insert the positions part before the closures line (at the end when there is
+        none) and repaint; nothing at all for "" — no position with an expiry."""
+        if not text:
+            return
+        at = len(self.parts) if self.briefing_index is None else self.briefing_index
+        self.parts.insert(at, text)
         self.message.object = "\n\n".join(self.parts)
 
 
@@ -580,6 +601,29 @@ async def _refresh_opening_after_pull(
         log.warning("Opening status refresh after the Flex pull failed: %s", exc)
 
 
+async def _add_expiries_when_read(opening: OpeningMessage, poller: Any, session: Any) -> None:
+    """Add the positions part to the opening message once the book is read (2026-11-08).
+
+    Operator: "not check before connection validation, then check positions and logic".
+    Waits for the dashboard poller's first validated poll (`polled()`: past the session's
+    unread start), asks the session owner whether IBKR is connected, then inserts the part in
+    place — the #77 mechanism, no new chat line. Once: a later connection is read at the next
+    start ("Ask to connect only"). The opening message never waits for this (hard rule 1).
+    Never raises: the session is already up.
+    """
+    try:
+        snapshot = await poller.polled()
+        connected = session.state().is_live
+        text = _build_expiries_text(snapshot, connected=connected)
+        opening.add_expiries(text)
+        log.info(
+            "Startup briefing: positions part %s",
+            "added" if text else "not needed — the book holds no position with an expiry",
+        )
+    except Exception as exc:
+        log.warning("briefing positions part not added: %s: %s", type(exc).__name__, exc)
+
+
 async def _send_opening_status(
     chat: pn.chat.ChatInterface, toolkit: ClaudeToolkit, tv_offline: bool
 ) -> tuple[str | None, bool, OpeningMessage]:
@@ -599,13 +643,11 @@ async def _send_opening_status(
     halves of the gateway answer, and the empty part is dropped rather than sent as a
     leading blank line. Account figures and the order book live in the dashboard and are
     no longer echoed here (2026-08-05) — so on a healthy start this message is three
-    `\n\n`-joined parts: the trade dataset, TradingView, and the briefing (expiring
-    positions + today's closures) — omitted rather than sent blank when
-    `_build_briefing_text` returns "". The first two parts are each one line; the briefing
-    part is not — `render_briefing` itself joins two sections with `\n\n`, and the
-    expiries section, when it has items, emits a `**Expiring soon:**` header plus one
-    bullet per position, so the whole message can run to several lines on a healthy
-    start."""
+    `\n\n`-joined parts: the trade dataset, TradingView, and the briefing's closures line —
+    omitted rather than sent blank when `_build_briefing_text` returns "". The positions
+    part joins later, before the closures line, once the book is read
+    (`_add_expiries_when_read`, 2026-11-08) — a `**Positions with an expiry:**` header plus
+    one bullet per position, or nothing when no position has an expiry."""
     ibkr_caveat, ibkr_offline = await gather_session_state(toolkit)
     # The pull decision is taken here, before the line is built, so the line can say that
     # a pull is running (gap #77); the sync reuses this decision rather than deciding again.
@@ -621,10 +663,17 @@ async def _send_opening_status(
     parts = ([ibkr_caveat] if ibkr_caveat else []) + [f"_{trade_status}_", tv_line]
     dataset_index = 1 if ibkr_caveat else 0
     briefing_text = await asyncio.to_thread(_build_briefing_text, toolkit)
+    briefing_index = len(parts) if briefing_text else None
     if briefing_text:
         parts.append(briefing_text)
     message = chat.send("\n\n".join(parts), user="ClaudIA", respond=False)
-    opening = OpeningMessage(message=message, parts=parts, dataset_index=dataset_index, pull=pull)
+    opening = OpeningMessage(
+        message=message,
+        parts=parts,
+        dataset_index=dataset_index,
+        pull=pull,
+        briefing_index=briefing_index,
+    )
     return trade_context, ibkr_offline, opening
 
 
@@ -1607,6 +1656,12 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
             agent._trade_context, ibkr_offline, opening = await _send_opening_status(
                 chat, toolkit, tv_offline
             )
+            # The positions part waits for the book's first read, never the session (2026-11-08).
+            expiries_task = asyncio.create_task(
+                _add_expiries_when_read(opening, _dashboard_poller, get_session())
+            )
+            _background_tasks.add(expiries_task)
+            expiries_task.add_done_callback(_background_tasks.discard)
             _session["agent"] = agent
             _settle_intro(
                 "**ClaudIA is ready** — IBKR not connected."

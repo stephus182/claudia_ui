@@ -7,11 +7,16 @@ NEVER BREAK STARTUP (2026-09-15) — structural rather than a promise: there is 
 that can block, hang, or fail slowly.
 
 The second hard rule — never present a failed read as "nothing today" — is carried by the
-types rather than by discipline. A section is one of three constructors and **only `Ready`
-has items**, so `Ready(items=())` ("we looked, there is genuinely nothing") and
-`Unavailable(reason)` ("we could not look") cannot be collapsed by a renderer. This is the
-same reasoning as `DashboardSnapshot.orders` being `tuple | None`: `()` and a failed lookup
-are opposite claims.
+types rather than by discipline. **Only `Ready` has items**, so `Ready(items=())` ("we looked,
+there is genuinely nothing") and `Unavailable(reason)` ("we could not look") cannot be
+collapsed by a renderer. This is the same reasoning as `DashboardSnapshot.orders` being
+`tuple | None`: `()` and a failed lookup are opposite claims. Since 2026-11-08 the positions
+part says NOTHING for `Ready(items=())` (operator: "if no positions then no message"), so its
+silence is its "nothing" and `Unavailable` always renders ⚠ — never silence.
+
+The two sections are rendered at different moments: the closures line with the opening
+message, the positions part once the dashboard's first read of the book has landed
+(`panel_app._add_expiries_when_read`) — so each has its own public renderer.
 
 Design: `docs/plans/archive/briefing/2026-09-15-morning-briefing.md` §7.
 """
@@ -35,14 +40,6 @@ class Ready(Generic[T]):
     """The read succeeded. `items` may legitimately be empty — that is a positive result."""
 
     items: tuple[T, ...]
-
-
-@dataclass(frozen=True)
-class Degraded:
-    """The read could not run yet, but the reason is known and benign (e.g. not polled)."""
-
-    reason: str
-    as_of: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,13 +77,8 @@ class Weekend:
     globex_hours: str | None = None
 
 
-ClosureSection: TypeAlias = "Ready[ClosedExchange] | Weekend | Degraded | Unavailable"
-"""The `Ready`/`Degraded`/`Unavailable` constructors are a shared vocabulary across every
-section builder in this module, not a per-function contract: `build_closures` below only
-ever returns `Ready`, `Weekend` or `Unavailable` (there is nothing about "today's closures"
-that is a benign not-yet-available state), while Task 3's expiries builder does return
-`Degraded`. A caller that matches on `build_closures` alone will see a `Degraded` branch it
-can never reach — that is intentional, not a sign the branch belongs here."""
+ClosureSection: TypeAlias = "Ready[ClosedExchange] | Weekend | Unavailable"
+
 
 # The tracked exchanges whose regular week includes Sunday. Tadawul trades Sun–Thu — the
 # `exchange_calendars` XSAU calendar the core reads, and the core's own comment on it
@@ -222,11 +214,7 @@ class ExpiringRow(Protocol):
         ...
 
 
-ExpirySection: TypeAlias = "Ready[ExpiringContract] | Degraded | Unavailable"
-
-DEFAULT_HORIZON_DAYS = 7
-"""How far ahead an expiry is worth mentioning. A week covers the roll window without
-making the briefing a standing fixture."""
+ExpirySection: TypeAlias = "Ready[ExpiringContract] | Unavailable"
 
 
 def _parse_ibkr_date(value: str | None) -> date | None:
@@ -242,14 +230,16 @@ def _parse_ibkr_date(value: str | None) -> date | None:
 def build_expiries(
     positions: Sequence[ExpiringRow] | None,
     today: date,
-    horizon_days: int = DEFAULT_HORIZON_DAYS,
     identities: Mapping[int, ContractIdentity] | None = None,
 ) -> ExpirySection:
-    """Open positions expiring within `horizon_days`, nearest deadline first.
+    """Every open position with an expiry, nearest deadline first (operator 2026-11-08:
+    "Every FUT position" — not only those due within the week). A position still held after
+    its expiry is listed too, with negative `days_left`: it is the one most worth saying.
 
-    `positions` is None when the dashboard poller has not published a snapshot yet — that
-    is `Degraded`, never an empty `Ready`, because "we have not looked" and "nothing is
-    expiring" are opposite claims.
+    `positions` is None when the guard withheld them — the dashboard's read failed, or was
+    never made. This is built only once the first read has completed
+    (`DashboardPoller.polled()`), so None is `Unavailable` ("could not be read"), never an
+    empty `Ready`: "we could not look" and "nothing to say" are opposite claims.
 
     **Not keyed on `asset_class`.** The scope ruling of 2026-09-15 is futures-first, but
     any instrument that carries an expiry is picked up, so options later are a predicate
@@ -282,11 +272,11 @@ def build_expiries(
     empty mapping, and a row whose conid is absent from it — no futures on the book, or
     a per-conid read that failed — falls back to the row's own fields on every field:
     fail-soft, so a missing or partially-resolved identity never blanks or drops the
-    row. Resolved here, at build time, so the renderer (`_render_expiries`) stays dumb
+    row. Resolved here, at build time, so the renderer (`render_expiries`) stays dumb
     and needs no change.
     """
     if positions is None:
-        return Degraded(reason="positions have not been polled yet")
+        return Unavailable(reason="IBKR's positions could not be read")
     identity_map = identities or {}
     out: list[ExpiringContract] = []
     for row in positions:
@@ -296,8 +286,6 @@ def build_expiries(
         if when is None:
             continue
         days_left = (when - today).days
-        if days_left < 0 or days_left > horizon_days:
-            continue
         identity = identity_map.get(row.conid)
         local_symbol = identity.local_symbol if identity is not None else ""
         name = identity.name if identity is not None else ""
@@ -312,19 +300,6 @@ def build_expiries(
         )
     out.sort(key=lambda c: (c.days_left, c.symbol))
     return Ready(items=tuple(out))
-
-
-@dataclass(frozen=True)
-class Briefing:
-    """The whole briefing: one section per topic, each carrying its own state.
-
-    Adding a section here means adding it to `render_briefing` and to the positive-sentence
-    map in `test_a_degraded_section_is_never_rendered_as_an_empty_one`, which fails loudly
-    until you do.
-    """
-
-    expiries: ExpirySection
-    closures: ClosureSection
 
 
 def _format_quantity(quantity: float) -> str:
@@ -352,21 +327,15 @@ def _format_quantity(quantity: float) -> str:
     return text
 
 
-def _degraded_reason(section: Degraded) -> str:
-    """The Degraded sentence fragment: the reason, plus the staleness stamp when the
-    caller set one. No builder in this module sets `as_of` today — `build_expiries`
-    always passes a bare `reason` — but staleness is exactly the context an operator wants
-    on a degraded section, so the renderer surfaces it the moment a caller starts setting
-    one rather than silently dropping a field that already exists on the type.
-    """
-    if section.as_of is None:
-        return section.reason
-    return f"{section.reason} (as of {section.as_of})"
+def render_expiries(section: ExpirySection, escape: Callable[[str], str]) -> str:
+    """The positions part: "" when no position has an expiry (operator 2026-11-08: "if no
+    positions then no message"); `Unavailable` always carries ⚠ and its reason — never "",
+    which would read as that "nothing".
 
-
-def _render_expiries(section: ExpirySection, escape: Callable[[str], str]) -> str:
-    """The expiries section. Degraded and Unavailable carry ⚠ and their reason; only a
-    `Ready` with no items may say the positive "nothing expiring".
+    `escape` is applied to every IBKR-supplied string and is **required, with no default**:
+    a security control a caller can forget by omission is not a control. The caller passes
+    `panel_markdown.escape_markup` (`docs/security-architecture.md` §10); tests that care
+    about wording pass `str`, which makes the choice visible at every call site.
 
     The `elif isinstance(section, Ready)` plus a final `assert_never` (rather than an
     unconditional `else` for the content path) is deliberate: if a fourth section
@@ -375,33 +344,32 @@ def _render_expiries(section: ExpirySection, escape: Callable[[str], str]) -> st
     this module exists to prevent. mypy flags the `else` as unreachable only while the
     union really is exhausted; add a constructor and both mypy and `assert_never` fail loudly.
     """
-    if isinstance(section, Degraded):
-        return f"⚠ Expiring positions unavailable — {_degraded_reason(section)}."
-    elif isinstance(section, Unavailable):
-        return f"⚠ Expiring positions could not be read — {section.reason}."
+    if isinstance(section, Unavailable):
+        return f"⚠ Positions with an expiry could not be read — {section.reason}."
     elif isinstance(section, Ready):
         if not section.items:
-            return "No position expiring in the next week."
-        lines = ["**Expiring soon:**"]
+            return ""
+        lines = ["**Positions with an expiry:**"]
         for c in section.items:
-            if c.days_left == 0:
-                when = "today"
-            elif c.days_left == 1:
-                when = "1 day"
+            days = abs(c.days_left)
+            span = "1 day" if days == 1 else f"{days} days"
+            if c.days_left < 0:
+                when = f"expired {c.expiry.isoformat()}, {span} ago"
             else:
-                when = f"{c.days_left} days"
+                when = f"expires {c.expiry.isoformat()}, {'today' if days == 0 else span}"
             # IBKR-supplied strings: escaped. Our own literals and the formatted date are not.
             lines.append(
                 f"- {escape(c.symbol)} ({escape(c.description.strip())}) — "
-                f"{_format_quantity(c.quantity)} — expires {c.expiry.isoformat()}, {when}"
+                f"{_format_quantity(c.quantity)} — {when}"
             )
         return "\n".join(lines)
     else:
         assert_never(section)
 
 
-def _render_closures(section: ClosureSection, escape: Callable[[str], str]) -> str:
-    """The closures section. Same exhaustiveness shape as `_render_expiries` — see there.
+def render_closures(section: ClosureSection, escape: Callable[[str], str]) -> str:
+    """The closures line, sent with the opening message. Same exhaustiveness shape as
+    `render_expiries`, and the same required `escape` — see there.
 
     `escape` is applied to `label` even though every label in play today traces to our own
     20-entry `EXCHANGE_LABELS` map or its own-literal fallback (`EXCHANGE_LABELS.get(code,
@@ -411,9 +379,7 @@ def _render_closures(section: ClosureSection, escape: Callable[[str], str]) -> s
     list would silently break it with no test going red. Escaping here removes the need to
     keep that argument true forever: §10's point is not having to reason about provenance.
     """
-    if isinstance(section, Degraded):
-        return f"⚠ Exchange closures unavailable — {_degraded_reason(section)}."
-    elif isinstance(section, Unavailable):
+    if isinstance(section, Unavailable):
         return f"⚠ Exchange closures could not be read — {section.reason}."
     elif isinstance(section, Weekend):
         # The regular schedule, stated as such: never the weekday "open today" sentence,
@@ -487,28 +453,3 @@ def positions_for_briefing(
     if snapshot.error is not None:
         return None
     return snapshot.positions
-
-
-def render_briefing(briefing: Briefing, escape: Callable[[str], str]) -> str:
-    """One Markdown block. Each section renders its own state; no section can borrow
-    another's. A `Degraded` or `Unavailable` section always carries ⚠ and its reason, and
-    never the positive "we looked and found nothing" sentence.
-
-    `escape` is applied to every string of unpinned provenance and is **required, with no
-    default**: a security control that a caller can forget by omission is not a control.
-    `panel_app._build_briefing_text` passes `panel_markdown.escape_markup` — what
-    `docs/security-architecture.md` §10 requires of a surface that shows text — wired and
-    verified 2026-09-15. That verification also measured the extra escape pass as
-    redundant: the resulting bokeh model text was byte-identical with and without it,
-    because the chat feed already renders through `safe_markdown` (`renderers=
-    [safe_markdown]`), which itself escapes. So passing `escape_markup` here is
-    defence-in-depth, not a correctness requirement — see `_build_briefing_text`'s
-    docstring for the check itself. Tests that care about wording rather than escaping
-    pass `str` explicitly, which makes the choice visible at every call site.
-    """
-    return "\n\n".join(
-        (
-            _render_expiries(briefing.expiries, escape),
-            _render_closures(briefing.closures, escape),
-        )
-    )
