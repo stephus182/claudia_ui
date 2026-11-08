@@ -401,7 +401,7 @@ Dockerfile.** `GatewayManager.start()` builds only when the image is *absent*, s
 restart re-runs the old image forever.
 
 ```bash
-docker rmi ibkr-core-gateway     # then start normally; the next start rebuilds
+docker rmi -f ibkr-core-gateway  # -f: refused without it while the container, stopped or not, uses the image; then start normally — the next start rebuilds
 ```
 
 ⚠ **This costs a fresh 2FA login.** Plan it; do not discover it.
