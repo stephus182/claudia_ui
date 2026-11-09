@@ -798,13 +798,14 @@ async def _report_new_fills(
     (gap #99, operator 2026-10-20). Never raises.
 
     The WebSocket is the listener's only input, and what IBKR replays on it at a start is
-    measured as arbitrary (core register F41): ten fills of 2026-10-08 reached the chat 22
-    hours late, and only because the replay beat the Flex pull by fourteen seconds. So this
-    reads the same window the Fills tab reads — `fetch_fills`, IBKR's `/iserver/account/trades`,
-    warm-up included — and asks the listener's own rule (`is_news`: not on a statement, not
-    in an `execution_reported` row) of each execution. Run once the store is as settled as
-    this start can make it (`_init_session`, after the Flex pull has landed, failed or been
-    skipped), so yesterday's fills the statement settles are not news; today's are.
+    measured as arbitrary (the core's behaviours reference, WebSocket `str`): ten fills of
+    2026-10-08 reached the chat 22 hours late, and only because the replay beat the Flex pull by
+    fourteen seconds. So this reads the same window the Fills tab reads — `fetch_fills`, IBKR's
+    `/iserver/account/trades`, warm-up included — and asks the listener's own rule (`is_news`:
+    not on a statement, not in an `execution_reported` row) of each execution. Run once the
+    store is as settled as this start can make it (`_init_session`, after the Flex pull has
+    landed, failed or been skipped), so yesterday's fills the statement settles are not news;
+    today's are.
 
     One chat message authored IBKR with the count (silence when there is nothing — never
     "0 new fills"), one warning line (the toast), an operator note per fill with the

@@ -936,8 +936,10 @@ row per fill through the same `_record_execution_reported` the live path uses, w
 describe one execution differently. Silence when there is nothing; an offline start, a failed
 read or an unreadable store give one `error` line, nothing reported, nothing recorded. The
 listener starts **after** this, so whatever IBKR then replays is already recorded and stays
-silent. Not covered: the WebSocket going silent during a session (core register F41, parked by
-the operator until seen again). Design: `docs/plans/2026-10-20-new-fills-at-start-design.md`.
+silent. During a session the WebSocket is the source: IBKR documents no acknowledgment of a `str`
+subscription, so a quiet socket means no new execution, and every fill made with ClaudIA open since
+2026-10-02 arrived over it (four, 2026-11-06 — two of them then not announced, a ClaudIA defect after a
+restart with the page left open: close the page before a restart). Design: `docs/plans/2026-10-20-new-fills-at-start-design.md`.
 
 **Rules the review of 2026-09-04 added, each with a test:** every fill is reported, including
 the ones the listener's P&L capture round consumes from the same queue (a bracket's second leg
