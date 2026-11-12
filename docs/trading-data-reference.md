@@ -132,8 +132,13 @@ data = self._get("/iserver/account/orders")       # retrieve actual data
 Symptoms and diagnosis:
 - `orders: [], snapshot: true` on only one call → missing second call, not a data issue
 - Still empty after two calls → possible IBKR session not fully initialized; check `ping()` first
-- Mobile/TWS-placed orders: expected to be visible after proper initialization (under test)
-- GTC orders from previous days: should appear in the live list regardless of when placed
+- Mobile-placed orders: **visible** — measured 2026-11-12, two orders placed on IBKR Mobile were
+  in the list, and the API then modified and cancelled both (core register F47; the core's
+  `docs/audits/live-test-log.md`, run 2026-11-12). TWS-placed orders: not measured.
+- GTC orders from previous days: **in the list** — measured 2026-11-12, a GTC order ClaudIA staged
+  on 2026-07-23 (its `CLAUDIA-` reference is a millisecond timestamp) was there. IBKR's page
+  says the list "contains all orders placed on the account for the day"; a working GTC order from
+  an earlier day is in it all the same.
 
 Source: https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/
 

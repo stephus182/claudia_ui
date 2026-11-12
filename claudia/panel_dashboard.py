@@ -1078,7 +1078,8 @@ _ORDER_TOOLTIPS = {
     "for this order (measured on futures rows) — not 'No'.",
     "Status": "IBKR's own status string, verbatim.",
     "Origin": "ClaudIA for orders staged through this app; external for TWS, mobile or the "
-    "web portal — those cannot be modified or cancelled through the API.",
+    "web portal. Where an order was placed does not decide whether it can be changed: orders "
+    "placed on IBKR Mobile were modified and cancelled through the API (measured 2026-11-12).",
 }
 
 
