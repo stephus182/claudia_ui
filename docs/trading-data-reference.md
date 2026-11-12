@@ -139,6 +139,14 @@ Symptoms and diagnosis:
   on 2026-07-23 (its `CLAUDIA-` reference is a millisecond timestamp) was there. IBKR's page
   says the list "contains all orders placed on the account for the day"; a working GTC order from
   an earlier day is in it all the same.
+- Cancelled orders: **still in the raw list the same day** — measured 2026-11-12, the two orders
+  cancelled at 10:20–10:22 EST read `Cancelled` there at 11:59 EST. The core's
+  `IBKRClient.get_live_orders`, which the `get_live_orders` tool reads, drops them: it keeps a row
+  only if its status is present and not `Filled`, `Cancelled`, `ApiCancelled` or `Expired`
+  (`_TERMINAL_STATUSES`).
+- An order ClaudIA staged, then modified **on IBKR Mobile**: **still in the list with its
+  `CLAUDIA-` reference and its id** — measured 2026-11-12 (the GTC order above, its limit moved on
+  the phone), so its Origin stays ClaudIA.
 
 Source: https://www.interactivebrokers.com/campus/trading-lessons/request-modify-orders/
 

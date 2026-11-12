@@ -1374,7 +1374,10 @@ class LiveOrder:
 
     `origin` preserves the distinction the chat block already drew: orders placed through
     ClaudIA carry a `CLAUDIA-` local id, while anything from TWS, mobile or the web portal
-    does not and is read-only through this API.
+    does not. It says where an order was placed, not whether it can be changed. Measured
+    2026-11-12 (core register F47): orders placed on IBKR Mobile were modified and cancelled
+    through the API, and a ClaudIA order whose limit was moved on IBKR Mobile kept its
+    `CLAUDIA-` id. Until then this said such orders were "read-only through this API".
     """
 
     order_id: str

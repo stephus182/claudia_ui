@@ -565,7 +565,10 @@ against, so the expectations above do not have to be re-derived:
 - **`local_order_id` is live behaviour on the single-ticket path and equals the cOID.** Placement
   *and* modify both answered `[{"order_id": "975324503", "local_order_id":
   "CLAUDIA-1789049488826", "order_status": "PreSubmitted", "encrypt_message": "1"}]`. The 2021
-  worked example's key is real; `parent_order_id` on a child is still unmeasured.
+  worked example's key is real; `parent_order_id` on a child is still unmeasured. **The key
+  follows the cOID** (2026-11-12, core register F47): a modify of an order placed on IBKR Mobile,
+  which carries no cOID, answered `{"order_id": …, "order_status": "PreSubmitted",
+  "encrypt_message": "1"}` with no `local_order_id`, the same id as a string.
 - **`order_ref` on the live-orders row echoes the cOID** (`CLAUDIA-1789049488826`) — the
   book-side link the 09-08 pass called a candidate — while the order-status endpoint has no
   `order_ref` key at all (its keys were listed: 46 on the working read, `order_ref` not among
@@ -873,7 +876,14 @@ https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/li
 
 `get_order_status` also returns `order_not_editable`/`cannot_cancel_order` booleans — ClaudIA's
 system prompt requires checking these before proposing a modify/cancel and explaining to the
-user if either blocks the action, rather than proposing it anyway.
+user if either blocks the action, rather than proposing it anyway. They are IBKR's per-order
+answer: `false` while an order works, `true` once it is cancelled (measured 2026-11-12, core
+register F47). **The same prompt section also refuses any order whose origin is external**
+("`get_live_orders` already documents that orders placed via IBKR mobile or TWS cannot be modified
+or cancelled through the API — if the order's origin is external, say so and stop"). That rule
+rests on the claim F47 measured false on 2026-11-12: orders placed on IBKR Mobile were modified
+and cancelled through the API. Whether to change it is the operator's decision (gap #114); until
+then the model refuses an order placed on the phone that IBKR would accept.
 
 Calls `IBKRClient.modify_order_and_confirm(account_id, order_id, order_body)` — the reply-chain-aware
 variant (same loop as `place_order_and_confirm()`). **Live-verified 2026-07-10**: a clean,
@@ -888,10 +898,12 @@ fields matched the request.
 `order_ref` (IBKR's actual Live Orders field, snake_case) first, with `orderRef`/`cOID`/
 `clientOrderId` kept only as fallbacks. Before the fix, both checked the fallback keys only, so
 every order — including ClaudIA's own — fell through to an unreliable `clientId` check and was
-mislabeled `EXTERNAL`; this made ClaudIA correctly refuse to auto-propose a modify on its own
+mislabeled `EXTERNAL`; this made ClaudIA refuse to auto-propose a modify on its own
 just-placed order per its hard rule, requiring a manual gate confirmation instead of an autonomous
 proposal. Empirically the mislabel itself was cosmetic (IBKR accepted the modify regardless), but
-the usability regression was real. See the resolved Known Gaps entry in `docs/project-status.md`
+the usability regression was real. (Until 2026-11-12 this read "correctly refuse". The hard rule,
+"refuse an EXTERNAL order", rests on a claim measured false that day: IBKR accepts a modify and a
+cancel of an order placed on IBKR Mobile — core register F47, gap #114.) See the resolved Known Gaps entry in `docs/project-status.md`
 for commit references and a known residual edge case.
 
 ## Automatic execution reports (2026-09-04)
