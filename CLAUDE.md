@@ -276,6 +276,13 @@ on the startup-briefing branch: **32 skips in the worktree against 7 in the main
 from an identical 2,027 collected. Those 25 tests only ran, and passed, after the merge.
 **Verify a merge from the main checkout, never from the worktree the work was built in.**
 
+**A bare `pytest` collects `tests/` and nothing else** (`testpaths` in `pyproject.toml`, gap #116,
+2026-11-24). pytest does not read `.gitignore`: in the main checkout it also loaded what the probe
+folders under `docs/plans/` held, which stopped the pre-push hook's collection with 24 errors.
+Every test runs as before, measured test by test, and `tests/test_collection_scope.py` fails on a
+test module put anywhere else, because nothing would run it and nothing would say so. A path on
+the command line is still collected wherever it is.
+
 **The `live_api` marker exists because local validation cannot prove API acceptance.** During
 the 2026-07-27 guardrail work, three separate defects passed a docs read *and* a green suite
 and would each have returned a 400 on every request: `exclusiveMinimum` and

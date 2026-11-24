@@ -131,6 +131,10 @@ asyncio_mode = "auto"
 # pytest-socket: AF_UNIX stays open for asyncio's self-pipe, which every async test needs.
 # The block itself is armed in tests/conftest.py, not here.
 addopts = "--allow-unix-socket"
+# A bare `pytest` collects tests/ and nothing else (gap #116). pytest does not read .gitignore,
+# so in the main checkout it also loaded the probe folders under docs/plans/. Every test is under
+# tests/; tests/test_collection_scope.py holds this line and fails on a test module put elsewhere.
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
