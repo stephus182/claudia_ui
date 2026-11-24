@@ -951,7 +951,12 @@ def _format_reply_log(reply_log: list[dict[str, Any]]) -> str:
 
 
 def _declined_reply_text(reply_log: list[dict[str, Any]]) -> str:
-    """Name the IBKR prompt the human declined — the log's last unconfirmed record, or ""."""
+    """Name the IBKR prompt that was not confirmed — the log's last unconfirmed record, or "".
+
+    From core 2.2.0 `ReplyNotConfirmedError` quotes it in its own sentence. One case still rests
+    on this: Touch ID failing for the reply itself, where the core raises a bare Gate 1 error
+    and IBKR has not been answered (register F34's leftover).
+    """
     declined = [r for r in reply_log if not r.get("confirmed")]
     if not declined:
         return ""
@@ -1141,28 +1146,10 @@ _FAILURE_PATTERNS: tuple[tuple[Callable[[Exception], bool], str, str], ...] = (
         "{detail}",
     ),
     (
-        # The core raises "Order cancelled by user" for BOTH the abandon button and the
-        # AppKit auto-dismiss: `_order_dialog.py` prints CANCELLED for either (its docstring
-        # says the timeout "counts as cancel") and `order_confirm` maps anything but
-        # CONFIRMED to that one message; its own "Confirmation dialog timed out" is raised
-        # only when the dialog SUBPROCESS overruns by 10 s. So ClaudIA cannot tell the two
-        # apart (core register F21) and says so. "Cancelled" is not a word for this: found
-        # live 2026-09-25 on the cancel path, where "Order was cancelled at the confirmation
-        # dialog" read as the order being cancelled when the timeout had KEPT it (gap #67).
-        lambda e: "cancelled by user" in str(e).lower(),
-        "gate2",
-        "Declined or timed out at the confirmation dialog — nothing was sent to IBKR.",
-    ),
-    (
-        lambda e: "declined ibkr order reply" in str(e).lower(),
-        "reply",
-        "Declined at a follow-up IBKR confirmation prompt after Gate 2 was approved — "
-        "check IBKR for the order's current status.",
-    ),
-    (
         # By TYPE, the dialog's own (gap #67, core register F21). The words "timed out" are
         # not it: a network timeout says them too, after Gate 2 was approved and the order
-        # posted, and until 2026-11-24 it was told here as "nothing was sent to IBKR".
+        # posted, and until 2026-11-24 it was told here as "nothing was sent to IBKR". Nor is
+        # "cancelled" a word for it: the timeout KEEPS the order (found live 2026-09-25).
         lambda e: isinstance(e, ConfirmationTimeoutError),
         "timeout",
         # `{timeout_s}` is the core's constant, substituted when the sentence is built.

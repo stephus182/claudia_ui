@@ -932,25 +932,29 @@ async def test_execute_staged_order_touch_id_error():
 
 @pytest.mark.asyncio
 async def test_execute_staged_order_dialog_cancel_error():
-    """'cancelled by user' in error → dialog cancellation message."""
+    """The place dialog's abandon button → declined, in the core's own sentence."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.place_order_and_confirm.side_effect = RuntimeError("Order cancelled by user")
+    client.place_order_and_confirm.side_effect = ConfirmationDeclinedError(
+        "Not sent — nothing reached IBKR."
+    )
     action = _make_action()
     recorded = await _run(action, ibkr_mod)
-    assert any("Declined or timed out at" in c for c in _sent_contents(recorded))
+    said = "Declined at the confirmation dialog. Not sent — nothing reached IBKR."
+    assert any(said in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
 async def test_execute_staged_order_reply_chain_decline_error():
-    """'declined IBKR order reply' (place_order_and_confirm mid-chain decline) →
-    a message distinct from the Touch ID failure text, since Gate 1 succeeded and
-    the user consciously declined a follow-up IBKR prompt after the order was placed."""
+    """A question IBKR asked mid-chain, declined: the core's sentence, never the Touch ID
+    failure text, since Gate 1 succeeded and the user declined IBKR's question after the
+    order was posted."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.place_order_and_confirm.side_effect = RuntimeError("User declined IBKR order reply")
+    sentence = _REPLY_ASKED + "it was declined at the dialog — IBKR was answered no."
+    client.place_order_and_confirm.side_effect = ReplyNotConfirmedError(sentence)
     action = _make_action()
     recorded = await _run(action, ibkr_mod)
     contents = _sent_contents(recorded)
-    assert any("follow-up IBKR confirmation" in c for c in contents)
+    assert any(sentence in c for c in contents)
     assert not any("authentication failed or was cancelled" in c for c in contents)
 
 
@@ -1801,12 +1805,15 @@ async def test_execute_cancel_order_touch_id_error():
 
 @pytest.mark.asyncio
 async def test_execute_cancel_order_dialog_cancel_error():
-    """Declining at the confirmation dialog is reported as a user cancel, not a failure."""
+    """Declining at the confirmation dialog is reported as the user's no, not a failure."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    client.cancel_order.side_effect = RuntimeError("Order cancelled by user")
+    client.cancel_order.side_effect = ConfirmationDeclinedError(
+        "Kept — the order is still working."
+    )
     action = _make_cancel_action()
     recorded = await _run_cancel(action, ibkr_mod)
-    assert any("Declined or timed out at" in c for c in _sent_contents(recorded))
+    said = "Declined at the confirmation dialog. Kept — the order is still working."
+    assert any(said in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
@@ -2024,23 +2031,27 @@ async def test_execute_modify_order_touch_id_error():
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_dialog_cancel_error():
-    """Declining at the confirmation dialog is reported as a user cancel."""
+    """Declining at the confirmation dialog is reported as the user's no."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    client.modify_order_and_confirm.side_effect = RuntimeError("Order cancelled by user")
+    client.modify_order_and_confirm.side_effect = ConfirmationDeclinedError(
+        "Left unchanged — the order is as it was."
+    )
     action = _make_modify_action()
     recorded = await _run_modify(action, ibkr_mod)
-    assert any("Declined or timed out at" in c for c in _sent_contents(recorded))
+    said = "Declined at the confirmation dialog. Left unchanged — the order is as it was."
+    assert any(said in c for c in _sent_contents(recorded))
 
 
 @pytest.mark.asyncio
 async def test_execute_modify_order_reply_chain_decline_error():
-    """A decline at a follow-up IBKR prompt is named as such — the order's state is unknown."""
+    """A question IBKR asked mid-chain, declined, reaches the chat in the core's words."""
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
-    client.modify_order_and_confirm.side_effect = RuntimeError("User declined IBKR order reply")
+    sentence = _REPLY_ASKED + "it was declined at the dialog — IBKR was answered no."
+    client.modify_order_and_confirm.side_effect = ReplyNotConfirmedError(sentence)
     action = _make_modify_action()
     recorded = await _run_modify(action, ibkr_mod)
     contents = _sent_contents(recorded)
-    assert any("follow-up IBKR confirmation" in c for c in contents)
+    assert any(sentence in c for c in contents)
 
 
 @pytest.mark.asyncio
@@ -3325,15 +3336,17 @@ async def test_execute_staged_order_without_replies_adds_no_line_and_an_empty_lo
 
 @pytest.mark.asyncio
 async def test_execute_staged_order_names_the_declined_ibkr_prompt():
-    """A decline mid-chain names the prompt that was declined, from the partial log."""
+    """The prompt is named from the partial log where the core's sentence does not quote it:
+    Touch ID failing for the reply itself, once the write's authorization has run out
+    (register F34, its leftover)."""
     ibkr_mod, client = _make_ibkr_mock()
 
     def _place(account_id, order_body, *, reply_log):
-        """A client double whose second gate is declined: partial log, then the raise."""
+        """A client double whose reply is refused at its own Gate 1: partial log, then the raise."""
         reply_log.append(
             _reply_record("Stop Variant Order Confirmation A Stop Order …", confirmed=False)
         )
-        raise RuntimeError("User declined IBKR order reply")
+        raise HumanAuthError("Touch ID timed out after 60s")
 
     client.place_order_and_confirm.side_effect = _place
     contents = _sent_contents(await _run(_make_action(), ibkr_mod))
@@ -3747,8 +3760,11 @@ def test_cancel_proposal_contract_label_is_none_for_a_stock_and_never_raises():
 @pytest.mark.parametrize(
     ("exc", "stage"),
     [
-        (HumanAuthError("Order cancelled by user"), "gate2"),
-        (HumanAuthError("User declined IBKR order reply"), "reply"),
+        (ConfirmationDeclinedError("no word of it decides"), "gate2"),
+        (ReplyNotConfirmedError("no word of it decides"), "reply"),
+        # The words core 2.1.0 raised for both; from 2.2.0 nothing raises them.
+        (RuntimeError("Order cancelled by user"), "other"),
+        (RuntimeError("User declined IBKR order reply"), "other"),
         (ConfirmationTimeoutError("no word of it decides"), "timeout"),
         (
             HumanAuthError("Touch ID timed out after 60s"),
@@ -3772,15 +3788,15 @@ def test_cancel_proposal_contract_label_is_none_for_a_stock_and_never_raises():
 def test_refusal_stage_uses_the_same_patterns_as_the_user_facing_text(exc, stage):
     """The stage a refusal is recorded under and the sentence the user reads come from one
     table (#50, 2026-09-11) — a failure mode added to one cannot be missing from the other.
-    The exception types are the ones each failure really arrives as: the gates raise
-    `HumanAuthError`, which the classifier has always read as a Touch ID failure by default."""
+    The exception types are the ones each failure really arrives as: Gate 1 raises
+    `HumanAuthError` itself, Gate 2 and the reply chain a subclass each."""
     from claudia.order_flow import _classify_execution_error, _refusal_stage
 
     assert _refusal_stage(exc) == stage
     sentence = _classify_execution_error(exc)
     assert sentence == _classify_execution_error(type(exc)(str(exc)))
     if stage == "other":
-        assert sentence == "RuntimeError: boom"
+        assert sentence == f"RuntimeError: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -3864,7 +3880,9 @@ def test_a_core_refusal_is_logged_as_a_refusal_rather_than_an_unexpected_failure
 async def test_a_gate2_abandon_writes_a_refusal_decision_with_the_proposal():
     """Cell 5 (2026-09-11): DO NOT SEND left only `trade_proposed` in the store (#50)."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.place_order_and_confirm.side_effect = HumanAuthError("Order cancelled by user")
+    client.place_order_and_confirm.side_effect = ConfirmationDeclinedError(
+        "Not sent — nothing reached IBKR."
+    )
     store = MagicMock()
     action = _make_action()
     recorded = await _run(action, ibkr_mod, store=store, session_id="s1")
@@ -3875,7 +3893,10 @@ async def test_a_gate2_abandon_writes_a_refusal_decision_with_the_proposal():
     assert kwargs["metadata"]["proposal"] == json.loads(action.payload["order"])
     assert kwargs["metadata"]["ibkr_replies"] == []
     assert kwargs["metadata"]["dispatched"] is False
-    assert "Declined or timed out at the confirmation dialog" in kwargs["summary_text"]
+    assert (
+        "Declined at the confirmation dialog. Not sent — nothing reached IBKR."
+        in kwargs["summary_text"]
+    )
     assert kwargs["symbol"] == "AAPL"
 
 
@@ -3896,7 +3917,9 @@ async def test_a_declined_precaution_keeps_its_reply_log_in_the_refusal_row():
                 "at": "2026-09-11T14:54:00Z",
             }
         )
-        raise HumanAuthError("User declined IBKR order reply")
+        raise ReplyNotConfirmedError(
+            _REPLY_ASKED + "it was declined at the dialog — IBKR was answered no."
+        )
 
     client.place_order_and_confirm.side_effect = decline
     store = MagicMock()
@@ -3926,9 +3949,11 @@ async def test_a_failure_after_dispatch_is_recorded_as_dispatched_unverified():
 
 @pytest.mark.asyncio
 async def test_a_cancel_refusal_is_recorded():
-    """KEEP ORDER at Gate 2 (#50)."""
+    """DISCARD on the cancel dialog (#50)."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.cancel_order.side_effect = HumanAuthError("Order cancelled by user")
+    client.cancel_order.side_effect = ConfirmationDeclinedError(
+        "Kept — the order is still working."
+    )
     store = MagicMock()
     recorded = await _run_cancel(_make_cancel_action(), ibkr_mod, store=store, session_id="s1")
     assert any("Order not cancelled" in c for c in _sent_contents(recorded))
@@ -3943,7 +3968,9 @@ async def test_a_cancel_refusal_is_recorded():
 async def test_a_modify_refusal_is_recorded():
     """LEAVE UNCHANGED at Gate 2 (#50)."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.modify_order_and_confirm.side_effect = HumanAuthError("Order cancelled by user")
+    client.modify_order_and_confirm.side_effect = ConfirmationDeclinedError(
+        "Left unchanged — the order is as it was."
+    )
     store = MagicMock()
     recorded = await _run_modify(_make_modify_action(), ibkr_mod, store=store, session_id="s1")
     assert any("Order not modified" in c for c in _sent_contents(recorded))
@@ -3956,7 +3983,9 @@ async def test_a_modify_refusal_is_recorded():
 async def test_a_refusal_with_no_store_still_reports_and_returns():
     """The render sites allow store=None; a refusal must still reach the chat and return."""
     ibkr_mod, client = _make_ibkr_mock()
-    client.place_order_and_confirm.side_effect = HumanAuthError("Order cancelled by user")
+    client.place_order_and_confirm.side_effect = ConfirmationDeclinedError(
+        "Not sent — nothing reached IBKR."
+    )
     recorded = await _run(_make_action(), ibkr_mod, store=None, session_id="s1")
     assert any("Order not placed" in c for c in _sent_contents(recorded))
 
@@ -4141,7 +4170,9 @@ async def test_a_refusal_logs_at_info_as_a_refusal_not_a_failure(caplog):
     import logging
 
     ibkr_mod, client = _make_ibkr_mock()
-    client.place_order_and_confirm.side_effect = HumanAuthError("Order cancelled by user")
+    client.place_order_and_confirm.side_effect = ConfirmationDeclinedError(
+        "Not sent — nothing reached IBKR."
+    )
     with caplog.at_level(logging.INFO, logger="claudia.order_flow"):
         await _run(
             _make_action(
@@ -4163,7 +4194,8 @@ async def test_a_refusal_logs_at_info_as_a_refusal_not_a_failure(caplog):
     refusal = [r for r in caplog.records if "refused at gate2" in r.getMessage()]
     assert len(refusal) == 1 and refusal[0].levelno == logging.INFO and refusal[0].exc_info is None
     assert (
-        refusal[0].getMessage() == "Order staging refused at gate2 for ES: Order cancelled by user"
+        refusal[0].getMessage()
+        == "Order staging refused at gate2 for ES: Not sent — nothing reached IBKR."
     )
     assert not any(r.levelno >= logging.ERROR for r in caplog.records)
 
@@ -4300,7 +4332,7 @@ def test_the_place_card_says_nothing_is_sent_until_gate2_and_never_says_cancel()
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("core_name", "make_proposal", "make_mock", "gated_method", "prefix"),
+    ("core_name", "make_proposal", "make_mock", "gated_method", "prefix", "left_in_place"),
     [
         pytest.param(
             "_execute_staged_order_core",
@@ -4308,6 +4340,7 @@ def test_the_place_card_says_nothing_is_sent_until_gate2_and_never_says_cancel()
             _make_ibkr_mock,
             "place_order_and_confirm",
             "**Order not placed:**",
+            "Not sent — nothing reached IBKR.",
             id="place",
         ),
         pytest.param(
@@ -4316,6 +4349,7 @@ def test_the_place_card_says_nothing_is_sent_until_gate2_and_never_says_cancel()
             _make_cancel_modify_ibkr_mock,
             "modify_order_and_confirm",
             "**Order not modified:**",
+            "Left unchanged — the order is as it was.",
             id="modify",
         ),
         pytest.param(
@@ -4324,28 +4358,38 @@ def test_the_place_card_says_nothing_is_sent_until_gate2_and_never_says_cancel()
             _make_cancel_modify_ibkr_mock,
             "cancel_order",
             "**Order not cancelled:**",
+            "Kept — the order is still working.",
             id="cancel",
         ),
     ],
 )
+@pytest.mark.parametrize("ends", ["abandoned", "timed-out"])
 async def test_an_abandoned_or_timed_out_dialog_never_reads_as_the_order_being_cancelled(
-    core_name, make_proposal, make_mock, gated_method, prefix
+    core_name, make_proposal, make_mock, gated_method, prefix, left_in_place, ends
 ):
     """Gap #67, fourth surface, found live 2026-09-25: a cancel dialog left to time out
     produced "**Order not cancelled:** Order was cancelled at the confirmation dialog." —
     the one word the class is about, on the one path where it means the opposite of what
     happened (the timeout KEPT the order; IBKR still had it to cancel a minute later).
 
-    The core raises the same `HumanAuthError("Order cancelled by user")` for the abandon
-    button AND for the AppKit auto-dismiss (register F21), so ClaudIA cannot tell them apart
-    and must not pretend to: it says "declined or timed out", and what is true on every path
-    — nothing was sent. The per-path outcome ("Order not cancelled") is the prefix's job.
+    The core gives the two their own types (register F6, F21): an abandoned dialog is told in
+    the core's own sentence for that path, a timed-out one by what is true on every path —
+    nothing was sent. The per-path outcome ("Order not cancelled") is the prefix's job.
     """
     import claudia.order_flow as order_flow
 
+    if ends == "abandoned":
+        exc: Exception = ConfirmationDeclinedError(left_in_place)
+        said = f"Declined at the confirmation dialog. {left_in_place}"
+    else:
+        exc = ConfirmationTimeoutError(
+            "Confirmation dialog timed out after 60 s with no decision — nothing was sent to IBKR; "
+            "the order is as it was"
+        )
+        said = "Confirmation dialog timed out (60 seconds) — nothing was sent to IBKR."
     core = getattr(order_flow, core_name)
     ibkr_mod, client = make_mock()
-    getattr(client, gated_method).side_effect = HumanAuthError("Order cancelled by user")
+    getattr(client, gated_method).side_effect = exc
     send_status, calls = _make_send_status_recorder()
     with (
         patch.dict("sys.modules", {"ibkr_core_mcp": ibkr_mod, "dotenv": MagicMock()}),
@@ -4355,8 +4399,7 @@ async def test_an_abandoned_or_timed_out_dialog_never_reads_as_the_order_being_c
 
     outcome = next(text for text, _author in calls if text.startswith(prefix))
     after_prefix = outcome[len(prefix) :]
-    assert "Declined or timed out at the confirmation dialog" in after_prefix, outcome
-    assert "nothing was sent to IBKR" in after_prefix, outcome
+    assert after_prefix.strip() == said
     assert "cancel" not in after_prefix.lower(), outcome
 
 
