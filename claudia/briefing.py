@@ -59,32 +59,33 @@ class ClosedExchange:
 
 @dataclass(frozen=True)
 class Weekend:
-    """A Saturday or Sunday: the regular weekly schedule decides, and no holiday list is read.
+    """A Saturday or Sunday, which the date alone decides.
 
     Operator rule 2026-09-26 (gap #78, after "All tracked exchanges open today" printed on a
     Saturday): **the regular schedule comes first and holidays only subtract from it** — no
-    exchange ever opens on its weekend; the surprises are all special closures. The holiday
-    lists could never have said "closed" here: the core builds them from weekdays only
-    (`weekdays − sessions`), so a weekend is in nobody's list by construction.
+    exchange ever opens on its weekend; the surprises are all special closures.
 
-    `open_today` names the tracked exchanges whose regular week includes this day (Tadawul
-    on a Sunday); `globex_hours` is CME's own schedule string quoted from the context's
+    `open_today` names the tracked exchanges holding a session, by each one's own calendar
+    (the core's `sessions_today`); when no calendar could be read, those whose regular week
+    includes this day (Tadawul on a Sunday). `regular` is False when the calendars say
+    something else than the regular week — a Sunday Tadawul is closed — and the sentence then
+    gives no reason. `globex_hours` is CME's own schedule string quoted from the context's
     futures table, or None when the context did not carry it — never an hour typed here.
     """
 
     day: str
     open_today: tuple[str, ...] = ()
     globex_hours: str | None = None
+    regular: bool = True
 
 
 ClosureSection: TypeAlias = "Ready[ClosedExchange] | Weekend | Unavailable"
 
 
 # The tracked exchanges whose regular week includes Sunday. Tadawul trades Sun–Thu — the
-# `exchange_calendars` XSAU calendar the core reads, and the core's own comment on it
-# ("Fridays appear as holidays from a Mon–Fri perspective"). A weekday rule living here is
-# an interim: core register F24 asks the context to carry per-exchange session status, at
-# which point this constant goes.
+# `exchange_calendars` XSAU calendar the core reads. What stands in when no calendar could be
+# read, and what the calendars' own verdicts are compared with before a sentence says
+# "regular": it decides nothing else since the core answers per exchange (register F24).
 _SUNDAY_SESSIONS = ("XSAU",)
 _DAY_NAMES = {5: "Saturday", 6: "Sunday"}
 
@@ -105,63 +106,63 @@ def _globex_hours(mkt: Mapping[str, object] | None) -> str | None:
     return hours.strip() if isinstance(hours, str) and hours.strip() else None
 
 
+def _session_verdicts(mkt: Mapping[str, object] | None) -> tuple[tuple[str, bool], ...]:
+    """Each exchange the core's calendars judged today, sorted by code: whether it holds a
+    session. Empty when they judged nobody — no context, the failure marker, an empty map.
+
+    A key that is not a string, or a verdict that is not a bool, is dropped rather than
+    failing the read: the other entries are still true statements about today. Dropped before
+    `sorted()` runs, since one `int`/`str` pair of keys anywhere would raise there.
+    """
+    raw = mkt.get("sessions_today") if mkt is not None else None
+    if not isinstance(raw, Mapping):
+        return ()
+    return tuple(
+        sorted((c, v) for c, v in raw.items() if isinstance(c, str) and isinstance(v, bool))
+    )
+
+
 def build_closures(mkt: Mapping[str, object] | None, today: date) -> ClosureSection:
-    """Exchanges closed on `today`, from `get_market_calendar_context`'s dict.
+    """Exchanges closed on `today`, from `get_market_calendar_context`'s dict: one verdict per
+    exchange from its own calendar (`sessions_today`, core 2.2.0, register F24), the regular
+    week and the holidays alike.
 
     Takes a `Mapping`, not a `dict`: `dict` is **invariant** in its value type, so a caller
-    holding a `dict[str, dict[str, list[str]]]` — which is what both the store and a test
-    literal produce — could not pass it to a `dict[str, object]` parameter under mypy
-    strict. `Mapping` is covariant and accepts it.
+    holding a `dict[str, dict[str, bool]]` could not pass it to a `dict[str, object]`
+    parameter under mypy strict. `Mapping` is covariant and accepts it.
 
-    `mkt` is None when the calendar could not be read; an empty or malformed dict is the
-    same failure and must not be reported as "nothing closed today".
+    `mkt` is None when the calendar could not be read. A dict that judged nobody (the core's
+    failure marker, an empty map) is the same failure and must not be reported as "nothing
+    closed today". The operator ruled a closure's missing name cosmetic on 2026-09-15 —
+    "knowing it's closed is what matters" — so no name resolution is attempted.
 
-    Holidays arrive as bare ISO date strings with no names (measured 2026-09-15:
-    `["2026-01-01", "2026-02-16", ...]`). The operator ruled the missing name cosmetic the
-    same day — "knowing it's closed is what matters" — so no name resolution is attempted.
-
-    A key in `holidays_by_exchange` that is not a string is dropped rather than turned into
-    an `Unavailable`: the other, well-formed entries are still true statements about today,
-    and a real closure this function would otherwise suppress is worse than one dropped
-    junk key. Unlike a missing/malformed top-level dict — which means the whole read failed
-    and nothing here can be trusted — a single bad key is a local defect in one entry, not
-    evidence the rest of the map is wrong. The non-string keys **must be filtered out before
-    `sorted()` runs**, not merely skipped inside the loop: `sorted()` compares every key
-    against every other key, so one `int`/`str` (or `None`/`str`) pair anywhere in the dict
-    raises `TypeError` before a single iteration — an in-loop guard placed after the sort
-    can never run.
-
-    **A weekend is decided before any of that** (gap #78): the weekly schedule is known from
-    the date alone, so a Saturday or Sunday is a `Weekend` even when the calendar could not
-    be read — an unreadable calendar then costs the Globex hours line, not the verdict.
-
-    **The core now answers the per-exchange question itself** (register F24, `release/2.2.0`,
-    2026-09-29): `get_market_calendar_context()` carries `sessions_today`, one verdict per
-    exchange from its own calendar (`None` on the failure marker). ClaudIA runs the released
-    2.1.0 until `core-ref.txt` moves, so the weekday rule and the holiday scan above stay;
-    when the pin reaches the release that carries it, read `sessions_today` here and delete
-    the weekday rule — keeping only the weekend verdict for an unreadable calendar, which no
-    dict can supply.
+    **A weekend is decided before any of that** (gap #78): it is known from the date alone, so
+    a Saturday or Sunday is a `Weekend` even when the calendar could not be read — an
+    unreadable calendar then costs the Globex hours line and the calendars' own verdicts, and
+    the regular week stands in for them.
     """
+    verdicts = _session_verdicts(mkt)
     day = _DAY_NAMES.get(today.weekday())
     if day is not None:
-        open_today = tuple(
-            EXCHANGE_LABELS.get(code, code) for code in _SUNDAY_SESSIONS if day == "Sunday"
+        regular_week = _SUNDAY_SESSIONS if day == "Sunday" else ()
+        open_codes = tuple(c for c, is_open in verdicts if is_open) if verdicts else regular_week
+        return Weekend(
+            day=day,
+            open_today=tuple(EXCHANGE_LABELS.get(code, code) for code in open_codes),
+            globex_hours=_globex_hours(mkt),
+            regular=open_codes == regular_week,
         )
-        return Weekend(day=day, open_today=open_today, globex_hours=_globex_hours(mkt))
     if mkt is None:
         return Unavailable(reason="market calendar could not be read")
-    raw = mkt.get("holidays_by_exchange")
-    if not isinstance(raw, dict):
-        return Unavailable(reason="market calendar carried no holiday map")
-    stamp = today.isoformat()
-    string_keyed = [(code, days) for code, days in raw.items() if isinstance(code, str)]
-    closed: list[ClosedExchange] = []
-    for code, days in sorted(string_keyed):
-        if not isinstance(days, (list, tuple)) or stamp not in days:
-            continue
-        closed.append(ClosedExchange(code=code, label=EXCHANGE_LABELS.get(code, code)))
-    return Ready(items=tuple(closed))
+    if not verdicts:
+        return Unavailable(reason="market calendar said of no exchange whether it is open")
+    return Ready(
+        items=tuple(
+            ClosedExchange(code=code, label=EXCHANGE_LABELS.get(code, code))
+            for code, is_open in verdicts
+            if not is_open
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -391,8 +392,14 @@ def render_closures(section: ClosureSection, escape: Callable[[str], str]) -> st
             if section.globex_hours
             else ""
         )
-        if section.open_today:
-            names = ", ".join(escape(n) for n in section.open_today)
+        names = ", ".join(escape(n) for n in section.open_today)
+        if not section.regular:
+            closed = (
+                "tracked exchanges closed today" if names else "every tracked exchange closed today"
+            )
+            exception = f", except {names}" if names else ""
+            return f"**{section.day} — weekend:** {closed}{exception}.{globex}"
+        if names:
             return (
                 f"**{section.day} — weekend:** tracked exchanges closed on their regular "
                 f"schedule, except {names}, whose regular week includes today.{globex}"

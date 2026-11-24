@@ -38,10 +38,11 @@ claudia/briefing.py         — startup briefing: today's exchange closures, sen
                               line; not connected: "connect to IBKR, then restart ClaudIA"; a failed
                               read: ⚠ — operator 2026-11-08, gap #113: "It should read the book"); pure
                               builders, no network (section state is Ready/Weekend/Unavailable
-                              so a failed read can never render as "nothing today"; a Saturday or
-                              Sunday is decided by the regular weekly schedule before any holiday
-                              list is read — operator rule 2026-09-26, gap #78: no exchange opens
-                              on its weekend, holidays only subtract)
+                              so a failed read can never render as "nothing today"; who holds a
+                              session is the core's `sessions_today`, one verdict per exchange from
+                              its own calendar — operator rule 2026-09-26, gap #78: the regular
+                              week first, holidays only subtract; a Saturday or Sunday stays a
+                              weekend when no calendar can be read)
 claudia/flex_sync.py        — session-start dataset validation, the "did this pull change anything" gate,
                               and the startup pull rule: pull unless the store holds the statement
                               for the weekday before today (ET), read from IBKR's own `toDate` —

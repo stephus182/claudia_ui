@@ -7,8 +7,10 @@ same property that makes them safe to call during session start.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
+
+import pytest
 
 from claudia import briefing as br
 from claudia.contract_identity import ContractIdentity
@@ -30,14 +32,9 @@ def _render(
 
 
 def test_closures_lists_only_exchanges_closed_today() -> None:
-    """Only today's closures, labelled from the existing 20-entry map."""
-    mkt = {
-        "holidays_by_exchange": {
-            "XTKS": ["2026-09-21", "2026-09-23"],
-            "XMEX": ["2026-09-16"],
-            "XNYS": ["2026-11-26"],
-        }
-    }
+    """Only today's closures, one verdict per exchange from its own calendar (the core's
+    `sessions_today`), labelled from the existing 20-entry map."""
+    mkt = {"sessions_today": {"XTKS": False, "XMEX": True, "XNYS": True}}
     out = br.build_closures(mkt, today=date(2026, 9, 21))
     assert isinstance(out, br.Ready)
     assert [c.code for c in out.items] == ["XTKS"]
@@ -47,7 +44,7 @@ def test_closures_lists_only_exchanges_closed_today() -> None:
 def test_closures_ready_and_empty_when_nothing_is_closed() -> None:
     """Measured 2026-09-15: no tracked exchange was closed. That is a POSITIVE result
     and must be Ready(()), never Unavailable."""
-    mkt = {"holidays_by_exchange": {"XTKS": ["2026-09-21"]}}
+    mkt = {"sessions_today": {"XTKS": True, "XNYS": True}}
     out = br.build_closures(mkt, today=date(2026, 9, 15))
     assert out == br.Ready(items=())
 
@@ -59,9 +56,22 @@ def test_closures_unavailable_when_the_calendar_is_missing() -> None:
     assert "calendar" in out.reason.lower()
 
 
-def test_closures_unavailable_when_the_calendar_lacks_its_key() -> None:
-    """A dict that arrived but carries no holiday map is a failed read, not a quiet day."""
-    out = br.build_closures({}, today=date(2026, 9, 15))
+@pytest.mark.parametrize(
+    "mkt",
+    [
+        {},
+        {"error": "ImportError: …", "is_trading_day": None, "sessions_today": None},
+        {"sessions_today": {}},
+        {"sessions_today": ["XTKS"]},
+        {"sessions_today": {"XTKS": "False", 1: True}},
+        {"holidays_by_exchange": {"XTKS": ["2026-09-15"]}},
+    ],
+    ids=["empty", "the-failure-marker", "judged-nobody", "not-a-map", "no-verdict", "another-key"],
+)
+def test_closures_unavailable_when_the_calendar_judged_nobody(mkt) -> None:
+    """A dict that arrived but says of no exchange whether it holds a session is a failed read,
+    not a quiet day: "All tracked exchanges open today" must come from verdicts."""
+    out = br.build_closures(mkt, today=date(2026, 9, 15))
     assert isinstance(out, br.Unavailable)
 
 
@@ -73,15 +83,10 @@ def test_closures_skips_non_string_keys_without_crashing_on_the_sort() -> None:
     front, so a single `int`/`str` (or `None`/`str`) key pair anywhere in the dict raises
     `TypeError` before the first well-formed entry is even reached — an in-loop
     `isinstance` continue placed after the sort call is unreachable and protects
-    nothing. This is the exact mixed-key shape that reproduced the crash.
+    nothing. This is the exact mixed-key shape that reproduced the crash. A verdict that is
+    not a bool is dropped the same way: 0 and "False" are not the calendar saying closed.
     """
-    mkt = {
-        "holidays_by_exchange": {
-            "XTKS": ["2026-09-21"],
-            1: ["2026-09-21"],
-            None: [],
-        }
-    }
+    mkt = {"sessions_today": {"XTKS": False, 1: False, None: True, "XNYS": 0, "XLON": "False"}}
     out = br.build_closures(mkt, today=date(2026, 9, 21))
     assert isinstance(out, br.Ready)
     assert [c.code for c in out.items] == ["XTKS"]
@@ -552,6 +557,17 @@ def test_closure_labels_are_escaped_too() -> None:
     assert "TSE Tokyo" in text
 
 
+@pytest.mark.parametrize("regular", [True, False])
+def test_the_weekend_lines_names_are_escaped_too(regular: bool) -> None:
+    """A code the label map does not hold is shown as the calendar spells it, so the weekend
+    line escapes its names like the weekday one, in both its sentences."""
+    text = _render(
+        closures=br.Weekend(day="Sunday", open_today=("<b>X</b>",), regular=regular),
+        escape=lambda s: s.replace("<", "&lt;"),
+    )
+    assert "&lt;b>X&lt;/b>" in text and "<b>" not in text
+
+
 def test_an_unreadable_section_is_never_rendered_as_an_empty_one() -> None:
     """THE invariant, asserted over EVERY public section renderer rather than one of them.
 
@@ -742,20 +758,56 @@ def test_a_saturday_is_a_weekend_closure_never_an_open_day() -> None:
     because a weekend is in no holiday list — the core builds the lists from weekdays.
     Operator: regular schedule first, holidays only subtract; no exchange opens on its
     weekend. So a weekend day is a `Weekend`, whatever the lists say."""
-    mkt = {"holidays_by_exchange": {"XTKS": ["2026-09-21"]}, **_GLOBEX}
+    mkt = {"sessions_today": {"XTKS": False, "XNYS": False, "XSAU": False}, **_GLOBEX}
     out = br.build_closures(mkt, today=_SATURDAY)
     assert isinstance(out, br.Weekend)
     assert out.day == "Saturday"
     assert out.open_today == ()
+    assert "on its regular schedule" in _render(closures=out)
 
 
 def test_a_sunday_names_the_exchange_whose_regular_week_includes_it() -> None:
     """Tadawul trades Sun–Thu (exchange_calendars' XSAU calendar, the core's own source):
     on a Sunday it is the one tracked exchange with a session, and it is named."""
-    out = br.build_closures({"holidays_by_exchange": {}}, today=_SUNDAY)
+    out = br.build_closures({"sessions_today": {"XNYS": False, "XSAU": True}}, today=_SUNDAY)
     assert isinstance(out, br.Weekend)
     assert out.day == "Sunday"
     assert out.open_today == ("Tadawul (Sun–Thu week)",)
+    assert "whose regular week includes today" in _render(closures=out)
+
+
+def test_a_sunday_its_exchange_is_closed_names_nobody_and_gives_no_reason() -> None:
+    """A Sunday on which Tadawul's calendar says closed (2026-05-24 was one). The weekday rule
+    named it anyway, because it read no calendar (gap #78). And the line may not say "on its regular
+    schedule" either, which is not why Tadawul is closed that day."""
+    out = br.build_closures({"sessions_today": {"XNYS": False, "XSAU": False}}, today=_SUNDAY)
+    assert isinstance(out, br.Weekend)
+    assert out.open_today == ()
+    text = _render(closures=out)
+    assert "Sunday — weekend" in text and "every tracked exchange closed today" in text
+    assert "Tadawul" not in text and "regular" not in text
+
+
+def test_a_weekend_session_outside_the_regular_week_is_named_without_that_reason() -> None:
+    """A calendar may hold a special session on a weekend. Its exchange is named, and nothing
+    claims its regular week includes the day."""
+    out = br.build_closures(
+        {"sessions_today": {"XBOM": True, "XNYS": False, "XSAU": False}}, today=_SATURDAY
+    )
+    assert isinstance(out, br.Weekend)
+    assert out.open_today == ("BSE Mumbai",)
+    text = _render(closures=out)
+    assert "closed today, except BSE Mumbai" in text and "regular" not in text
+
+
+@pytest.mark.parametrize("mkt", [None, {}, {"sessions_today": None}, {"sessions_today": {}}])
+def test_a_sunday_without_a_calendar_falls_back_on_the_regular_week(mkt) -> None:
+    """Without verdicts the date still says weekend, and Tadawul's regular week still includes
+    a Sunday — said as its regular week, which is all that is known."""
+    out = br.build_closures(mkt, today=_SUNDAY)
+    assert isinstance(out, br.Weekend)
+    assert out.open_today == ("Tadawul (Sun–Thu week)",)
+    assert "whose regular week includes today" in _render(closures=out)
 
 
 def test_the_weekend_verdict_needs_no_calendar() -> None:
@@ -769,20 +821,48 @@ def test_the_weekend_verdict_needs_no_calendar() -> None:
 def test_the_globex_hours_are_quoted_from_the_context_not_copied() -> None:
     """CME's schedule string reaches the briefing from the core's `_FUTURES_SCHEDULE`
     through the context; a context without it yields no hours, never a copy typed here."""
-    with_hours = br.build_closures({"holidays_by_exchange": {}, **_GLOBEX}, today=_SATURDAY)
-    without = br.build_closures({"holidays_by_exchange": {}}, today=_SATURDAY)
+    closed = {"sessions_today": {"XNYS": False}}
+    with_hours = br.build_closures({**closed, **_GLOBEX}, today=_SATURDAY)
+    without = br.build_closures(closed, today=_SATURDAY)
     assert isinstance(with_hours, br.Weekend) and isinstance(without, br.Weekend)
     assert with_hours.globex_hours == "Sun 5:00 PM – Fri 4:00 PM"
     assert without.globex_hours is None
 
 
-def test_a_weekday_still_gets_the_holiday_verdict() -> None:
-    """Regular schedule first, holidays second: on a weekday the lists decide as before."""
+def test_a_weekday_gets_each_exchanges_own_verdict() -> None:
+    """Regular schedule and holidays alike: each exchange's calendar decides. A Friday closes
+    Tadawul (Sun–Thu) and says nothing about the others."""
     out = br.build_closures(
-        {"holidays_by_exchange": {"XTKS": ["2026-09-21"]}}, today=date(2026, 9, 21)
+        {"sessions_today": {"XTKS": True, "XSAU": False}}, today=date(2026, 9, 25)
     )
     assert isinstance(out, br.Ready)
-    assert [c.code for c in out.items] == ["XTKS"]
+    assert [c.code for c in out.items] == ["XSAU"]
+
+
+def test_the_cores_own_calendar_tells_two_sundays_apart() -> None:
+    """The seam itself, on the core's real calendars (offline tables, two exchanges): the key is
+    there with bool verdicts, and the two kinds of Sunday Tadawul has in a year differ, where
+    the weekday rule could not see it. Found in the calendar, not pinned."""
+    from ibkr_core_mcp import SQLiteStore
+
+    def context(day: date) -> dict[str, Any]:
+        """The core's dict for `day`, over two calendars only."""
+        return SQLiteStore.get_market_calendar_context(["XNYS", "XSAU"], today=day)
+
+    sundays = [date(2025, 1, 5) + timedelta(weeks=n) for n in range(52)]
+    verdicts: dict[bool, date] = {}
+    for day in sundays:
+        verdicts.setdefault(context(day)["sessions_today"]["XSAU"], day)
+        if len(verdicts) == 2:
+            break
+    ordinary = br.build_closures(context(verdicts[True]), today=verdicts[True])
+    holiday = br.build_closures(context(verdicts[False]), today=verdicts[False])
+    assert isinstance(ordinary, br.Weekend) and isinstance(holiday, br.Weekend)
+    assert ordinary.open_today == ("Tadawul (Sun–Thu week)",)
+    assert holiday.open_today == ()
+    new_year = br.build_closures(context(date(2025, 1, 1)), today=date(2025, 1, 1))
+    assert isinstance(new_year, br.Ready)
+    assert "XNYS" in [c.code for c in new_year.items]
 
 
 def test_a_saturday_renders_as_a_weekend_closure() -> None:
