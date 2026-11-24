@@ -371,7 +371,7 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
    placement, modification or cancellation; IBKR's precaution replies validate through their
    own dialogs on the write's `OrderWriteAuthorization`, 2026-09-11) → **Gate 2** (AppKit
    dialog, values in bold, green/red banner by side,
-   **SEND TO IBKR** button, a 60 s timeout that leaves the order as it was, Return key disabled). The pre-gate chat message names the Gate 2 button of its own path (`SEND TO IBKR` / `MODIFY ORDER` / `CANCEL ORDER`, copies held to the installed core by a contract test; the bracket and attach cards end at the core's bracket dialog, `SEND TO IBKR`) and says what a timeout leaves in place, never "auto-cancels" (gap #67, 2026-09-25).
+   **SEND TO IBKR** button, a 60 s timeout that leaves the order as it was, Return key disabled). The pre-gate chat message names the Gate 2 button of its own path (`SEND TO IBKR` / `MODIFY ORDER` / `VALIDATE` on a cancel, copies held to the installed core by a contract test; the bracket and attach cards end at the core's bracket dialog, `SEND TO IBKR`) and says what a timeout leaves in place, never "auto-cancels" (gap #67, 2026-09-25). What the dialog answered is read off the core's exception type, never off its words: a network timeout on the write is not the dialog's (2026-11-24).
 4. `IBKRClient.place_order()` fires only after both gates pass.
 
 - **Order parameters are immutable**: ClaudIA must use the user's exact values (symbol,

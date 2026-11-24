@@ -43,6 +43,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from ibkr_core_mcp.exceptions import (
+    ConfirmationDeclinedError,
+    ConfirmationTimeoutError,
+    HumanAuthError,
+    OrderValidationError,
+    ReplyNotConfirmedError,
+)
 from ibkr_core_mcp.order_confirm import _DIALOG_TIMEOUT_S, change_value_text, price_text_safe
 
 from claudia import env_file
@@ -65,8 +72,10 @@ framework-agnostic: they never import or know about any specific UI toolkit."""
 # twice, they drifted: the card said "Clicking 'Stage this order'" and nothing held it to the
 # button. Agreed with the operator one button at a time on 2026-09-24 (memory
 # `feedback-order-button-naming-and-colour`):
-#   * UPPERCASE, no articles — the Gate 2 dialogs already are, so one action has one
-#     spelling from chat to dialog (`CANCEL ORDER`, `KEEP ORDER`, `MODIFY ORDER`).
+#   * UPPERCASE, no articles — the Gate 2 dialogs already are. `MODIFY ORDER` is spelled the
+#     same on both. The cancel path is not: its dialog says VALIDATE / DISCARD under a banner
+#     that reads CANCEL ORDER, and the chat card keeps CANCEL ORDER / KEEP ORDER (operator
+#     2026-10-01).
 #   * A chat button STAGES; only Gate 2's button sends. No chat label says "send".
 #   * "CANCEL" appears only on the button that cancels a live order. A button that throws
 #     away a proposal is `DISCARD`; one that leaves the order in place is `KEEP ORDER`.
@@ -92,7 +101,7 @@ STAGE_ATTACHED_LABEL = "STAGE ATTACHED ORDER"
 # core constant and is imported rather than copied, for the same reason.
 GATE2_SEND_LABEL = "SEND TO IBKR"
 GATE2_MODIFY_LABEL = "MODIFY ORDER"
-GATE2_CANCEL_LABEL = "CANCEL ORDER"
+GATE2_CANCEL_LABEL = "VALIDATE"
 
 # What the Gate 2 timeout leaves in place, per path — gap #67 defect (3): "confirm or it
 # auto-cancels" read as "the order gets cancelled" on the cancel path, where the timeout KEEPS
@@ -952,10 +961,9 @@ def _declined_reply_text(reply_log: list[dict[str, Any]]) -> str:
 
 
 # One table behind the user-facing sentence and the recorded stage of a refusal (#50,
-# 2026-09-11): (predicate on (message, exception type name), stage, sentence). Order
-# matters and is the classifier's original order — a dialog cancel is matched before the
-# Touch ID patterns so it is never misreported as a Touch ID failure, and a Touch ID timeout
-# stays a Touch ID failure (the `"touch" not in` guard on the dialog-timeout row).
+# 2026-09-11): (predicate on the exception, stage, sentence). Order matters: the core's
+# own types come before the rows that read words, so no sentence IBKR or the core writes can
+# be claimed by a row that only looks for one.
 #
 # A sentence may carry `{detail}`, replaced with the exception's own message — see
 # `_classify_execution_error`. Every other row states the whole fact by itself; the library
@@ -1080,16 +1088,16 @@ def _contract_rules(ibkr: Any, conid: int, is_buy: bool) -> Mapping[str, Any] | 
     return rules if isinstance(rules, Mapping) else None
 
 
-_FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
+_FAILURE_PATTERNS: tuple[tuple[Callable[[Exception], bool], str, str], ...] = (
     (
         # Matched by TYPE, first: raised by ClaudIA itself before Gate 1 (gap #71).
-        lambda _m, t: "ContractNotTradeable" in t,
+        lambda e: isinstance(e, ContractNotTradeableError),
         "contract_not_tradeable",
         "{detail}",
     ),
     (
         # Matched by TYPE: raised by ClaudIA itself before Gate 1 (gap #80).
-        lambda _m, t: "RefusedBeforeGates" in t,
+        lambda e: isinstance(e, RefusedBeforeGatesError),
         "before_gates",
         "{detail}",
     ),
@@ -1107,32 +1115,28 @@ _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
         # this is raised — the refusal lands AFTER Gate 1 (the check needs a read, and no
         # network call may precede the gates), which is why the sentence says so: this
         # flow has already promised the operator a Touch ID step and a dialog.
-        lambda _m, t: "OrderValidation" in t,
+        lambda e: isinstance(e, OrderValidationError),
         "validation",
         "Refused by ibkr_core_mcp's own order safety check — not a Touch ID or "
         "confirmation-dialog failure. {detail}",
     ),
     (
-        # By TYPE: from ibkr_core_mcp 2.2.0 a dialog's abandon button raises
-        # `ConfirmationDeclinedError` — never the timeout's type — with a sentence per dialog
-        # saying what the click left in place ("Kept — the order is still working."). The
-        # sentence is the core's and is shown as written. Matched on the type's name, as
-        # every type row here is, so it holds on the pinned release too, where the class
-        # does not exist and the row below still does the job (register F6, 2026-10-01).
-        lambda _m, t: "ConfirmationDeclined" in t,
+        # By TYPE: a dialog's abandon button raises `ConfirmationDeclinedError` — never the
+        # timeout's type — with a sentence per dialog saying what the click left in place
+        # ("Kept — the order is still working."). The sentence is the core's and is shown as
+        # written (register F6, 2026-10-01).
+        lambda e: isinstance(e, ConfirmationDeclinedError),
         "gate2",
         "Declined at the confirmation dialog. {detail}",
     ),
     (
-        # By TYPE, and before every row that reads the message: from ibkr_core_mcp 2.2.0 a
-        # question IBKR asked AFTER the write was posted, and that was not confirmed, raises
-        # `ReplyNotConfirmedError`. Its sentence says what happened and why — declined, or
-        # nobody answered — and quotes IBKR's question, whose words can be anything, so no
-        # substring row below may see it; least of all the Gate 2 timeout, whose sentence
-        # says nothing was sent (register F34, operator 2026-10-01: a clear message, easier
-        # to show if there is an issue). Shown whole. Matched on the type's name: inert on
-        # the pinned release, where the "declined ibkr order reply" row below still applies.
-        lambda _m, t: "ReplyNotConfirmed" in t,
+        # By TYPE, and before every row that reads the message: a question IBKR asked AFTER
+        # the write was posted, and that was not confirmed, raises `ReplyNotConfirmedError`.
+        # Its sentence says what happened and why — declined, or nobody answered — and quotes
+        # IBKR's question, whose words can be anything, so no substring row below may see it.
+        # Shown whole (register F34, operator 2026-10-01: a clear message, easier to show if
+        # there is an issue).
+        lambda e: isinstance(e, ReplyNotConfirmedError),
         "reply",
         "{detail}",
     ),
@@ -1145,29 +1149,38 @@ _FAILURE_PATTERNS: tuple[tuple[Callable[[str, str], bool], str, str], ...] = (
         # apart (core register F21) and says so. "Cancelled" is not a word for this: found
         # live 2026-09-25 on the cancel path, where "Order was cancelled at the confirmation
         # dialog" read as the order being cancelled when the timeout had KEPT it (gap #67).
-        lambda m, _t: "cancelled by user" in m.lower(),
+        lambda e: "cancelled by user" in str(e).lower(),
         "gate2",
         "Declined or timed out at the confirmation dialog — nothing was sent to IBKR.",
     ),
     (
-        lambda m, _t: "declined ibkr order reply" in m.lower(),
+        lambda e: "declined ibkr order reply" in str(e).lower(),
         "reply",
         "Declined at a follow-up IBKR confirmation prompt after Gate 2 was approved — "
         "check IBKR for the order's current status.",
     ),
     (
-        lambda m, _t: "timed out" in m.lower() and "touch" not in m.lower(),
+        # By TYPE, the dialog's own (gap #67, core register F21). The words "timed out" are
+        # not it: a network timeout says them too, after Gate 2 was approved and the order
+        # posted, and until 2026-11-24 it was told here as "nothing was sent to IBKR".
+        lambda e: isinstance(e, ConfirmationTimeoutError),
         "timeout",
         # `{timeout_s}` is the core's constant, substituted when the sentence is built.
         "Confirmation dialog timed out ({timeout_s} seconds) — nothing was sent to IBKR.",
     ),
     (
-        lambda m, t: "authentication" in m.lower() or "touch" in m.lower() or "HumanAuth" in t,
+        # Gate 1 raises `HumanAuthError` itself. A subclass no row above knows is not one of
+        # its failures: it falls through and is shown under its own name.
+        lambda e: (
+            type(e) is HumanAuthError
+            or "authentication" in str(e).lower()
+            or "touch" in str(e).lower()
+        ),
         "touch_id",
         "Touch ID authentication failed or was cancelled.",
     ),
     (
-        lambda m, _t: "403" in m,
+        lambda e: "403" in str(e),
         "rejected",
         "IBKR rejected the order (HTTP 403) — brokerage session may need "
         "re-initialisation. Try logging in to the Client Portal gateway and retrying.",
@@ -1185,16 +1198,15 @@ def _classify_execution_error(exc: Exception) -> str:
     patterns first so a dialog cancel is never misreported as a Touch ID failure.
     """
     error_msg = str(exc)
-    exc_type = type(exc).__name__
     for matches, _stage, sentence in _FAILURE_PATTERNS:
-        if matches(error_msg, exc_type):
+        if matches(exc):
             # `.replace`, never `.format`: it is a no-op on the rows that carry no
             # placeholder, whereas `.format` would raise on the first sentence that ever
             # contains a brace for its own sake.
             return sentence.replace("{detail}", error_msg).replace(
                 "{timeout_s}", str(_DIALOG_TIMEOUT_S)
             )
-    return f"{exc_type}: {error_msg}"
+    return f"{type(exc).__name__}: {error_msg}"
 
 
 def _refusal_stage(exc: Exception) -> str:
@@ -1203,17 +1215,14 @@ def _refusal_stage(exc: Exception) -> str:
     `contract_not_tradeable` and `before_gates` (ClaudIA refused before Gate 1 — an expired
     future, gap #71; a proposal that cannot become an order, gap #80),
     `validation` (ibkr_core_mcp refused the write itself — no human and no broker said no),
-    `gate2` (DO NOT SEND / KEEP ORDER / LEAVE UNCHANGED — or the dialog's own auto-dismiss,
-    which the core reports the same way, register F21), `reply` (a declined precaution),
-    `timeout` (the dialog subprocess overran, leaving the order as it was), `touch_id`
-    (denied, unavailable, or timed out at the sensor), `rejected` (IBKR 403), or `other`. Read off the same table as
-    `_classify_execution_error`, so the stage and the sentence cannot disagree.
+    `gate2` (the dialog's abandon button: DO NOT SEND, LEAVE UNCHANGED or DISCARD),
+    `reply` (a question IBKR asked after the write was posted, declined or not answered),
+    `timeout` (the dialog closed with no decision, leaving the order as it was), `touch_id`
+    (denied, unavailable, or timed out at the sensor), `rejected` (IBKR 403), or `other`.
+    Read off the same table as `_classify_execution_error`, so the stage and the sentence
+    cannot disagree.
     """
-    error_msg = str(exc)
-    exc_type = type(exc).__name__
-    return next(
-        (stage for matches, stage, _ in _FAILURE_PATTERNS if matches(error_msg, exc_type)), "other"
-    )
+    return next((stage for matches, stage, _ in _FAILURE_PATTERNS if matches(exc)), "other")
 
 
 def _refusal_subject(noun: str, proposal: dict[str, Any]) -> str:

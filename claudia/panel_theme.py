@@ -34,6 +34,10 @@ THEMES: tuple[str, ...] = ("default", "dark")
 CLAUDIA_AVATAR_PATH = Path(__file__).parent / "assets" / "claudia-avatar.png"
 """Where ClaudIA's chat avatar is expected. Absent → Panel's letter fallback, with a warning."""
 
+CLAUDIA_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "claudia-logo.png"
+"""ClaudIA's mark on the Gate 2 dialogs (`set_dialog_icon` in `panel_app.main`). Read by the
+dialog's own process, so an absolute path; absent → the core's own glyph, silently."""
+
 CLAUDIA_AUTHORS: tuple[str, ...] = (
     "ClaudIA",
     "ClaudIA — Order Proposal",

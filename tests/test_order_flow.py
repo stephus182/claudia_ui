@@ -12,7 +12,15 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from ibkr_core_mcp.exceptions import HumanAuthError, IBKRAPIError, OrderValidationError
+import requests
+from ibkr_core_mcp.exceptions import (
+    ConfirmationDeclinedError,
+    ConfirmationTimeoutError,
+    HumanAuthError,
+    IBKRAPIError,
+    OrderValidationError,
+    ReplyNotConfirmedError,
+)
 
 from claudia import order_flow
 from claudia.order_flow import (
@@ -3741,7 +3749,7 @@ def test_cancel_proposal_contract_label_is_none_for_a_stock_and_never_raises():
     [
         (HumanAuthError("Order cancelled by user"), "gate2"),
         (HumanAuthError("User declined IBKR order reply"), "reply"),
-        (RuntimeError("Confirmation dialog timed out"), "timeout"),
+        (ConfirmationTimeoutError("no word of it decides"), "timeout"),
         (
             HumanAuthError("Touch ID timed out after 60s"),
             "touch_id",
@@ -4217,7 +4225,7 @@ def _pre_gate_modify_proposal() -> dict[str, Any]:
             _make_ibkr_mock,
             "SEND TO IBKR",
             "nothing is sent",
-            ("MODIFY ORDER", "CANCEL ORDER"),
+            ("MODIFY ORDER", "CANCEL ORDER", "VALIDATE"),
             id="place",
         ),
         pytest.param(
@@ -4226,16 +4234,16 @@ def _pre_gate_modify_proposal() -> dict[str, Any]:
             _make_cancel_modify_ibkr_mock,
             "MODIFY ORDER",
             "the order stays as it is",
-            ("SEND TO IBKR", "CANCEL ORDER"),
+            ("SEND TO IBKR", "CANCEL ORDER", "VALIDATE"),
             id="modify",
         ),
         pytest.param(
             "_execute_cancel_order_core",
             _pre_gate_cancel_proposal,
             _make_cancel_modify_ibkr_mock,
-            "CANCEL ORDER",
+            "VALIDATE",
             "the order stays working",
-            ("SEND TO IBKR", "MODIFY ORDER"),
+            ("SEND TO IBKR", "MODIFY ORDER", "CANCEL ORDER"),
             id="cancel",
         ),
     ],
@@ -4352,15 +4360,6 @@ async def test_an_abandoned_or_timed_out_dialog_never_reads_as_the_order_being_c
     assert "cancel" not in after_prefix.lower(), outcome
 
 
-class ConfirmationDeclinedError(HumanAuthError):
-    """The type ibkr_core_mcp raises for a dialog's abandon button from 2.2.0 (register F6).
-
-    Declared here because the pinned release does not export it. ClaudIA's table matches on
-    the type's NAME, which is what this stand-in carries; when `core-ref.txt` moves to a
-    release that has the class, import the core's own and delete this one.
-    """
-
-
 @pytest.mark.parametrize(
     "left_in_place",
     [
@@ -4410,12 +4409,6 @@ async def test_a_declined_cancel_dialog_says_the_order_was_kept():
         "**Order not cancelled:** Declined at the confirmation dialog. "
         "Kept — the order is still working."
     )
-
-
-class ReplyNotConfirmedError(HumanAuthError):
-    """The type ibkr_core_mcp raises from 2.2.0 when a question IBKR asked after the write was
-    posted is not confirmed (register F34). A stand-in by name, like the class above, for the
-    same reason and with the same end: the core's own class once `core-ref.txt` moves."""
 
 
 _REPLY_ASKED = "IBKR asked for a confirmation before accepting the request, and "
@@ -4471,6 +4464,50 @@ async def test_a_reply_nobody_answered_reaches_the_chat_as_what_happened_and_why
     assert outcome == f"**Order not placed:** {sentence}"
 
 
+def test_a_gate_outcome_the_table_does_not_know_is_not_called_a_touch_id_failure():
+    """The core gives each gate outcome its own subclass of `HumanAuthError`. One added there
+    later is shown under its own name until it has a row here: the Touch ID row is Gate 1's,
+    and Gate 1 raises the base class itself."""
+    from claudia.order_flow import _classify_execution_error, _refusal_stage
+
+    class SomeLaterOutcomeError(HumanAuthError):
+        """A gate outcome of a later core."""
+
+    later = SomeLaterOutcomeError("The dialog could not be drawn.")
+    assert _refusal_stage(later) == "other"
+    assert (
+        _classify_execution_error(later) == "SomeLaterOutcomeError: The dialog could not be drawn."
+    )
+    assert _refusal_stage(HumanAuthError("The dialog could not be drawn.")) == "touch_id"
+
+
+@pytest.mark.parametrize(
+    "network",
+    [
+        requests.exceptions.ReadTimeout(
+            "HTTPSConnectionPool(host='localhost', port=5055): Read timed out. (read timeout=30)"
+        ),
+        requests.exceptions.ConnectTimeout(
+            "HTTPSConnectionPool(host='localhost', port=5055): Max retries exceeded (Caused by "
+            "ConnectTimeoutError('Connection to localhost timed out.'))"
+        ),
+    ],
+    ids=lambda exc: type(exc).__name__,
+)
+def test_a_network_timeout_never_reads_as_the_dialogs(network):
+    """The write is posted after Gate 2 was approved. When its answer does not come back, IBKR
+    may hold the order, so the one sentence that must not be printed is the dialog timeout's
+    "nothing was sent to IBKR". The row used to match the words "timed out", which every
+    network timeout says too (run 2026-11-24); it reads the core's type now."""
+    from claudia.order_flow import _classify_execution_error, _refusal_stage
+
+    assert _refusal_stage(network) == "other"
+    sentence = _classify_execution_error(network)
+    assert "nothing was sent" not in sentence, sentence
+    assert "dialog" not in sentence.lower(), sentence
+    assert str(network) in sentence, sentence
+
+
 def test_the_timeout_sentence_reads_the_core_timeout_at_call_time():
     """The subprocess-overrun timeout sentence used to carry a typed "60 seconds". The number
     is the core's, so it is read from the core's constant when the sentence is built — a
@@ -4478,7 +4515,7 @@ def test_the_timeout_sentence_reads_the_core_timeout_at_call_time():
     from claudia.order_flow import _classify_execution_error
 
     with patch("claudia.order_flow._DIALOG_TIMEOUT_S", 75):
-        sentence = _classify_execution_error(RuntimeError("Confirmation dialog timed out"))
+        sentence = _classify_execution_error(ConfirmationTimeoutError("whatever it says"))
     assert "75 seconds" in sentence, sentence
     assert "nothing was sent to IBKR" in sentence, sentence
     assert "cancel" not in sentence.lower(), sentence
@@ -4507,7 +4544,7 @@ def test_the_timeout_sentence_reads_the_core_timeout_at_call_time():
             "_format_cancel_summary",
             _pre_gate_cancel_proposal,
             "CANCEL ORDER",
-            "CANCEL ORDER",
+            "VALIDATE",
             "Nothing is cancelled until",
             id="cancel",
         ),

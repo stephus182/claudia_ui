@@ -76,6 +76,16 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
         # submission order, and only the core knows the identifiers it pairs on.
         "pair_bracket_response",
         "attached_entry",
+        # ClaudIA's mark on the Gate 2 dialogs, set once at startup (gap #67).
+        "set_dialog_icon",
+    ),
+    # The refusal table matches the gates' outcomes by these types (gap #67; register F6, F34).
+    "ibkr_core_mcp.exceptions": (
+        "ConfirmationDeclinedError",
+        "ConfirmationTimeoutError",
+        "HumanAuthError",
+        "OrderValidationError",
+        "ReplyNotConfirmedError",
     ),
     "ibkr_core_mcp.order_confirm": ("change_value_text", "price_text_safe", "_DIALOG_TIMEOUT_S"),
     "ibkr_core_mcp.streaming": ("IBKRWebSocket", "PnLUpdate", "TradeExecution"),

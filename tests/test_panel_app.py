@@ -2992,6 +2992,34 @@ def test_main_runs_both_startup_checks_before_serving(_restore_root_logging):
     assert mock_serve.called
 
 
+def test_main_gives_the_gate2_dialogs_claudias_mark_before_serving(_restore_root_logging):
+    """`main()` hands the core ClaudIA's logo, once, before the first session can reach a
+    dialog (gap #67). The file must be there: the core draws its own glyph, and says nothing,
+    for one it cannot read."""
+    from claudia import panel_app, panel_theme
+
+    calls: list[str] = []
+    with (
+        patch(
+            "claudia.panel_app.set_dialog_icon", side_effect=lambda _: calls.append("icon")
+        ) as icon,
+        patch("claudia.panel_app.warn_if_session_borrowed"),
+        patch("claudia.panel_app.warn_if_login_refused"),
+        patch("claudia.panel_app.warn_if_stale"),
+        patch("claudia.panel_app.warn_if_model_lacks_operator_channel"),
+        patch("claudia.panel_app.pn.serve", side_effect=lambda *a, **k: calls.append("serve")),
+        patch("claudia.panel_app._port_is_free", return_value=True),
+        patch("claudia.panel_app.signal.signal"),
+        patch("claudia.panel_app._gdrive_sync", None),
+    ):
+        panel_app.main()
+
+    icon.assert_called_once_with(panel_theme.CLAUDIA_LOGO_PATH)
+    assert calls == ["icon", "serve"]
+    assert panel_theme.CLAUDIA_LOGO_PATH.is_absolute()
+    assert panel_theme.CLAUDIA_LOGO_PATH.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
 def test_main_warns_when_another_ibkr_app_holds_the_session(_restore_root_logging):
     """`main()` reaches the borrowed-session check before serving.
 

@@ -153,7 +153,7 @@ ClaudIA calls propose_order (strict-schema tool — records, executes nothing)
     ↓ panel_order_flow.render_order_proposal() → button: "STAGE ORDER"
     ↓ User clicks → order_flow._execute_staged_order_core()
     ↓ Gate 1 — Touch ID (macOS LocalAuthentication)
-    ↓ Gate 2 — AppKit dialog: green=BUY / red=SELL, 60s auto-cancel, Enter disabled
+    ↓ Gate 2 — AppKit dialog: green=BUY / red=SELL, Enter disabled; after 60 s it closes and nothing is sent
     ↓ IBKRClient.place_order() → IBKR gateway
 ```
 

@@ -47,6 +47,7 @@ from ibkr_core_mcp import (
     GDriveCache,
     IBKRClient,
     SQLiteStore,
+    set_dialog_icon,
 )
 from ibkr_core_mcp.gateway import GatewayManager
 
@@ -97,6 +98,7 @@ from claudia.panel_sink import PanelMessageSink
 from claudia.panel_system_log import SystemLog
 from claudia.panel_theme import (
     AVATAR_STYLESHEET,
+    CLAUDIA_LOGO_PATH,
     apply_session_theme,
     intro_card,
     register_claudia_avatar,
@@ -1941,6 +1943,8 @@ def main() -> None:
             _PANEL_PORT,
         )
         return
+    # The Gate 2 dialogs carry ClaudIA's mark instead of the core's own glyph (gap #67).
+    set_dialog_icon(CLAUDIA_LOGO_PATH)
     # The only "server is up" signal. pn.serve(show=False) opens no browser, and
     # _configure_logging pins bokeh to WARNING, which suppresses its own
     # "Bokeh app running at" banner — so without this line a correctly-started

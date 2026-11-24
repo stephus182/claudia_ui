@@ -48,8 +48,8 @@ Every visual parameter in the entire application:
   candle recipe, not renamed
 
 Also: `claudia/assets/claudia-logo.png` (1.4 MB since 2026-09-02, when the user's new logo replaced
-the 1.1 MB original) exists but is **referenced by no code**, and there is no `static_dirs=` to
-serve it — reserved for the phase-2 header (`ui-customisation-reference.md` §5).
+the 1.1 MB original) is the mark on the Gate 2 dialogs (2026-11-24, `ui-customisation-reference.md`
+§2.2); no page serves it, and there is no `static_dirs=` to do so.
 
 ### What the baseline actually looks like
 
@@ -348,7 +348,7 @@ Stated as questions, not decisions:
    compared side-by-side.
 7. ~~**`Rerun` / `Undo` / `Clear` are exposed** on an interface where a message can stage a live
    order.~~ **Closed 2026-09-02:** hidden, Send only (`ui-customisation-reference.md` §1).
-8. **`claudia-logo.png` is dead weight** — 1.4 MB (1.1 MB until 2026-09-02), unreferenced, unservable.
+8. ~~**`claudia-logo.png` is dead weight**~~ — **closed 2026-11-24:** the Gate 2 dialogs draw it.
 
 ---
 
@@ -434,7 +434,6 @@ listed in its §4 menu.
 ### Not recommended
 
 - Any page-level stylesheet or global `raw_css` — proven not to reach, and deprecated (§2, §3.1).
-- Keeping `claudia-logo.png` unless it is actually rendered — delete it or serve it.
 
 ---
 

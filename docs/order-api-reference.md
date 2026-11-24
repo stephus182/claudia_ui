@@ -743,7 +743,9 @@ Mirrors the placement flow exactly: ClaudIA calls `propose_cancel` →
 `panel_order_flow.render_cancel_proposal()` shows a `CANCEL ORDER` (red) / `KEEP ORDER` (neutral) button pair →
 `_execute_cancel_order_core()` calls `IBKRClient.cancel_order(account_id, order_id)` behind the same
 Gate 1 (Touch ID) + Gate 2 (AppKit dialog) pair used by placement — the gates fire inside
-`cancel_order()` itself, not in `claudia_ui`. No reply chain to resolve (a single `DELETE` call).
+`cancel_order()` itself, not in `claudia_ui`. Gate 2's own buttons on this path are `VALIDATE` and
+`DISCARD`, under a banner that reads CANCEL ORDER (core 2.2.0; gap #67). No reply chain to resolve
+(a single `DELETE` call).
 
 ```json
 {
@@ -1108,8 +1110,8 @@ granted for …` once per write, `covered by authorization` once per precaution)
 (gap #50, same day):** DO NOT SEND at Gate 2 and DO NOT REPLY at a precaution had left the
 store with `trade_proposed` and nothing else — the declined precaution's `confirmed: false`
 entry was discarded with the chain. Every outcome after the button now writes a row:
-`trade_refused` (stage `gate2` / `reply` / `timeout` / `touch_id`, the reason, the reply log as
-far as it got), `trade_rejected` (IBKR's payload), `trade_dispatched_unverified`; the same for
+`trade_refused` (stage `gate2` / `reply` / `timeout` / `touch_id`, the first three read off the
+core's exception types since 2026-11-24; the reason; the reply log as far as it got), `trade_rejected` (IBKR's payload), `trade_dispatched_unverified`; the same for
 modify and cancel. A human's no logs at INFO, not as an ERROR traceback.
 
 `place_order_and_confirm` loops over `{id, message, messageOptions}` entries, each behind Gate 1
