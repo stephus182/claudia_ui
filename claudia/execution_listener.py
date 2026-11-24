@@ -324,7 +324,7 @@ def get_live_pnl_text(toolkit: ClaudeToolkit) -> str:
     dependency: it returns correct realized/unrealized P&L on every call,
     live-verified 2026-07-17 (docs/plans/archive/pnl-dashboard/2026-07-17-account-pnl-display-fixes.md).
     """
-    latest = toolkit._store.get_latest_pnl()
+    latest = toolkit.store.get_latest_pnl()
     if latest is not None:
         return format_pnl_snapshot(latest)
     text, _ = toolkit.execute("get_ledger", {})

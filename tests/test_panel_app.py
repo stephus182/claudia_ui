@@ -810,8 +810,8 @@ async def test_init_starts_connectivity_and_execution_singletons(monkeypatch, ba
         await asyncio.wait_for(chat.callback("hello", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
     checker_kwargs = backend_singletons.checker_cls.call_args.kwargs
-    assert checker_kwargs["gateway_url"] is mock_toolkit._config.gateway_url
-    assert checker_kwargs["gdrive_token_file"] is mock_toolkit._config.gdrive_token_file
+    assert checker_kwargs["gateway_url"] is mock_toolkit.config.gateway_url
+    assert checker_kwargs["gdrive_token_file"] is mock_toolkit.config.gdrive_token_file
     assert checker_kwargs["tv_bridge"] is None
     assert checker_kwargs["gdrive_sync"] is sentinel
     backend_singletons.checker_cls.return_value.start.assert_called_once()
@@ -819,7 +819,7 @@ async def test_init_starts_connectivity_and_execution_singletons(monkeypatch, ba
     # pinned the ABSENCE of per-session subscription; Phase 6 delivers it.
     backend_singletons.checker_cls.return_value.subscribe.assert_called_once()
     backend_singletons.listener_cls.assert_called_once_with(
-        mock_toolkit._config.gateway_url, mock_toolkit._store, is_news=ANY
+        mock_toolkit.config.gateway_url, mock_toolkit.store, is_news=ANY
     )
     backend_singletons.listener_cls.return_value.start.assert_called_once()
 
@@ -1263,10 +1263,10 @@ def _flex_toolkit(stale: bool) -> MagicMock:
     nothing unless a test poses it — and nothing held means a pull is due.
     """
     toolkit = MagicMock()
-    toolkit._config.flex_token = "tok"
-    toolkit._config.flex_query_id = "qid"
-    toolkit._config.sqlite_path = "/nonexistent/claudia-tests/store.db"
-    toolkit._store.get_trade_date_coverage.return_value = {
+    toolkit.config.flex_token = "tok"
+    toolkit.config.flex_query_id = "qid"
+    toolkit.config.sqlite_path = "/nonexistent/claudia-tests/store.db"
+    toolkit.store.get_trade_date_coverage.return_value = {
         "stale": stale,
         "newest": "2026-07-22",
         "last_trading_day": "2026-07-23",
@@ -1318,7 +1318,7 @@ async def test_flex_sync_runs_when_the_previous_weekdays_statement_is_missing(ca
         await _drain_flex_sync()
     toolkit.execute.assert_any_call("sync_flex_trades", {})
     assert spawned is True  # the store settles when `on_done` runs, not before (gap #99)
-    toolkit._store.get_trade_date_coverage.assert_not_called()
+    toolkit.store.get_trade_date_coverage.assert_not_called()
     assert any(
         "Flex sync due" in r.message and "2026-09-25" in r.message and "2026-09-28" in r.message
         for r in caplog.records
@@ -1360,7 +1360,7 @@ async def test_flex_sync_runs_and_backs_up_when_stale_and_never_attempted():
     # upload_account_sqlite, not upload_account_file: store.db runs in WAL mode, so a raw
     # byte read would miss commits still in store.db-wal and could tear mid-checkpoint.
     toolkit._cache.upload_account_sqlite.assert_called_once_with(
-        toolkit._config.sqlite_path, "store.db"
+        toolkit.config.sqlite_path, "store.db"
     )
     toolkit._cache.upload_account_file.assert_not_called()
     sent = [c.args[0] for c in syslog.say.call_args_list]
@@ -1535,7 +1535,7 @@ async def test_upload_when_the_merge_moves_the_source_mix_without_moving_the_cou
         await _drain_flex_sync()
 
     toolkit._cache.upload_account_sqlite.assert_called_once_with(
-        toolkit._config.sqlite_path, "store.db"
+        toolkit.config.sqlite_path, "store.db"
     )
 
 
@@ -1610,7 +1610,7 @@ async def test_flex_sync_noop_when_offline_or_unconfigured():
 
     toolkit = _flex_toolkit(stale=True)
     await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=True)
-    toolkit._store.get_trade_date_coverage.assert_not_called()
+    toolkit.store.get_trade_date_coverage.assert_not_called()
     toolkit2 = _flex_toolkit(stale=True)
     toolkit2._config.flex_token = ""
     await _maybe_background_flex_sync(MagicMock(), toolkit2, ibkr_offline=False)
@@ -2125,7 +2125,7 @@ async def test_init_starts_the_dashboard_poller_on_the_toolkit_client(backend_si
         chat = _find_chat(root)
         await asyncio.wait_for(chat.callback("x", "User", chat), timeout=_CALLBACK_TIMEOUT)
 
-    poller_cls.assert_called_once_with(mock_toolkit.client, mock_toolkit._config.sqlite_path)
+    poller_cls.assert_called_once_with(mock_toolkit.client, mock_toolkit.config.sqlite_path)
     poller_cls.return_value.start.assert_called()
 
 
@@ -4207,7 +4207,7 @@ _EMPTY_STORE_COVERAGE: dict[str, Any] = {
 def _flex_toolkit_empty_store() -> MagicMock:
     """A toolkit over a store whose trades table has never been written to."""
     toolkit = _flex_toolkit(stale=False)
-    toolkit._store.get_trade_date_coverage.return_value = dict(_EMPTY_STORE_COVERAGE)
+    toolkit.store.get_trade_date_coverage.return_value = dict(_EMPTY_STORE_COVERAGE)
     return toolkit
 
 
@@ -4272,7 +4272,7 @@ async def test_the_core_staleness_flag_decides_nothing_any_more(caplog):
         await _maybe_background_flex_sync(MagicMock(), toolkit, ibkr_offline=False)
         await _drain_flex_sync()
     toolkit.execute.assert_any_call("sync_flex_trades", {})
-    toolkit._store.get_trade_date_coverage.assert_not_called()
+    toolkit.store.get_trade_date_coverage.assert_not_called()
     assert not any("data current" in r.message for r in caplog.records)
 
 

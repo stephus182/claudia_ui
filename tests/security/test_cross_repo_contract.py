@@ -38,11 +38,11 @@ Three ways that happens, each with a test here:
    leaves no recovery. The core's LocalAuthentication test double cannot see a switch, so the
    installed core is held to it here (gap #60, 2026-09-28; docs/code agreement is core F2).
 
-6. **An attribute ClaudIA reads on the toolkit moves.** It reaches past `ClaudeToolkit` to
-   the store, the config and the Drive cache (`_store`, `_config`, `_cache`), and every test
-   here drives a MagicMock toolkit, which answers to any name. A real toolkit is built and
-   each attribute read is checked on it; the three private ones are pinned by identity
-   (gap #87, 2026-09-30).
+6. **An attribute ClaudIA reads on the toolkit moves.** It reads the store and the config
+   `ClaudeToolkit` was built with (public since core 2.2.0) and reaches past it to the Drive
+   cache (`_cache`, private by the core's decision), and every test here drives a MagicMock
+   toolkit, which answers to any name. A real toolkit is built and each attribute read is
+   checked on it; the three collaborators are pinned by identity (gap #87).
 
 These assertions run against the *installed* core, so they check what this machine and CI
 actually resolve rather than what a document claims.
@@ -681,13 +681,14 @@ def test_the_gate2_button_names_claudia_prints_are_the_ones_the_core_draws():
 
 # ── The toolkit's collaborators, which ClaudIA reaches past it (gap #87, 2026-09-30) ───────
 #
-# ClaudIA reads three of `ClaudeToolkit`'s private attributes — the store, the config and the
-# Drive cache it was built with — at 12 sites, because the toolkit exposes only `client`
-# publicly. A private name carries no compatibility promise from the core, and this repository's
-# tests drive MagicMock toolkits, which answer to any attribute: a rename in the core would pass
-# the whole suite and break the running app at startup. So a real toolkit is built here.
-# Public properties for the three are the lasting fix, and belong to the core (gap #87).
-TOOLKIT_REACH_INS = ("_cache", "_config", "_store")
+# ClaudIA reads three of the objects `ClaudeToolkit` was built with: the store and the config,
+# public since core 2.2.0 (register F29), and the Drive cache, which the core keeps private — an
+# accessor would hand over the whole Drive client, uploads and deletes included. This
+# repository's tests drive MagicMock toolkits, which answer to any attribute: a rename in the
+# core would pass the whole suite and break the running app at startup. So a real toolkit is
+# built here.
+TOOLKIT_REACH_INS = ("_cache",)
+TOOLKIT_COLLABORATORS = ("_cache", "config", "store")
 
 
 def _toolkit_attributes(source: str) -> set[str]:
@@ -730,18 +731,18 @@ def _reach_ins(names: set[str]) -> set[str]:
 
 def _collaborator_mismatches(toolkit_cls: type) -> list[str]:
     """Build `toolkit_cls` from four distinct sentinels, by keyword as ClaudIA does, and name
-    each reach-in that does not hold the collaborator passed under its own name."""
+    each attribute that does not hold the collaborator passed under its own name."""
     passed: dict[str, Any] = {role: object() for role in ("client", "cache", "store", "config")}
     toolkit = toolkit_cls(**passed)
     return [
         attribute
-        for attribute in TOOLKIT_REACH_INS
+        for attribute in TOOLKIT_COLLABORATORS
         if getattr(toolkit, attribute, None) is not passed[attribute.removeprefix("_")]
     ]
 
 
-def test_the_toolkit_holds_the_collaborators_claudia_reaches_past_it():
-    """`toolkit._store` is the store `ClaudeToolkit` was built with, and so on — what
+def test_the_toolkit_holds_the_collaborators_claudia_reads():
+    """`toolkit.store` is the store `ClaudeToolkit` was built with, and so on — what
     `opening_status`, `panel_app`, `panel_chart` and `execution_listener` rely on."""
     from ibkr_core_mcp import ClaudeToolkit
 
@@ -749,7 +750,7 @@ def test_the_toolkit_holds_the_collaborators_claudia_reaches_past_it():
 
 
 def test_claudia_reaches_past_the_toolkit_only_where_it_is_pinned():
-    """The private toolkit attributes ClaudIA reads equal `TOOLKIT_REACH_INS`: a fourth
+    """The private toolkit attributes ClaudIA reads equal `TOOLKIT_REACH_INS`: a second
     reach-in is a decision made here, and a pin no longer read must go."""
     private = _reach_ins(_claudia_toolkit_attributes())
     assert private == set(TOOLKIT_REACH_INS), sorted(private)
@@ -773,13 +774,13 @@ def test_the_collaborator_check_sees_a_swap():
     from ibkr_core_mcp import ClaudeToolkit
 
     class Swapped(ClaudeToolkit):
-        """Keeps the cache as `_config` and the config as `_cache`."""
+        """Keeps the cache as its config and the config as its cache."""
 
         def __init__(self, client: Any, cache: Any, store: Any, config: Any) -> None:
             """Pass the cache and the config to the real constructor crossed over."""
             super().__init__(client=client, cache=config, store=store, config=cache)
 
-    assert _collaborator_mismatches(Swapped) == ["_cache", "_config"]
+    assert _collaborator_mismatches(Swapped) == ["_cache", "config"]
 
 
 def test_the_attribute_probe_reads_every_receiver_shape():

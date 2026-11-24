@@ -573,7 +573,7 @@ def test_get_live_pnl_text_uses_cache_when_populated():
     from claudia.execution_listener import get_live_pnl_text
 
     toolkit = MagicMock()
-    toolkit._store.get_latest_pnl.return_value = {
+    toolkit.store.get_latest_pnl.return_value = {
         "account": "U1234567.Core",
         "dpl": 12.5,
         "nl": 10000.0,
@@ -593,7 +593,7 @@ def test_get_live_pnl_text_falls_back_to_ledger_when_cache_empty():
     from claudia.execution_listener import get_live_pnl_text
 
     toolkit = MagicMock()
-    toolkit._store.get_latest_pnl.return_value = None
+    toolkit.store.get_latest_pnl.return_value = None
     toolkit.execute.return_value = ("Account Ledger (USD):\n  Realized P&L : +461.56", None)
     result = get_live_pnl_text(toolkit)
     assert "Realized P&L" in result

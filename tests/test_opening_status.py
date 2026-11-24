@@ -20,9 +20,9 @@ from claudia.opening_status import (
 def _make_toolkit(flex: bool = True) -> MagicMock:
     """A stub toolkit whose Flex configuration and market calendar can be posed."""
     toolkit = MagicMock()
-    toolkit._config.flex_token = "tok" if flex else ""
-    toolkit._config.flex_query_id = "qid" if flex else ""
-    toolkit._store.get_market_calendar_context.return_value = None
+    toolkit.config.flex_token = "tok" if flex else ""
+    toolkit.config.flex_query_id = "qid" if flex else ""
+    toolkit.store.get_market_calendar_context.return_value = None
     return toolkit
 
 
@@ -142,10 +142,10 @@ async def test_gather_session_state_offline_when_ping_raises():
 def test_build_trade_lines_flex_not_configured_still_appends_calendar():
     """With Flex unconfigured no coverage lookup runs, but the calendar still reaches context."""
     toolkit = _make_toolkit(flex=False)
-    toolkit._store.get_market_calendar_context.return_value = _MKT
+    toolkit.store.get_market_calendar_context.return_value = _MKT
     status, context = build_trade_lines(toolkit, ibkr_offline=False)
     assert "Flex not configured" in status
-    toolkit._store.get_trade_date_coverage.assert_not_called()
+    toolkit.store.get_trade_date_coverage.assert_not_called()
     # app.py:511 subtlety: the calendar block lands in trade_context even when
     # Flex is unconfigured — (trade_context or "") + _cal_block.
     assert context is not None
@@ -159,7 +159,7 @@ def test_build_trade_lines_flex_not_configured_still_appends_calendar():
 def test_build_trade_lines_flex_configured_with_data():
     """A covered dataset reports its trade count and refresh date, with no refresh nudge."""
     toolkit = _make_toolkit()
-    toolkit._store.get_trade_date_coverage.return_value = {
+    toolkit.store.get_trade_date_coverage.return_value = {
         "oldest": "2024-01-02",
         "newest": "2026-07-22",
         "total_trades": 1234,
@@ -177,7 +177,7 @@ def test_build_trade_lines_flex_configured_with_data():
 def test_build_trade_lines_offline_notes_connect_to_refresh():
     """Offline, the line says the data cannot be refreshed rather than implying it is current."""
     toolkit = _make_toolkit()
-    toolkit._store.get_trade_date_coverage.return_value = {
+    toolkit.store.get_trade_date_coverage.return_value = {
         "oldest": "2024-01-02",
         "newest": "2026-07-22",
         "total_trades": 1234,
@@ -191,7 +191,7 @@ def test_build_trade_lines_no_data_yet():
     """An empty dataset says so instead of reporting zero trades as a fact about the account."""
     toolkit = _make_toolkit()
     # Real empty-store return shape from SQLiteStore.get_trade_date_coverage (store.py:355).
-    toolkit._store.get_trade_date_coverage.return_value = {
+    toolkit.store.get_trade_date_coverage.return_value = {
         "oldest": None,
         "newest": None,
         "total_trades": 0,
@@ -206,7 +206,7 @@ def test_build_trade_lines_no_data_yet():
 def test_build_trade_lines_coverage_error_degrades_to_syncing():
     """A coverage lookup failure degrades to a neutral syncing line rather than failing."""
     toolkit = _make_toolkit()
-    toolkit._store.get_trade_date_coverage.side_effect = RuntimeError("db locked")
+    toolkit.store.get_trade_date_coverage.side_effect = RuntimeError("db locked")
     status, context = build_trade_lines(toolkit, ibkr_offline=False)
     assert status == "Trade history: syncing…"
     assert context is None  # calendar mock returns None → nothing appended
@@ -215,7 +215,7 @@ def test_build_trade_lines_coverage_error_degrades_to_syncing():
 def test_build_trade_lines_calendar_error_is_swallowed():
     """A calendar failure is swallowed — it is optional context, not a reason to fail a session."""
     toolkit = _make_toolkit(flex=False)
-    toolkit._store.get_market_calendar_context.side_effect = RuntimeError("boom")
+    toolkit.store.get_market_calendar_context.side_effect = RuntimeError("boom")
     status, context = build_trade_lines(toolkit, ibkr_offline=False)
     assert "Flex not configured" in status
     assert context is None
@@ -252,8 +252,8 @@ def _outcome(ok: bool = True, empty: bool = False, reused: bool = False):
 def _covered_toolkit():
     """A stub toolkit reporting a covered, non-stale Flex dataset."""
     toolkit = _make_toolkit()
-    toolkit._config.sqlite_path = "/tmp/store.db"
-    toolkit._store.get_trade_date_coverage.return_value = {
+    toolkit.config.sqlite_path = "/tmp/store.db"
+    toolkit.store.get_trade_date_coverage.return_value = {
         "oldest": "2024-01-02",
         "newest": "2026-07-22",
         "total_trades": 1234,
@@ -432,7 +432,7 @@ def test_the_model_is_given_no_staleness_rule_of_its_own():
     > 3 on a weekday" — a second definition beside the core's flag, and on 2026-09-24 it told
     the model a two-trading-day-old store was fine. Neither definition is given now."""
     toolkit = _make_toolkit()
-    toolkit._store.get_trade_date_coverage.return_value = _coverage()
+    toolkit.store.get_trade_date_coverage.return_value = _coverage()
     _status, context = build_trade_lines(toolkit, ibkr_offline=False)
     assert context is not None
     assert "days_since_newest" not in context
@@ -446,7 +446,7 @@ def test_the_model_is_told_the_store_holds_the_newest_statement():
     from datetime import UTC, date, datetime
 
     toolkit = _make_toolkit()
-    toolkit._store.get_trade_date_coverage.return_value = _coverage()
+    toolkit.store.get_trade_date_coverage.return_value = _coverage()
     with (
         patch("claudia.opening_status.statement_through", return_value=date(2026, 9, 25)),
         patch(
@@ -466,7 +466,7 @@ def test_the_model_is_told_when_a_newer_statement_may_exist():
     from datetime import UTC, date, datetime
 
     toolkit = _make_toolkit()
-    toolkit._store.get_trade_date_coverage.return_value = _coverage()
+    toolkit.store.get_trade_date_coverage.return_value = _coverage()
     with (
         patch("claudia.opening_status.statement_through", return_value=date(2026, 9, 25)),
         patch(
@@ -484,7 +484,7 @@ def test_the_model_gets_no_clock_time_for_flex_publication():
     """Operator 2026-09-28: the publication time is irrelevant to the rule, so the prompt
     carries none (it used to quote 17:15, 20:20, 22:07 and 08:18 ET)."""
     toolkit = _make_toolkit()
-    toolkit._store.get_trade_date_coverage.return_value = _coverage()
+    toolkit.store.get_trade_date_coverage.return_value = _coverage()
     _status, context = build_trade_lines(toolkit, ibkr_offline=False)
     assert context is not None
     assert "T+1" in context

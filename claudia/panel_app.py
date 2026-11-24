@@ -455,7 +455,7 @@ def _build_briefing_text(toolkit: ClaudeToolkit) -> str:
     """
     try:
         try:
-            mkt = toolkit._store.get_market_calendar_context()
+            mkt = toolkit.store.get_market_calendar_context()
         except Exception:
             mkt = None
         return render_closures(build_closures(mkt, today=date.today()), escape=escape_markup)
@@ -555,7 +555,7 @@ async def _flex_pull_decision(toolkit: ClaudeToolkit, ibkr_offline: bool) -> Fle
        today (ET) — `flex_sync.statement_through` against `flex_sync.pull_due`. Nothing
        held, or unreadable, means pull: unknown is not "current".
     """
-    cfg = toolkit._config
+    cfg = toolkit.config
     if not (cfg and cfg.flex_token and cfg.flex_query_id):
         return FlexPullDecision(due=False)
     if ibkr_offline:
@@ -1026,7 +1026,7 @@ async def _maybe_background_flex_sync(
     store matters most. It re-validates after a *successful* sync because a pull is the
     one thing in a session that can change the answer.
     """
-    cfg = toolkit._config
+    cfg = toolkit.config
     if decision is None:
         decision = await _flex_pull_decision(toolkit, ibkr_offline)
     if not decision.due:
@@ -1580,7 +1580,7 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
             # (no await between the None-check and assignment on this single-
             # threaded loop), so no lock is needed — same reasoning as
             # Parity with the removed app.py. tv_bridge stays None until Phase 9 (D5).
-            cfg = toolkit._config
+            cfg = toolkit.config
             # The session owner starts FIRST and is the only thing that reads IBKR
             # connectivity. Everything downstream — the status dot, the dashboard poller,
             # the execution listener — asks it rather than probing independently, which is
@@ -1602,7 +1602,7 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
             is_news = news_rule(cfg.sqlite_path, _get_store())
             if _execution_listener is None:
                 _execution_listener = ExecutionListener(
-                    cfg.gateway_url, toolkit._store, is_news=is_news
+                    cfg.gateway_url, toolkit.store, is_news=is_news
                 )
             # Not started here: it starts once this start's catch-up has run (gap #99,
             # `_after_flex_settled` below), so fills found at start are one message and

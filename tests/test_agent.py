@@ -388,7 +388,7 @@ def test_handle_local_tool_unknown_name():
 def test_handle_local_tool_get_live_pnl_populated():
     """A cached execution-triggered snapshot is rendered with signs and the account id."""
     agent = _make_agent()
-    agent._toolkit._store.get_latest_pnl.return_value = {
+    agent._toolkit.store.get_latest_pnl.return_value = {
         "account": "DU1234567.Core",
         "dpl": 12.5,
         "nl": 10000.0,
@@ -405,7 +405,7 @@ def test_handle_local_tool_get_live_pnl_populated():
 def test_handle_local_tool_get_live_pnl_none_falls_back_to_ledger():
     """With no cached snapshot the ledger is pulled live — the cache starts empty each process."""
     agent = _make_agent()
-    agent._toolkit._store.get_latest_pnl.return_value = None
+    agent._toolkit.store.get_latest_pnl.return_value = None
     agent._toolkit.execute.return_value = ("Account Ledger (USD):\n  Realized P&L : +461.56", None)
     result = agent._handle_local_tool("get_live_pnl", {})
     assert "Realized P&L" in result
@@ -416,7 +416,7 @@ def test_handle_local_tool_get_live_pnl_partial_fields_format_as_na():
     """A snapshot with some None numeric fields (early/partial tick) must format
     those fields as 'n/a' rather than raising a format-spec TypeError."""
     agent = _make_agent()
-    agent._toolkit._store.get_latest_pnl.return_value = {
+    agent._toolkit.store.get_latest_pnl.return_value = {
         "account": "DU1234567.Core",
         "dpl": None,
         "nl": 10000.0,

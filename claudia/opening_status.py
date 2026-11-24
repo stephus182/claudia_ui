@@ -1,8 +1,7 @@
 """UI-free builders for the opening status message (Panel entry point).
 
 Structured as pure/thread-friendly functions so `panel_app._init_session` stays readable
-and tests can feed dict fixtures directly. Uses the `toolkit._store` reach-in; for config
-it uses `toolkit._config`, since `ClaudeToolkit` exposes no public config/store property.
+and tests can feed dict fixtures directly. Reads the toolkit's public `store` and `config`.
 
 Began as a faithful port of the Chainlit app's startup status logic and **deliberately
 stopped being one on 2026-08-05**, when the live dashboard took over every account figure.
@@ -324,12 +323,12 @@ def build_trade_lines(
     real checks (0.19s measured on the live 53 MB store.db) and the wording follows its
     verdict in all three directions — validated, failed, or nothing to validate.
     """
-    config = toolkit._config
+    config = toolkit.config
     flex_configured = bool(config and config.flex_token and config.flex_query_id)
     trade_context: str | None = None
     if flex_configured:
         try:
-            cov = toolkit._store.get_trade_date_coverage()
+            cov = toolkit.store.get_trade_date_coverage()
             if cov["oldest"]:
                 sync_note = _sync_note(config, cov, ibkr_offline)
                 integrity_note, integrity_context = _integrity_phrases(config)
@@ -383,7 +382,7 @@ def build_trade_lines(
     # Append market calendar context (holidays, last/next trading day, futures
     # schedule). Parity with the removed app.py: appends even when trade_context is None.
     try:
-        mkt = toolkit._store.get_market_calendar_context()
+        mkt = toolkit.store.get_market_calendar_context()
         if mkt:
             trade_context = (trade_context or "") + _format_market_calendar(mkt)
     except Exception as exc:
