@@ -136,8 +136,10 @@ async def test_on_load_cache_hit_renders_figure_without_fetching():
     from datetime import date
 
     today = str(date.today())
-    tk._cache.check.assert_called_once_with("AAPL", "1D", "6m", today)
-    tk._cache.load.assert_called_once_with("AAPL", "1D", "6m", today)
+    # The hours are part of the key since core 2.2.0, and said on every call (gap #65).
+    tk._cache.check.assert_called_once_with("AAPL", "1D", "6m", today, outside_rth=False)
+    tk._cache.load.assert_called_once_with("AAPL", "1D", "6m", today, outside_rth=False)
+    tk._cache.entry.assert_called_once_with("AAPL", "1D", "6m", today, outside_rth=False)
     assert [type(e).__name__ for e in _chart(pane).object] == ["Overlay", "Bars"]
     assert "Loaded 4 bars for AAPL" in _status(pane).object
 
@@ -173,7 +175,7 @@ async def test_on_load_cache_miss_fetches_then_loads():
     tk.execute.assert_called_once()
     name, inputs = tk.execute.call_args.args
     assert name == "fetch_market_data"
-    assert inputs == {"symbol": "AAPL", "period": "6m", "bar": "1d"}
+    assert inputs == {"symbol": "AAPL", "period": "6m", "bar": "1d", "outside_rth": False}
     tk._cache.load.assert_called_once()
     assert [type(e).__name__ for e in _chart(pane).object] == ["Overlay", "Bars"]
 
@@ -635,7 +637,7 @@ async def test_on_load_failure_names_the_chart_still_displayed():
 
     msg = _status(pane).object
     assert "ZZQQXX" in msg
-    assert "Still showing AAPL 1d (6m)" in msg
+    assert "Still showing AAPL · listing not recorded · 1d (6m)" in msg
     assert _chart(pane).object is not None  # chart deliberately NOT cleared
 
 
@@ -770,6 +772,85 @@ async def test_on_load_says_nothing_when_the_bar_size_matches():
     assert "Loaded 4 bars for AAPL" in status
     assert "IBKR returned" not in status
     assert "requested" not in hv_title(_chart(pane).object)
+
+
+# ── gap #65 (2026-11-24): what the bars are, said on the chart ────────────────────────────
+
+
+_AAPL_ROW = {
+    "end": "2026-11-24",
+    "outside_rth": False,
+    "listing": {"conid": 265598, "name": "APPLE INC", "exchange": "NASDAQ", "currency": "USD"},
+}
+
+
+async def _load_with_row(row: Any) -> pn.Column:
+    """The pane after one Load of a cached AAPL whose manifest row is `row`."""
+    from unittest.mock import patch
+
+    tk = _mock_toolkit(cached=True, df=_sample_df())
+    tk._cache.entry.return_value = row
+    pane = build_chart_pane()
+    cb = _get_click_callback(_button(pane))
+    with patch("claudia.panel_app._get_toolkit", return_value=tk):
+        await cb(None)
+    return pane
+
+
+@pytest.mark.asyncio
+async def test_the_title_and_the_status_say_which_listing_and_which_hours():
+    """A ticker is not a listing: asked for `ES` the fetch returned Eversource Energy (gap
+    #65). The cache's own row says what the bars are, and both lines carry it: exchange and
+    currency, the bar, the period, the hours, and the listing's name last — Bokeh cuts a title
+    at the figure's edge without a sign (drawn 2026-11-24), and the name is what a long one is
+    made of."""
+    pane = await _load_with_row(_AAPL_ROW)
+    said = "NASDAQ, USD · 1d (6m) · regular hours · APPLE INC"
+    assert hv_title(_chart(pane).object) == f"AAPL · {said}"
+    assert _status(pane).object == f"Loaded 4 bars for AAPL — {said}."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row", "said"),
+    [
+        (None, "listing not recorded · 1d (6m) · hours not recorded"),
+        ({"end": "2026-11-24"}, "listing not recorded · 1d (6m) · hours not recorded"),
+        ({"listing": None, "outside_rth": False}, "listing not recorded · 1d (6m) · regular hours"),
+        (
+            {"listing": {"name": "", "exchange": None, "currency": "MXN"}, "outside_rth": False},
+            "exchange unknown, MXN · 1d (6m) · regular hours · name unknown",
+        ),
+        ({**_AAPL_ROW, "outside_rth": True}, "NASDAQ, USD · 1d (6m) · all hours · APPLE INC"),
+    ],
+    ids=["no-row", "saved-before-2.2.0", "no-listing", "half-a-listing", "all-hours"],
+)
+async def test_what_the_row_does_not_say_is_said_to_be_unknown(row, said):
+    """Never a guess, never a blank: a row saved by an earlier core has no listing and no
+    hours, and a listing can lack a field."""
+    pane = await _load_with_row(row)
+    assert hv_title(_chart(pane).object) == f"AAPL · {said}"
+    assert said in _status(pane).object
+
+
+@pytest.mark.asyncio
+async def test_a_listings_name_is_escaped_in_the_status_line_and_after_a_failed_load():
+    """The name is IBKR's text, and the status line is rendered markup: both places that print
+    it escape it (security architecture § 10)."""
+    from unittest.mock import patch
+
+    row = {**_AAPL_ROW, "listing": {"name": "<b>X</b>", "exchange": "N", "currency": "USD"}}
+    pane = await _load_with_row(row)
+    assert "&lt;b&gt;X&lt;/b&gt;" in _status(pane).object and "<b>" not in _status(pane).object
+
+    bad = _mock_toolkit(cached=False, df=None)
+    bad._cache.load.side_effect = RuntimeError("No cached file")
+    cb = _get_click_callback(_button(pane))
+    with patch("claudia.panel_app._get_toolkit", return_value=bad):
+        await cb(None)
+    failed = _status(pane).object
+    assert "Still showing AAPL · N, USD · 1d (6m) · regular hours · &lt;b&gt;X&lt;/b&gt;." in failed
+    assert "<b>" not in failed
 
 
 # ── gap #21 (2026-09-25): a Load click is a real tool run, and leaves a real record ─────

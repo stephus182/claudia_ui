@@ -768,6 +768,18 @@ def test_every_toolkit_attribute_claudia_reads_exists_on_a_real_toolkit():
     assert read and not missing, missing
 
 
+@pytest.mark.parametrize("method", ["check", "load", "entry"])
+def test_the_drive_cache_reads_the_chart_makes_still_take_its_arguments(method):
+    """The chart pane reads the bar cache past the toolkit, and its tests drive a MagicMock,
+    which answers to any name and takes any argument. The hours are part of the key since
+    core 2.2.0 (gap #65): a read that lost them would answer for another series."""
+    from ibkr_core_mcp import GDriveCache
+
+    parameters = inspect.signature(getattr(GDriveCache, method)).parameters
+    assert list(parameters)[:5] == ["self", "symbol", "timeframe", "period", "end"]
+    assert parameters["outside_rth"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
 def test_the_collaborator_check_sees_a_swap():
     """The identity check, against a toolkit that files two collaborators under each
     other's names."""

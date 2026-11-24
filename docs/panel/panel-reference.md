@@ -440,6 +440,12 @@ libraries guarantee, quoted and executed, are in
   guarantee (*"Field names of the OHLC fields. Default is `["open","high","low","close"]`"*),
   and only its surrounding prose states the positional rule — the isolated line is what a
   reader checks.
+- **What the bars are** (gap #65, 2026-11-24): the title and the status line carry exchange and
+  currency, the bar, the period, the hours and the listing's name, from the manifest row the cache
+  recorded with the bars (`toolkit._cache.entry`); what the row does not say reads `not recorded`
+  or `unknown`, never blank. The name is last because Bokeh cuts a title at the figure's edge
+  without a sign. The pane is regular hours, said on every cache call and on the fetch,
+  because the hours are part of the core's cache key since 2.2.0.
 - **Data**: cache-first via `toolkit._cache.check/load` (parquet, `DatetimeIndex`, lowercase
   columns), fetching from IBKR on a miss — through `tool_record.record_and_execute`, never
   `toolkit.execute` directly (gap #21, 2026-09-25): the Load click leaves a `tool` row stamped

@@ -2,16 +2,18 @@
 
 A self-contained component the user drives independently of the conversation:
 symbol / period / bar controls + a Load button that fetches OHLCV (Drive-cache
-first, IBKR on miss) and renders a HoloViews candlestick. STK only — the fetch tool
-resolves STK conids (no sec_type parameter). Every failure path (IBKR offline,
-empty DataFrame, unknown symbol, unexpected exception) surfaces an honest status
-message and never crashes the session.
+first, IBKR on miss) and renders a HoloViews candlestick. STK only, regular hours only.
+The title and the status say what the bars are — the listing, its exchange and currency,
+the bar, the period, the hours — from the cache's own row (gap #65). Every failure path
+(IBKR offline, empty DataFrame, unknown symbol, unexpected exception) surfaces an honest
+status message and never crashes the session.
 
 Data flow (verified 2026-07-24 — research doc
 docs/panel/2026-07-24-candlestick-chart-pane-research.md):
-  toolkit._cache.check / load(symbol, bar.upper(), period, end) return whether the
-  bars are cached and the OHLCV DataFrame respectively (DatetimeIndex + lowercase
-  open/high/low/close/volume columns — ibkr_core_mcp indicators.py:11,42). On a
+  toolkit._cache.check / load / entry(symbol, bar.upper(), period, end, outside_rth=False)
+  return whether the bars are cached, the OHLCV DataFrame (DatetimeIndex + lowercase
+  open/high/low/close/volume columns — ibkr_core_mcp indicators.py:11,42) and the row
+  recorded with them (the listing, the hours; the hours are part of the key). On a
   cache miss, `record_and_execute(toolkit, "fetch_market_data", …)` fetches from IBKR (leaving a
   `tool` row under the session, gap #21) and
   populates the parquet cache, returning only a human-readable SUMMARY string
@@ -40,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
@@ -55,11 +58,15 @@ import panel as pn
 from bokeh.models import NumeralTickFormatter
 
 from claudia.palette import DOWN_COLOR, UP_COLOR
-from claudia.panel_markdown import safe_markdown
+from claudia.panel_markdown import escape_markup, safe_markdown
 from claudia.tool_record import UI_BUTTON_ORIGIN, record_and_execute
 
 log = logging.getLogger(__name__)
 
+
+# Regular trading hours, said on every call rather than left to the core's defaults: the hours
+# are part of the cache key since core 2.2.0, so the read and the fetch must agree on them.
+_OUTSIDE_RTH = False
 
 # Passed to hvplot.ohlc()'s bar_width= for the candle bodies only (build_chart_object) --
 # the volume bars are a separate .hvplot.bar() call that takes no bar_width and uses
@@ -314,6 +321,33 @@ def build_chart_object(df: pd.DataFrame, title: str) -> Any:
     return (price + volume).cols(1)
 
 
+def _what_the_bars_are(row: object, bars: str) -> str:
+    """`<exchange>, <currency> · <bars> · <hours> · <name>`, off the cache's own row (gap #65).
+
+    A ticker is not a listing: the fetch once answered `ES` with Eversource Energy. What the
+    row does not say is said to be unknown — a row saved before core 2.2.0 has neither. The
+    name goes last: Bokeh cuts a title at the figure's edge without a sign (drawn 2026-11-24),
+    and a fund's name alone can fill the line.
+
+    Args:
+        row: `GDriveCache.entry`'s manifest row, or None.
+        bars: The bar size and the period, as the caller words them.
+    """
+    recorded = row if isinstance(row, Mapping) else {}
+    listing = recorded.get("listing")
+    if isinstance(listing, Mapping):
+        fields = ("exchange", "currency", "name")
+        exchange, currency, name = (str(listing.get(f) or f"{f} unknown") for f in fields)
+        where, who = f"{exchange}, {currency}", f" · {name}"
+    else:
+        where, who = "listing not recorded", ""
+    outside = recorded.get("outside_rth")
+    hours = "hours not recorded"
+    if isinstance(outside, bool):
+        hours = "all hours" if outside else "regular hours"
+    return f"{where} · {bars} · {hours}{who}"
+
+
 def build_chart_pane(session_id: str | None = None) -> pn.Column:
     """Return the self-contained candlestick pane.
 
@@ -376,7 +410,8 @@ def build_chart_pane(session_id: str | None = None) -> pn.Column:
 
             # Blocking Drive/IBKR calls go through to_thread so the event loop (and the
             # loading spinner) stay responsive.
-            if not await asyncio.to_thread(toolkit._cache.check, sym, tf, period.value, end):
+            key = (sym, tf, period.value, end)
+            if not await asyncio.to_thread(toolkit._cache.check, *key, outside_rth=_OUTSIDE_RTH):
                 status.object = f"Fetching {sym}…"
                 # execute returns (text_result, None) -- ClaudeToolkit.execute's declared
                 # signature is `-> tuple[str, None]`, the second slot a legacy figure
@@ -397,12 +432,17 @@ def build_chart_pane(session_id: str | None = None) -> pn.Column:
                 fetch_summary, _ = await record_and_execute(
                     toolkit,
                     "fetch_market_data",
-                    {"symbol": sym, "period": period.value, "bar": bar.value},
+                    {
+                        "symbol": sym,
+                        "period": period.value,
+                        "bar": bar.value,
+                        "outside_rth": _OUTSIDE_RTH,
+                    },
                     store=store,
                     session_id=session_id,
                     origin=UI_BUTTON_ORIGIN,
                 )
-            df = await asyncio.to_thread(toolkit._cache.load, sym, tf, period.value, end)
+            df = await asyncio.to_thread(toolkit._cache.load, *key, outside_rth=_OUTSIDE_RTH)
             if df is None or df.empty:
                 status.object = f"No data for {sym}."
                 return
@@ -412,11 +452,10 @@ def build_chart_pane(session_id: str | None = None) -> pn.Column:
             # screenshot cannot silently misreport its own timeframe.
             actual = _infer_bar_label(df.index)
             mismatched = bool(actual) and actual != bar.value
-            label = (
-                f"{sym} {actual} ({period.value}) — requested {bar.value}"
-                if mismatched
-                else f"{sym} {bar.value} ({period.value})"
-            )
+            bars = f"{actual if mismatched else bar.value} ({period.value})"
+            row = await asyncio.to_thread(toolkit._cache.entry, *key, outside_rth=_OUTSIDE_RTH)
+            asked = f" — requested {bar.value}" if mismatched else ""
+            label = f"{sym} · {_what_the_bars_are(row, bars + asked)}"
             chart.object = build_chart_object(df, label)
             shown_label = label
             note = (
@@ -424,7 +463,9 @@ def build_chart_pane(session_id: str | None = None) -> pn.Column:
                 if mismatched
                 else ""
             )
-            status.object = f"Loaded {len(df)} bars for {sym}.{note}"
+            # The listing's name is IBKR's text; the status line is rendered markup.
+            said = escape_markup(_what_the_bars_are(row, bars))
+            status.object = f"Loaded {len(df)} bars for {sym} — {said}.{note}"
         except Exception as exc:
             # symbol.value (not a try-local) so the message is safe even if the
             # failure fired before any local was bound (e.g. _get_toolkit raising).
@@ -440,7 +481,7 @@ def build_chart_pane(session_id: str | None = None) -> pn.Column:
             # so appending unconditionally produced "connected?." and "bars..".
             if not reason.endswith((".", "?", "!")):
                 reason += "."
-            still = f" Still showing {shown_label}." if shown_label else ""
+            still = f" Still showing {escape_markup(shown_label)}." if shown_label else ""
             status.object = f"✕ Could not load {failed} — {reason}{still}"
         finally:
             load_btn.loading = False
