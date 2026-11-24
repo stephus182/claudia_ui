@@ -3468,6 +3468,8 @@ async def test_execute_cancel_order_falls_back_to_the_proposal_when_the_status_r
     ibkr_mod, client = _make_cancel_modify_ibkr_mock()
     client.get_order_status.side_effect = RuntimeError("HTTP 500")
     await _run_cancel(_make_cancel_action(_ES_CANCEL), ibkr_mod)
+    # Nor does the read decide whether the cancel goes: without it, the bare one (gap #7).
+    assert client.cancel_order.call_args.kwargs["manual_indicator"] is None
     details = client.cancel_order.call_args.kwargs["order_details"]
     assert details == {
         "ticker": "ES",
@@ -3480,6 +3482,38 @@ async def test_execute_cancel_order_falls_back_to_the_proposal_when_the_status_r
         # failed nothing can tell a future from a stock. The dialog must not multiply.
         "_multiplier_unknown": True,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "tag"),
+    [
+        pytest.param({"sec_type": "FUT"}, True, id="FUT"),
+        pytest.param({"sec_type": "FOP"}, True, id="FOP"),
+        pytest.param({"sec_type": "fut"}, True, id="lower-case"),
+        pytest.param({"sec_type": "FUT", "conid": None}, True, id="FUT-without-a-conid"),
+        pytest.param({"sec_type": "STK"}, None, id="STK"),
+        pytest.param({"sec_type": "OPT"}, None, id="OPT"),
+        pytest.param({"sec_type": "CASH"}, None, id="CASH"),
+        pytest.param({"sec_type": ""}, None, id="not-given"),
+    ],
+)
+async def test_a_futures_cancel_carries_the_cme_tag_and_no_other_cancel_does(status, tag):
+    """Gap #7, CME Rule 536-B. IBKR's Cancel Order page (read 2026-11-24): `manualIndicator` is
+    required on a future and a futures option, and "regardless of original submission, the
+    cancellation must also include the manualIndicator tag". A person clicked, so True. Left
+    out on every other class: IBKR rejects the tag on an equity placement, and an equity
+    cancel carrying it was never probed. The class is the live order's own, from the one
+    status read the dialog is built from.
+    """
+    ibkr_mod, client = _make_cancel_modify_ibkr_mock()
+    _set_readback(client, **{**_ES_STATUS, **status})
+    client.get_contract_info.return_value = _ES_INFO
+    await _run_cancel(_make_cancel_action(_ES_CANCEL), ibkr_mod)
+    kwargs = client.cancel_order.call_args.kwargs
+    assert kwargs["manual_indicator"] is tag
+    # It travels beside the dialog's details, never inside them.
+    assert not [key for key in kwargs["order_details"] if "manual" in key.lower()]
 
 
 def _rendered_cancel_dialog(order_id: str, details: dict[str, Any]) -> dict[str, str]:

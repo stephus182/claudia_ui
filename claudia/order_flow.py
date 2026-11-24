@@ -567,6 +567,9 @@ def _cancel_display_details(ibkr: Any, proposal: dict[str, Any]) -> dict[str, An
         if linked:
             # Popped by `_cancel_order` and sent to the chat before the write; never a dialog key.
             details["_linked_sentence"] = linked
+        if str(status.get("sec_type", "")).upper() in ("FUT", "FOP"):
+            # Popped by `_cancel_order` and passed to the client (gap #7); never a dialog key.
+            details["_manual_indicator"] = True
         # The two keys the core's cancel dialog draws its ⚠ rows from (its A6): ClaudIA builds
         # the dialog's details itself (gap #40), so the core's own builder never runs on this
         # path, and the rows were absent from the last screen before the write — seen live
@@ -2803,8 +2806,17 @@ async def _cancel_order(
             # A bracket leg (gap #36): what this cancel does to the other legs, said before
             # Touch ID, from the read above — one read, two uses.
             await send_status(linked, "System")
+        # CME Rule 536-B (gap #7): the cancel of a future or a futures option says a person
+        # made it. Known from the same read; without it the bare cancel goes, since a cancel is
+        # never blocked by a read. `extOperator` stays out, as on place and modify (8089).
+        # https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/cancel-order.md
+        manual_indicator = order_details.pop("_manual_indicator", None)
         result = await asyncio.to_thread(
-            ibkr.cancel_order, account_id, order_id, order_details=order_details
+            ibkr.cancel_order,
+            account_id,
+            order_id,
+            order_details=order_details,
+            manual_indicator=manual_indicator,
         )
         dispatched = True
 

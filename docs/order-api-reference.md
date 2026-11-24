@@ -776,13 +776,16 @@ observed (see § Post-dispatch read-back) — `CANCELLED:` in the summary only w
 disposable AAPL order (orderId `567317535`), confirmed gone from `get_live_orders` on the next
 check. STK cancellation works end to end.
 
-**The CME Rule 536-B tag on a futures cancel — documented, not enforced, and not yet sent
-(gap #7).** IBKR's Cancel Order page lists `manualIndicator`/`extOperator` as **query params**
-for FUT/FOP: each is "required when trading Futures and Futures Options contracts to remain in
-compliance with CME Group Rule 536-B", and "Regardless of original submission, the cancellation
-must also include the manualIndicator tag" (read 2026-10-01, byte-identical to the 2026-09-08
-capture). ClaudIA's place and modify bodies carry `manualIndicator: True`; **its cancel does
-not**: the released core's `cancel_order()` sends the bare `DELETE`.
+**The CME Rule 536-B tag on a futures cancel — documented, not enforced, sent (gap #7).**
+IBKR's Cancel Order page lists `manualIndicator`/`extOperator` as **query params** for FUT/FOP:
+each is "required when trading Futures and Futures Options contracts to remain in compliance
+with CME Group Rule 536-B", and "Regardless of original submission, the cancellation must also
+include the manualIndicator tag" (read again 2026-11-24, the same sentences). ClaudIA's place
+and modify bodies carry `manualIndicator: True`, and since 2026-11-24 its cancel of a FUT or FOP
+passes `manual_indicator=True` to the core's `cancel_order()` (2.2.0), which sends
+`?manualIndicator=true`. The class is the live order's own `sec_type`, from the status read made
+before Touch ID; when that read fails the bare cancel goes, since a cancel is never blocked by a
+read.
 
 What was measured:
 
@@ -800,12 +803,8 @@ What was measured:
 - **Not probed:** `extOperator` on a cancel (IBKR rejects it on place as field 8089, so it stays
   out everywhere), and the tag on an equity cancel.
 
-**From core 2.2.0** `cancel_order(..., manual_indicator=True)` sends the tag; ClaudIA passes it
-for a FUT or FOP cancel — known from the status read it already makes before Touch ID, omitted
-when that read fails, since a cancel is never blocked by a read — once `core-ref.txt` moves to
-that release. Until then every futures cancel here is the bare one. Tracked as Known Gaps #7 in
-`docs/project-status.md`. The bracket plan inherits this path: a parent cancel is the same
-`DELETE`.
+Tracked as Known Gaps #7 in `docs/project-status.md`. A bracket leg is cancelled by the same
+path, so it carries the tag too.
 Source: https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/cancel-order.md
 (`ibkrcampus.com`, the earlier host, answered a Cloudflare error on 2026-10-01)
 

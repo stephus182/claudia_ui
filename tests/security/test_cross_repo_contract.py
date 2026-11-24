@@ -105,7 +105,7 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
 GATED_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
     "place_order_and_confirm": ("reply_log",),
     "modify_order_and_confirm": ("reply_log",),
-    "cancel_order": ("order_details",),
+    "cancel_order": ("order_details", "manual_indicator"),
     "place_bracket_and_confirm": ("reply_log",),
     "attach_order_and_confirm": ("reply_log",),
 }
