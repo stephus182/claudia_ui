@@ -46,15 +46,15 @@ ClaudIA without touching IB. No container restart, no login prompt.
 ▶ Verifying IBKR session...
   ✔ IBKR session active and ready.
 ```
-The existing container (if any) is removed and a fresh one is started.
-Login is required.
+A current container is restarted in place; any other is removed and a new one is run (core 2.2.0,
+register F43). Login is required.
 
 **Decision logic** (`GatewayManager.startup()`):
 1. Ensure Docker Desktop is running
 2. Check `is_running() AND is_authenticated()` — if both true → fast path, return
-3. Otherwise → full path: remove container, start fresh, prompt for login
+3. Otherwise → full path: a fresh gateway process, then the login
 
-**Why remove-and-recreate on the full path:** the IBKR gateway container holds session state. Reusing a stale container after a timeout produces unpredictable auth errors. A fresh container always starts clean.
+**Why a fresh process on the full path:** the gateway holds its session in its own process. `docker restart` gives a current container a new one, so a clean, unauthenticated session, and keeps the container's files, the gateway's log among them: the one place a refused login shows (measured 2026-11-07, register F43).
 
 **caffeinate:** macOS sleep prevention is started before the gateway check. `caffeinate -i -w $$` runs for the lifetime of the script, preventing idle sleep from disconnecting IBKR mid-session.
 
@@ -338,7 +338,7 @@ No container restart. No login. Session uninterrupted.
 ```
 ./start-claudia.sh
   → Phase -1: container missing or not authenticated → full path
-  → Docker launched, fresh container started
+  → Docker launched, the container restarted in place (recreated when it is not current)
   → Login page opened (from core 2.2.0: a small window of its own, closed at the first
     authenticated-and-connected reading — gap #102)
   → User completes IBKR login + mobile 2FA
@@ -373,4 +373,4 @@ No container restart. No login. Session uninterrupted.
   was one login on IBKR's website, then one to the gateway (`docs/ibkr-gateway.md` § Refused after "Client login
   succeeds").
 - **Gateway starts but session drops immediately**: Competing session or IBKR 2FA timing issue. Click the IBKR button again — the pre-flight names a borrowed session rather than retrying it.
-- **Container present but not authenticated**: Session timed out. Full path runs — remove/recreate/login.
+- **Container present but not authenticated**: Session timed out. Full path runs — a restart in place (a new container when it is not current), then the login.

@@ -159,12 +159,11 @@ execution, it transiently subscribes to `spl` (P&L), waits (bounded by a 10s tim
 for exactly one `PnLUpdate`, records it via `SQLiteStore.record_pnl_snapshot()`, and
 unsubscribes — returning to its executions-only steady state.
 
-**The subscription is sent the instant `connect()` returns — and on the released core that is
-too early.** IBKR drops a topic sent before its `sts` frame (measured 2026-09-24: 0 `str` frames
-before it, 37 after, gap #68) and says nothing, so on `ibkr_core_mcp` 2.1.0 this listener has
-never received an execution in production. The core's `release/2.2.0` (`ebca521`) makes
-`connect()` return only after `sts authenticated: true`; the ordering here is then correct
-without a change. Finding, sources and the ClaudIA half that follows the pin:
+**The subscription is sent the instant `connect()` returns, which is right from core 2.2.0 on:**
+`connect()` returns only after `sts authenticated: true`. IBKR drops a topic sent before its `sts`
+frame (measured 2026-09-24: 0 `str` frames before it, 37 after, gap #68) and says nothing, so on
+`ibkr_core_mcp` 2.1.0 this listener never received an execution in production. Finding, sources
+and the ClaudIA half that follows the pin:
 `docs/order-api-reference.md` § Automatic execution reports.
 
 This replaced an earlier design (`PnLStreamer`, see git history and

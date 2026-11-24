@@ -243,7 +243,8 @@ and no *"authenticated to cp"* means refused; neither yet means IBKR is still an
 page writes *"Client login succeeds"* one second **before** IBKR is asked, so it is not a
 session. A restart did not clear one (2026-10-08: the container started 15:47:49 UTC,
 the next login was refused at 15:49:37); a container that is removed and re-created loses its
-log, and with it the evidence (`GatewayManager.start()` removes it — core register F43).
+log, and with it the evidence (since core 2.2.0 `GatewayManager.start()` restarts a current
+container in place, which keeps it, and recreates only another — register F43).
 Where it shows: the preflight reads `[REFUSED]` (exit 5) or `[VALIDATING]` (exit 6); the
 launcher and the IBKR button name a refused last login before the page opens and end the wait
 at once if the new login is refused too; ClaudIA warns at start; `--diagnose` prints the login
@@ -310,12 +311,12 @@ and `python -m claudia.gateway_launch --diagnose` is the next step.
   borrowed session — it stays open and the owner says "Close the login window (⌘Q on macOS)".
   ⌘Q because, measured 2026-10-13, a closed window leaves its Chrome running on macOS and the next
   login would open in that leftover, out of the owner's reach (it then says so). The gateway's
-  certificate warning is accepted once in that profile. With core 2.1.0, or no Chrome, a browser
-  tab as before, and today's lines.
+  certificate warning is accepted once in that profile. Without Chrome, a browser tab as before,
+  and today's lines.
 - **The IBKR button** (in the action bar under the chat since 2026-09-03; "Start IBKR Gateway" in the welcome message before) — hands a `GatewayManager` to
   `GatewaySession.establish()`, which reads the session *before* anything touches the
   container and opens a login page only from `FREE`. It used to inline its own sequence and
-  call `GatewayManager.start()` — which removes any existing container — **before** the
+  call `GatewayManager.start()` — which then removed any existing container — **before** the
   pre-flight, so the two verdicts the pre-flight existed for were computed against a session
   that had already been destroyed. Fixed 2026-08-06; `tests/test_gateway_ownership.py`
   now fails if any module outside the owner drives a manager again.

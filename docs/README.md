@@ -65,6 +65,9 @@ like, and the mandatory live-test procedure. Two behaviors surprise people from 
 tools need the `[scraper]` extra and every import is lazy, so a missing extra fails at tool-call
 time rather than at startup; and a fetch of a domain with a saved login profile opens a **real
 browser window** and is **serialised per profile**, both required rather than incidental.
+And what a bar is, per asset class and per source — its stamp, its session, the hours, the volume,
+the cache key, each with its proof — is `ibkr_core_mcp/docs/market-data-conventions.md`: read it
+before describing or comparing bars.
 
 ## Panel framework reference (`docs/panel/`)
 

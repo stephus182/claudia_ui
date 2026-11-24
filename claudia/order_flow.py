@@ -190,10 +190,12 @@ def _last_trade_key(row: Mapping[str, Any]) -> int:
     CME https://www.cmegroup.com/markets/energy/crude-oil/light-sweet-crude.contractSpecs.html
 
     **This duplicates `ibkr_core_mcp.claude_tools`'s rule by necessity, not by choice.** The
-    core owns the same logic for the tools path, but this repo's CI installs the core from
-    PyPI at the pinned release (`core-ref.txt`), where that helper does not yet exist — an
-    import would go red until the next core release. Consolidate to one definition when the
-    core is next released and the pin moves; until then the two must be changed together.
+    core has had the same rule for the tools path since 2.2.0, under private names
+    (`_last_trade_key`, `_still_tradeable`). Consolidate when it has a public one; until then
+    the two must be changed together. They are not quite one today: the core lets only a row
+    with a date compete for the front month, and orders by this key; the caller below orders
+    by `expirationDate` alone, so a row with no date, or with `ltd` only, would come first
+    (run 2026-11-24; IBKR sent both dates for every root measured).
     """
     dates = []
     for key in ("ltd", "expirationDate"):

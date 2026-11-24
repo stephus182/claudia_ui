@@ -457,8 +457,8 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   after trading has stopped** (CLV6: `expirationDate` 20260922, `ltd` 20261001), so after each
   monthly roll a bare `CL` resolved to the expired contract for as long as IBKR still listed it —
   CLV6 was listed two days after it expired and gone by day seven (2026-09-24, 09-29); `ltd` alone
-  would have allowed nine. The core carries the same rule (register
-  F16) until its next release. **HARD RULE (gap #71, operator 2026-09-24): an expired future is
+  would have allowed nine. The core has the same rule since 2.2.0 (register
+  F16), under private names, so ClaudIA's copy stays until it has a public one. **HARD RULE (gap #71, operator 2026-09-24): an expired future is
   never staged** — the model usually supplies the conid from that core resolver, so the order
   path refuses any FUT whose `/iserver/contract/{conid}/info` `maturity_date` is today or
   earlier, or unreadable (fail-closed), **before Gate 1**, from the contract read it already

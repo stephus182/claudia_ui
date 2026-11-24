@@ -191,7 +191,7 @@ quotes and the read-only captures: `docs/plans/2026-09-24-tif-and-close-orders-r
 | Place / modify body | `tif` | IBKR's enum has **five** values: `DAY`, `IOC`, `GTC`, `OPG`, `PAX` ([submit-new-order](https://www.interactivebrokers.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order.md); the same five on get-order-status and in the OpenAPI document v2.40.0). `PAX` is listed and **defined nowhere** IBKR publishes — not in the legacy Client Portal reference (which defines the other four), not on any Campus page, not in the TWS API order reference, not in the F/ES contract rules (research 2026-10-05, in `ibkr_core_mcp/docs/order-management-examples.md` § Time in force). Operator's decision 2026-10-05: not offered — ClaudIA proposes the four IBKR defines. The enum is **not** the whole story: `/iserver/contract/rules` returns more per contract |
 | `/iserver/contract/rules` (POST, read-only: *"Returns trading related rules for a specific contract and side"*) | `tifTypes`, `orderTypes` | The TIFs and order types **this contract** accepts — the authority for what may be proposed ([search-contract-rules](https://www.interactivebrokers.com/docs/web-api/v1/endpoints/contract/search-contract-rules.md)) |
 | `/iserver/account/order/status/{id}` | `tif` | *"Returns the time in force of the order."* — reported `DAY` for a DAY stock order, measured |
-| `/iserver/account/orders` (live orders) | `timeInForce` | *"Returns the time in force (tif) of the order."* — but reports **`CLOSE`** for a DAY stock order (gap #70). `CLOSE` is in no enum and defined nowhere; IBKR's own example response carries it (on an FX order). **Do not map it to `DAY`**: that would be an undocumented rule presented as fact. **The dashboard's Orders tab no longer reads this field (gap #70, fixed 2026-09-24):** each order's TIF comes from order status's `tif`, read once per order and again only when `orderDesc` changes, and shows `—` until known (`dashboard_data.TifCache`). The core's `get_live_orders` tool still shows the model the raw value (core register F8) |
+| `/iserver/account/orders` (live orders) | `timeInForce` | *"Returns the time in force (tif) of the order."* — but reports **`CLOSE`** for a DAY order, stock or future (gap #70; core register F14). `CLOSE` is in no enum and defined nowhere; IBKR's own example response carries it (on an FX order). **Do not map it to `DAY`**: that would be an undocumented rule presented as fact. **The dashboard's Orders tab no longer reads this field (gap #70, fixed 2026-09-24):** each order's TIF comes from order status's `tif`, read once per order and again only when `orderDesc` changes, and shows `—` until known (`dashboard_data.TifCache`). Since core 2.2.0 `get_live_orders` quotes the model IBKR's own `orderDesc` instead of the raw value (register F8) |
 | same | `orderDesc` | IBKR's own text for the order, e.g. `Buy 1 F Limit 5.10, Day` |
 
 ### Part A — stocks (STK)
@@ -253,9 +253,9 @@ ETF — and F → NYSE.
 `DAY`, `GTC`, `IOC`, `GTD` — **no `OPG`, no `OVT`/`OND`**. ClaudIA's proposal enum includes `OPG`,
 so an `OPG` proposal on ES is schema-valid today and would be refused only by IBKR.
 
-- **What the live-orders endpoint reports for a DAY future is unmeasured**: every futures order
-  seen on 2026-09-24 was GTC (reported `GTC`). The stock `CLOSE` finding must not be assumed to
-  carry over; one DAY future at a safe price settles it.
+- **A DAY future reads `CLOSE` too** on the live-orders endpoint: an ES stop on 2026-10-02, and CL
+  (core register F14). Neither was an order for the close: `CLOSE` is only how that list labels a
+  DAY order.
 - **Outside RTH on US futures** decides when a stop can trigger — § Stop orders on US futures.
 
 **Close equivalents.** ES has **no closing auction**: its daily settlement is a VWAP between
@@ -1024,8 +1024,8 @@ frame reporting `authenticated: true`. What IBKR documents (scraped 2026-09-29, 
 properties with the `sessionId`, `str` needs a brokerage session, and IBKR's own example sleeps
 3 s before its first topic. The core fixed it where it is: `IBKRWebSocket.connect()` now returns
 only after `sts authenticated: true`, so the subscribe-straight-after-connect above becomes
-correct with no change here once `core-ref.txt` moves; until then, on the released 2.1.0, this
-section describes surfaces that have never fired. The remaining ClaudIA half (a socket double as
+correct with no change here from core 2.2.0 on; on 2.1.0 this section described surfaces that had
+never fired. The remaining ClaudIA half (a socket double as
 strict as the gateway, the "not confirmed" silence guard, replay-and-seed against
 `realtimeUpdatesOnly`) is spec Part 3 and follows the pin; the Fills tab (gap #68's other half,
 built 2026-09-25) is the independent check meanwhile.

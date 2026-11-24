@@ -24,7 +24,7 @@ goes on. Six such copies, written 2026-08-10 → 09-25, were found in `data/` on
 every content row in them was already in `claudia.db` (read-only comparison, 2026-10-01 — only
 the full-text index's internal segments differed). The core's
 `GDriveCache.upload_account_sqlite` writes the same kind of snapshot beside `store.db`; it sweeps
-by the same rule from core 2.2.0 (the released 2.1.0 this repository runs does not).
+by the same rule since core 2.2.0.
 
 **Shared credentials, independent implementations:** `GDriveSync` (this file's module) and
 `ibkr_core_mcp`'s `GDriveCache` both read `GDRIVE_TOKEN_FILE`/`GDRIVE_CREDENTIALS_FILE` from
@@ -115,9 +115,9 @@ Reproduced on demand on 2026-09-24 against real Drive, with 8 threads sharing on
   survived failed 90 of 120 calls.
 - **With the pattern:** 3 of 3 runs completed, 360 of 360 calls succeeded, and there were no crashes.
 
-The core's `GDriveCache` (`ibkr_core_mcp/cache.py`) shares one connection in the released 2.1.0
-this repository runs; from core 2.2.0 it and the web scraper's Drive client build through one
-function with the same pattern (register F17).
+Since core 2.2.0 the core's `GDriveCache` (`ibkr_core_mcp/cache.py`) and the web scraper's Drive
+client build through one function with the same pattern (register F17); until then the cache
+shared one connection.
 
 **Upload lock:** `upload_db` uses `threading.RLock` (reentrant) because `_find_file`
 calls `_get_service()`, which also acquires the same lock. A plain `Lock` would deadlock

@@ -1483,8 +1483,8 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                 filled=max(0.0, total - remaining),
                 price=_as_float(row["price"]) if row.get("price") not in (None, "") else None,
                 order_type=str(row.get("orderType") or row.get("origOrderType") or "").strip(),
-                # NOT `timeInForce`: it read "CLOSE" for a DAY stock order on 2026-09-24,
-                # a value in no enum (gap #70). The TIF is filled in by `TifCache` from the
+                # NOT `timeInForce`: it reads "CLOSE" for a DAY order, stock or future,
+                # a value in no enum (gap #70; core register F14). The TIF is filled in by `TifCache` from the
                 # order-status endpoint's documented `tif`; until then it is unknown.
                 tif="",
                 status=str(row.get("status") or row.get("order_status") or "").strip(),
@@ -1714,22 +1714,26 @@ def display_symbol(
 TIF_RETRY_SECONDS = 60.0
 """How long a failed or empty TIF read waits before it is tried again.
 
-`/iserver/account/order/status` returned 503 mid-session under load on 2026-09-21, and IBKR's
-rate limits are per endpoint, so a failure is not retried on every 15 s poll."""
+`/iserver/account/order/status` answers 503 for an order it holds nothing about: IBKR's page
+says so of one "cancelled or filled prior to the active session" with "no cached information
+saved" (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status,
+read 2026-11-24), and a row IBKR lists as `Inactive` read so on 2026-10-02 (core register F36).
+The core raises such an answer at once since 2.2.0; asking again on every 15 s poll could not
+change it, and the endpoint has its own rate limit."""
 
 
 class TifCache:
     """Each working order's time in force, read from order status once and kept.
 
     **Why not the live-orders row (gap #70).** `/iserver/account/orders` reported
-    `timeInForce: "CLOSE"` for a DAY stock order on 2026-09-24 (3 of 3 DAY orders; GTC orders
-    read `GTC`), while the same order's `orderDesc` read ", Day" and
+    `timeInForce: "CLOSE"` for a DAY order — stocks on 2026-09-24 (3 of 3), a future on
+    2026-10-02 (core register F14); none was an order for the close — while GTC orders
+    read `GTC`, and while the same order's `orderDesc` read ", Day" and
     `/iserver/account/order/status` `tif` read `DAY`. `CLOSE` is in no IBKR enum and defined
     nowhere, so it is neither shown nor translated: mapping it to DAY would be an undocumented
     rule presented as fact. Order status's `tif` is documented — *"Returns the time in force of
     the order"* (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status.md)
-    — and it is the only source used, for every instrument, so the fix does not depend on how
-    the row reports futures (unmeasured on 2026-09-24: every futures order seen was GTC).
+    — and it is the only source used, for every instrument.
 
     **Cost.** One status read per order, repeated only when IBKR's own description of the
     order (`orderDesc`) changes — a modify from ClaudIA, TWS or mobile rewrites it, and the TIF

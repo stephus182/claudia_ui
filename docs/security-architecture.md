@@ -519,6 +519,12 @@ Dated, so a future reader can tell a decision from a default.
 Stated plainly, because a limit that is not written down is indistinguishable from an
 oversight.
 
+- **The core's audit record does not say it was ClaudIA.** Since core 2.2.0 `ClaudeToolkit.execute`
+  and the gated order writes each leave one redacted line in `~/.ibkr_core/audit.jsonl` (the core's
+  `SECURITY.md` § Audit Record owns the format). ClaudIA neither moves the file nor names itself
+  (`audit.configure`, `audit.context`), so `client` and `agent` read `unknown`; and a click that
+  runs a tool, the chart's Load, carries the core's `actor: model`. ClaudIA's own record keeps the
+  two apart (`tool_record`, the `ui_button` stamp). Whether to name ClaudIA is the operator's call.
 - **The trust boundary is every process on this machine, not this user.** The Panel server
   binds loopback with an exact origin allowlist, which stops a hostile web page. It does not
   stop a local process: Bokeh session tokens are unsigned by default, an absent `Origin`
