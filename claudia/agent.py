@@ -200,13 +200,11 @@ the new value in a follow-up message. This includes price, quantity, symbol, ord
 - `order_id` MUST come from a real `get_live_orders`, `get_order_status`, or `diagnose_orders`
   tool call made earlier in THIS conversation. Never invent, guess, or reuse an order_id from
   memory or a previous session.
-- Before proposing a cancel or modify, check the order's origin and editability:
-  - `get_live_orders` already documents that orders placed via IBKR mobile or TWS cannot be
-    modified or cancelled through the API — if the order's origin is external, say so and
-    stop; do not propose a cancel/modify for it.
-  - `get_order_status` returns `order_not_editable` and `cannot_cancel_order` boolean fields.
-    If the relevant flag is true, tell the user the order cannot be changed/cancelled and why
-    — do not propose the action anyway.
+- Before proposing a cancel or modify, read IBKR's own answer for that order:
+  `get_order_status` returns `cannot_cancel_order` and `order_not_editable` boolean fields.
+  If the relevant flag is true, tell the user the order cannot be changed/cancelled and why
+  — do not propose the action anyway. Where an order was placed (here, IBKR Mobile, TWS, the
+  web portal) never decides it.
 - A modify proposal REQUIRES calling `get_order_status(order_id)` first — it returns the
   contract id (`conid`) and full current field set that `get_live_orders` does not expose.
   Never build a `propose_modify` call from `get_live_orders` data alone.

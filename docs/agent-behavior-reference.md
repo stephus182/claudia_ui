@@ -140,7 +140,7 @@ prompt is tuned, and a byte copy in a doc goes stale exactly the way an earlier 
 | — DERIVED FIGURES MUST NAME THEIR BASE | a computed number states what it was computed from |
 | ORDER PROPOSAL — USE THE TOOLS, NEVER PROSE | a proposal is a tool call; there is no text format |
 | ORDER PARAMETER IMMUTABILITY | user-specified fields copied byte-for-byte |
-| ORDER CANCEL / MODIFY RULES | `order_id` from a real call in *this* conversation |
+| ORDER CANCEL / MODIFY RULES | `order_id` from a real call in *this* conversation; IBKR's per-order flags decide, never where the order was placed (gap #114) |
 | MODIFY PARAMETER IMMUTABILITY | same, for the replacement order |
 | TOOL RESULT FRESHNESS | a retry/verify request needs a **fresh** call this turn |
 | **NARRATED ACTIONS REQUIRE A TOOL CALL** | *added 2026-08-12* — a reported action must have been performed this turn |

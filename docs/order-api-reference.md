@@ -925,13 +925,13 @@ https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/li
 `get_order_status` also returns `order_not_editable`/`cannot_cancel_order` booleans — ClaudIA's
 system prompt requires checking these before proposing a modify/cancel and explaining to the
 user if either blocks the action, rather than proposing it anyway. They are IBKR's per-order
-answer: `false` while an order works, `true` once it is cancelled (measured 2026-11-12, core
-register F47). **The same prompt section also refuses any order whose origin is external**
-("`get_live_orders` already documents that orders placed via IBKR mobile or TWS cannot be modified
-or cancelled through the API — if the order's origin is external, say so and stop"). That rule
-rests on the claim F47 measured false on 2026-11-12: orders placed on IBKR Mobile were modified
-and cancelled through the API. Whether to change it is the operator's decision (gap #114); until
-then the model refuses an order placed on the phone that IBKR would accept.
+answer ("Returns whether or not the order can be modified", IBKR's order-status page): `false`
+while an order works, `true` once it is cancelled (measured 2026-11-12, core register F47).
+**Where an order was placed never decides it** (gap #114, 2026-11-24): until then the same prompt
+section refused any order placed on IBKR Mobile or TWS, a rule that rested on a claim F47 measured
+false. The core's `get_live_orders` description says the same from 2.2.0, and
+`test_safety_block_goes_by_the_orders_own_flags_and_never_by_where_it_was_placed` fails when an
+origin rule is written back.
 
 Calls `IBKRClient.modify_order_and_confirm(account_id, order_id, order_body)` — the reply-chain-aware
 variant (same loop as `place_order_and_confirm()`). **Live-verified 2026-07-10**: a clean,

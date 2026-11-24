@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections.abc import Iterable, Mapping
 from types import SimpleNamespace
 from typing import Any, cast
@@ -109,6 +110,27 @@ def test_safety_block_checks_order_editability_flags():
     prompt = _build_system_prompt("# Role\nI am ClaudIA.")
     assert "order_not_editable" in prompt
     assert "cannot_cancel_order" in prompt
+
+
+def test_safety_block_goes_by_the_orders_own_flags_and_never_by_where_it_was_placed():
+    """Gap #114. Until 2026-11-24 the section said orders placed on IBKR Mobile or TWS cannot be
+    changed through the API, so the model refused them and sent the user to the phone. Measured
+    false on 2026-11-12: IBKR accepted modifies and cancels of exactly such orders. IBKR answers
+    per order (`cannot_cancel_order`, `order_not_editable`: "Returns whether or not the order can
+    be modified",
+    https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status).
+    One sentence of the section may speak of where an order was placed, and it says that this
+    never decides; a second one is an origin rule written back."""
+    from claudia.agent import _SAFETY_BLOCK
+
+    section = _SAFETY_BLOCK.split("## ORDER CANCEL / MODIFY RULES")[1].split("\n## ")[0]
+    assert "`cannot_cancel_order`" in section and "`order_not_editable`" in section
+    sentences = re.split(r"(?<=[.:;])\s+", " ".join(section.split()))
+    about_the_origin = [
+        s for s in sentences if re.search(r"origin|external|mobile|tws|portal", s, re.IGNORECASE)
+    ]
+    assert len(about_the_origin) == 1, about_the_origin
+    assert "never decides" in about_the_origin[0]
 
 
 def test_safety_block_contains_modify_parameter_immutability():
