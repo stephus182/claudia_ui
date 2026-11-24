@@ -24,7 +24,9 @@ claudia/dashboard_data.py   — live dashboard: pure data (ledger, positions, re
 claudia/dashboard_poller.py — live dashboard: process-wide 15s poller caching one DashboardSnapshot
 claudia/panel_dashboard.py  — live dashboard: KPI strip + Tabs(Chart/Positions/Orders/Fills/P&L), no IBKR and no SQL
 claudia/agent.py            — Anthropic SDK streaming loop, tool routing, prompt caching (UI-agnostic via MessageSink)
-claudia/proposal_tools.py   — strict-schema propose_order/propose_cancel/propose_modify declarations (no execution)
+claudia/proposal_tools.py   — the five propose_* declarations (no execution): order/cancel/modify strict;
+                              bracket/attach non-strict by the API's union budget, validated in-process
+                              against the same declared schema (2026-10-18, gap #36)
 claudia/message_sink.py     — MessageSink / ToolStepHandle protocols (the UI-decoupling seam)
 claudia/order_flow.py       — framework-agnostic order-execution cores → ibkr_core_mcp biometric gates
 claudia/opening_status.py   — UI-free opening-status builders (session state + trade line; no account
@@ -332,7 +334,8 @@ These rules must never be violated when extending ClaudIA:
 
 1. **Never add a tool that calls `place_order`, `modify_order`, `cancel_order`, or
    `reply_order`.** *Proposing* is a tool call (`propose_order` / `propose_cancel` /
-   `propose_modify` — schema-validated, local handlers, no IBKR reachability). *Staging* is
+   `propose_modify` / `propose_bracket` / `propose_attach` — schema-validated, local
+   handlers, no IBKR reachability). *Staging* is
    a UI-layer action triggered by a physical button click. The rule forbids the second as an
    LLM capability, not the first.
 2. **Never log or expose `ANTHROPIC_API_KEY`** in UI output, logs, or error messages.
@@ -347,9 +350,11 @@ These rules must never be violated when extending ClaudIA:
 ## Order Staging (safety-critical — summary only, full spec: `docs/order-api-reference.md`)
 
 ClaudIA **cannot** place, modify, or cancel orders autonomously:
-1. ClaudIA calls `propose_order` (or `propose_cancel` / `propose_modify`) — a `strict: true`
-   tool declared in `claudia/proposal_tools.py`. It reaches nothing: the handler records the
-   proposal and returns a `tool_result`. There is no text format for a proposal.
+1. ClaudIA calls `propose_order` (or `propose_cancel` / `propose_modify`, or since
+   2026-10-18 `propose_bracket` / `propose_attach`, gap #36) — declared in
+   `claudia/proposal_tools.py`, `strict: true` for the first three. It reaches nothing: the
+   handler records the proposal and returns a `tool_result`. There is no text format for a
+   proposal.
 2. `agent.py` hands the recorded `tool_use.input` to the `MessageSink`
    (`send_order_proposal`); `PanelMessageSink` routes it to
    `panel_order_flow.render_order_proposal()` → a Panel message with a blue
@@ -364,7 +369,7 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
    placement, modification or cancellation; IBKR's precaution replies validate through their
    own dialogs on the write's `OrderWriteAuthorization`, 2026-09-11) → **Gate 2** (AppKit
    dialog, values in bold, green/red banner by side,
-   **SEND TO IBKR** button, a 60 s timeout that leaves the order as it was, Return key disabled). The pre-gate chat message names the Gate 2 button of its own path (`SEND TO IBKR` / `MODIFY ORDER` / `CANCEL ORDER`, copies held to the installed core by a contract test) and says what a timeout leaves in place, never "auto-cancels" (gap #67, 2026-09-25).
+   **SEND TO IBKR** button, a 60 s timeout that leaves the order as it was, Return key disabled). The pre-gate chat message names the Gate 2 button of its own path (`SEND TO IBKR` / `MODIFY ORDER` / `CANCEL ORDER`, copies held to the installed core by a contract test; the bracket and attach cards end at the core's bracket dialog, `SEND TO IBKR`) and says what a timeout leaves in place, never "auto-cancels" (gap #67, 2026-09-25).
 4. `IBKRClient.place_order()` fires only after both gates pass.
 
 - **Order parameters are immutable**: ClaudIA must use the user's exact values (symbol,
@@ -393,16 +398,44 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   refusal before Gate 1 — no conid, no order id, no tradeable future — is stage `before_gates`
   (`RefusedBeforeGatesError`, gap #80, 2026-09-28: six such exits reported and returned,
   so they wrote nothing).
-- **Attached profit taker / bracket orders (2026-09-06, reviewed 2026-09-08): supported by the
-  Web API, not yet expressible here.** IBKR takes a bracket as one request — an `orders` array
-  where the parent carries `cOID` and each child `parentId` equal to it — and holds the child
-  until the parent fills. Every layer of this stack carries one ticket (proposal schema, order
-  body, the ibkr_core_mcp client, Gate 2, read-back), so it is Known Gaps #36 with a plan in
-  `docs/plans/` (build deferred). Documented 2026-09-08: the response is one entry per ticket and
-  the reply chain is per ticket, **index-aligned** — `place_order_and_confirm` answers the first
-  entry only, which is right for one ticket and would drop a bracket child's reply. **Never
-  approximate it with two independent proposals** (user rule 2026-09-07): a standalone
-  opposite-side limit is live immediately and can open the wrong position. Finding and sources:
+- **Attached profit taker / bracket orders (gap #36): BUILT 2026-10-18 on branch
+  `bracket-orders`, waiting for the core 2.2.0 pin.** Two tools, one child shape:
+  `propose_bracket` (a new order plus a profit taker and/or a stop loss) and `propose_attach`
+  (ONE child on an order already working; a profit taker AND a stop loss are two calls). A
+  child is the parent's size, the opposite side and the same contract — derived on the order
+  path (`order_flow._child_ticket`) or by the core from IBKR's record of the parent, never
+  typed; its TIF is the parent's unless it states an equal or shorter one, never longer
+  (IBKR overrides a longer child TIF with the parent's — refused at the proposal and by the
+  core, and both TIFs are explicit and bold on the card and the dialog, operator rule
+  2026-10-18). IBKR takes a bracket as one request — an `orders` array where the parent carries
+  `cOID` and each child `parentId` equal to it — and holds the child until the parent fills;
+  the response order is not the submission order, so the legs are paired by identifier
+  (`pair_bracket_response`, `attached_entry`), and a pairing problem is said and recorded,
+  never reported as success. The parent gets IBKR's **All or None** where IBKR's product
+  list allows it (stocks, options, bonds — never futures: refused on CME, NYMEX and COMEX),
+  and a multi-lot parent without it gets the red partial-fill line on the card and on Gate 2:
+  warned, never refused. IBKR's own whatif of the array runs before any gate, and a refusal it
+  answers in a 2xx body (`error`, measured 2026-10-19: a margin shortfall) refuses there too, so
+  no Touch ID is spent on an order IBKR has already refused. Both cards end
+  at the core's bracket dialog (`SEND TO IBKR`); the cores are `_execute_staged_bracket_core`
+  and `_execute_attach_core`, one `trade_staged` row per leg naming its parent and siblings; a
+  held child is said to be held, never "working". On the Orders tab each bracket is one band,
+  folded by its arrow and open by default (gap #105, operator 2026-11-06): the parent's row in
+  bold, a `Role` column (Parent / Child / Single order), BUY green and SELL red on every order.
+  A child reads `held (parent N)` while its parent is in the book; once the parent has left it,
+  IBKR's own status word for the child with `· parent N executed` or `· parent N cancelled`
+  when IBKR's status read of that parent says so (`ParentStatusCache`, one read per absent
+  parent), and `· parent N not in the book` when it gave no final word — a parent leaves the
+  book when it fills and when it is cancelled alike, so a fill is never inferred from an
+  absence (`Submitted` there is a released child working, seen live 2026-10-19). A child
+  inherits its parent's origin. The table is redrawn only when the book changed, because
+  reassigning its frame re-opens every folded band; a header sort re-orders rows and bands, so
+  the parent is told by its bold row and its Role, never by its place. A cancel
+  or modify of a bracket leg says what IBKR does to the other legs before Touch ID, and the cancel
+  details carry the two OCA keys the core's dialog draws its ⚠ rows from (2026-10-19). **Never
+  approximate it with two independent proposals** (user rule 2026-09-07, a non-overridable
+  section of the safety block since 2026-10-18): a standalone opposite-side limit is live
+  immediately and can open the wrong position. Finding and sources:
   `docs/order-api-reference.md` § Attached profit taker.
 - Modify requests require the **full original order**, not a diff (IBKR API requirement).
   `propose_modify` carries the replacement order in its top-level fields plus a `changes`
@@ -433,7 +466,14 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   "restore" symbol resolution here — re-implementing it would put a second, drifting
   definition next to the authoritative one.
 - `strict: true` enforces types, `enum`s, required keys and closed objects at the API
-  boundary. **Seven** guarantees it cannot express are checked by `_proposal_defect()` in
+  boundary — for the three original tools. **`propose_bracket` and `propose_attach` are
+  non-strict** (2026-10-18): the API caps union-typed parameters at 16 across all strict
+  schemas in one request, the three originals carry 10, and its internal grammar limit
+  refused every four- or five-strict-tool layout even at 14 (the probe record in
+  `claudia/proposal_tools.py`). For those two, `agent._schema_defect()` enforces the same
+  declared schema in-process before any field is read, keyed on the declaration's own
+  `strict` flag; what is lost is constrained decoding, and an invalid call is refused with a
+  tool result like a defective one. **Seven** guarantees no schema can express are checked by `_proposal_defect()` in
   `claudia/agent.py`: positive quantity, non-blank `symbol`, non-blank `order_id`, no
   duplicate `changes` entries, `outside_rth` strictly boolean-or-null, every present price a
   finite non-zero number, and a priced `order_type` carrying the price it is priced by. A
@@ -464,7 +504,7 @@ before adding/debugging a tool. Recent additions log: `ibkr_core_mcp/CHANGELOG.m
 
 `self._all_tools` in `claudia/agent.py` is **not** just that catalog: it is the toolkit's 44,
 plus the TradingView extras when the sidecar is up (17 curated), plus 5 local utility tools
-(`_LOCAL_TOOLS`) and the 3 `PROPOSAL_TOOLS`, both declared in claudia_ui. The proposal tools
+(`_LOCAL_TOOLS`) and the 5 `PROPOSAL_TOOLS`, both declared in claudia_ui. The proposal tools
 are appended last so the tools cache breakpoint on the final entry stays stable.
 
 No extras (e.g. `[server]`) are needed for the install above; `[scraper]` is the one that
@@ -631,7 +671,7 @@ the fix that established this (75,480 → 2,910 tokens/session).
   of our own): `docs/panel/component-model-reference.md`
 - Panel data surfaces — Tabulator/Number/ECharts, the `pn.extension()` gate, side windows,
   stream/patch + connectivity, the editing / buttons / selection toolkit for a write surface
-  (§2.2.1, scraped and probed 2026-10-08), and 33 measured gotchas (16 onwards found live against the
+  (§2.2.1, scraped and probed 2026-10-08), and 40 measured gotchas (16 onwards found live against the
   account): `docs/panel/data-surfaces-reference.md`
 - **Live dashboard** (KPI strip · Positions · P&L, shipped 2026-08-04): the three modules in
   the diagram above. Read `claudia/dashboard_data.py`'s module docstring first — it carries the

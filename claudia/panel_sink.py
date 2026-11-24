@@ -229,3 +229,19 @@ class PanelMessageSink:
         await render_modify_proposal(
             self._chat, proposal, session_id=self._session_id, store=self._store
         )
+
+    async def send_bracket_proposal(self, proposal: dict[str, Any]) -> None:
+        """Render the staging button for a bracket. Places nothing — see MessageSink."""
+        from claudia.panel_order_flow import render_bracket_proposal
+
+        await render_bracket_proposal(
+            self._chat, proposal, session_id=self._session_id, store=self._store
+        )
+
+    async def send_attach_proposal(self, proposal: dict[str, Any]) -> None:
+        """Render the staging button for one attached order. Attaches nothing — see MessageSink."""
+        from claudia.panel_order_flow import render_attach_proposal
+
+        await render_attach_proposal(
+            self._chat, proposal, session_id=self._session_id, store=self._store
+        )

@@ -167,6 +167,7 @@ def test_safety_block_change_adds_a_constraint_and_relaxes_none():
         "## ORDER PROPOSAL — USE THE TOOLS, NEVER PROSE",
         "## ORDER PARAMETER IMMUTABILITY — NON-OVERRIDABLE",
         "## ORDER CANCEL / MODIFY RULES — NON-OVERRIDABLE",
+        "## ATTACHED ORDERS — NON-OVERRIDABLE",  # gap #36, 2026-10-18
         "## MODIFY PARAMETER IMMUTABILITY — NON-OVERRIDABLE",
         "## TOOL RESULT FRESHNESS — NON-OVERRIDABLE",
         "## NARRATED ACTIONS REQUIRE A TOOL CALL — NON-OVERRIDABLE",
@@ -883,6 +884,8 @@ def _make_agent_with_sink(sink=None):
     sink.send_order_proposal = AsyncMock()
     sink.send_cancel_proposal = AsyncMock()
     sink.send_modify_proposal = AsyncMock()
+    sink.send_bracket_proposal = AsyncMock()
+    sink.send_attach_proposal = AsyncMock()
     toolkit = MagicMock()
     toolkit.tools = []
     store = MagicMock()
@@ -1373,9 +1376,14 @@ def test_order_proposal_schema_module_is_gone():
 
 
 def test_proposal_tools_are_registered_in_the_tool_list(agent):
-    """All three proposal tools are actually offered to the model."""
+    """Every declared proposal tool — the five, read from the declaration, never a list kept
+    here — is actually offered to the model."""
+    from claudia.proposal_tools import PROPOSAL_TOOLS
+
     names = {t["name"] for t in agent._all_tools}
-    assert {"propose_order", "propose_cancel", "propose_modify"} <= names
+    declared = {t["name"] for t in PROPOSAL_TOOLS}
+    assert len(declared) == 5
+    assert declared <= names
 
 
 def test_locally_handled_tools_exclude_order_write_tools():
@@ -1644,10 +1652,12 @@ async def test_proposal_is_logged_as_a_decision():
 
 
 def test_safety_block_names_the_proposal_tools():
-    """All three tool names appear, so the model has no reason to invent a text format."""
+    """Every declared tool name appears, so the model has no reason to invent a text format."""
+    from claudia.proposal_tools import PROPOSAL_TOOLS
+
     prompt = _build_system_prompt("# Role\nI am ClaudIA.")
-    for tool in ("propose_order", "propose_cancel", "propose_modify"):
-        assert tool in prompt
+    for tool in PROPOSAL_TOOLS:
+        assert tool["name"] in prompt
 
 
 def test_safety_block_has_no_fenced_proposal_format_left():
@@ -1696,7 +1706,7 @@ def test_absolute_constraints_still_route_trades_through_the_tools():
 class _RecordingSink:
     """A MessageSink stand-in that records what actually reached the user.
 
-    `proposal_error` makes all three proposal renderers raise, standing in for a sink that
+    `proposal_error` makes all five proposal renderers raise, standing in for a sink that
     blows up mid-render (the 2026-07-17 shape). With it unset the sink renders normally
     and records the proposal, so the same class covers the success path.
     """
@@ -1740,6 +1750,14 @@ class _RecordingSink:
     async def send_cancel_proposal(self, proposal: dict[str, Any]) -> None:
         """Route a cancel proposal through the shared recorder."""
         await self._render("cancel", proposal)
+
+    async def send_bracket_proposal(self, proposal: dict[str, Any]) -> None:
+        """Route a bracket proposal through the shared recorder."""
+        await self._render("bracket", proposal)
+
+    async def send_attach_proposal(self, proposal: dict[str, Any]) -> None:
+        """Route an attach proposal through the shared recorder."""
+        await self._render("attach", proposal)
 
     async def send_modify_proposal(self, proposal: dict[str, Any]) -> None:
         """Route a modify proposal through the shared recorder."""
@@ -2216,6 +2234,37 @@ SYNTHETIC_MODIFY = {
     "reason": "synthetic bump",
     "changes": [{"field": "limit_price", "previous_value": 550.0}],
 }
+SYNTHETIC_BRACKET = {
+    **SYNTHETIC_ORDER,
+    "symbol": "WWW",
+    "children": [
+        {
+            "kind": "profit_taker",
+            "price": 350.0,
+            "limit_price": None,
+            "tif": None,
+            "outside_rth": None,
+        }
+    ],
+}
+SYNTHETIC_ATTACH = {
+    "order_id": "7770003333",
+    "symbol": "VVV",
+    "action": "BUY",
+    "quantity": 5,
+    "order_type": "LMT",
+    "limit_price": 100.0,
+    "stop_price": None,
+    "tif": "DAY",
+    "reason": "synthetic exit",
+    "child": {
+        "kind": "stop_loss",
+        "price": 95.0,
+        "limit_price": None,
+        "tif": None,
+        "outside_rth": None,
+    },
+}
 
 
 def _seed_rendered(agent, decision_type: str, payload: dict[str, Any]) -> None:
@@ -2250,19 +2299,30 @@ def test_emission_record_names_the_tool_and_the_order_id():
     assert "YYY" in body
 
 
-def test_emission_record_covers_all_three_proposal_kinds():
-    """Each kind renders its own identity line, in emission order."""
+def test_emission_record_covers_every_proposal_kind():
+    """Each of the five kinds renders its own identity line, in emission order — a bracket
+    like a new order (its symbol), an attach like a cancel (the working order's id)."""
     agent, _sink = _make_agent_recording()
     _seed_rendered(agent, "trade_proposed", SYNTHETIC_ORDER)
     _seed_rendered(agent, "trade_cancel_proposed", SYNTHETIC_CANCEL)
     _seed_rendered(agent, "trade_modify_proposed", SYNTHETIC_MODIFY)
+    _seed_rendered(agent, "trade_bracket_proposed", SYNTHETIC_BRACKET)
+    _seed_rendered(agent, "trade_attach_proposed", SYNTHETIC_ATTACH)
     body = _operator_message(agent)
 
     assert "propose_order for ZZZ" in body
     assert "propose_cancel for order 9990001111 (YYY)" in body
     assert "propose_modify for order 8880002222 (XXX)" in body
+    assert "propose_bracket for WWW" in body
+    assert "propose_attach for order 7770003333 (VVV)" in body
     # Emission order is the order they were emitted in.
-    assert body.index("propose_order") < body.index("propose_cancel") < body.index("propose_modify")
+    assert (
+        body.index("propose_order")
+        < body.index("propose_cancel")
+        < body.index("propose_modify")
+        < body.index("propose_bracket")
+        < body.index("propose_attach")
+    )
 
 
 def test_emission_record_carries_no_pricing():
@@ -5001,3 +5061,203 @@ async def test_a_pass_truncated_before_its_tool_call_still_warns():
     )
     await agent.handle_message("cancel that one")
     assert any("truncated" in m.lower() for m in sink.messages)
+
+
+# ── Brackets and attached orders (gap #36, 2026-10-18) ────────────────────────────────────
+
+_CHILD_PT: dict[str, Any] = {
+    "kind": "profit_taker",
+    "price": 170.0,
+    "limit_price": None,
+    "tif": None,
+    "outside_rth": None,
+}
+_BRACKET_OK: dict[str, Any] = {
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LMT",
+    "limit_price": 150.0,
+    "stop_price": None,
+    "tif": "GTC",
+    "sec_type": "STK",
+    "conid": 265598,
+    "outside_rth": None,
+    "reason": "t",
+    "children": [_CHILD_PT],
+}
+_ATTACH_OK: dict[str, Any] = {
+    "order_id": "123",
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LMT",
+    "limit_price": 150.0,
+    "stop_price": None,
+    "tif": "GTC",
+    "reason": "t",
+    "child": {
+        "kind": "stop_loss",
+        "price": 140.0,
+        "limit_price": None,
+        "tif": None,
+        "outside_rth": None,
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "kind, inputs, fragment",
+    [
+        ("bracket", {**_BRACKET_OK, "children": []}, "at least one"),
+        (
+            "bracket",
+            {**_BRACKET_OK, "children": [{**_CHILD_PT, "kind": "trailing"}]},
+            "profit_taker or stop_loss",
+        ),
+        ("bracket", {**_BRACKET_OK, "children": [{**_CHILD_PT, "price": 0}]}, "not a price"),
+        (
+            "bracket",
+            {**_BRACKET_OK, "children": [{**_CHILD_PT, "limit_price": 171.0}]},
+            "limit_price must be null",
+        ),
+        # IBKR: a BUY is bracketed by a HIGH-side sell limit and a LOW-side sell stop.
+        ("bracket", {**_BRACKET_OK, "children": [{**_CHILD_PT, "price": 140.0}]}, "must be above"),
+        (
+            "bracket",
+            {
+                **_BRACKET_OK,
+                "children": [
+                    {
+                        "kind": "stop_loss",
+                        "price": 160.0,
+                        "limit_price": None,
+                        "tif": None,
+                        "outside_rth": None,
+                    }
+                ],
+            },
+            "must be below",
+        ),
+        ("attach", {**_ATTACH_OK, "order_id": " "}, "order_id"),
+        (
+            "attach",
+            {**_ATTACH_OK, "child": {**_ATTACH_OK["child"], "outside_rth": "yes"}},
+            "outside_rth",
+        ),
+        # IBKR (TWS guide, Using the Orders Panel, scraped 2026-10-18): a child's TIF must be
+        # equal to or shorter than the parent's; a longer one is overridden by the parent's.
+        # Refused here instead of rewritten there (operator rule 2026-10-18), on both tools.
+        (
+            "bracket",
+            {**_BRACKET_OK, "tif": "DAY", "children": [{**_CHILD_PT, "tif": "GTC"}]},
+            "longer than the parent's",
+        ),
+        (
+            "attach",
+            {**_ATTACH_OK, "tif": "DAY", "child": {**_ATTACH_OK["child"], "tif": "GTC"}},
+            "longer than the parent's",
+        ),
+    ],
+)
+def test_bracket_and_attach_defects_are_rejected_whole(kind, inputs, fragment):
+    """The child's own rules, the ones a schema cannot express: rejected whole, never repaired."""
+    from claudia.agent import _proposal_defect
+
+    defect = _proposal_defect(kind, inputs)
+    assert defect is not None and fragment in defect, defect
+
+
+def test_a_market_parent_has_no_reference_price_so_only_positivity_is_checked():
+    """A MKT parent has no price to compare a child against: a positive child price is all."""
+    from claudia.agent import _proposal_defect
+
+    mkt = {
+        **_BRACKET_OK,
+        "order_type": "MKT",
+        "limit_price": None,
+        "children": [{**_CHILD_PT, "price": 1.0}],
+    }
+    assert _proposal_defect("bracket", mkt) is None
+
+
+@pytest.mark.parametrize(
+    "parent_tif, child_tif",
+    [("GTC", "GTC"), ("GTC", "DAY"), ("DAY", "DAY"), ("DAY", "IOC"), ("GTC", None)],
+)
+def test_a_childs_tif_equal_to_or_shorter_than_the_parents_is_accepted(parent_tif, child_tif):
+    """IBKR's rule is a ceiling, not an equality: equal or shorter passes, null is the parent's own."""
+    from claudia.agent import _proposal_defect
+
+    bracket = {**_BRACKET_OK, "tif": parent_tif, "children": [{**_CHILD_PT, "tif": child_tif}]}
+    assert _proposal_defect("bracket", bracket) is None
+    attach = {**_ATTACH_OK, "tif": parent_tif, "child": {**_ATTACH_OK["child"], "tif": child_tif}}
+    assert _proposal_defect("attach", attach) is None
+
+
+def test_a_sell_parents_profit_taker_sits_below_and_its_stop_above():
+    """IBKR: a SELL is bracketed by a low-side buy limit and a high-side buy stop."""
+    from claudia.agent import _proposal_defect
+
+    sell = {
+        **_BRACKET_OK,
+        "action": "SELL",
+        "children": [
+            {
+                "kind": "profit_taker",
+                "price": 140.0,
+                "limit_price": None,
+                "tif": None,
+                "outside_rth": None,
+            },
+            {
+                "kind": "stop_loss",
+                "price": 160.0,
+                "limit_price": 160.5,
+                "tif": "DAY",
+                "outside_rth": True,
+            },
+        ],
+    }
+    assert _proposal_defect("bracket", sell) is None
+
+
+@pytest.mark.parametrize(
+    "tool, payload, renderer",
+    [
+        ("propose_bracket", _BRACKET_OK, "send_bracket_proposal"),
+        ("propose_attach", _ATTACH_OK, "send_attach_proposal"),
+    ],
+)
+async def test_handle_message_bracket_and_attach_proposals_dispatch_to_their_sinks(
+    tool, payload, renderer
+):
+    """A recorded bracket or attach proposal is handed to ITS sink method unmodified — and
+    never to `send_order_proposal`, which would draw the one-ticket card for a parent whose
+    children would then not exist (a child is never an independent order)."""
+    agent, sink = _make_agent_with_sink()
+    _wire_tool_execution(agent, sink)
+    agent._client.messages.stream = MagicMock(
+        side_effect=[
+            _FakeStream(_proposal_tool_events(tool, payload)),
+            _FakeStream(_text_response_events("Ready when you are.")),
+        ]
+    )
+    await agent.handle_message("Buy 1 AAPL at 150 with a profit taker at 170")
+    getattr(sink, renderer).assert_awaited_once_with(payload)
+    sink.send_order_proposal.assert_not_awaited()
+
+
+def test_the_safety_block_forbids_a_standalone_exit_order():
+    """Operator rule 2026-09-07: a profit taker or a stop loss is an attached order or it does
+    not exist — never a standalone opposite-side `propose_order` "meanwhile"."""
+    from claudia.agent import _SAFETY_BLOCK
+
+    assert "## ATTACHED ORDERS — NON-OVERRIDABLE" in _SAFETY_BLOCK
+    assert "NEVER propose the exit as a separate standalone `propose_order`" in _SAFETY_BLOCK
+    # Live 2026-10-19 (C1 step 2): the model told the user a cancelled stop loss "leaves the
+    # profit taker in place"; IBKR cancelled the sibling, as its OCA rule says. The block
+    # states the rule so the narrative matches what ClaudIA's own pre-gate line says.
+    assert (
+        "cancelling one attached order cancels every attached order of its parent" in _SAFETY_BLOCK
+    )

@@ -6,11 +6,15 @@ handling, or debugging an order-related issue.
 
 ## How a proposal is made
 
-A proposal is a **tool call**, not text. ClaudIA calls `propose_order`, `propose_cancel`, or
-`propose_modify` — declared in `claudia/proposal_tools.py` with `strict: true`, so the
+A proposal is a **tool call**, not text. ClaudIA calls `propose_order`, `propose_cancel`,
+`propose_modify`, or (since 2026-10-18, gap #36) `propose_bracket` / `propose_attach` —
+declared in `claudia/proposal_tools.py`. The first three carry `strict: true`, so the
 Anthropic API validates `tool_use.input` against the schema before the handler in
-`claudia/agent.py` ever sees it. The handler records the input and returns a `tool_result`;
-it reaches no IBKR API. There is no fenced text format — the `order-proposal` /
+`claudia/agent.py` ever sees it; the two bracket tools are non-strict (the API's budget of 16
+union-typed parameters across all strict schemas in a request — the module's probe record)
+and `agent._schema_defect` validates them against the same declared schema in-process,
+before any field is read. The handler records the input and returns a `tool_result`; it
+reaches no IBKR API. There is no fenced text format — the `order-proposal` /
 `order-cancel-proposal` blocks and their hand-written validator (`order_proposal_schema.py`)
 were retired 2026-07-27.
 
@@ -18,8 +22,8 @@ Two enforcement layers, and the split matters:
 
 | Layer | Enforces |
 |---|---|
-| `strict: true` JSON Schema (API boundary) | Types, `enum` membership, every `required` key present, `additionalProperties: false`, `minItems: 1` on `changes` |
-| `agent.py:_proposal_defect()` | The four terms a strict schema cannot express: `quantity > 0`, non-blank `symbol`, non-blank `order_id` (cancel/modify), no duplicate `changes` entries |
+| The declared JSON Schema — `strict: true` at the API boundary for order/cancel/modify; `agent.py:_schema_defect()` in-process for bracket/attach (2026-10-18) | Types, `enum` membership, every `required` key present, `additionalProperties: false`, `minItems: 1` on `changes` and on `children` |
+| `agent.py:_proposal_defect()` (+ `_child_defect()` for each attached order) | The terms a schema cannot express: `quantity > 0`, non-blank `symbol`, non-blank `order_id` (cancel/modify/attach), no duplicate `changes` entries, `outside_rth` boolean-or-null, every price finite and non-zero, a priced type carrying its price; a child's kind, its single price for a profit taker, and its side against the parent's reference price in IBKR's words |
 
 Neither layer repairs a value. A defect rejects the whole proposal, creates no button, and
 returns a `REJECTED — <reason>` `tool_result` that says so — order parameters are immutable
@@ -585,32 +589,75 @@ against, so the expectations above do not have to be re-derived:
   read-back must say *held* from the parent link, never from the status alone), then
   `Cancelled` with `cannot_cancel_order: true`.
 
-### Why ClaudIA cannot send it today (2026-09-06, re-checked against the 2026-09-08 scrape)
+### What ClaudIA sends — built 2026-10-18 on branch `bracket-orders`, waiting for the 2.2.0 pin
 
-Every layer carries exactly one ticket:
+Until 2026-10-18 every layer carried exactly one ticket; the table below is what each layer
+does now (gap #36; design `docs/plans/2026-10-17-bracket-orders-design.md`):
 
-| Layer | Where | The one-ticket assumption |
+| Layer | Where | Now |
 |---|---|---|
-| Proposal schema | `claudia/proposal_tools.py` | `propose_order` is 11 closed keys, no child; a strict-schema change needs the live-API probe (`live_api` marker) |
-| Order body | `claudia/order_flow.py` (`order_body`) | one dict; `cOID` is set, `parentId` never |
-| Client | `ibkr_core_mcp/client.py` `place_order(account_id, order: dict)` and `get_order_preview` | both wrap the single dict as `{"orders": [api_order]}` — a caller cannot pass two tickets **through those two methods**, and `place_order_and_confirm` answers replies for `response[0]` only. **No longer the blocker, 2026-09-21:** the bracket seam exists on core `main` (unreleased) — `place_bracket_and_confirm` and `get_bracket_preview` take a parent plus children, and it resolves every ticket's reply chain rather than the first entry; the single-order path is deliberately untouched. What remains is the claudia_ui layers in this table, and the fact that the release named in `core-ref.txt` does not carry the seam |
-| Gate 2 | `ibkr_core_mcp/order_confirm.py` | renders one order; the human must see **both** legs before **SEND TO IBKR** |
-| Read-back | `order_flow._read_back` | one order id; the documented bracket response carries one entry per ticket (above), so both ids are available to read back — the child's `PreSubmitted` must read as *held*, not *working* |
-| Orders tab | `claudia/panel_dashboard.py` | no parent column; two candidate fields to measure before adding one — `order_ref` and `child_order_type` (above) |
-| Execution reports | `claudia/execution_listener.py` | already correct: both legs of a bracket are reported since the 2026-09-04 fix |
+| Proposal schema | `claudia/proposal_tools.py` | `propose_bracket` = `propose_order`'s eleven fields + `children` (`minItems: 1`); `propose_attach` = `propose_cancel`'s nine + `child`; ONE child object shared by both (`kind`, `price`, `limit_price`, `tif`, `outside_rth` — size, side and contract are never typed). **Both non-strict**: the API caps union-typed parameters at 16 across all strict schemas in a request and the five strict would carry 22 (the module's probe record); `agent._schema_defect` enforces the same declared schema in-process before `_proposal_defect` |
+| Defect rules | `claudia/agent.py` (`_child_defect`) | every child price finite and non-zero; a profit taker is one limit price; the sides follow IBKR's words ("a BUY is bracketed by a high-side sell limit and a low-side sell stop") against the parent's reference price — the limit for LMT/STOP_LIMIT, the stop for STP, no comparison on a MKT parent; a child's stated TIF is equal to or shorter than the parent's (`_TIF_RANK`: IOC < OPG < DAY < GTC) — IBKR's rule, below — never longer, refused before any card |
+| Order body | `claudia/order_flow.py` (`_parent_body`, `_child_ticket`) | the parent by the live-proven one-ticket code plus `cOID` and `allOrNone: true` on IBKR's product classes (stocks, options, bonds — never futures); each child written in full from the parent: its contract, size and account, the opposite side, the parent's TIF unless stated (never longer), `parentId` = `cOID`, `manualIndicator` on a future; the card shows the parent's TIF and each child's explicit and bold, naming whose it is (operator rule 2026-10-18) |
+| Client | `ibkr_core_mcp` 2.2.0: `get_bracket_preview` → `place_bracket_and_confirm`; `attach_order_and_confirm` for a working parent | IBKR's own whatif of the ticket array runs BEFORE any gate; one request, one Touch ID, one dialog, every reply resolved; the attach form reads the parent from IBKR, refuses one that is not working before its gates, and completes the child itself — ClaudIA sends the child's own fields and the parent's id, nothing derived; a refusal IBKR answers in a **2xx body carrying `error`** (measured 2026-10-19: "The Available Funds in your Commodities segment are insufficient…" on 2 ES) is read by `_stage_bracket` and refuses before the gates like an HTTP refusal — `RefusedBeforeGatesError`, stage `before_gates`, no Touch ID spent |
+| Gate 2 | `ibkr_core_mcp/order_confirm.py` `confirm_bracket_dialog` | the parent plus every child on one screen; on an attach the parent row reads `order N · Submitted · k attached` and the title says ATTACHED ORDER; a multi-lot parent without All or None gets the red `⚠ Partial fill` row (warned, never refused); button `SEND TO IBKR` |
+| Read-back | `order_flow._stage_bracket`, `_attach_order` | the legs are paired by identifier (`pair_bracket_response`, `attached_entry` — the response order is NOT the submission order, measured 2026-09-21); every leg read back on its own, one `trade_staged` row per leg naming its parent and siblings; a child's `PreSubmitted` is said as *held by IBKR until the parent fills*, never *working*; a pairing problem, or an accepted order the response does not link to its parent, is said loudly and recorded, never reported as success; so is an entry IBKR links to the parent but gives no order id — nothing is read back, the row stays unverified, and the child's id is read from ITS entry only, never from another entry of the response (review 2026-10-18) |
+| Orders tab | `claudia/dashboard_data.py`, `panel_dashboard.py` | the live-orders feed carries `parentId` (int) on a child row — measured 2026-10-18 — and `order_ref` on the parent only: a child shows `held (parent N)` while its parent is in the book, otherwise IBKR's own status word with what IBKR reports of the parent beside it: `· parent N executed` or `· parent N cancelled` from one status read of that parent (`/iserver/account/order/status/{id}` answered `Filled` for a filled order and `Cancelled` for a cancelled bracket parent, measured 2026-11-06; `ParentStatusCache`), `· parent N not in the book` when it gave no final word — `Submitted` is a released child working (seen 2026-10-19 on a live row), `PreSubmitted` a released stop not yet triggered or a child whose parent is simply gone; a parent leaves the book when it fills and when it is cancelled alike, so a fill is never inferred from an absence — and inherits its parent's origin. Since 2026-11-06 (gap #105) the tab folds each bracket under one band (`Bracket: <parent id> · <symbol> (N orders)`, open by default), sets the parent in bold, colours every side and names each row Parent, Child or Single order |
+| Cancel / modify of a leg | `order_flow._linked_sentence`, `_HELD_CHILD_MODIFY_SENTENCE` | before Touch ID, from the status read the dialog is built from, each sentence as strong as its source (docs check 2026-10-18): cancelling a child cancels every attached order of the parent — they share one OCA group, IBKR's TWS guide (One-Cancels-All) — and the parent keeps working (its auto-cancel preset is off unless set); cancelling a parent *normally* cancels its children — undocumented by IBKR, measured as cancelled (2026-09-22) and as left `Inactive`, never working (2026-10-18), so the sentence is hedged like the core's `⚠ Attached orders` row and ends on "check the book after" (`children_order_ids` is **semicolon**-separated, measured 2026-10-18); a quantity change on a held child is ignored by IBKR, and once released a quantity above the parent's fill is refused before anything is sent (the sentence names the effect, never "the core" or a version). The cancel dialog's own `⚠ Linked orders` / `⚠ Attached orders` rows are the core's, drawn from `_oca_group_type` and `_has_attached_children` — keys ClaudIA's `_cancel_display_details` sets from the same status read, because ClaudIA builds the dialog's details itself (gap #40) and the core's builder never runs on this path (found live 2026-10-19: a held child's dialog had no row) |
+| Execution reports | `claudia/execution_listener.py` | unchanged: both legs of a bracket are reported since the 2026-09-04 fix |
+
+**IBKR's documented parent/child rules (scraped through Firecrawl 2026-10-18; the file of record
+is the git-ignored probe folder), against which the sentences above were checked:**
+
+- *Child shape and holding.* "A BUY order is bracketed by a high-side sell limit order and a
+  low-side sell stop order. A SELL order is bracketed by a high-side buy stop order and a low
+  side buy limit order"; "The order quantity for the high and low side bracket orders matches
+  the original order quantity" (order-types catalogue, Bracket); "it will not be transmitted
+  until the parent order executes" (TWS guide, right-click on the order line).
+- *One child fills.* "By default, once an order in the group fills, all other linked orders
+  are canceled. If an order is partially filled, the remaining orders will be reduced
+  proportionately" (TWS guide, Order Types › One-Cancels-All); the group type measured on
+  every child, `ReduceOnFillNonBlock`, is OCA type 3, "remaining orders are proportionately
+  reduced in size with no block" (https://www.interactivebrokers.com/docs/general/order-types/complex-orders/oca-types).
+- *Cancelling a child.* Same page: "If an order is canceled by the client before execution,
+  all remaining orders in the OCA group will automatically be canceled, but if one of the
+  orders is rejected or canceled by the system, the remaining order(s) WILL NOT automatically
+  be canceled." The parent keeps working: the TWS preset "Auto-cancel parent — check to have
+  the parent order canceled when the child order is canceled" is off unless set, and the Web
+  API ticket has no such field (https://www.ibkrguides.com/traderworkstation/define-order-preset-value.htm).
+- *Cancelling the parent* and *a partial fill of the parent* are on no IBKR page found;
+  both stay measured (2026-09-22, 2026-10-18) and are worded as observations.
+- *Modifying a child.* "Order Quantity, which can be modified to be equal to or less than the
+  quantity in the Leaves status field" and **"You must set the TIF for a child order equal to
+  or shorter than that of the parent. Otherwise, the TIF of the parent order will override
+  that of the child order"** (https://www.ibkrguides.com/traderworkstation/using-the-orders-panel.htm)
+  — the rule `agent._child_defect` and the core's `_bracket_tickets` refuse rather than let
+  IBKR rewrite what the human approved (operator rule 2026-10-18).
+- *Status words.* `PreSubmitted` = "accepted by the system (simulated orders) or an exchange
+  (native orders) and … has yet to be elected"; `Submitted` = "accepted and is working at the
+  destination"; `Inactive` = "you have not yet activated or transmitted it"
+  (https://www.interactivebrokers.com/docs/web-api/v1/endpoints/order-monitoring/order-status-value).
+  `PreSubmitted` is also a released, untriggered stop, so the Orders tab reads the parent's
+  presence, never the word alone.
 
 Hard Rule 1 is unaffected by any of this: a bracket is still one physical click on a request the
-human sees whole. Known Gaps #36 in `docs/project-status.md` tracks it.
+human sees whole. Known Gaps #36 in `docs/project-status.md` tracks it; the branch merges after
+`core-ref.txt` moves to 2.2.0.
+
+**Measured 2026-10-18 on the attach form (core session A5, market closed, prices far away;
+record `docs/plans/probes/2026-10-17-bracket-live/`):** a Ford parent took two, then three
+attached children one request each, every status read linked by `parent_order_id`; two children
+in one request were accepted up to a precaution; after a parent cancel the held children were
+seen both lingering as `Inactive` feed rows with `parentId` and vanishing — which is why the
+Orders tab reads the parent's presence and never infers a fill.
 
 **Two independent orders are NOT a substitute and must never be proposed as one — user
 rule, 2026-09-07.** A standalone opposite-side limit placed *before* the parent fills is a live
 order on its own: at 7700 it fills first and opens a long, the opposite of the intent, with
 the "parent" still resting to double the exposure on the way back. The conditional link
 (`parentId`) *is* the order type; without it there is no profit taker, only two unrelated
-orders. Until the bracket path exists, the profit taker is either attached in TWS/IBKR Mobile
-by hand, or proposed through ClaudIA **only after** the parent's fill has been reported by
-IBKR (§ Automatic execution reports). This rule belongs in ClaudIA's safety block when the
-feature is built, so the model can never "help" by splitting a bracket into two proposals.
+orders. Since 2026-10-18 the rule is a non-overridable section of ClaudIA's safety block
+(ATTACHED ORDERS), so the model can never "help" by splitting a bracket into two proposals.
 
 ### The whatif is BLIND to bracket children — measured live 2026-09-20
 

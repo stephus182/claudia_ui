@@ -4,7 +4,8 @@
 windows, and the wiring that lets the chatbot drive them (or lets them run on their own).**
 Living document — started 2026-07-24, **substantially updated 2026-08-04** when the live
 dashboard shipped the first `Tabulator`, the first `Number` tiles, the first `pn.extension` call
-and the first notifications.
+and the first notifications. Grouped rows were measured and written up on **2026-11-06** (§2.2,
+gotchas 34–40), when the Orders table began folding each bracket under one band.
 
 It began as a starting point rather than a design, and that is still true of §4–§6. What has
 changed is that §1, §3, §7 and §8 are now records of shipped behaviour rather than a menu — the
@@ -26,7 +27,7 @@ CLAUDE.md's "API Docs First" rule applies. Every claim below carries its evidenc
 
 | Tag | Meaning |
 |---|---|
-| **[S]** | **Scraped** from the official Panel docs on **2026-07-24**, and the Tabulator page again on **2026-10-08** (capture `.firecrawl/panel-tabulator/`, git-ignored); URL in §10 |
+| **[S]** | **Scraped** from the official Panel docs on **2026-07-24**, and the Tabulator page again on **2026-10-08** (capture `.firecrawl/panel-tabulator/`, git-ignored); Tabulator's own grouping and localisation pages on **2026-11-06** (`.firecrawl/tabulator-6.4/`, git-ignored); URLs in §10 |
 | **[P]** | **Probed** against the *installed* panel 1.9.3 in `.venv` — the source of truth for our runtime behavior |
 | **[C]** | **Code** in this repo, cited `file:line` |
 | **[?]** | **Unverified** — a proposal, an open question, or something that needs a live check before it is relied on |
@@ -42,7 +43,7 @@ disagreement is called out (there is one — §6.5).
 |---|---|
 | Candlestick chart | **Shipped.** HoloViews/hvplot (`pn.pane.HoloViews`, superseded 2026-08-03 — §1.1 D1), cache-backed, own Load button, STK only. [`panel_chart.py`](../../claudia/panel_chart.py) **[C]** |
 | Status lights | **Shipped** as `pn.indicators.BooleanStatus` ×3, **retired 2026-09-03** for the action bar's `Button(color=…)` — the button's colour is the light and a click reconnects (`panel_action_bar.py`) **[C]** |
-| Tables | **Shipped 2026-08-04.** One `Tabulator` — the dashboard's positions table: `disabled=True`, `formatters`, `text_align`, `header_filters`, `header_tooltips`, `pagination='local'`, and `.style.map` for signed P&L. [`panel_dashboard.py`](../../claudia/panel_dashboard.py) **[C]** |
+| Tables | **Shipped 2026-08-04; three since 2026-09-25**, each a `Tabulator`, each `disabled=True` with no click or edit handler (Hard Rule 1, asserted over every table the tabs contain). **Positions** (2026-08-04): `formatters`, `text_align`, `header_filters`, `header_tooltips`, `pagination='local'`, `.style.map` for signed P&L. **Working orders** (2026-08-05): since 2026-11-06 grouped by bracket — one band each, the parent's row bold, a Role column, a side colour on every order, no fixed height, redrawn only when the book changed (§2.2 *Grouped rows*). **Fills** (2026-09-25): side colours. [`panel_dashboard.py`](../../claudia/panel_dashboard.py) **[C]** |
 | Value indicators | **Shipped 2026-08-04.** Six `pn.indicators.Number` KPI tiles with sign-threshold `colors` **[C]** |
 | Second chart | **Shipped 2026-08-04.** Realised-P&L cumulative area + daily bars, a second `pn.pane.HoloViews` **[C]** |
 | Notifications | **Shipped 2026-08-04.** `pn.state.notifications` toasts on the fresh↔stale transition only **[C]** |
@@ -229,6 +230,47 @@ Ctrl / Shift for multiple), `False`, `'checkbox'`, `'checkbox-single'` (no selec
 
 **Row content.** `row_content=callable(row) → pane` renders an expandable detail region under the
 row; `embed_content=True` pre-renders every row's content **[S]**.
+
+**Grouped rows — measured 2026-11-06 for the Orders tab (gap #105) [P].** `groupby=[col]` is
+Tabulator's row grouping: one band per value, with an arrow that folds it; groups start open and
+are drawn in the order their first row appears. A click on a column header keeps every group
+together but sorts the rows inside it **and re-orders the groups** (after a sort by one column a
+group's first data row was no longer first, and the bands had changed places) — so a row that
+must be recognised is marked in the row itself, never by its position. What the scraped page
+does not say, each probed on 1.9.3 (Tabulator 6.4.0):
+
+- **The band reads `<column name>: <value> (N items)`.** The prefix is Panel's own — the view's
+  `groupBy` getter builds `${column}: ${value}` (`panel/models/tabulator.ts`) — so the grouping
+  column's *name* is text the user reads. Name it for the band, and hide the column itself with
+  `hidden_columns`.
+- **The count's words are Tabulator's language table**, plain JSON through `configuration`:
+  `{"locale": "en", "langs": {"en": {"groups": {"item": "order", "items": "orders"}}}}` gives
+  `(3 orders)` (https://tabulator.info/docs/6.4/localize, "copy for the auto generated item count
+  in group header").
+- **The band's value is drawn as HTML**, the cells as text: `<i>` in a group value rendered
+  italic, and the same markup in a cell stayed literal. Tabulator documents that a group header
+  is "a DOM node, a text string or an HTML string" (https://tabulator.info/docs/6.4/group).
+  Escape any group value built from outside strings (`html.escape`); the escaped value displays
+  as the literal text.
+- **A folded group re-opens whenever `value` is reassigned** — an equal frame included (folded,
+  three reassignments at 2 s, open again). Reassign only when the frame changed
+  (`if not frame.equals(table.value)`); a fold then holds until the data changes. The Styler's
+  rules survive the reassignment (gotcha 19).
+- **No native route puts the fold arrow on a real data row.** `row_content` draws its expand
+  icon on *every* row unconditionally (`_expand_render`) and gives each expanded row a second
+  table with its own headings. `hierarchical=True` builds a synthetic top row per index value
+  (`group_data` / `summarize`: the first record's value, or `min` / `max` / `sum` / `mean`), so a
+  real row is either repeated beneath a copy of itself or replaced by a computed total — Qty 3
+  for a 1-lot bracket, a false figure on a trading screen. `groupby` is the only fold that keeps
+  every row a real row; its arrow sits on the band.
+- **Free band wording is possible and not used.** `pn.io.JSCode` placeholders are compiled
+  anywhere in `configuration` (`transformJsPlaceholders`), so `configuration={"groupHeader":
+  JSCode("(function(value, count, data, group){…})")}` works; Panel's page documents `JSCode` for
+  formatters and editors only, and it is `new Function` in the page. The column name and the
+  language table give a readable band with no JavaScript.
+
+Probe, renders and the two Tabulator pages: `docs/plans/probes/2026-11-06-orders-tab-nesting/`,
+`.firecrawl/tabulator-6.4/`.
 
 **Static configuration.** `configuration={...}` passes options Panel does not expose straight to
 the Tabulator library — `clipboard`, `rowHeight`, `columnDefaults: {headerSort: False}` are the
@@ -563,7 +605,9 @@ the agent to function.
    verified `call_soon_threadsafe` bridge (§5.3). The tape is still unbuilt, but the feed's seam
    exists since 2026-09-04: `ExecutionListener.subscribe` delivers each fill to every session,
    which today shows it as an IBKR-authored chat message + toast (`docs/order-api-reference.md`
-   § Automatic execution reports). A tape would be one more subscriber.
+   § Automatic execution reports). A tape would be one more subscriber. Since 2026-09-25 the
+   **Fills tab** lists the executions not yet on a statement — read from IBKR's trades endpoint by
+   the poller, not streamed from the listener; a streamed tape is still unbuilt.
 4. **Indicator overlays on the candlestick** — **volume subplot, MA (SMA) overlay, and zoom sync
    between the two rows shipped 2026-08-03** (the SMA overlay was **removed 2026-09-23**: hard-coded at
    20 periods with no setting, and not a period the operator's own rules use; indicators return only
@@ -616,6 +660,13 @@ Every item is scraped or probed, not inferred:
 | 31 | `configuration=` is a **constructor-only** argument on 1.9.3, stored as `_configuration`; there is no `configuration` attribute to read or set afterwards (`tables.py:1395,1405`) | **[P]** |
 | 32 | A click on a `buttons` column leaves `event.value` unset — the widget fills `value` from the frame for data columns only (`tables.py:1488-1492`); read the row by `event.row` | **[P]** |
 | 33 | `on_edit` callbacks run **once per edit, after** the frame changed (the browser's `pre` event is consumed internally); `event.old` is the previous cell value from the widget's own copy (`tables.py:1495-1506`) | **[P]** |
+| 34 | A `groupby` band reads `<column name>: <value> (N items)` — the prefix is Panel's (`tabulator.ts`, the `groupBy` getter), so the grouping column's NAME is user-facing text; hide the column with `hidden_columns` | **[P]** |
+| 35 | The band's count words come from Tabulator's language table: `configuration={"locale": "en", "langs": {"en": {"groups": {"item": …, "items": …}}}}` — JSON, no JavaScript | **[S]** + **[P]** |
+| 36 | A band's value is inserted as **HTML** (markup in a group value was rendered); cells are text. `html.escape` any group value built from outside strings | **[P]** |
+| 37 | Folded groups **re-open whenever `value` is reassigned**, an equal frame included — reassign only when the frame changed (`frame.equals(table.value)`) | **[P]** |
+| 38 | No native fold arrow sits on a real data row: `row_content` draws its icon on every row, `hierarchical` builds a synthetic top row (a copy of the first record, or a computed total). `groupby` is the only fold that keeps every row real | **[P]** |
+| 39 | pandas 3's string dtype turns a `None` in a text column into NaN: test "has a value" with `pd.isna`, never `is not None` (a probe labelled every row Child) | **[P]** |
+| 40 | With `groupby`, a header sort re-orders the rows inside each band **and the bands themselves** — mark a row that must be recognised in the row (a style, a column), never by its position | **[P]** |
 
 ---
 
@@ -639,7 +690,9 @@ Every item is scraped or probed, not inferred:
    `_on_click_callbacks`/`_on_edit_callbacks`, and `style.ctx` after `style._compute()` (which is
    how the P&L colouring is tested). `stream`/`patch` round-trips are still unexercised here: the
    dashboard replaces `value` wholesale, because the position book is small and a full replace
-   cannot drift from the source the way an incremental patch can.
+   cannot drift from the source the way an incremental patch can. The Orders table replaces it
+   only when the new frame differs from the one drawn (2026-11-06): a wholesale replace re-opens
+   every folded group (gotcha 37).
 
 ---
 
@@ -694,6 +747,8 @@ not duplicate — the styling/template URL index in `ui-design-reference.md` §9
 | Concurrency | https://panel.holoviz.org/how_to/concurrency/index.html |
 | Caching (`pn.cache`, memoization) | https://panel.holoviz.org/how_to/caching/index.html · https://panel.holoviz.org/how_to/caching/memoization.html |
 | Tabulator JS options (for `configuration`) | https://tabulator.info/docs/6.4/options |
+| Tabulator row grouping (the group header, the open state) — scraped **2026-11-06** | https://tabulator.info/docs/6.4/group |
+| Tabulator localisation (the `groups` item words) — scraped **2026-11-06** | https://tabulator.info/docs/6.4/localize |
 | Apache ECharts option reference | https://echarts.apache.org/en/index.html |
 | jsPanel options (for `FloatPanel.config`) | https://jspanel.de/#options/overview |
 

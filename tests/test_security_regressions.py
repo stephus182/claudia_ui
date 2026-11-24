@@ -707,7 +707,11 @@ def test_version_snapshot_is_chmod_600(tmp_path, monkeypatch):
 # guarantees that schema provably cannot express (probed 2026-07-27).
 #
 # Cases that were rejected by the old validator and are now structurally impossible are
-# asserted against the schema in tests/test_proposal_tools.py, not here.
+# asserted against the schema in tests/test_proposal_tools.py, not here — for the three
+# STRICT tools. `propose_bracket` and `propose_attach` are non-strict (the API's union
+# budget, 2026-10-18; the probe record in claudia/proposal_tools.py), so for them those
+# cases are reachable in-process and `agent._schema_defect` is the outer layer: the rows
+# below drive them through the real handler, each one a case no defect rule would catch.
 
 _M1_ORDER = {
     "symbol": "AAPL",
@@ -734,6 +738,39 @@ _M1_MODIFY = {
     "sec_type": "STK",
     "reason": "M-1 regression fixture",
     "changes": [{"field": "limit_price", "previous_value": 100.0}],
+}
+
+
+_M1_BRACKET = {
+    **_M1_ORDER,
+    "outside_rth": None,
+    "children": [
+        {
+            "kind": "profit_taker",
+            "price": 200.0,
+            "limit_price": None,
+            "tif": None,
+            "outside_rth": None,
+        }
+    ],
+}
+_M1_ATTACH = {
+    "order_id": "242538143",
+    "symbol": "AAPL",
+    "action": "BUY",
+    "quantity": 1,
+    "order_type": "LMT",
+    "limit_price": 105.0,
+    "stop_price": None,
+    "tif": "GTC",
+    "reason": "M-1 regression fixture",
+    "child": {
+        "kind": "stop_loss",
+        "price": 95.0,
+        "limit_price": None,
+        "tif": None,
+        "outside_rth": None,
+    },
 }
 
 
@@ -805,6 +842,18 @@ def _m1_agent():
         ("propose_order", {**_M1_ORDER, "limit_price": float("inf")}, "infinite limit price"),
         ("propose_order", {**_M1_ORDER, "limit_price": 0}, "zero limit price"),
         ("propose_cancel", {**_M1_ORDER, "order_id": "42", "limit_price": 0}, "zero on a cancel"),
+        # The schema's own guarantees on the two NON-strict tools (2026-10-18): each row is a
+        # violation that only the schema refuses. A list payload crashed `_proposal_defect`
+        # on `.get` (crash vector 3); an unknown key, a missing required key and a lowercase
+        # enum pass every defect rule — `action.upper()` would even read "buy" as BUY.
+        ("propose_bracket", [dict(_M1_BRACKET)], "list payload on a non-strict tool"),
+        ("propose_bracket", {**_M1_BRACKET, "extra": 1}, "unknown key on a non-strict tool"),
+        (
+            "propose_bracket",
+            {k: v for k, v in _M1_BRACKET.items() if k != "reason"},
+            "missing required key on a non-strict tool",
+        ),
+        ("propose_attach", {**_M1_ATTACH, "action": "buy"}, "lowercase enum on a non-strict tool"),
     ],
 )
 def test_malformed_order_proposal_is_rejected(tool, payload, reason):

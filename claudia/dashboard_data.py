@@ -1390,6 +1390,11 @@ class LiveOrder:
     tif: str
     status: str
     origin: str = ""
+    # The parent's order id on an attached child (gap #36, 2026-10-18): the live-orders feed
+    # carries `parentId` on a child row (measured 2026-10-18 on Ford, core session A5), and
+    # `order_ref` on the parent only — so a child's origin is read through its parent in
+    # `parse_orders`. None on every order that is not a child.
+    parent_order_id: str | None = None
     # IBKR's outsideRTH attribute as reported on the order row — True / False, or None when
     # the row does not carry a boolean. Measured 2026-09-04: the field is present though
     # undocumented, False on a resting stock limit and **None on a resting ES futures
@@ -1405,6 +1410,12 @@ class LiveOrder:
     # IBKR's own text for the order (`orderDesc`, e.g. "Buy 1 F Limit 5.10, Day"). Kept as
     # the change signal for the TIF cache: a modify from anywhere rewrites it.
     description: str = ""
+    # IBKR's own status word for this child's parent WHEN THE PARENT IS NOT IN THE BOOK
+    # (gap #105, 2026-11-06): `Filled` or `Cancelled`, as `/iserver/account/order/status/
+    # {parent}` answered — the two final words `ParentStatusCache` keeps — or "" when it was
+    # not read or gave neither. A parent leaves the working book when it fills and when it is
+    # cancelled alike, so the absence says nothing; this is where the tab learns which it was.
+    parent_status: str = ""
 
     @property
     def is_claudia_staged(self) -> bool:
@@ -1423,6 +1434,12 @@ def _optional_float(raw: Any) -> float | None:
         return None
 
 
+# Whichever key the live-orders feed carries for a child's parent: `parentId` (int) is what
+# it carried on 2026-10-18 (the core's A5 session, case (a)); `parent_order_id` is the order
+# status endpoint's spelling, kept so a row shaped by that endpoint reads the same.
+_PARENT_KEYS = ("parentId", "parent_order_id")
+
+
 def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
     """Type IBKR's live-order rows, skipping any row that carries no order id.
 
@@ -1436,6 +1453,10 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
     Rows are any `Mapping`, not only dicts: since 2026-09-17 ibkr_core_mcp returns
     `IBKRResponse` models, which serve IBKR's payload as a mapping and are not dicts. A
     `dict` check here kept 0 of 1 live orders that day, with this suite green.
+
+    An attached child (gap #36) carries its parent's id (`_PARENT_KEYS`) and, since IBKR
+    puts `order_ref` on the parent only (measured 2026-09-21 and 2026-10-18), inherits its
+    parent's origin — by id, from the same book, never from another row on the symbol.
     """
     out: list[LiveOrder] = []
     for row in rows or ():
@@ -1468,6 +1489,9 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                 tif="",
                 status=str(row.get("status") or row.get("order_status") or "").strip(),
                 origin=str(row.get("order_ref") or row.get("orderRef") or "").strip(),
+                parent_order_id=next(
+                    (str(row[k]) for k in _PARENT_KEYS if row.get(k) not in (None, "")), None
+                ),
                 outside_rth=(
                     row["outsideRTH"] if isinstance(row.get("outsideRTH"), bool) else None
                 ),
@@ -1481,7 +1505,13 @@ def parse_orders(rows: Sequence[Any]) -> tuple[LiveOrder, ...]:
                 description=str(row.get("orderDesc") or "").strip(),
             )
         )
-    return tuple(out)
+    by_id = {o.order_id: o for o in out}
+    return tuple(
+        replace(o, origin=by_id[o.parent_order_id].origin)
+        if o.parent_order_id in by_id and not o.origin
+        else o
+        for o in out
+    )
 
 
 # The three top-of-book fields the positions table renders, plus the availability flag.
@@ -1762,6 +1792,105 @@ class TifCache:
             self._known.pop(order.order_id, None)
             self._failed[order.order_id] = (order.description, now)
         return tif
+
+
+PARENT_STATUS_WORDS: Mapping[str, str] = {"Filled": "executed", "Cancelled": "cancelled"}
+"""IBKR's `order_status` word for a parent that has left the working book → the Orders tab's
+word (gap #105, operator 2026-11-06: "parent executed"). The two words that are final and
+that the tab gives a meaning to: `ParentStatusCache` keeps exactly these, and the tab prints
+exactly these. Every other answer — a failed read, a parent IBKR still reports as working —
+is no word, and the tab says "not in the book". The word is IBKR's status of the order, not
+a quantity: a parent cancelled after a partial fill reads `Cancelled`."""
+
+PARENT_STATUS_RETRY_SECONDS = 300.0
+"""How long a parent's status read that gave no final word waits before it is tried again.
+
+Longer than the TIF's: a released pair can rest for days after its parent filled, and IBKR
+documents a 503 from `/iserver/account/order/status` for an order it holds no cached
+information about — so a parent it no longer answers for is asked a few times an hour, not
+on every 15 s poll (the limits are per endpoint)."""
+
+
+class ParentStatusCache:
+    """IBKR's status word for each parent that left the working book while a child stayed.
+
+    **Why a read at all (gap #105).** A bracket's parent leaves `/iserver/account/orders`
+    when it fills and when it is cancelled alike (the core filters both out as terminal), and
+    its children can stay: released and working after a fill, or — seen 2026-10-18 —
+    lingering `Inactive` after a cancel. The absence therefore says nothing, and the tab must
+    not call it an execution. `/iserver/account/order/status/{id}` does say it: measured
+    2026-11-06, `order_status` read `Filled` for a filled order of the day and `Cancelled`
+    for the cancelled parent of that day's test bracket.
+
+    **Cost.** One status read per absent parent, whatever the number of its children; a
+    final word (`PARENT_STATUS_WORDS`) is kept for as long as a child refers to that parent,
+    and anything else is asked again only after `PARENT_STATUS_RETRY_SECONDS`. A parent that
+    is in the book is never asked about.
+
+    **What it cannot do.** IBKR may stop answering for a parent filled on an earlier day;
+    the child then carries no word and the tab says "not in the book" — true, and less than
+    the trader would like.
+
+    Owned by the poller (one per process), called from its worker thread; not thread-safe
+    beyond that single caller.
+    """
+
+    def __init__(self) -> None:
+        """Empty: nothing known, nothing tried."""
+        self._known: dict[str, str] = {}  # parent order id -> IBKR's final word
+        self._tried: dict[str, float] = {}  # parent order id -> when a read gave no word
+
+    def cached_parent_ids(self) -> set[str]:
+        """The parent ids with a kept word or a pending retry — for tests and debugging."""
+        return set(self._known) | set(self._tried)
+
+    def resolve(
+        self, orders: Sequence[LiveOrder], source: OrderStatusSource, now: float
+    ) -> tuple[LiveOrder, ...]:
+        """`orders` with `parent_status` set on each child whose parent is not among them.
+
+        Args:
+            orders: The working book.
+            source: The order-status reader (the IBKR client).
+            now: A monotonic timestamp in seconds, for the retry spacing.
+        """
+        on_book = {o.order_id for o in orders}
+        absent = {
+            o.parent_order_id
+            for o in orders
+            if o.parent_order_id is not None and o.parent_order_id not in on_book
+        }
+        for cache in (self._known, self._tried):
+            for gone in set(cache) - absent:
+                del cache[gone]
+        words = {parent: self._word(parent, source, now) for parent in sorted(absent)}
+        return tuple(
+            replace(o, parent_status=words[o.parent_order_id]) if o.parent_order_id in words else o
+            for o in orders
+        )
+
+    def _word(self, parent_id: str, source: OrderStatusSource, now: float) -> str:
+        """The kept word, a fresh read, or "" while a read without a word waits out its retry."""
+        known = self._known.get(parent_id)
+        if known is not None:
+            return known
+        tried = self._tried.get(parent_id)
+        if tried is not None and now - tried < PARENT_STATUS_RETRY_SECONDS:
+            return ""
+        try:
+            status = source.get_order_status(parent_id)
+            word = (
+                str(status.get("order_status") or "").strip() if isinstance(status, Mapping) else ""
+            )
+        except Exception as exc:
+            log.info("Parent order %s: status read gave no answer: %s", parent_id, exc)
+            word = ""
+        if word in PARENT_STATUS_WORDS:
+            self._known[parent_id] = word
+            self._tried.pop(parent_id, None)
+            return word
+        self._tried[parent_id] = now
+        return ""
 
 
 def fetch_orders(client: OrderSource) -> tuple[LiveOrder, ...] | None:

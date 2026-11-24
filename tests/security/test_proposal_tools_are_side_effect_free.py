@@ -1,7 +1,8 @@
 """CLA-SEC-003 — proposing is a declaration, and CLA-SEC-004 — its values are never repaired.
 
 Audit 2026-09-13, weaknesses B-3 and the structural half of B-4. `propose_order`,
-`propose_cancel` and `propose_modify` are the only order-shaped things the model can call.
+`propose_cancel` and `propose_modify` — and since 2026-10-18 `propose_bracket` and
+`propose_attach` — are the only order-shaped things the model can call.
 They reach nothing: the handler checks, records and returns a string. That was true and
 guarded by a test named `test_proposal_handlers_cannot_reach_execution` — which
 substring-searches `proposal_tools.py`, the module that holds the JSON schemas, not
@@ -15,6 +16,8 @@ payload — they cannot see a repair on a path they do not exercise.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from tests.security.structural import (
     PACKAGE_DIR,
@@ -68,9 +71,14 @@ def test_the_proposal_handler_touches_only_the_turn_it_is_recording():
     assert reached == {"_pending_proposal", "_called_tools_this_turn"}
 
 
-def test_the_defect_check_reaches_nothing_at_all():
-    """`_proposal_defect` is a pure function over the input dict: no `self`, no I/O."""
-    fn = function_named(AGENT, "_proposal_defect")
+@pytest.mark.parametrize("name", ["_proposal_defect", "_schema_defect"])
+def test_the_defect_checks_reach_nothing_at_all(name):
+    """Both checks are pure functions over the input: no `self`, no I/O.
+
+    `_schema_defect` (2026-10-18) is the outer layer for the two non-strict proposal tools —
+    the one place a third-party validator reads a model-controlled value in this layer.
+    """
+    fn = function_named(AGENT, name)
     assert self_collaborators(fn) == set()
     assert not (called_names(fn) & (IO_CALL_NAMES - _DICT_READ))
 
@@ -79,7 +87,7 @@ def test_neither_proposal_function_performs_io():
     """Both handlers are free of every call that would leave the process."""
     offenders = {
         name: sorted(called_names(function_named(AGENT, name)) & (IO_CALL_NAMES - _DICT_READ))
-        for name in ("_record_proposal", "_proposal_defect")
+        for name in ("_record_proposal", "_proposal_defect", "_schema_defect")
         if called_names(function_named(AGENT, name)) & (IO_CALL_NAMES - _DICT_READ)
     }
     assert not offenders, f"a proposal handler reaches out: {offenders}"
@@ -97,6 +105,7 @@ def test_no_proposal_function_writes_to_the_proposal():
         for fn_name in (
             "_record_proposal",
             "_proposal_defect",
+            "_schema_defect",
             "render_order_proposal",
             "render_cancel_proposal",
             "render_modify_proposal",

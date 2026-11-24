@@ -121,9 +121,10 @@ check; site docs were at 1.9.4 when `ui-customisation-reference.md` was last scr
   `Tabs` vs templates vs a second `pn.serve` slug), the connectivity surface (stream/patch,
   periodic callbacks, `pn.bind`, URL sync, reconnect, thread bridge), a **sketch** — not a
   design — for chatbot-piloted vs independently-driven surfaces, and the **gotchas index**
-  (§8; 27 entries as of 2026-08-04, those numbered 16 and above measured against a live
-  account rather than scraped, including the ledger `BASE` row that reports its own currency
-  as the literal string `"BASE"`). Every claim tagged scraped / probed / code / unverified.
+  (§8; those numbered 16 and above measured against a live account rather than scraped,
+  including the ledger `BASE` row that reports its own currency as the literal string
+  `"BASE"`; 34–40, 2026-11-06, are the grouped-rows findings behind the Orders tab's bands).
+  Every claim tagged scraped / probed / code / unverified.
 
 ### Research — point-in-time, not updated
 

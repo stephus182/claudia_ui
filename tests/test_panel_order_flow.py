@@ -10,8 +10,11 @@ order-placement logic itself (that's test_order_flow.py's job, already covered).
 from unittest.mock import MagicMock, patch
 
 import pytest
+from ibkr_core_mcp import attached_entry, pair_bracket_response
 
 from claudia.panel_order_flow import (
+    render_attach_proposal,
+    render_bracket_proposal,
     render_cancel_proposal,
     render_modify_proposal,
     render_order_proposal,
@@ -43,6 +46,14 @@ def _make_ibkr_mock():
         "order_id": "242538143",
         "order_status": "Submitted",
     }
+    # The bracket and attach paths (gap #36): the real pairing functions, a response each.
+    mod.pair_bracket_response = pair_bracket_response
+    mod.attached_entry = attached_entry
+    client.get_bracket_preview.return_value = {}
+    client.place_bracket_and_confirm.return_value = [{"order_id": "1", "order_status": "Submitted"}]
+    client.attach_order_and_confirm.return_value = [
+        {"order_id": "2", "parent_order_id": "555", "order_status": "PreSubmitted"}
+    ]
     return mod, client
 
 
@@ -80,6 +91,24 @@ _MODIFY = {
     "limit_price": 105.0,
     "changes": [{"field": "limit_price", "previous_value": 100.0}],
 }
+_CHILD = {
+    "kind": "profit_taker",
+    "price": 170.0,
+    "limit_price": None,
+    "tif": None,
+    "outside_rth": None,
+}
+_BRACKET = {
+    **_PLACE,
+    "order_type": "LMT",
+    "limit_price": 150.0,
+    "tif": "GTC",
+    "sec_type": "STK",
+    "outside_rth": None,
+    "reason": "r",
+    "children": [_CHILD],
+}
+_ATTACH = {**_CANCEL, "child": {**_CHILD, "kind": "stop_loss", "price": 140.0}}
 
 # Every client method that writes an order. A click reaches exactly one of them or none.
 _WRITES = (
@@ -89,6 +118,8 @@ _WRITES = (
     "modify_order_and_confirm",
     "cancel_order",
     "reply_order",
+    "place_bracket_and_confirm",
+    "attach_order_and_confirm",
 )
 
 # (card, label) -> the one write that label's click must reach; None = no IBKR write at all.
@@ -99,6 +130,10 @@ _EFFECT = {
     ("cancel", "KEEP ORDER"): None,
     ("modify", "MODIFY ORDER"): "modify_order_and_confirm",
     ("modify", "DISCARD"): None,
+    ("bracket", "STAGE BRACKET"): "place_bracket_and_confirm",
+    ("bracket", "DISCARD"): None,
+    ("attach", "STAGE ATTACHED ORDER"): "attach_order_and_confirm",
+    ("attach", "DISCARD"): None,
 }
 
 # (card, dismiss label) -> the exact chat line the dismissal posts.
@@ -106,6 +141,8 @@ _DISMISS_MESSAGE = {
     ("place", "DISCARD"): "Order proposal discarded — nothing was sent to IBKR.",
     ("cancel", "KEEP ORDER"): "Proposal dismissed — order left unchanged at IBKR.",
     ("modify", "DISCARD"): "Modify proposal discarded — order left unchanged at IBKR.",
+    ("bracket", "DISCARD"): "Bracket proposal discarded — nothing was sent to IBKR.",
+    ("attach", "DISCARD"): "Attach proposal discarded — the working order is unchanged at IBKR.",
 }
 
 
@@ -116,8 +153,12 @@ async def _render(kind: str, chat):
     elif kind == "cancel":
         with patch("claudia.panel_order_flow.cancel_proposal_contract_label", return_value=None):
             await render_cancel_proposal(chat, dict(_CANCEL), session_id="s1", store=None)
-    else:
+    elif kind == "modify":
         await render_modify_proposal(chat, dict(_MODIFY), session_id="s1", store=None)
+    elif kind == "bracket":
+        await render_bracket_proposal(chat, dict(_BRACKET), session_id="s1", store=None)
+    else:
+        await render_attach_proposal(chat, dict(_ATTACH), session_id="s1", store=None)
     column = chat.send.call_args.args[0]
     return column[0], column[1]
 
@@ -141,6 +182,8 @@ def _writes_reached(client) -> list[str]:
         ("place", [("STAGE ORDER", "primary"), ("DISCARD", "danger")]),
         ("cancel", [("CANCEL ORDER", "danger"), ("KEEP ORDER", "default")]),
         ("modify", [("MODIFY ORDER", "primary"), ("DISCARD", "danger")]),
+        ("bracket", [("STAGE BRACKET", "primary"), ("DISCARD", "danger")]),
+        ("attach", [("STAGE ATTACHED ORDER", "primary"), ("DISCARD", "danger")]),
     ],
 )
 async def test_each_card_shows_exactly_the_agreed_buttons_and_colours(kind, expected):
@@ -187,6 +230,8 @@ async def test_each_button_does_what_its_label_says(kind, label):
         ("place", "DISCARD", "STAGE ORDER"),
         ("cancel", "KEEP ORDER", "CANCEL ORDER"),
         ("modify", "DISCARD", "MODIFY ORDER"),
+        ("bracket", "DISCARD", "STAGE BRACKET"),
+        ("attach", "DISCARD", "STAGE ATTACHED ORDER"),
     ],
 )
 async def test_after_a_dismiss_the_confirm_button_dispatches_nothing(kind, dismiss, confirm):
@@ -211,11 +256,12 @@ async def test_order_buttons_obey_the_naming_and_colour_rules_as_a_class():
 
     Not a list of today's labels: a new card, or a label or handler moved between buttons,
     is judged by its behaviour. One label has one colour; blue exactly on the buttons that
-    reach a place or modify write; red on the one that reaches a cancel, and "CANCEL" on no
-    other button; UPPERCASE throughout.
+    reach a place, modify or attach write (an attach writes a new order onto a working one);
+    red on the one that reaches a cancel, and "CANCEL" on no other button; UPPERCASE
+    throughout.
     """
     seen: dict[str, set[str]] = {}
-    for kind in ("place", "cancel", "modify"):
+    for kind in ("place", "cancel", "modify", "bracket", "attach"):
         _, row = await _render(kind, _make_chat())
         for button in row:
             chat = _make_chat()
@@ -224,7 +270,7 @@ async def test_order_buttons_obey_the_naming_and_colour_rules_as_a_class():
                 _, fresh = await _render(kind, chat)
                 await _get_click_callback(_by_label(fresh, button.label))(None)
             reached = _writes_reached(client)
-            validates = any(w.startswith(("place", "modify")) for w in reached)
+            validates = any(w.startswith(("place", "modify", "attach")) for w in reached)
             cancels = "cancel_order" in reached
 
             assert button.label == button.label.upper(), button.label
@@ -240,7 +286,13 @@ async def test_order_buttons_obey_the_naming_and_colour_rules_as_a_class():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("kind", "confirm"),
-    [("place", "STAGE ORDER"), ("cancel", "CANCEL ORDER"), ("modify", "MODIFY ORDER")],
+    [
+        ("place", "STAGE ORDER"),
+        ("cancel", "CANCEL ORDER"),
+        ("modify", "MODIFY ORDER"),
+        ("bracket", "STAGE BRACKET"),
+        ("attach", "STAGE ATTACHED ORDER"),
+    ],
 )
 async def test_the_card_text_names_the_button_that_exists(kind, confirm):
     """The instruction on each card names its real confirm button, and no retired label."""

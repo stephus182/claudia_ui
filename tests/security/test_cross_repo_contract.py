@@ -71,6 +71,11 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
         "BrowserCookieAuth",
         "GDriveCache",
         "SQLiteStore",
+        # The two pure pairing functions of the bracket seam (gap #36, 2026-10-18), imported
+        # inside `order_flow`'s bracket and attach cores: IBKR's response order is not the
+        # submission order, and only the core knows the identifiers it pairs on.
+        "pair_bracket_response",
+        "attached_entry",
     ),
     "ibkr_core_mcp.order_confirm": ("change_value_text", "price_text_safe", "_DIALOG_TIMEOUT_S"),
     "ibkr_core_mcp.streaming": ("IBKRWebSocket", "PnLUpdate", "TradeExecution"),
@@ -83,13 +88,16 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
     "ibkr_core_mcp.gdrive_auth": ("load_or_refresh_credentials",),
 }
 
-# The three gated entry points, and the keyword arguments ClaudIA passes to each. The gates
-# live inside these methods in the core; calling a different one, or the same one with a
-# changed signature, is how an order write stops being gated the way this repository thinks.
+# The gated entry points — three, plus the bracket and attach writes since 2026-10-18
+# (gap #36) — and the keyword arguments ClaudIA passes to each. The gates live inside these
+# methods in the core; calling a different one, or the same one with a changed signature, is
+# how an order write stops being gated the way this repository thinks.
 GATED_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
     "place_order_and_confirm": ("reply_log",),
     "modify_order_and_confirm": ("reply_log",),
     "cancel_order": ("order_details",),
+    "place_bracket_and_confirm": ("reply_log",),
+    "attach_order_and_confirm": ("reply_log",),
 }
 
 
@@ -172,8 +180,8 @@ def test_the_import_probe_reads_every_form():
     assert modules == {"ibkr_core_mcp.streaming"}
 
 
-def test_the_three_gated_entry_points_keep_their_shape():
-    """Name, presence, and the keyword arguments ClaudIA actually passes."""
+def test_every_gated_entry_point_keeps_its_shape():
+    """Name, presence, and the keyword arguments ClaudIA actually passes — for all five."""
     from ibkr_core_mcp import IBKRClient
 
     for method_name, keywords in GATED_ENTRY_POINTS.items():
@@ -651,6 +659,13 @@ def test_the_gate2_button_names_claudia_prints_are_the_ones_the_core_draws():
     source = inspect.getsource(order_confirm)
     for label in (GATE2_SEND_LABEL, GATE2_MODIFY_LABEL, GATE2_CANCEL_LABEL):
         assert f'confirm_label="{label}"' in source, f"the core no longer draws a {label} button"
+    # The bracket and attach cards (gap #36, 2026-10-18) both end at the core's bracket
+    # dialog, whose button is SEND TO IBKR — pinned on that dialog's own source, not on the
+    # module's, so the place dialog's identical label cannot stand in for it.
+    bracket_dialog = inspect.getsource(order_confirm.confirm_bracket_dialog)
+    assert f'confirm_label="{GATE2_SEND_LABEL}"' in bracket_dialog, (
+        "the core's bracket dialog no longer draws the SEND TO IBKR button the two cards name"
+    )
     assert isinstance(order_confirm._DIALOG_TIMEOUT_S, int)
 
 

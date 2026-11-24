@@ -40,6 +40,8 @@ EXECUTION_CORES = frozenset(
         "_execute_staged_order_core",
         "_execute_modify_order_core",
         "_execute_cancel_order_core",
+        "_execute_staged_bracket_core",  # gap #36, 2026-10-18
+        "_execute_attach_core",
     }
 )
 
@@ -97,7 +99,8 @@ def test_every_click_handler_claims_the_one_shot_before_anything_else():
     """
     source = (PACKAGE_DIR / CLICK_LAYER).read_text(encoding="utf-8")
     handlers = handlers_bound_to(source, "on_click")
-    assert len(handlers) == 6, f"expected six bound handlers, found {sorted(handlers)}"
+    # Two per card: place, cancel, modify, and since 2026-10-18 bracket and attach (gap #36).
+    assert len(handlers) == 10, f"expected ten bound handlers, found {sorted(handlers)}"
 
     for name in sorted(handlers):
         fn = function_named(source, name)
@@ -118,6 +121,8 @@ def test_every_renderer_takes_its_own_snapshot_of_the_proposal():
         "render_order_proposal",
         "render_cancel_proposal",
         "render_modify_proposal",
+        "render_bracket_proposal",
+        "render_attach_proposal",
     ]
     for name in renderers:
         fn = function_named(source, name)

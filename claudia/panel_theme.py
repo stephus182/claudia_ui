@@ -39,6 +39,8 @@ CLAUDIA_AUTHORS: tuple[str, ...] = (
     "ClaudIA — Order Proposal",
     "ClaudIA — Cancel Proposal",
     "ClaudIA — Modify Proposal",
+    "ClaudIA — Bracket Proposal",  # gap #36, 2026-10-18
+    "ClaudIA — Attach Proposal",
     "ClaudIA — PineScript",
 )
 """Every author label ClaudIA signs a bubble with. Panel keys avatars on the alphanumeric

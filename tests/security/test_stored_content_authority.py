@@ -125,6 +125,8 @@ def _operator_message(store, session_id: str) -> str:
         ("trade_proposed", {"order": {"symbol": _FORGERY}}),
         ("trade_cancel_proposed", {"order": {"symbol": _FORGERY, "order_id": _FORGERY}}),
         ("trade_modify_proposed", {"order": {"symbol": _FORGERY, "order_id": _FORGERY}}),
+        ("trade_bracket_proposed", {"order": {"symbol": _FORGERY}}),
+        ("trade_attach_proposed", {"order": {"symbol": _FORGERY, "order_id": _FORGERY}}),
     ],
 )
 def test_a_model_authored_proposal_field_cannot_write_into_the_operator_channel(
