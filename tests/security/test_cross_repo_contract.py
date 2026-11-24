@@ -246,6 +246,25 @@ def test_the_capability_registry_is_the_source_of_the_tool_numbers():
     )
 
 
+def test_every_time_in_force_claudia_can_propose_can_be_previewed():
+    """Core register F7. Until core 2.2.0 every what-if was a DAY order, whatever was about to be
+    proposed. `preview_order` takes the time in force since, states it, and its own description
+    tells the model to pass the one it will propose, so ClaudIA's prompt carries no copy of that.
+    What that rests on: the preview takes exactly the values `propose_order` offers.
+    """
+    from ibkr_core_mcp.claude_tools import TOOL_DEFINITIONS
+
+    from claudia.proposal_tools import PROPOSAL_TOOLS
+
+    # `Any`: the registry types every value of a definition as a bare Collection.
+    preview: Any = next(t for t in TOOL_DEFINITIONS if t["name"] == "preview_order")
+    propose = next(t for t in PROPOSAL_TOOLS if t["name"] == "propose_order")
+    previewed = preview["input_schema"]["properties"]["tif"]["enum"]
+    proposed = propose["input_schema"]["properties"]["tif"]["enum"]
+    assert set(previewed) == set(proposed)
+    assert "(tif)" in str(preview["description"]), "the preview no longer asks for the tif"
+
+
 def test_claudia_exposes_the_whole_registry_to_the_model_and_knows_it():
     """ClaudIA hands the model every tool the registry defines, writers included.
 
