@@ -79,6 +79,21 @@ def test_importing_the_app_does_not_load_the_operators_env():
     ]
 
 
+def test_the_operators_keychain_is_shut():
+    """The core reads the OS keychain in every `Config.from_env()` (its 2.2.0 release), and so
+    does every `core_config()` here. `pytest_configure` sets keyring's null backend, which holds
+    nothing and prompts for nothing.
+
+    To see this red, remove that line and run with
+    `PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring`: without the variable, asking for the
+    backend would initialise the real one.
+    """
+    import keyring
+    import keyring.backends.null
+
+    assert isinstance(keyring.get_keyring(), keyring.backends.null.Keyring)
+
+
 def test_every_exemption_still_names_a_real_test():
     """An exemption that outlives its test is a hole nobody can see.
 

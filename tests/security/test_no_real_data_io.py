@@ -75,6 +75,20 @@ def test_the_reporter_is_redirected_and_no_session_is_left_over():
     assert panel_app._open_sessions == {}
 
 
+def test_the_cores_audit_record_lands_under_the_tests_own_directory(tmp_path):
+    """The core appends one line per tool call, order write and session write (its 2.2.0
+    release), to `~/.ibkr_core/audit.jsonl` unless told otherwise. This one, made with nothing
+    configured here, is alone in this test's own file: `_audit_record_under_tmp`, per test.
+    """
+    from ibkr_core_mcp import audit
+
+    audit.record("tool_call", actor="model", decision="executed", tool="a_unit_test")
+
+    lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert '"a_unit_test"' in lines[0]
+
+
 def test_a_leftover_session_finalised_at_shutdown_writes_no_report_into_the_real_directory():
     """The defect, replayed: a mock store left registered, then the shutdown finaliser.
 

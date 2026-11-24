@@ -19,6 +19,9 @@ are probes, the session reporter is redirected, and an audit hook refuses anythi
 `~/.ibkr_core` — each in its section below, asserted by tests/security/test_no_real_data_io.py.
 The desktop block, 2026-10-16 (gap #100): the same hook refuses, by command name, a child
 process that would reach the desktop or a daemon — tests/security/test_no_desktop_reached.py.
+The keychain and the audit record, 2026-11-24: core 2.2.0 reads the first and writes the second,
+so keyring's null backend is set for the run and the record is redirected for every test —
+asserted by the same two files as the live-I/O and real-data blocks.
 """
 
 import os
@@ -521,6 +524,13 @@ def pytest_configure(config):
     _OPERATOR_GUARD["armed"] = True
     sys.addaudithook(_desktop_hook)
     _DESKTOP_GUARD["armed"] = True
+    # And the operator's keychain, on every run, an opted-in live-API one included: the core
+    # reads it in each `Config.from_env()`. Set, never read first — asking `keyring` for its
+    # backend would initialise the real one. Same line as the core's own conftest.
+    import keyring
+    import keyring.backends.null
+
+    keyring.set_keyring(keyring.backends.null.Keyring())
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -608,6 +618,20 @@ def isolate_real_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterat
     monkeypatch.setattr(session_reporter, "REPORT_DIR", tmp_path / "session-reports")
     yield
     panel_app._open_sessions.clear()
+
+
+@pytest.fixture(autouse=True)
+def _audit_record_under_tmp(tmp_path: Path) -> None:
+    """Every test: the core's audit record lands under its tmp_path.
+
+    A tool call, an order write and a session write each record themselves, by default in
+    `~/.ibkr_core/audit.jsonl`, where the operator-data hook would refuse the first test that
+    got that far. Per test, not once: a test that configures its own file must not leave it
+    to the next one.
+    """
+    from ibkr_core_mcp import audit
+
+    audit.configure(tmp_path / "audit.jsonl")
 
 
 def _find_buttons(chat):

@@ -218,6 +218,8 @@ ruff check . && ruff format --check . && mypy   # lint, format, type gates — a
 # there, before it happens, however the path is spelled, and the run fails if a refusal was
 # swallowed. It catches accidents, not intent, and sees only what Python audits: SQL-level
 # ATTACH and dir_fd-relative calls are out of its sight (docs/security-architecture.md § 9).
+# Nor does a test read the OS keychain or add to the audit record, both the core's since 2.2.0:
+# keyring's null backend for the run, the record under each test's tmp_path (2026-11-24).
 
 # Opt-in only — bills real Anthropic API calls, skipped by default (7 tests):
 CLAUDIA_LIVE_SCHEMA_CHECK=1 pytest -m live_api
