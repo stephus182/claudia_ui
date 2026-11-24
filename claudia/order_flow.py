@@ -1377,12 +1377,14 @@ def _needs_conid_text(sec_type: str, symbol: str) -> str:
     ## Why refusing costs nothing
 
     The authoritative resolver is already in the loop one turn earlier — `get_market_snapshot`
-    and `preview_order` both route through `_resolve_snapshot_conid`, and that is where the
-    model gets the conid it puts in the proposal. Measured over this account's whole order
-    history on 2026-08-05, across the 18 `trade_proposed`/`trade_staged` rows: 16 carried a
-    conid, and the 2 that did not are a single order proposed and staged on 2026-07-06.
-    **On and after 2026-07-10 it is 16 of 16 — no placement has gone without one.** This
-    guard therefore makes mandatory what production already does, rather than adding a step.
+    and `preview_order` both route through `_resolve_snapshot_conid`, and each names the
+    contract it resolved with its conid, which is what the model puts in the proposal. For
+    `preview_order` that holds from core 2.2.0 (gap #96): until then it printed only the symbol
+    it was asked for, and the one futures proposal in 38 that carried no conid, on 2026-10-08,
+    had followed a preview and nothing else. Measured over this account's whole order history
+    on 2026-08-05, across the 18 `trade_proposed`/`trade_staged` rows: 16 carried a conid, and
+    the 2 that did not are a single order proposed and staged on 2026-07-06. This guard
+    therefore makes mandatory what production already does, rather than adding a step.
     Re-implementing the resolution rule here was rejected for the opposite reason: it would
     put a second, drifting definition of symbol resolution next to the authoritative one.
 

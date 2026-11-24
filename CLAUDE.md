@@ -463,9 +463,11 @@ ClaudIA **cannot** place, modify, or cancel orders autonomously:
   path refuses any FUT whose `/iserver/contract/{conid}/info` `maturity_date` is today or
   earlier, or unreadable (fail-closed), **before Gate 1**, from the contract read it already
   makes (`ContractNotTradeableError`, stage `contract_not_tradeable`). FOP is not covered.
-  This costs nothing: the model gets its conid from `get_market_snapshot`/`preview_order`,
-  which route through the authoritative resolver, and **every real placement proposal since
-  2026-07-10 already carried one** (measured over the full order history 2026-08-05). Do not
+  This costs nothing: the model gets its conid from `get_market_snapshot` or `preview_order`,
+  which route through the authoritative resolver and name the contract with its conid (the
+  preview since core 2.2.0; until then it printed only the symbol, and on 2026-10-08 a futures
+  proposal carried none — gap #96). **Every real placement proposal from 2026-07-10 to
+  2026-08-05 carried one** (measured over the full order history that day). Do not
   "restore" symbol resolution here — re-implementing it would put a second, drifting
   definition next to the authoritative one.
 - `strict: true` enforces types, `enum`s, required keys and closed objects at the API
