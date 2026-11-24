@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from ibkr_core_mcp.order_confirm import _DIALOG_TIMEOUT_S, change_value_text, price_text_safe
 
+from claudia import env_file
 from claudia.contract_identity import contract_identity
 
 if TYPE_CHECKING:
@@ -295,12 +296,10 @@ def proposal_contract_label(proposal: dict[str, Any]) -> str | None:
     if conid in (None, ""):
         return None
     try:
-        from dotenv import load_dotenv
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+        from ibkr_core_mcp import BrowserCookieAuth, IBKRClient
 
-        load_dotenv(override=False)
         ibkr = IBKRClient(
-            config=Config.from_env(),
+            config=env_file.core_config(),
             auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
         )
         identity = contract_identity(ibkr, int(conid))
@@ -334,12 +333,10 @@ def cancel_proposal_contract_label(proposal: dict[str, Any]) -> str | None:
     if not order_id:
         return None
     try:
-        from dotenv import load_dotenv
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+        from ibkr_core_mcp import BrowserCookieAuth, IBKRClient
 
-        load_dotenv(override=False)
         ibkr = IBKRClient(
-            config=Config.from_env(),
+            config=env_file.core_config(),
             auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome")),
         )
         status = ibkr.get_order_status(order_id)
@@ -1765,11 +1762,9 @@ async def _stage_order(
 
     reply_log: list[dict[str, Any]] = []
     try:
-        from dotenv import load_dotenv
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+        from ibkr_core_mcp import BrowserCookieAuth, IBKRClient
 
-        load_dotenv(override=False)
-        config = Config.from_env()
+        config = env_file.core_config()
         # Every synchronous IBKR call in this flow runs in a worker thread (gap #17): the
         # client reads browser cookies here, and the gated write blocks on Touch ID and a
         # 60 s dialog — none of it may hold the event loop every tab is served from.
@@ -2131,11 +2126,9 @@ async def _cancel_order(
             "System",
         )
 
-        from dotenv import load_dotenv
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+        from ibkr_core_mcp import BrowserCookieAuth, IBKRClient
 
-        load_dotenv(override=False)
-        config = Config.from_env()
+        config = env_file.core_config()
         # Every synchronous IBKR call in this flow runs in a worker thread (gap #17): the
         # client reads browser cookies here, and the gated write blocks on Touch ID and a
         # 60 s dialog — none of it may hold the event loop every tab is served from.
@@ -2356,11 +2349,9 @@ async def _modify_order(
             "System",
         )
 
-        from dotenv import load_dotenv
-        from ibkr_core_mcp import BrowserCookieAuth, Config, IBKRClient
+        from ibkr_core_mcp import BrowserCookieAuth, IBKRClient
 
-        load_dotenv(override=False)
-        config = Config.from_env()
+        config = env_file.core_config()
         # Every synchronous IBKR call in this flow runs in a worker thread (gap #17): the
         # client reads browser cookies here, and the gated write blocks on Touch ID and a
         # 60 s dialog — none of it may hold the event loop every tab is served from.

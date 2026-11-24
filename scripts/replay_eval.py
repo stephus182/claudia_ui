@@ -46,8 +46,8 @@ from pathlib import Path
 from typing import Any
 
 import anthropic
-from dotenv import load_dotenv
 
+from claudia import env_file
 from claudia.agent import (
     _HISTORY_LIMIT,
     _MAX_TOKENS,
@@ -155,13 +155,12 @@ def build_agent(db: Path, session_id: str, doc_version: str | None, model: str) 
     from ibkr_core_mcp import (
         BrowserCookieAuth,
         ClaudeToolkit,
-        Config,
         GDriveCache,
         IBKRClient,
         SQLiteStore,
     )
 
-    config = Config.from_env()
+    config = env_file.core_config()
     ibkr = IBKRClient(
         config=config, auth=BrowserCookieAuth(os.environ.get("IBKR_AUTH_BROWSER", "chrome"))
     )
@@ -354,11 +353,12 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=Path("data/test-sessions/replay-eval"))
     args = parser.parse_args()
 
-    load_dotenv(override=False)
+    env_file.load()
     if os.environ.get("CLAUDIA_LIVE_SCHEMA_CHECK") != "1":
         raise SystemExit("billed: set CLAUDIA_LIVE_SCHEMA_CHECK=1 to run")
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise SystemExit("no ANTHROPIC_API_KEY resolved (checked .env)")
+    key = env_file.anthropic_api_key()
+    if key is None:
+        raise SystemExit(env_file.model_unreachable_reason())
     model = os.environ.get("CLAUDIA_MODEL", "claude-opus-4-8")
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -367,7 +367,7 @@ def main() -> int:
     rows = agent._store.get_history(session_id, limit=_HISTORY_LIMIT)
     withdrawn = withdrawn_ids(db)
     expect = set(args.expect)
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=key.get_secret_value())
     print(
         f"turn {args.turn} · session {session_id[:8]} · {len(rows)} rows in window · "
         f"withdrawn in window: {sorted(r['id'] for r in rows if r['id'] in withdrawn)} · model {model}"

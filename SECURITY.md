@@ -51,6 +51,7 @@ remote author of the system prompt.
 | Claims about actions are ruled on by evidence, not by the model | four detectors, `called_tools` / `_pending_proposal` | `tests/test_agent.py`, `tests/test_corpus_precision.py` |
 | Unit tests reach no live system, see no real secret, write nothing into the operator's data, and reach nothing under `~/.ibkr_core` — the trade store, the Drive token (probe DB paths, redirected reporter, session-end check, an audit hook on SQLite and file events) | `tests/conftest.py`, pytest-socket | `tests/security/test_no_live_io.py`, `tests/security/test_no_real_data_io.py` |
 | Subprocesses start in two modules, list-form, never a shell; no unit test can start one that reaches the desktop; the sidecar's **child process**, and the docker CLI that reads the gateway's log, receive only a declared environment | `tradingview._sidecar_env`, `gateway_launch._docker_env`, the conftest desktop hook | `tests/security/test_process_spawn_sites.py` (every way to start a process, by AST), `tests/security/test_no_desktop_reached.py` (refused by name), `tests/security/test_sidecar_child_environment.py` (a real child reports its own environment), `tests/test_tradingview.py`, `tests/test_gateway_launch.py` |
+| A secret is read from `.env` into the object that uses it and never placed in a process environment; an inherited one is removed at startup by name; no test can open the real `.env` | `claudia/env_file.py` over the core's `load_env_file`; the conftest stand-in and audit hook | `tests/security/test_secrets_out_of_environment.py` (a real child reports no secret; the third-party `load_dotenv` case against python-dotenv's genuine function; the refusal and the `Setup required` error; three structural rules; the `.env` guard) |
 | The gateway's internal log reaches no output but the time, event and code of six login phrases; a line without a leading time is refused, never guessed | `gateway_launch.read_login_events` (one in-container `grep -F`), `gateway_preflight.login_events` | `tests/test_gateway_preflight.py` (account-, token- and MAC-shaped strings in every line, exact output), `tests/test_gateway_launch.py` (no user id or username in `--diagnose`) |
 | The server binds loopback with an exact origin allowlist that no environment variable can replace | `panel_app._WEBSOCKET_ORIGINS`, pinned as a bokeh user-set value | `tests/test_security_regressions.py::test_pn_serve_binds_loopback_only` and `::test_bokeh_env_var_cannot_widen_the_websocket_origin_allowlist` |
 | The cross-repo API contract is pinned in both directions, at a named release | `IMPORTED_API` (held equal to every core import statement), `TOOLKIT_REACH_INS`, `GATED_ENTRY_POINTS`, `core-ref.txt` (the supported PyPI version) | `tests/security/test_cross_repo_contract.py` |
@@ -99,8 +100,8 @@ Full flow, with the reply chain and the read-back: `docs/order-api-reference.md`
 
 | Material | Lives in | Control |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | `.env`, 0600 | Never formatted into any message; third-party loggers pinned to WARNING; not passed to the sidecar |
-| IBKR Flex token | `.env` | Travels in a query string, so every Flex call goes through the toolkit, whose exceptions are replaced by the core's fixed sentences |
+| `ANTHROPIC_API_KEY` | `.env`, 0600 | Read by `claudia/env_file.py` into a `SecretStr`, never placed in the environment (a copy inherited from the shell is removed at startup); unwrapped only for `AsyncAnthropic(api_key=…)`; never formatted into any message; third-party loggers pinned to WARNING; not passed to the sidecar |
+| IBKR Flex token | `.env`, 0600 | Read by the core's loader into `Config.flex_token` as a `SecretStr`, never placed in the environment; travels in a query string, so every Flex call goes through the toolkit, whose exceptions are replaced by the core's fixed sentences |
 | Google OAuth token and credentials | `~/.ibkr_core/`, 0600 | Chmod'd after every refresh; uploads are fixed filenames, never a glob |
 | IBKR browser session cookie | The browser's own store | Read for the WebSocket handshake only; never logged |
 
@@ -192,6 +193,7 @@ Before any significant change:
 - [ ] Any new shared state touched from a worker thread is lock-protected; cross-thread UI updates go through `call_soon_threadsafe`
 - [ ] A new dependency finding with a fixed release bumps the floor; only a no-fix finding goes in the ignore file, with a reason and a re-check date
 - [ ] `.env` and both private documents are 0600, and `git ls-files -i -c --exclude-standard` prints nothing
+- [ ] A new secret is added to the secret names and read through `env_file` as a `SecretStr`, never from `os.environ`; a new Anthropic client carries `api_key=`; the editor's terminal does not inject `.env` (VS Code: `python.terminal.useEnvFile` off)
 
 ---
 
