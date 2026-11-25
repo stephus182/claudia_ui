@@ -43,6 +43,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+import requests
 from ibkr_core_mcp.exceptions import (
     ConfirmationDeclinedError,
     ConfirmationTimeoutError,
@@ -904,14 +905,24 @@ def _format_attach_summary(proposal: dict[str, Any]) -> str:
 
 
 def _post_dispatch_failure_text(exc: Exception, noun: str) -> str:
-    """The failure message for an exception raised *after* the IBKR write returned.
+    """The failure message for an exception raised *after* the IBKR write returned, or by a
+    write whose connection was lost before it did.
 
     Once the dispatch call has returned, the write reached IBKR. Anything that fails
     afterwards — surfacing the result, reading the state back, writing the decision row —
     is a reporting failure, not a placement failure. Telling the user "Order not placed"
     there would be the same assert-without-evidence defect this module's read-back exists
     to close, only pointed the other way.
+
+    A write lost unanswered may have arrived or not, so its message claims neither. "If you had
+    approved": the write asks at both gates first, and only the user knows how far it got.
     """
+    if isinstance(exc, requests.RequestException):
+        return (
+            f"⚠️ **The {noun} may or may not have reached IBKR.** "
+            f"{_classify_execution_error(exc)} "
+            f"If you had approved the dialog, check IBKR before trying again."
+        )
     return (
         f"⚠️ **The {noun} WAS dispatched to IBKR** — this failure happened afterwards, "
         f"while reporting or recording it: {_classify_execution_error(exc)}. "
@@ -975,9 +986,9 @@ def _declined_reply_text(reply_log: list[dict[str, Any]]) -> str:
 # own types come before the rows that read words, so no sentence IBKR or the core writes can
 # be claimed by a row that only looks for one.
 #
-# A sentence may carry `{detail}`, replaced with the exception's own message — see
-# `_classify_execution_error`. Every other row states the whole fact by itself; the library
-# refusal below cannot, because the numbers that make it actionable live in the message.
+# A sentence may carry `{detail}`, replaced with the exception's own message, or `{type}`, its
+# type's name — see `_classify_execution_error`. Every other row states the whole fact by itself;
+# the library refusal below cannot, because the numbers that make it actionable live in the message.
 class ContractNotTradeableError(Exception):
     """A futures order refused before Gate 1: its contract is at or past its expiration, or
     no expiration could be read (gap #71 — HARD rule, operator 2026-09-24).
@@ -1161,6 +1172,14 @@ _FAILURE_PATTERNS: tuple[tuple[Callable[[Exception], bool], str, str], ...] = (
         "Confirmation dialog timed out ({timeout_s} seconds) — nothing was sent to IBKR.",
     ),
     (
+        # By TYPE, and before the rows that read the message: a lost connection (the core's own
+        # types cover every answer IBKR gives). Its message quotes the URL, and the digits of an
+        # account or an order number are no evidence: a 403 among them is not IBKR's refusal.
+        lambda e: isinstance(e, requests.RequestException),
+        "other",
+        "No answer came back from the IBKR gateway ({type}).",
+    ),
+    (
         # Gate 1 raises `HumanAuthError` itself. A subclass no row above knows is not one of
         # its failures: it falls through and is shown under its own name.
         lambda e: (
@@ -1195,8 +1214,10 @@ def _classify_execution_error(exc: Exception) -> str:
             # `.replace`, never `.format`: it is a no-op on the rows that carry no
             # placeholder, whereas `.format` would raise on the first sentence that ever
             # contains a brace for its own sake.
-            return sentence.replace("{detail}", error_msg).replace(
-                "{timeout_s}", str(_DIALOG_TIMEOUT_S)
+            return (
+                sentence.replace("{type}", type(exc).__name__)
+                .replace("{detail}", error_msg)
+                .replace("{timeout_s}", str(_DIALOG_TIMEOUT_S))
             )
     return f"{type(exc).__name__}: {error_msg}"
 
@@ -1210,9 +1231,9 @@ def _refusal_stage(exc: Exception) -> str:
     `gate2` (the dialog's abandon button: DO NOT SEND, LEAVE UNCHANGED or DISCARD),
     `reply` (a question IBKR asked after the write was posted, declined or not answered),
     `timeout` (the dialog closed with no decision, leaving the order as it was), `touch_id`
-    (denied, unavailable, or timed out at the sensor), `rejected` (IBKR 403), or `other`.
-    Read off the same table as `_classify_execution_error`, so the stage and the sentence
-    cannot disagree.
+    (denied, unavailable, or timed out at the sensor), `rejected` (IBKR 403), or `other` (a
+    connection lost before the write among them). Read off the same table as
+    `_classify_execution_error`, so the stage and the sentence cannot disagree.
     """
     return next((stage for matches, stage, _ in _FAILURE_PATTERNS if matches(exc)), "other")
 
@@ -1272,8 +1293,9 @@ def _record_refusal(
 
     `noun` is "trade", "modify" or "cancel"; the row is `<noun>_refused`, or
     `<noun>_dispatched_unverified` when the write had already reached IBKR and what failed
-    was the reporting — a different fact, named differently. No store or no session: the
-    render sites allow both, and a refusal must still report and return.
+    was the reporting, or when its connection was lost before IBKR answered — a different fact,
+    named differently. No store or no session: the render sites allow both, and a refusal must
+    still report and return.
     """
     kind = "dispatched_unverified" if dispatched else "refused"
     reason = _classify_execution_error(exc)
@@ -2206,7 +2228,7 @@ async def _stage_order(
     qty = _whole_or_exact(proposal.get("quantity", 0))
     otype = proposal.get("order_type", "MKT")
     sec_type = proposal.get("sec_type", "STK").upper()
-    dispatched = False  # flips once the IBKR write has returned — see the except block
+    dispatched = False  # flips when the IBKR write returns, or is lost — see the except block
 
     await send_status(
         (
@@ -2229,9 +2251,13 @@ async def _stage_order(
         log.info(
             "Placing order: %s", {k: v for k, v in order_body.items() if not k.startswith("_")}
         )
-        result = await asyncio.to_thread(
-            ibkr.place_order_and_confirm, account_id, order_body, reply_log=reply_log
-        )
+        try:
+            result = await asyncio.to_thread(
+                ibkr.place_order_and_confirm, account_id, order_body, reply_log=reply_log
+            )
+        except requests.RequestException:
+            dispatched = True  # lost unanswered: IBKR may have it
+            raise
         dispatched = True
         reply_line = _format_reply_log(reply_log)
         if reply_line:
@@ -2780,7 +2806,7 @@ async def _cancel_order(
     """The cancel flow itself; reached only through `_execute_cancel_order_core`."""
     order_id = proposal.get("order_id")
     symbol = proposal.get("symbol", "?")
-    dispatched = False  # flips once the IBKR write has returned — see the except block
+    dispatched = False  # flips when the IBKR write returns, or is lost — see the except block
 
     try:
         # Refused inside the `try` so the handler records it (gap #80), and before the gates
@@ -2815,13 +2841,17 @@ async def _cancel_order(
         # never blocked by a read. `extOperator` stays out, as on place and modify (8089).
         # https://www.interactivebrokers.com/docs/web-api/v1/endpoints/orders/cancel-order.md
         manual_indicator = order_details.pop("_manual_indicator", None)
-        result = await asyncio.to_thread(
-            ibkr.cancel_order,
-            account_id,
-            order_id,
-            order_details=order_details,
-            manual_indicator=manual_indicator,
-        )
+        try:
+            result = await asyncio.to_thread(
+                ibkr.cancel_order,
+                account_id,
+                order_id,
+                order_details=order_details,
+                manual_indicator=manual_indicator,
+            )
+        except requests.RequestException:
+            dispatched = True  # lost unanswered: IBKR may have it
+            raise
         dispatched = True
 
         # Same 200-with-rejection classification as the place path — cancel_order
@@ -3000,7 +3030,7 @@ async def _modify_order(
     order_id = proposal.get("order_id")
     conid = proposal.get("conid")
     symbol = proposal.get("symbol", "?")
-    dispatched = False  # flips once the IBKR write has returned — see the except block
+    dispatched = False  # flips when the IBKR write returns, or is lost — see the except block
 
     reply_log: list[dict[str, Any]] = []
     try:
@@ -3092,9 +3122,13 @@ async def _modify_order(
         account_id = _resolve_account_id(accounts)
 
         log.info("Modifying order %s: %s", order_id, order_body)
-        result = await asyncio.to_thread(
-            ibkr.modify_order_and_confirm, account_id, order_id, order_body, reply_log=reply_log
-        )
+        try:
+            result = await asyncio.to_thread(
+                ibkr.modify_order_and_confirm, account_id, order_id, order_body, reply_log=reply_log
+            )
+        except requests.RequestException:
+            dispatched = True  # lost unanswered: IBKR may have it
+            raise
         dispatched = True
         reply_line = _format_reply_log(reply_log)
         if reply_line:

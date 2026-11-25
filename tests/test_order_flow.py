@@ -2845,6 +2845,72 @@ async def test_a_failure_before_the_dispatch_still_says_the_order_was_not_placed
     assert not any("WAS dispatched" in c for c in contents)
 
 
+# The two shapes a lost connection arrives in: no answer in time, and no connection left. The
+# second quotes the URL, whose account and order numbers are not words about the failure (this
+# one holds a 403).
+_LOST_CONNECTIONS = [
+    requests.exceptions.ReadTimeout(
+        "HTTPSConnectionPool(host='localhost', port=5055): Read timed out. (read timeout=30)"
+    ),
+    requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='localhost', port=5055): Max retries exceeded with url: "
+        "/v1/api/iserver/account/U12345/order/2420403143 (Caused by NewConnectionError())"
+    ),
+]
+
+_CORES: dict[str, tuple[Any, Any, str, str]] = {
+    "trade": (_run, _make_action, "place_order_and_confirm", "Order not placed"),
+    "cancel": (_run_cancel, _make_cancel_action, "cancel_order", "Order not cancelled"),
+    "modify": (_run_modify, _make_modify_action, "modify_order_and_confirm", "Order not modified"),
+}
+
+
+@pytest.mark.parametrize("lost", _LOST_CONNECTIONS, ids=lambda exc: type(exc).__name__)
+@pytest.mark.parametrize("noun", _CORES)
+@pytest.mark.asyncio
+async def test_a_connection_lost_during_the_write_leaves_its_outcome_unknown(noun, lost):
+    """The user approved, the write went out and no answer came: IBKR may have it.
+
+    Until 2026-11-24 the words "timed out" were read as the dialog's, and an approved order was
+    reported as "Confirmation dialog timed out (60 seconds) — nothing was sent to IBKR" and
+    recorded as refused by the user. Both could lead to the same order being sent twice.
+    """
+    run, make_action, write, not_done = _CORES[noun]
+    ibkr_mod, client = _make_ibkr_mock()
+    getattr(client, write).side_effect = lost
+    store = MagicMock()
+    said = _sent_contents(await run(make_action(), ibkr_mod, store=store, session_id="s1"))[-1]
+    assert "may or may not have reached IBKR" in said
+    assert "check IBKR" in said
+    for claim in (not_done, "nothing was sent", "dialog timed out", "WAS dispatched", "U12345"):
+        assert claim not in said
+    row = store.add_decision.call_args.kwargs
+    assert row["decision_type"] == f"{noun}_dispatched_unverified"
+    for claim in ("nothing was sent", "dialog timed out", "rejected", "U12345"):
+        assert claim not in row["summary_text"]
+
+
+@pytest.mark.parametrize("lost", _LOST_CONNECTIONS, ids=lambda exc: type(exc).__name__)
+@pytest.mark.parametrize("noun", _CORES)
+@pytest.mark.asyncio
+async def test_a_connection_lost_before_the_write_still_says_it_was_not_done(noun, lost):
+    """The other side: a read failed and the write was never called, so "not placed" is known —
+    and no dialog, which never opened, is blamed for it."""
+    run, make_action, write, not_done = _CORES[noun]
+    ibkr_mod, client = _make_ibkr_mock()
+    client.get_accounts.side_effect = lost
+    store = MagicMock()
+    said = _sent_contents(await run(make_action(), ibkr_mod, store=store, session_id="s1"))[-1]
+    getattr(client, write).assert_not_called()
+    assert not_done in said
+    row = store.add_decision.call_args.kwargs
+    assert row["decision_type"] == f"{noun}_refused"
+    assert row["metadata"]["stage"] == "other"
+    for claim in ("dialog", "rejected", "U12345"):
+        assert claim not in said
+        assert claim not in row["summary_text"]
+
+
 # ── blank read-back fields are absence, not disagreement ─────────────────────
 
 
@@ -4575,14 +4641,15 @@ def test_a_network_timeout_never_reads_as_the_dialogs(network):
     """The write is posted after Gate 2 was approved. When its answer does not come back, IBKR
     may hold the order, so the one sentence that must not be printed is the dialog timeout's
     "nothing was sent to IBKR". The row used to match the words "timed out", which every
-    network timeout says too (run 2026-11-24); it reads the core's type now."""
+    network timeout says too (run 2026-11-24); it reads the core's type now. The sentence names
+    the error by its type: the message quotes a URL, which can carry the account's number."""
     from claudia.order_flow import _classify_execution_error, _refusal_stage
 
     assert _refusal_stage(network) == "other"
     sentence = _classify_execution_error(network)
     assert "nothing was sent" not in sentence, sentence
     assert "dialog" not in sentence.lower(), sentence
-    assert str(network) in sentence, sentence
+    assert type(network).__name__ in sentence, sentence
 
 
 def test_the_timeout_sentence_reads_the_core_timeout_at_call_time():

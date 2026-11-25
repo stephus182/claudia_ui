@@ -84,8 +84,8 @@ REFUSED_ORDER_ACTION_TYPES: tuple[str, ...] = (
 Written only by `claudia/order_flow.py` after a physical click (gap #50, 2026-09-11):
 `*_refused` — the human said no at Gate 1, Gate 2 or an IBKR precaution dialog, or the
 dialog timed out; `*_rejected` — the human approved and IBKR said no; `*_dispatched_unverified`
-— the write reached IBKR and the reporting failed. Disjoint from `RENDERED_PROPOSAL_TYPES`
-and `COMPLETED_ORDER_ACTION_TYPES` (pinned by
+— the write reached IBKR and the reporting failed, or its connection was lost before IBKR
+answered. Disjoint from `RENDERED_PROPOSAL_TYPES` and `COMPLETED_ORDER_ACTION_TYPES` (pinned by
 tests/test_conversation_store.py::test_refused_allowlist_is_disjoint_from_the_other_two).
 
 Why they are replayed to the model: a refusal is a chat status line the model never sees,
@@ -609,8 +609,9 @@ class ConversationStore:
         (metadata `stage`: gate2, reply, timeout, touch_id, rejected, other; `reason`; the
         `ibkr_replies` as far as the chain got, a declined one as `confirmed: false`);
         `trade_dispatched_unverified` / `modify_…` / `cancel_…` — the write reached IBKR and
-        the reporting failed; `trade_rejected` / `modify_rejected` / `cancel_rejected` — IBKR
-        refused an approved write (`ibkr_response` carries its payload).
+        the reporting failed, or its connection was lost before IBKR answered;
+        `trade_rejected` / `modify_rejected` / `cancel_rejected` — IBKR refused an approved
+        write (`ibkr_response` carries its payload).
 
         From `claudia/agent.py` — a proposal was *surfaced* (the user has not decided yet):
           - ``trade_proposed`` — a new-order staging button was rendered for the user

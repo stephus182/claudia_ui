@@ -1110,8 +1110,14 @@ granted for …` once per write, `covered by authorization` once per precaution)
 store with `trade_proposed` and nothing else — the declined precaution's `confirmed: false`
 entry was discarded with the chain. Every outcome after the button now writes a row:
 `trade_refused` (stage `gate2` / `reply` / `timeout` / `touch_id`, the first three read off the
-core's exception types since 2026-11-24; the reason; the reply log as far as it got), `trade_rejected` (IBKR's payload), `trade_dispatched_unverified`; the same for
-modify and cancel. A human's no logs at INFO, not as an ERROR traceback.
+core's exception types since 2026-11-24; the reason; the reply log as far as it got),
+`trade_rejected` (IBKR's payload), `trade_dispatched_unverified`; the same for modify and cancel.
+A human's no logs at INFO, not as an ERROR traceback. **A connection lost during a write is not a
+refusal (2026-11-24):** the core lets the `requests` exception out, and whether the write arrived
+is not known, so it is `trade_dispatched_unverified` and the chat says to check IBKR before trying
+again. Until then its words "timed out" were read as the dialog's own
+timeout: "nothing was sent to IBKR". A connection lost in a read before the write is still "not
+placed": no gate had run.
 
 `place_order_and_confirm` loops over `{id, message, messageOptions}` entries, each behind Gate 1
 (*Python is trying to confirm an IBKR order reply <id>.*) and the CONFIRM ORDER REPLY dialog, and
