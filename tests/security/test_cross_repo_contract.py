@@ -224,6 +224,30 @@ def test_claudia_calls_no_gated_method_it_has_not_pinned():
     )
 
 
+def test_every_gated_call_is_under_the_lost_connection_guard():
+    """A write whose connection is lost may have reached IBKR, and only the place that makes the
+    call can tell it from a read before it. Found by merging the guard into a branch with two
+    more writes than `main` (bracket and attach, 2026-11-25): git had nothing to say about them.
+    """
+    called, guarded = set(), set()
+    for path, source in package_sources():
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Attribute) and node.attr in GATED_ENTRY_POINTS:
+                called.add((path.name, node.lineno, node.attr))
+            if isinstance(node, ast.Try) and any(
+                h.type is not None and ast.unparse(h.type) == "requests.RequestException"
+                for h in node.handlers
+            ):
+                guarded |= {
+                    (path.name, inner.lineno, inner.attr)
+                    for statement in node.body
+                    for inner in ast.walk(statement)
+                    if isinstance(inner, ast.Attribute) and inner.attr in GATED_ENTRY_POINTS
+                }
+    assert {attr for _path, _line, attr in called} == set(GATED_ENTRY_POINTS)
+    assert called == guarded, f"not under the guard: {sorted(called - guarded)}"
+
+
 def test_the_capability_registry_is_the_source_of_the_tool_numbers():
     """Whatever ClaudIA says about the toolkit must be computed from the registry.
 

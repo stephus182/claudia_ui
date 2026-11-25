@@ -2407,7 +2407,7 @@ async def _stage_bracket(
     otype = proposal.get("order_type", "MKT")
     sec_type = proposal.get("sec_type", "STK").upper()
     children_spec = list(proposal.get("children") or [])
-    dispatched = False  # flips once the IBKR write has returned — see the except block
+    dispatched = False  # flips when the IBKR write returns, or is lost — see the except block
 
     await send_status(
         (
@@ -2448,9 +2448,17 @@ async def _stage_bracket(
             {k: v for k, v in order_body.items() if not k.startswith("_")},
             len(children),
         )
-        result = await asyncio.to_thread(
-            ibkr.place_bracket_and_confirm, account_id, order_body, children, reply_log=reply_log
-        )
+        try:
+            result = await asyncio.to_thread(
+                ibkr.place_bracket_and_confirm,
+                account_id,
+                order_body,
+                children,
+                reply_log=reply_log,
+            )
+        except requests.RequestException:
+            dispatched = True  # lost unanswered: IBKR may have it
+            raise
         dispatched = True
         reply_line = _format_reply_log(reply_log)
         if reply_line:
@@ -2607,7 +2615,7 @@ async def _attach_order(
     symbol = proposal.get("symbol", "?")
     child = dict(proposal.get("child") or {})
     kind = str(child.get("kind", "child"))
-    dispatched = False  # flips once the IBKR write has returned — see the except block
+    dispatched = False  # flips when the IBKR write returns, or is lost — see the except block
 
     await send_status(
         (
@@ -2625,9 +2633,13 @@ async def _attach_order(
         account_id = _resolve_account_id(accounts)
         spec = _child_spec(child)
         log.info("Attaching to order %s: %s", order_id, spec)
-        result = await asyncio.to_thread(
-            ibkr.attach_order_and_confirm, account_id, order_id, spec, reply_log=reply_log
-        )
+        try:
+            result = await asyncio.to_thread(
+                ibkr.attach_order_and_confirm, account_id, order_id, spec, reply_log=reply_log
+            )
+        except requests.RequestException:
+            dispatched = True  # lost unanswered: IBKR may have it
+            raise
         dispatched = True
         reply_line = _format_reply_log(reply_log)
         if reply_line:

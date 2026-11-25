@@ -5783,3 +5783,64 @@ async def test_modifying_a_held_child_says_quantity_changes_are_ignored_and_capp
         for c in contents
     )
     assert client.get_order_status.call_count == 2  # the pre-gate read, then the read-back
+
+
+# ── A connection lost during the bracket and attach writes (2026-11-25) ──────────────────
+
+_LINKED_CORES: dict[str, tuple[Any, Any, Any, str, str]] = {
+    "bracket": (
+        _run_bracket,
+        _BRACKET_ONE_CHILD,
+        _bracket_mock,
+        "place_bracket_and_confirm",
+        "Bracket not placed",
+    ),
+    "attach": (
+        _run_attach,
+        _ATTACH_PROPOSAL,
+        lambda: _attach_mock([]),
+        "attach_order_and_confirm",
+        "Attachment not made",
+    ),
+}
+
+
+@pytest.mark.parametrize("lost", _LOST_CONNECTIONS, ids=lambda exc: type(exc).__name__)
+@pytest.mark.parametrize("path", _LINKED_CORES)
+@pytest.mark.asyncio
+async def test_a_linked_write_lost_unanswered_leaves_its_outcome_unknown(path, lost):
+    """The same rule as on the one-ticket paths: IBKR may have the legs, so it is neither "not
+    placed" nor a refusal by the user."""
+    run, proposal, make_mock, write, not_done = _LINKED_CORES[path]
+    ibkr_mod, client = make_mock()
+    getattr(client, write).side_effect = lost
+    store = MagicMock()
+    said = _sent_contents(await run(proposal, ibkr_mod, store=store))[-1]
+    assert "may or may not have reached IBKR" in said
+    assert "check IBKR" in said
+    for claim in (not_done, "nothing was sent", "WAS dispatched", "U12345"):
+        assert claim not in said
+    row = store.add_decision.call_args.kwargs
+    assert row["decision_type"] == "trade_dispatched_unverified"
+    for claim in ("nothing was sent", "rejected", "U12345"):
+        assert claim not in row["summary_text"]
+
+
+@pytest.mark.parametrize(
+    ("path", "read"),
+    [("bracket", "get_accounts"), ("bracket", "get_bracket_preview"), ("attach", "get_accounts")],
+)
+@pytest.mark.asyncio
+async def test_a_linked_write_never_called_still_says_it_was_not_done(path, read):
+    """A read before the write was lost, IBKR's whatif of the bracket among them: nothing was
+    sent, and that is known."""
+    run, proposal, make_mock, write, not_done = _LINKED_CORES[path]
+    ibkr_mod, client = make_mock()
+    getattr(client, read).side_effect = _LOST_CONNECTIONS[0]
+    store = MagicMock()
+    said = _sent_contents(await run(proposal, ibkr_mod, store=store))[-1]
+    getattr(client, write).assert_not_called()
+    assert not_done in said and "may or may not" not in said
+    row = store.add_decision.call_args.kwargs
+    assert row["decision_type"] == "trade_refused"
+    assert row["metadata"]["stage"] == "other"
