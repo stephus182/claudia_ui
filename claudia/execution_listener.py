@@ -493,7 +493,7 @@ class ExecutionListener:
     @property
     def _session(self) -> Any:
         """The session owner. Resolved lazily so import order stays unconstrained."""
-        from claudia.gateway_session import get_session
+        from ibkr_core_mcp.gateway import get_session
 
         return self._session_override or get_session()
 

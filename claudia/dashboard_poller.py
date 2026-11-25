@@ -165,7 +165,7 @@ class DashboardPoller:
                 process-wide one. The account half of each poll runs only when it reports
                 `LIVE` — see `_poll_once`.
         """
-        from claudia.gateway_session import get_session
+        from ibkr_core_mcp.gateway import get_session
 
         self._session = session if session is not None else get_session()
         self._client = client
@@ -274,7 +274,7 @@ class DashboardPoller:
         not a read of the book: the first poll at every start was one (live 2026-11-08). A poll
         that raised, or was cancelled, wakes the waiter too: its snapshot's error says so.
         """
-        from claudia.gateway_session import SessionPhase
+        from ibkr_core_mcp.gateway import SessionPhase
 
         phase: Any = None
         try:

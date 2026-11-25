@@ -154,6 +154,83 @@ def _manager_driver_offenders() -> list[str]:
     return hits
 
 
+_OWNER_ACTS = frozenset({"establish", "recover", "read_now", "start"})
+
+
+def _owner_calls(source: str) -> list[tuple[str, ast.Call]]:
+    """Every use of the core's session owner in `source`, as (method, call).
+
+    The receiver is `get_session()` itself, or a name bound to it. A method handed over
+    unbound — `asyncio.to_thread(get_session().establish, …)` — counts, its keywords being the
+    ones of the call it is handed to.
+    """
+    tree = ast.parse(source)
+
+    def is_owner(node: ast.AST) -> bool:
+        """`get_session()`, however the function was imported."""
+        return isinstance(node, ast.Call) and _dotted(node.func).split(".")[-1] == "get_session"
+
+    bound = {
+        _dotted(target)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and is_owner(node.value)
+        for target in node.targets
+    }
+    return [
+        (reference.attr, call)
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        for reference in (call.func, *call.args)
+        if isinstance(reference, ast.Attribute)
+        and (is_owner(reference.value) or _dotted(reference.value) in bound)
+    ]
+
+
+def _url_is_the_loaders(source: str, call: ast.Call) -> bool:
+    """`url=` is `gateway_url()`, or a name bound to it: never empty, never left to the core."""
+    bound = {
+        _dotted(target)
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and _dotted(node.value.func).split(".")[-1] == "gateway_url"
+        for target in node.targets
+    }
+    given = [k.value for k in call.keywords if k.arg == "url"]
+    return len(given) == 1 and (
+        (isinstance(given[0], ast.Call) and _dotted(given[0].func).split(".")[-1] == "gateway_url")
+        or _dotted(given[0]) in bound
+    )
+
+
+def test_every_call_into_the_session_owner_carries_the_loaders_url():
+    """With no URL, or an empty one, the core finds a `.env` by itself and exports the model key
+    from it (run 2026-11-25). Break: `url=` dropped, or `url=cfg.gateway_url` — red."""
+    missing = [
+        f"{path.name}:{call.lineno}: {method}()"
+        for path in _python_sources()
+        for method, call in _owner_calls(path.read_text())
+        if method in _OWNER_ACTS and not _url_is_the_loaders(path.read_text(), call)
+    ]
+    assert not missing, missing
+
+
+def test_the_owner_probe_sees_each_shape():
+    """The collector above on each form, and on what must not count."""
+    source = (
+        "get_session().establish(m, url=env_file.gateway_url())\n"
+        "s = get_session()\n"
+        "s.start(url=cfg.gateway_url)\n"
+        "asyncio.to_thread(get_session().establish, m, url=u)\n"
+        "store.get_session_row().start()\n"
+        "manager.start()\n"
+    )
+    assert [m for m, _ in _owner_calls(source)] == ["establish", "start", "establish"]
+    calls = [c for _, c in _owner_calls(source)]
+    assert [_url_is_the_loaders(source, c) for c in calls] == [True, False, False]
+    assert _url_is_the_loaders(source + "u = gateway_url()\n", calls[2])
+
+
 def test_only_the_owner_writes_to_a_session_endpoint():
     """`ssodh/init`, `/logout` and `reauthenticate` create or destroy sessions.
 
@@ -162,7 +239,7 @@ def test_only_the_owner_writes_to_a_session_endpoint():
     """
     offenders = _offenders(_SESSION_WRITE_ENDPOINTS, _SESSION_WRITE_ALLOWED)
     assert not offenders, (
-        "Session-affecting write outside claudia/gateway_session.py:\n  "
+        "Session-affecting write outside the session owner (the core's):\n  "
         + "\n  ".join(offenders)
         + "\n\nMove it into the owner, or add it to _SESSION_WRITE_ALLOWED with the "
         "stage that removes it."
@@ -192,7 +269,7 @@ def test_only_the_owner_mutates_the_container():
     pattern = re.compile(r"""docker["'\s,\]]+\s*["']?(stop|rm|restart|run)\b""")
     offenders = _offenders(pattern, {}) + _manager_driver_offenders()
     assert not offenders, (
-        "Container mutation outside claudia/gateway_session.py:\n  "
+        "Container mutation outside the session owner (the core's):\n  "
         + "\n  ".join(offenders)
         + "\n\nConstruct the manager and hand it to GatewaySession.establish/recover "
         "instead — the owner reads the session before anything touches the container."

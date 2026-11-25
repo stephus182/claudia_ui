@@ -1,10 +1,10 @@
 """Tests for ConnectivityChecker — the GDrive/TradingView poller and the IBKR dot.
 
 **The IBKR half no longer polls.** On 2026-08-06 the `/tickle` read and the `ssodh/init`
-soft-recovery write both moved to `claudia.gateway_session`, which owns the session
-lifecycle; `check_ibkr` is now a cached lookup on that owner. The tests for the moved
-behaviour moved with it, to `tests/test_gateway_session.py` — they describe the owner now,
-not this module.
+soft-recovery write both moved to the session owner, which is the core's since core F45
+(`ibkr_core_mcp.gateway.session`); `check_ibkr` is now a cached lookup on that owner. The
+tests for the moved behaviour are the core's too — they describe the owner, not this
+module.
 
 What is pinned here is the seam: the dot reports exactly what the owner says, and forms no
 opinion of its own. That is what makes the dot and the dashboard incapable of disagreeing,
@@ -469,8 +469,8 @@ async def test_run_checks_tv_unknown_when_no_bridge(checker):
 
 
 # ── Poll-loop lifecycle ─────────────────────────────────────────────────────
-# (The soft-recovery tests that used to sit under this banner moved to
-#  tests/test_gateway_session.py on 2026-08-06 with the write itself.)
+# (The soft-recovery tests that used to sit under this banner moved with the write itself
+#  on 2026-08-06; both are the core's since core F45.)
 
 
 @pytest.mark.asyncio
@@ -525,7 +525,7 @@ async def test_run_checks_reports_a_configured_but_failing_drive_as_error(checke
 def _real_checker(tmp_path):
     """A checker over a never-read `GatewaySession`, with Drive and TV unconfigured so
     that IBKR is the only service able to produce an alert."""
-    from claudia.gateway_session import GatewaySession
+    from ibkr_core_mcp.gateway import GatewaySession
 
     session = GatewaySession()
     checker = ConnectivityChecker(
@@ -558,8 +558,8 @@ async def test_an_unread_session_raises_no_disconnect_alert(tmp_path):
 @pytest.mark.asyncio
 async def test_a_first_read_of_live_after_unread_is_silent(tmp_path):
     """UNKNOWN -> OK is the existing startup silence; the fix must land on it."""
-    from claudia.gateway_preflight import GatewayState
-    from claudia.gateway_session import observe
+    from ibkr_core_mcp.gateway.preflight import GatewayState
+    from ibkr_core_mcp.gateway.session import observe
 
     checker, session = _real_checker(tmp_path)
     received: list[str] = []
@@ -581,8 +581,8 @@ async def test_a_first_read_of_live_after_unread_is_silent(tmp_path):
 async def test_a_first_read_of_down_after_unread_still_alerts(tmp_path):
     """The guard must be exactly as wide as 'not read yet'. A gateway that was READ and
     found down is a real outage, and silencing it would be the opposite defect."""
-    from claudia.gateway_preflight import GatewayState
-    from claudia.gateway_session import observe
+    from ibkr_core_mcp.gateway.preflight import GatewayState
+    from ibkr_core_mcp.gateway.session import observe
 
     checker, session = _real_checker(tmp_path)
     received: list[str] = []

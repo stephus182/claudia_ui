@@ -550,7 +550,7 @@ async def test_polled_wakes_even_when_the_first_poll_raises_outright(db):
 
 def _owner_reading(*phases):
     """A session owner whose state() walks through `phases`, then stays on the last one."""
-    from claudia.gateway_session import SessionPhase
+    from ibkr_core_mcp.gateway import SessionPhase
 
     def _state(phase):
         """A session state double in `phase`."""
@@ -573,7 +573,7 @@ async def test_polled_waits_past_a_poll_made_before_the_session_was_read(db):
     book live one poll later. A poll made against UNREAD is not a read of the book (the gap #26
     rule: UNREAD is no evidence); `polled()` waits for the first poll made against a state that
     was read."""
-    from claudia.gateway_session import SessionPhase
+    from ibkr_core_mcp.gateway import SessionPhase
 
     owner = _owner_reading(SessionPhase.UNREAD, SessionPhase.LIVE)
     p = _poller(db, FakeClient(), interval=0.01, session=owner)
@@ -589,7 +589,7 @@ async def test_polled_waits_past_a_poll_made_before_the_session_was_read(db):
 async def test_polled_counts_a_session_known_down_as_a_read_that_failed(db):
     """DOWN is evidence — the gateway holds no session — so a poll against it IS the read,
     and its error reaches the briefing as "could not be read", at once."""
-    from claudia.gateway_session import SessionPhase
+    from ibkr_core_mcp.gateway import SessionPhase
 
     owner = _owner_reading(SessionPhase.DOWN)
     p = _poller(db, FakeClient(), interval=60, session=owner)

@@ -1,18 +1,18 @@
-"""Command line over `claudia.gateway_session` — the launcher and the diagnostic.
+"""Command line over the core's session owner — the launcher and the diagnostic.
 
 This module is **presentation only**. Every decision about the gateway — whether to start
 a container, whether to open a login page, whether a session is usable — belongs to
-`claudia.gateway_session`, which `start-claudia.sh`, the in-chat **Start IBKR Gateway**
+`ibkr_core_mcp.gateway.session` (core F45), which `start-claudia.sh`, the in-chat **IBKR**
 button and this CLI all share. One authority, so the three cannot drift.
 
     python -m claudia.gateway_launch            # bring the session up and confirm it
     python -m claudia.gateway_launch --diagnose # read-only: state + the login timeline
 
-Two things live here that are not presentation, by necessity (gap #93): the one read of the
-gateway's own log, `read_login_events` — a process spawn, and processes are spawned only here
+Two things live here that are not presentation, by necessity (gap #93): ClaudIA's own read of
+the gateway's log, `read_login_events` — a process spawn, and processes are spawned only here
 and in `tradingview.py` (CLA-SEC-010) — and the startup warning built on it. Neither decides
-anything about the session: the rule is `gateway_preflight`'s, every decision still
-`gateway_session`'s, which receives the read from its callers.
+anything about the session: the rule is `gateway_preflight`'s, and the owner reads the log
+by itself, with the core's own reader.
 
 Until 2026-08-06 this file held the orchestration itself, and before that
 `start-claudia.sh` called `GatewayManager.startup()` with no pre-flight at all. Both are
@@ -25,15 +25,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
-from ibkr_core_mcp.gateway import GatewayManager
+from ibkr_core_mcp.gateway import GatewayManager, SessionPhase, get_session
 
+from claudia.env_file import gateway_url
 from claudia.gateway_preflight import (
     EXIT_FREE,
     EXIT_REFUSED,
     LOGIN_PHRASES,
     GatewayState,
     LoginEvent,
-    gateway_url,
     last_login,
     login_events,
     newest_login_index,
@@ -41,7 +41,6 @@ from claudia.gateway_preflight import (
     refine_with_log,
     verdict,
 )
-from claudia.gateway_session import SessionPhase, get_session
 
 log = logging.getLogger(__name__)
 
@@ -257,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
         emit=out,
         allow_restart=args.allow_restart,
         login_timeout=args.wait_timeout,
-        read_login=read_login_events,
+        url=url,
     )
 
     out()

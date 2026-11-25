@@ -17,11 +17,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from claudia.gateway_session import SessionPhase
+from ibkr_core_mcp.gateway import SessionPhase
+
 from claudia.tradingview import _TV_DEBUG_PORT
 
 if TYPE_CHECKING:
-    from claudia.gateway_session import GatewaySession
+    from ibkr_core_mcp.gateway import GatewaySession
+
     from claudia.gdrive_sync import GDriveSync
     from claudia.tradingview import TradingViewBridge
 
@@ -110,7 +112,7 @@ class ConnectivityChecker:
         # The session owner. Defaulted rather than required so existing call sites and
         # tests keep working; `panel_app` passes the process-wide one explicitly.
         if session is None:
-            from claudia.gateway_session import get_session
+            from ibkr_core_mcp.gateway import get_session
 
             session = get_session()
         self._session = session
@@ -135,7 +137,8 @@ class ConnectivityChecker:
 
         **This performs no HTTP of its own since 2026-08-06.** It used to `GET /tickle` on
         its own 60-second timer and, on a soft timeout, `POST /iserver/auth/ssodh/init`.
-        Both moved to `claudia.gateway_session`, for two distinct reasons:
+        Both moved to the session owner — the core's `ibkr_core_mcp.gateway.session`
+        since core F45 — for two distinct reasons:
 
         1. *One owner writes* (plan invariant §3.1). A monitor that can silently
            re-establish a session is a second authority over that session's lifecycle,
@@ -249,7 +252,7 @@ class ConnectivityChecker:
 
         IBKR needs no extra step here any more: the soft-timeout recovery it used to run
         (`ssodh/init` when a previously-OK session shows connected-but-unauthenticated)
-        moved to `gateway_session.GatewaySession._poll_once` on 2026-08-06, along with the
+        moved to the session owner's `GatewaySession._poll_once` on 2026-08-06, along with the
         read itself. `check_ibkr` is now a cached lookup, so this poll makes two network
         calls rather than three. TradingView maps a closed CDP port to `UNKNOWN` (not
         launched) rather than `ERROR`; so does Drive when nothing is configured

@@ -49,7 +49,7 @@ from ibkr_core_mcp import (
     SQLiteStore,
     set_dialog_icon,
 )
-from ibkr_core_mcp.gateway import GatewayManager
+from ibkr_core_mcp.gateway import GatewayManager, SessionPhase, get_session
 
 from claudia import env_file
 from claudia.agent import TRADES_WINDOW_SOURCE, ClaudIAAgent, warn_if_model_lacks_operator_channel
@@ -79,9 +79,8 @@ from claudia.flex_sync import (
     statement_through,
     validate_dataset,
 )
-from claudia.gateway_launch import read_login_events, warn_if_login_refused
+from claudia.gateway_launch import warn_if_login_refused
 from claudia.gateway_preflight import warn_if_session_borrowed
-from claudia.gateway_session import SessionPhase, get_session
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
 from claudia.live_realised import fetch_fills
@@ -875,8 +874,8 @@ def _build_action_bar(
         """Reconnect IBKR via the one shared session owner.
 
         Presentation only. Every decision — whether to start a container, whether the
-        session may be logged into, whether it is usable — belongs to
-        `claudia.gateway_session`, which `start-claudia.sh` and the CLI also call. The
+        session may be logged into, whether it is usable — belongs to the core's
+        `get_session()`, which `start-claudia.sh` and the CLI also call. The
         owner runs the read-only pre-flight FIRST: a session that already works is left
         alone (re-authenticating it is the harm), and the blocking work runs on a worker
         thread with its progress lines streamed into the System log.
@@ -888,9 +887,7 @@ def _build_action_bar(
             get_session().establish,
             GatewayManager(),
             emit=lambda line: loop.call_soon_threadsafe(syslog.say, line),
-            # The same log read the launcher hands over (gap #93): a refused last login is
-            # named before the page, and a newer refusal ends the wait, on both paths.
-            read_login=read_login_events,
+            url=env_file.gateway_url(),
         )
         if result.phase is SessionPhase.LIVE:
             if _connectivity_checker is not None:
@@ -1586,7 +1583,7 @@ def _build_chat_app(session_id: str | None = None) -> pn.chat.ChatInterface:
             # the execution listener — asks it rather than probing independently, which is
             # what makes them incapable of disagreeing about whether IBKR is up.
             _gateway_session = get_session()
-            _gateway_session.start(url=cfg.gateway_url)
+            _gateway_session.start(url=env_file.gateway_url())
             if _connectivity_checker is None:
                 _connectivity_checker = ConnectivityChecker(
                     gateway_url=cfg.gateway_url,

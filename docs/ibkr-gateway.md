@@ -17,15 +17,20 @@ in `connectivity.md` on 2026-08-06, **every one was an IBKR claim.**
 Invariants live in **docstrings**, beside the code that enforces them. This document carries
 what a human needs and code cannot state. The rule matters because two descriptions of one
 rule, kept in step by nobody, is the exact defect class the 2026-08-06 review was convened to
-remove — `gateway_preflight.verdict` and `gateway_session.classify` are now pinned to each
+remove — `gateway_preflight.verdict` and the session owner's `classify` are pinned to each
 other by a test over all 512 readings rather than by a comment promising they agree.
+
+**The session owner is the core's** (`ibkr_core_mcp/gateway/session.py`, core F45; ClaudIA's
+own copy was deleted on 2026-11-25). ClaudIA keeps *when*: the button, the launcher, the start
+of the poll — and every call it makes carries `env_file.gateway_url()`, because with no URL, or
+an empty one, the core searches for a `.env` by itself (CLA-SEC-014).
 
 | Question | Where the answer lives |
 |---|---|
-| What are the phases, and what does each mean? | `claudia/gateway_session.py` module docstring |
+| What are the phases, and what does each mean? | `ibkr_core_mcp/gateway/session.py` module docstring (the core's) |
 | Why does `LIVE` need a data call, not a flag? | ibid. |
-| Why does recovery not call `POST /logout`? | `gateway_session._recover` docstring |
-| What can `ssodh/init` actually do? | `gateway_session.attempt_soft_recovery` docstring |
+| Why does recovery not call `POST /logout`? | ibid., `_recover` docstring |
+| What can `ssodh/init` actually do? | ibid., `attempt_soft_recovery` docstring |
 | What can the pre-flight **not** see? | `claudia/gateway_preflight.py` module docstring |
 | Who may write, and what enforces it? | `tests/test_gateway_ownership.py` |
 | **Which actor renews the session, in which runtime** | here — §Actors |
@@ -98,7 +103,7 @@ gateway.
 ### How a reading is taken
 
 `GatewaySession.read_now()` issues **two GETs** — `/tickle` (is *a* session authenticated)
-and `/sso/validate` (**whose** it is) — via `gateway_preflight.read_state`, then, only when
+and `/sso/validate` (**whose** it is) — via the core's `read_state`, then, only when
 the brokerage session claims authenticated, one `GET /portfolio/accounts` to confirm the
 data half is actually serving. That third call is what separates `LIVE` from `DEGRADED`: an
 authenticated flag alone never turns the dot green. It is also IBKR's documented
@@ -110,7 +115,7 @@ whether IBKR is up. The gateway answers HTTP 200 regardless of auth state, so th
 parsed: both `iserver.authStatus.authenticated` and `.connected` must be true.
 
 *Why `LIVE` requires a data call rather than a flag, and what each phase means:
-`claudia/gateway_session.py` module docstring. Not repeated here.*
+`ibkr_core_mcp/gateway/session.py` module docstring. Not repeated here.*
 
 ### Session lifecycle (verified against official docs, 2026-07-17)
 
@@ -140,16 +145,16 @@ the ordinary browser + 2FA flow with one disconnect alert.
 - ⚠ **`POST /iserver/reauthenticate` is deprecated by IBKR and banned from proactive use** —
   it disrupts fresh logins. Different endpoint; unaffected by the above.
 - **Status: not live-verified.** Needs a session deliberately idled past ~6 minutes.
-  7 tests cover it, all in `tests/test_gateway_session.py`.
+  Its tests are the core's, in its `test_gateway_session.py`.
 
-*What `ssodh/init` can and cannot do — measured, with the evidence:
-`gateway_session.attempt_soft_recovery` docstring. Not repeated here.*
+*What `ssodh/init` can and cannot do — measured, with the evidence: the
+`attempt_soft_recovery` docstring in `ibkr_core_mcp/gateway/session.py`. Not repeated here.*
 
 **Competing sessions:** IBKR's own gateway walkthrough states you *"cannot be logged into the
 account you are authenticating with anywhere else before you authenticate"* and that merely
 closing another IBKR window/app (instead of using its "Log Out") *"may cause a stale login
 session"* — confirming `check_ibkr()`'s `authStatus.competing` warning
-(now `gateway_session.classify` → `SessionPhase.CONTESTED`) reflects a real,
+(now the session owner's `classify` → `SessionPhase.CONTESTED`) reflects a real,
 IBKR-documented failure mode: opening IBKR
 Mobile/TWS/another browser tab during a live ClaudIA session can force-kick the gateway session.
 Source: [Launching and Authenticating the Gateway](https://www.interactivebrokers.com/campus/trading-lessons/launching-and-authenticating-the-gateway/).
@@ -236,7 +241,8 @@ sharing.
 
 **Since 2026-10-12 the tools read that log for you (gap #93).** One read —
 `docker exec ibkr_core_gateway grep -rHF --include=gw.[0-9]*.log -e <phrase>… /app/api_gateway/logs`,
-no shell, an explicit environment (`gateway_launch.read_login_events`) — and only the time, the
+no shell, an explicit environment (`gateway_launch.read_login_events`; the session owner runs the
+core's own) — and only the time, the
 event and its code survive it; no line of the log is printed or stored. The rule: take the last
 *"Client login succeeds"* in the container's logs, whatever its age — *"giving up"* after it
 and no *"authenticated to cp"* means refused; neither yet means IBKR is still answering. The
@@ -300,8 +306,10 @@ and `python -m claudia.gateway_launch --diagnose` is the next step.
   that gets ignored when it must not. Beside it since 2026-10-12,
   `gateway_launch.warn_if_login_refused()` (gap #93), on the same terms: a `FREE` reading whose
   log shows the last login refused; silent otherwise, and on a live session the log is not read.
-- **The launcher and the IBKR button** — both hand the owner `read_login_events` (gap #93).
-  From `FREE`, before the page opens, a refused last login is named with the remedy; during
+- **The launcher and the IBKR button** — on both, the owner reads the gateway's log by itself
+  (gap #93; the callers handed it the read until core F45). From `FREE`, a login IBKR has not
+  answered yet opens no second page; a refused last login is named with the remedy before the
+  page opens; during
   the wait, a login newer than that one which IBKR refuses too ends the wait at once. The page
   still opens: the remedy needs one gateway login after the website login.
 - **The login window (gap #102, core register F44 — from core 2.2.0)** — `open_login_page()`
@@ -319,7 +327,7 @@ and `python -m claudia.gateway_launch --diagnose` is the next step.
   call `GatewayManager.start()` — which then removed any existing container — **before** the
   pre-flight, so the two verdicts the pre-flight existed for were computed against a session
   that had already been destroyed. Fixed 2026-08-06; `tests/test_gateway_ownership.py`
-  now fails if any module outside the owner drives a manager again.
+  now fails if any module of ClaudIA drives a manager again.
 
 ### ibkr_core_mcp ping
 
@@ -470,8 +478,8 @@ Full diagnosis of the 2026-08-05 borrowed session and the six 2026-08-06 gaps:
 ## Implementation reference
 
 ```
-claudia/gateway_session.py   — the session owner. Every read, the phase, the suspend lock,
-                               and every session-affecting write. Start here.
+ibkr_core_mcp/gateway/session.py — the session owner, the core's. Every read, the phase, the
+                               suspend lock, and every session-affecting write. Start here.
 claudia/gateway_preflight.py — the reader: two GETs -> GatewayState, plus verdicts and the CLI;
                                the log rule (login_events, last_login, refine_with_log) — pure
 claudia/gateway_launch.py    — CLI: `python -m claudia.gateway_launch [--diagnose]`; the one
@@ -480,13 +488,13 @@ claudia/gateway_launch.py    — CLI: `python -m claudia.gateway_launch [--diagn
 claudia/status.py            — ConnectivityChecker; check_ibkr() is a cached lookup, not a probe
 scripts/ibkr-keepalive.sh    — launchd renewer; honours the suspend lock
 scripts/gateway-reset.sh     — standalone recovery; refuses a healthy session, [REFUSED], [VALIDATING]
-ibkr_core_mcp/gateway/       — GatewayManager (Docker only) + the image that runs the gateway
+ibkr_core_mcp/gateway/       — also GatewayManager (Docker only) + the image that runs the gateway
 tests/test_gateway_ownership.py — the repo-level guards that keep all of the above true
 ```
 
-**The boundary, in one sentence:** `gateway_session` owns the session and every decision
-about it; `gateway_preflight` reads; `gateway_launch` presents; `ibkr_core_mcp` owns the
-container and the transport, never a session opinion.
+**The boundary, in one sentence:** `ibkr_core_mcp` owns the container, the transport, the
+session and every decision about it; in ClaudIA `gateway_preflight` reads and `gateway_launch`
+presents, and nothing decides.
 
 Related: `docs/connectivity.md` (Google Drive, TradingView, the status lights) ·
 `docs/startup-flow.md` (where the gateway sits in the launch sequence) ·

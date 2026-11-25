@@ -1771,7 +1771,7 @@ def _ibkr_unavailable() -> str | None:
     blocked here — the call simply fails with a 401 or a connection error, and that error
     is more informative to the model than a refusal would be.
     """
-    from claudia.gateway_session import get_session
+    from ibkr_core_mcp.gateway import get_session
 
     state = get_session().state()
     if state.may_call_ibkr:

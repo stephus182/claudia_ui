@@ -89,7 +89,8 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
     ),
     "ibkr_core_mcp.order_confirm": ("change_value_text", "price_text_safe", "_DIALOG_TIMEOUT_S"),
     "ibkr_core_mcp.streaming": ("IBKRWebSocket", "PnLUpdate", "TradeExecution"),
-    "ibkr_core_mcp.gateway": ("GatewayManager",),
+    "ibkr_core_mcp.gateway": ("GatewayManager", "GatewaySession", "SessionPhase", "get_session"),
+    "ibkr_core_mcp.gateway.session": ("release_session",),
     "ibkr_core_mcp.auth": ("BrowserCookieAuth",),
     # Both imported at module level by `gdrive_sync`. `load_or_refresh_credentials` is in
     # neither the core's `__init__` nor its README or consumers guide (checked 2026-09-30):

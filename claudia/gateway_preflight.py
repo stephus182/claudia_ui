@@ -77,10 +77,8 @@ establish or destroy a session is not a check, and re-authenticating speculative
 breaks a fresh login (`feedback-ibkr-session-safety`).
 
 **There is no exception any more.** `--release` still exists, but the `POST /logout` it
-performs lives in `claudia.gateway_session` — the session owner — and is merely *invoked*
-from this CLI. That move (2026-08-06) emptied `_SESSION_WRITE_ALLOWED` in
-`tests/test_gateway_ownership.py`, which is what that allowlist was always for: it records
-permissions that are meant to shrink to nothing, and this was the last entry.
+performs lives in `ibkr_core_mcp.gateway.session` — the session owner, the core's since
+core F45 — and is merely *invoked* from this CLI.
 
 The one side effect the GETs do have is benign: `/tickle` resets the keepalive timer,
 exactly as `ConnectivityChecker.check_ibkr` does every 60 seconds anyway. Reading can
@@ -102,6 +100,8 @@ from typing import Any, Literal, NamedTuple
 
 import requests
 import urllib3
+
+from claudia.env_file import gateway_url
 
 log = logging.getLogger(__name__)
 
@@ -501,23 +501,6 @@ def refine_with_log(
     )
 
 
-def gateway_url() -> str:
-    """The gateway URL from the environment, once ClaudIA's `.env` has been read — directly
-    rather than via `Config`.
-
-    `Config.from_env()` raised unless `ANTHROPIC_API_KEY` was set — the core stopped reading
-    that key in 2.0.0 (2026-09-17) — and the reason stands without it: a full configuration
-    has nothing to do with reaching the IBKR gateway, and a diagnostic that refuses to run
-    because an unrelated setting is missing is useless precisely when it is needed — a
-    half-configured environment is one of the states this is for. The file is read through
-    `env_file.load()` (gap #103): the URL is a setting and reaches the environment; no secret
-    does.
-    """
-    from claudia import env_file
-
-    return env_file.gateway_url()
-
-
 def warn_if_session_borrowed(url: str | None = None) -> str | None:
     """Log a loud error when another IBKR app **provably** holds the gateway's session.
 
@@ -598,9 +581,7 @@ def main(argv: list[str] | None = None) -> int:
     url = gateway_url()
 
     if "--release" in args:
-        # Imported here, not at module level: `gateway_session` imports this module for
-        # `read_state`/`GatewayState`, so a top-level import would be a circular one.
-        from claudia.gateway_session import release_session
+        from ibkr_core_mcp.gateway.session import release_session
 
         print("Releasing the gateway's held session (POST /logout)…\n")
         released, detail = release_session(url)
@@ -610,9 +591,10 @@ def main(argv: list[str] | None = None) -> int:
     state = read_state(url)
     found = verdict(state)
     if found[0] == EXIT_FREE:
-        # Imported here for the same reason as `release_session` above: `gateway_launch`
-        # imports this module. The log read lives there because a process may be spawned
-        # only from `gateway_launch.py` and `tradingview.py` (CLA-SEC-010).
+        # Imported here, not at module level: `gateway_launch` imports this module, so a
+        # top-level import would be a circular one. The log read lives there because a
+        # process may be spawned only from `gateway_launch.py` and `tradingview.py`
+        # (CLA-SEC-010).
         from claudia.gateway_launch import read_login_events
 
         found = refine_with_log(found, *read_login_events())

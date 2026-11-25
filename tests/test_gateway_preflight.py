@@ -31,7 +31,6 @@ from claudia.gateway_preflight import (
     verdict,
     warn_if_session_borrowed,
 )
-from claudia.gateway_session import release_session  # moved here 2026-08-06
 
 
 def _tickle(**auth):
@@ -222,19 +221,6 @@ def test_the_startup_warning_stays_silent_without_proof(label, state, caplog):
     assert caplog.text == ""
 
 
-def test_release_reports_ibkrs_own_status_field_not_merely_a_200():
-    """`{"status": false}` with HTTP 200 is a failed release — the slot is not free."""
-    ok_resp, bad_resp = MagicMock(), MagicMock()
-    ok_resp.status_code = bad_resp.status_code = 200
-    ok_resp.json.return_value = {"status": True}
-    bad_resp.json.return_value = {"status": False}
-
-    with patch("claudia.gateway_preflight.requests.post", return_value=ok_resp):
-        assert release_session("https://x/v1/api")[0] is True
-    with patch("claudia.gateway_preflight.requests.post", return_value=bad_resp):
-        assert release_session("https://x/v1/api")[0] is False
-
-
 def test_release_is_never_reached_by_the_read_only_path():
     """`read_state` must not be able to release anything — its contract is read-only."""
     with (
@@ -297,6 +283,55 @@ def test_verdict_is_total_over_every_field_combination():
         code, headline, guidance = verdict(state)
         assert code in {EXIT_READY, EXIT_UNREACHABLE, EXIT_FREE, EXIT_CONTESTED, EXIT_BORROWED}
         assert headline and guidance, f"empty verdict for {state}"
+
+
+def test_classify_and_verdict_agree_over_every_possible_reading():
+    """The core owner's `classify` and ClaudIA's `verdict` reach one conclusion per reading.
+
+    `verdict` here is ClaudIA's own copy until it leaves (core F45, second part): the operator's
+    preflight, `--diagnose` and `scripts/gateway-reset.sh` act on it, while the app acts on the
+    owner's `classify`. The core pins its own pair, not this one, and no other test here sees the
+    two part (run 2026-11-25: a live session with another client competing read the other way
+    round left every remaining test green). Over the complete cross-product of the fields either
+    function reads — 512 readings — because a representative case is what the 2026-08-06
+    lifecycle defect passed.
+
+    The correspondence is data because it is not one-to-one: `verdict` has no `DEGRADED`, since
+    the pre-flight makes no data call, so `EXIT_READY` covers both. That is the single place the
+    two may differ in granularity — never in conclusion. Break: `verdict`'s live check made to
+    yield to `competing` — red.
+    """
+    from itertools import product
+
+    from ibkr_core_mcp.gateway import SessionPhase
+    from ibkr_core_mcp.gateway.preflight import GatewayState as OwnersState
+    from ibkr_core_mcp.gateway.session import classify
+
+    equivalent = {
+        EXIT_UNREACHABLE: {SessionPhase.DOWN},
+        EXIT_READY: {SessionPhase.LIVE, SessionPhase.DEGRADED},
+        EXIT_CONTESTED: {SessionPhase.CONTESTED},
+        EXIT_BORROWED: {SessionPhase.BORROWED},
+        EXIT_FREE: {SessionPhase.FREE},
+    }
+    flags = ("reachable", "authenticated", "connected", "competing", "collision", "sso_valid")
+    readings = 0
+    for values in product((False, True), repeat=len(flags)):
+        for client_app, user_id, data_ok in product(
+            ("", "IBKRMOBILE_000.a-000"), (None, 99999999), (False, True)
+        ):
+            reading: dict[str, Any] = dict(zip(flags, values, strict=True))
+            reading |= {"client_app": client_app, "user_id": user_id}
+            code, _, _ = verdict(GatewayState(**reading))
+            phase = classify(OwnersState(**reading), data_ok)
+            readings += 1
+            assert phase in equivalent[code], (
+                f"verdict() and classify() disagree about {reading} (data_ok={data_ok}): exit "
+                f"code {code} vs phase {phase.value}"
+            )
+
+    # Pinned so that a field left out of the loop shows as a dropped count.
+    assert readings == 512
 
 
 def test_a_401_means_alive_and_ready_not_down():

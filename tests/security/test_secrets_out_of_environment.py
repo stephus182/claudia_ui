@@ -318,17 +318,27 @@ def test_every_anthropic_client_is_built_with_an_explicit_api_key():
     assert not bare, bare
 
 
+# The core's functions that search for a `.env` when they are given none, and export what it
+# holds beyond the core's own two secret names.
+_FINDS_A_DOTENV_BY_ITSELF = frozenset(
+    {"from_env", "gateway_api_url", "crawl4ai_profiles_dir_from_env"}
+)
+
+
 def test_config_from_env_is_called_only_by_the_loader():
     """With no path the core searches upward from its own `config.py` — under the developer
     override that is the core repository's `.env`, not ClaudIA's — and the Flex token would
     silently read as "not configured". Every `Config` comes from `env_file.core_config()`.
-    Break: a bare `Config.from_env()` in `order_flow.py` — red."""
+    The class and not the one name: `gateway_api_url` and `crawl4ai_profiles_dir_from_env`
+    search in the same way and export the model key from what they find (run 2026-11-25).
+    Break: a bare `Config.from_env()` in `order_flow.py`, or `gateway_api_url()` in
+    `panel_app.py` — red."""
     sites = {
         f"{path}:{call.lineno}"
         for path in _sources()
         if path != _THE_LOADER and not path.is_relative_to(_TESTS_DIR)
         for call in _calls_and_names(path)[0]
-        if _callee(call) == "from_env"
+        if _callee(call) in _FINDS_A_DOTENV_BY_ITSELF
     }
     assert not sites, sites
 

@@ -168,7 +168,7 @@ intention with no enforcement yet, and the audit is the record of why.
 | **CLA-SEC-012** | The cross-repo contract is pinned in both directions, at a named revision | One import list — held equal to what ClaudIA actually imports, `TYPE_CHECKING` and function-local imports included (since 2026-09-30, gap #84: two runtime imports had been outside it) — every attribute ClaudIA reads through a name ending in `toolkit` — every read today — checked on a real `ClaudeToolkit`, and the three collaborators it reads pinned by identity — `store` and `config`, public since core 2.2.0, and the one it still reaches past the toolkit for, the Drive cache (`_cache`) (gap #87; the tests' MagicMock toolkits answer to any name), five gated entry points, the registry as the only source of tool claims, two core behaviours a ClaudIA invariant rests on, the Gate 1 policy (`LAPolicyDeviceOwnerAuthentication` at both LocalAuthentication calls — the device-password recovery; gap #60, 2026-09-28), and `core-ref.txt` as the single source of the supported core revision | `test_cross_repo_contract.py`, including the pinned release's shape, that the *installed* distribution version equals it, and a rule that no other file in the repository names one | BUILT (§ 7) |
 
 | **CLA-SEC-013** | The set of model-directed outbound channels is closed and known | One local tool (`fetch_web_page`) and the core's `WEB_FETCH`/`NETWORK` set; no local tool may carry a request body | `test_outbound_sink_inventory.py`: ClaudIA's outbound tools detected **structurally** (a schema taking a `url`/`domain`/`endpoint`/`webhook`), the core's computed from the registry, and the SSRF guard's scope pinned as *destination*, not payload | BUILT (2026-09-14) — it pins the surface, **not** the exfiltration itself, which is an accepted residual (§ 9) |
-| **CLA-SEC-014** | A secret is read from the protected `.env` into the object that uses it and never placed in a process environment; an inherited one is removed at startup by name | `claudia/env_file.py` over the core's `load_env_file` (its invariant 12): the Anthropic SDK's two names added to the core's, `ENV_FILE` the repository root's, `core_config()` handing the names through, `dotenv.load_dotenv` replaced process-wide after the first read (`crawl4ai` calls it bare at import, from inside the venv's tree), `AsyncAnthropic(api_key=…)` or `Setup required`; the whole path drawn in § 6.7 | `test_secrets_out_of_environment.py`: a **real child** started after the loader reports no secret; the removal names the variable, never the value; a later `load_dotenv` by anyone exports no secret (against python-dotenv's genuine function); a refused or keyless file is reported with the `chmod 600` fix and refuses the agent; `core_config()` exports no Anthropic key (the live defect of 2026-10-16); structural: no dotenv loader outside the loader, every Anthropic client built with `api_key=`, `Config.from_env` only in the loader; the suite reads a stand-in `.env` of its own and the real one cannot be opened by any test | BUILT (2026-10-16; live-verified the same day, `docs/project-status.md` § Live Test Log) |
+| **CLA-SEC-014** | A secret is read from the protected `.env` into the object that uses it and never placed in a process environment; an inherited one is removed at startup by name | `claudia/env_file.py` over the core's `load_env_file` (its invariant 12): the Anthropic SDK's two names added to the core's, `ENV_FILE` the repository root's, `core_config()` handing the names through, `dotenv.load_dotenv` replaced process-wide after the first read (`crawl4ai` calls it bare at import, from inside the venv's tree), `AsyncAnthropic(api_key=…)` or `Setup required`; every call into the core's session owner carries `gateway_url()`, never empty, because with no URL the core finds a `.env` by itself and exports the model key (run 2026-11-25); the whole path drawn in § 6.7 | `test_secrets_out_of_environment.py`: a **real child** started after the loader reports no secret; the removal names the variable, never the value; a later `load_dotenv` by anyone exports no secret (against python-dotenv's genuine function); a refused or keyless file is reported with the `chmod 600` fix and refuses the agent; `core_config()` exports no Anthropic key (the live defect of 2026-10-16); structural: no dotenv loader outside the loader, every Anthropic client built with `api_key=`, `Config.from_env` and the core's two other functions that search for a `.env` only in the loader; the URL on every call into the session owner (`test_gateway_ownership.py::test_every_call_into_the_session_owner_carries_the_loaders_url`) and the IBKR button driven on the core's real owner with a `.env` where its search would find one (`test_panel_app.py::test_the_ibkr_button_leaves_no_secret_in_the_environment`); the suite reads a stand-in `.env` of its own and the real one cannot be opened by any test | BUILT (2026-10-16; live-verified the same day, `docs/project-status.md` § Live Test Log) |
 
 `pytest tests/security` runs the set in under four seconds (3.7s measured 2026-09-14); it is part of every unit run, of
 the pre-push hook, and of CI.
@@ -519,9 +519,10 @@ Dated, so a future reader can tell a decision from a default.
 Stated plainly, because a limit that is not written down is indistinguishable from an
 oversight.
 
-- **The core's audit record does not say it was ClaudIA.** Since core 2.2.0 `ClaudeToolkit.execute`
-  and the gated order writes each leave one redacted line in `~/.ibkr_core/audit.jsonl` (the core's
-  `SECURITY.md` § Audit Record owns the format). ClaudIA neither moves the file nor names itself
+- **The core's audit record does not say it was ClaudIA.** Since core 2.2.0 `ClaudeToolkit.execute`,
+  the gated order writes and the session owner's writes (OWASP ASVS 5.0 16.3.3) each leave one
+  redacted line in `~/.ibkr_core/audit.jsonl` (the core's `SECURITY.md` § Audit Record owns the
+  format). ClaudIA neither moves the file nor names itself
   (`audit.configure`, `audit.context`), so `client` and `agent` read `unknown`; and a click that
   runs a tool, the chart's Load, carries the core's `actor: model`. ClaudIA's own record keeps the
   two apart (`tool_record`, the `ui_button` stamp). Whether to name ClaudIA is the operator's call.
@@ -633,6 +634,12 @@ oversight.
 - **`.env` is not encrypted at rest** — deferred by the operator (2026-10-16); the OS keychain is the
   candidate. A process running as the operator can read the file; the suite's refusal guards tests,
   not code the operator runs.
+- **The gateway's certificate is not validated** (OWASP ASVS 5.0 12.3.2 and 12.3.4: not met). It is
+  self-signed, on the operator's own machine. Better than before, and no more than that: the core's
+  session owner turns verification off for a loopback host only and refuses any other before a
+  request, where ClaudIA's copy of it did so for any URL. ClaudIA's remaining reader
+  (`gateway_preflight.read_state`: the operator's commands and the two start-up warnings) still
+  does, until it leaves.
 - **A running process's current environment cannot be read on this macOS.** `ps -E` reports the
   environment a process was started with, and nothing at all for a launchd-spawned process; the live
   evidence for CLA-SEC-014 is ClaudIA's and the sidecar child's starting environment, launchd's own
@@ -706,6 +713,11 @@ desktop fails `test_no_desktop_reached.py` unless the test patches the call.
 if the core reads it); read it from `env_file` as a `SecretStr`; unwrap it only where it is sent;
 never through `os.environ`. The structural tests refuse a new dotenv loader and a client built
 without `api_key=`.
+
+**Call the core's session owner.** Always with `env_file.gateway_url()`: `url=` on `establish`,
+`recover`, `read_now` and `start`. Not `cfg.gateway_url`, which an empty `IBKR_GATEWAY_URL=` line
+leaves empty; the core takes an empty URL for none, finds a `.env` by itself and exports the model
+key (CLA-SEC-014). `test_gateway_ownership.py` refuses a call without it.
 
 **Accept a pip-audit finding.** Only when there is no fixed release. One line in
 `security/pip-audit-ignores.txt`: the identifier, why the path is unreachable or the risk

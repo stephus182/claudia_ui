@@ -52,8 +52,8 @@ from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
 import panel as pn
 import pytest
+from ibkr_core_mcp.gateway import SessionPhase, SessionState
 
-from claudia.gateway_session import SessionPhase, SessionState
 from claudia.panel_app import (
     _DOCS_PATH,
     _action_bar,
@@ -1112,8 +1112,9 @@ async def test_start_gateway_click_success_path_streams_and_refreshes_status(mon
     """Clicking the button delegates to the session owner and renders a LIVE result.
 
     The button is presentation only since 2026-08-06: the sequencing, the pre-flight and
-    the login wait all live in `claudia.gateway_session`, and their ordering is pinned in
-    `tests/test_gateway_session.py` where the call sequence is observable.
+    the login wait all live in the session owner, the core's since core F45, and their
+    ordering is pinned in its `test_gateway_session.py`, where the call sequence is
+    observable.
 
     `get_session` is patched rather than `GatewayManager`, and that boundary is not
     cosmetic. A MagicMock manager reports a truthy `is_running()` and `wait_for_gateway()`,
@@ -3421,14 +3422,26 @@ async def test_gateway_progress_lines_emitted_from_the_worker_thread_reach_the_l
 
 
 @pytest.mark.asyncio
-async def test_the_ibkr_button_hands_the_owner_the_log_read():
-    """Gap #93: the chat button's reconnect and the launcher hand the session owner the same
-    log read, so a refused last login is named before the page on both paths — the drift
-    `test_the_cli_delegates_rather_than_deciding` exists to prevent."""
-    from claudia import panel_app
-    from claudia.gateway_launch import read_login_events
+async def test_the_ibkr_button_leaves_no_secret_in_the_environment(tmp_path, monkeypatch):
+    """The core's REAL session owner, reached as the button reaches it, with a `.env` where the
+    core's own search would find one: given no URL, or an empty one, it reads that file and
+    exports the model key from it (run 2026-11-25). conftest turns the search off for every
+    other test, so without the bait this one could not fail. Break: no `url=`, or
+    `url=cfg.gateway_url`, on the call — red."""
+    from ibkr_core_mcp import config as core_config
+    from ibkr_core_mcp.gateway import GatewaySession
+
+    from claudia import env_file, panel_app
     from claudia.panel_system_log import SystemLog
 
+    bait = tmp_path / "bait.env"
+    bait.write_text("ANTHROPIC_API_KEY=sk-ant-bait\n", encoding="utf-8")
+    bait.chmod(0o600)
+    monkeypatch.setattr(core_config, "find_dotenv", lambda *args, **kwargs: str(bait))
+    monkeypatch.setenv("IBKR_GATEWAY_URL", "")
+    for name in env_file.secret_names():
+        monkeypatch.setenv(name, "so that the undo restores what was there")
+        monkeypatch.delenv(name)
     session_state = {
         "closed": False,
         "unsubscribe": None,
@@ -3436,18 +3449,17 @@ async def test_the_ibkr_button_hands_the_owner_the_log_read():
         "loader": None,
         "agent": None,
     }
-    owner = MagicMock()
-    owner.establish.return_value = SessionState(
-        phase=SessionPhase.DOWN, as_of=datetime.now(UTC), detail="no answer"
-    )
+    owner = GatewaySession()
     with (
-        patch("claudia.panel_app.GatewayManager"),
+        patch("claudia.panel_app.GatewayManager") as manager,
         patch("claudia.panel_app.get_session", return_value=owner),
     ):
+        manager.return_value.wait_for_gateway.return_value = False
         bar = panel_app._build_action_bar(SystemLog(), session_state, "s1")
         await _get_click_callback(bar.buttons["ibkr"])(None)
 
-    assert owner.establish.call_args.kwargs["read_login"] is read_login_events
+    assert [name for name in env_file.secret_names() if name in os.environ] == []
+    assert owner.phase.value == "down"
 
 
 @pytest.mark.asyncio
@@ -4142,7 +4154,7 @@ async def test_init_hands_the_opening_message_and_the_poller_to_the_positions_ta
     backend_singletons.expiries_task.assert_awaited_once()
     opening, poller, session = backend_singletons.expiries_task.await_args.args
     assert poller is poller_cls.return_value
-    from claudia.gateway_session import get_session
+    from ibkr_core_mcp.gateway import get_session
 
     assert session is get_session()
     assert opening.parts[opening.briefing_index] == "All tracked exchanges open today."

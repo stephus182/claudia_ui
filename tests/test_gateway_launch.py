@@ -1,10 +1,9 @@
 """Tests for `claudia.gateway_launch` — the CLI surface only.
 
 This module used to hold the gateway orchestration and its ordering tests. Both moved to
-`claudia.gateway_session` in stage 2 of
-`docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md`, and the sequence assertions
-moved with them to `tests/test_gateway_session.py`, where the owner's call order is
-observable.
+the session owner in stage 2 of
+`docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md`; the owner and
+its sequence assertions are the core's since core F45.
 
 What is left here is what the CLI is actually responsible for: turning a phase into an
 exit code a shell script can branch on, printing without buffering, and reading the
@@ -19,10 +18,10 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from ibkr_core_mcp.gateway import SessionPhase, SessionState
 
 from claudia.gateway_launch import main, read_login_events
 from claudia.gateway_preflight import LOGIN_PHRASES, GatewayState, LoginEvent
-from claudia.gateway_session import SessionPhase, SessionState
 
 
 def _state(phase: SessionPhase) -> SessionState:
@@ -314,21 +313,6 @@ def test_the_log_read_fails_open_with_its_reason(outcome, expected):
     )
     with patch("subprocess.run", **effect):
         assert read_login_events() == expected
-
-
-def test_the_launcher_hands_the_owner_the_log_read():
-    """Gap #93: the owner names a refused last login before the page and stops the wait early
-    on a newer refusal only when its caller hands it the log read — the spawn lives here
-    (CLA-SEC-010). The chat button hands it the same function (`tests/test_panel_app.py`)."""
-    session = MagicMock()
-    session.establish.return_value = _state(SessionPhase.LIVE)
-    with (
-        patch("claudia.gateway_launch.get_session", return_value=session),
-        patch("ibkr_core_mcp.gateway.GatewayManager"),
-    ):
-        main([])
-
-    assert session.establish.call_args.kwargs["read_login"] is read_login_events
 
 
 # ── Gap #93, piece 6: the startup warning beside the borrowed-session check ───────
