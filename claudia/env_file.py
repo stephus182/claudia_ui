@@ -144,6 +144,21 @@ def core_config() -> Config:
     return Config.from_env(dotenv_path=str(ENV_FILE), secret_names=secret_names())
 
 
+DEFAULT_GATEWAY_URL = "https://localhost:5055/v1/api"
+"""Matches `Config`'s own default for `IBKR_GATEWAY_URL`."""
+
+
+def gateway_url() -> str:
+    """The gateway's base URL: a setting, read once the file has been — never empty, no trailing slash.
+
+    Not through `core_config()`: a full configuration asks the OS keychain for two secrets, and
+    reaching the gateway needs none. Never empty, because the core's session owner takes an empty
+    URL for none and then finds a `.env` by itself, exporting what it holds (run 2026-11-25).
+    """
+    _env()
+    return (os.environ.get("IBKR_GATEWAY_URL") or DEFAULT_GATEWAY_URL).rstrip("/")
+
+
 def model_unreachable_reason() -> str | None:
     """Why ClaudIA cannot reach the model — the file and the fix, in one sentence — or None.
 

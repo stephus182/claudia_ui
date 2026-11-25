@@ -501,10 +501,6 @@ def refine_with_log(
     )
 
 
-DEFAULT_GATEWAY_URL = "https://localhost:5055/v1/api"
-"""Matches `Config`'s own default for `IBKR_GATEWAY_URL`."""
-
-
 def gateway_url() -> str:
     """The gateway URL from the environment, once ClaudIA's `.env` has been read — directly
     rather than via `Config`.
@@ -517,12 +513,9 @@ def gateway_url() -> str:
     `env_file.load()` (gap #103): the URL is a setting and reaches the environment; no secret
     does.
     """
-    import os
-
     from claudia import env_file
 
-    env_file.load()
-    return os.environ.get("IBKR_GATEWAY_URL", DEFAULT_GATEWAY_URL)
+    return env_file.gateway_url()
 
 
 def warn_if_session_borrowed(url: str | None = None) -> str | None:

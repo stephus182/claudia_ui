@@ -241,6 +241,26 @@ def test_building_the_core_config_exports_no_anthropic_key(env_path):
     assert cfg.flex_token.get_secret_value() == "flex-file-value"
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("IBKR_GATEWAY_URL=https://localhost:7777/v1/api/\n", "https://localhost:7777/v1/api"),
+        ("IBKR_GATEWAY_URL=\n", "https://localhost:5055/v1/api"),
+        ("", "https://localhost:5055/v1/api"),
+    ],
+    ids=["set-with-a-trailing-slash", "empty-value", "no-line"],
+)
+def test_the_gateway_url_is_never_empty(env_path, monkeypatch, line, expected):
+    """The core's owner takes an empty URL for none and then finds a `.env` by itself, which
+    exports the model key (run 2026-11-25). `IBKR_GATEWAY_URL=` is a line the keepalive's tests
+    call valid. Break: `os.environ.get(..., DEFAULT)` in place of `or` — the empty case red."""
+    monkeypatch.setenv("IBKR_GATEWAY_URL", "so that the undo restores what was there")
+    monkeypatch.delenv("IBKR_GATEWAY_URL")
+    env_path.write_text(line, encoding="utf-8")
+
+    assert env_file.gateway_url() == expected
+
+
 # ── Structural (design test 7) ─────────────────────────────────────────────────────────
 
 
