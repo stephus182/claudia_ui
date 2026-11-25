@@ -1,4 +1,9 @@
-"""Repo-level guards: only the session owner may write to the gateway or the container.
+"""Repo-level guards on the gateway's session, whose one owner is the core's (core F45).
+
+Nothing in `claudia/` drives a `GatewayManager` or writes to a session endpoint; a login starts
+from two places, the IBKR button and the launcher; every call into the owner carries the
+loader's URL; and the model's module may only read the owner's state. The whole tree is
+scanned: no file is exempt.
 
 Invariant §3.1 of `docs/plans/archive/gateway/2026-08-06-gateway-session-lifecycle-owner.md` — *one owner
 writes* — is not something a unit test of any single module can defend. It is a property
@@ -9,12 +14,6 @@ This is the same shape as the existing Hard Rule 1 assertion in
 `tests/test_panel_dashboard.py`, which checks *every* `Tabulator` rather than a fixed one:
 a guard that names the things it permits will fail on the thing nobody thought of, and a
 guard that names the things it forbids will not.
-
-## The allowlists are a work-list
-
-Each entry records **which stage removes it**. When a stage lands, its entry is deleted
-and this file tightens automatically. An allowlist that only ever grows is a rule being
-abandoned one exception at a time; these are meant to shrink to nothing.
 """
 
 from __future__ import annotations
@@ -31,24 +30,9 @@ from claudia.gateway_preflight import EXIT_FREE, EXIT_READY, EXIT_REFUSED, EXIT_
 _CLAUDIA = Path(__file__).resolve().parent.parent / "claudia"
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
-# The module that is allowed to do these things. The whole point of the plan.
-_OWNER = "gateway_session.py"
-
 # Endpoints that create, destroy or re-establish a session. A call to any of these from
-# outside the owner is a second authority over the session's lifecycle.
+# ClaudIA is a second authority over the session's lifecycle.
 _SESSION_WRITE_ENDPOINTS = re.compile(r"ssodh/init|/logout|reauthenticate")
-
-# Allowed session-write sites, with the stage that removes each.
-#
-# **EMPTY since 2026-08-06, and that is the finished state, not an oversight.** The last
-# entry was `gateway_preflight.py`, for the `POST /logout` behind `--release`; the review
-# on that date moved the function itself into `gateway_session` and left the CLI flag
-# calling into it. Nothing in the tree now writes to a session endpoint outside the owner.
-#
-# Do not add an entry to make a new call pass. The rule this file exists to defend has no
-# exceptions left, and an allowlist that starts growing again is the rule being abandoned
-# one entry at a time — which is exactly what the module docstring above warns about.
-_SESSION_WRITE_ALLOWED: dict[str, str] = {}
 
 
 def _python_sources() -> list[Path]:
@@ -59,8 +43,8 @@ def _python_sources() -> list[Path]:
 _HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "request"})
 
 
-def _offenders(pattern: re.Pattern[str], allowed: dict[str, str]) -> list[str]:
-    """Files that **call** a session-write endpoint, outside the owner.
+def _offenders(pattern: re.Pattern[str]) -> list[str]:
+    """Sites in `claudia/` that **call** a session-write endpoint.
 
     ## Why this reads the syntax tree instead of the lines
 
@@ -84,12 +68,10 @@ def _offenders(pattern: re.Pattern[str], allowed: dict[str, str]) -> list[str]:
     of sight — `path = "/logout"` on one line and `requests.post(base + path)` on another
     — is not caught. Nothing in either repo is written that way, and covering it would
     mean re-admitting the prose matches this exists to drop. If that pattern ever appears,
-    extend this rather than widen `_SESSION_WRITE_ALLOWED`.
+    extend this rather than exempt a file.
     """
     hits = []
     for path in _python_sources():
-        if path.name == _OWNER or path.name in allowed:
-            continue
         source = path.read_text()
         for node in ast.walk(ast.parse(source)):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
@@ -118,14 +100,12 @@ def _is_manager_construction(node: ast.AST) -> bool:
 
 
 def _manager_driver_offenders() -> list[str]:
-    """Every site outside the owner that calls a **method** on a `GatewayManager`.
+    """Every site in `claudia/` that calls a **method** on a `GatewayManager`.
 
     Constructing one and passing it on stays legal, and deliberately: that is exactly how
     `panel_app` and `gateway_launch` are supposed to reach the gateway — they hand the
     manager to `GatewaySession.establish`, which reads the session before anything
-    touches the container. The owner receives it as a `GatewayManagerLike` parameter, so
-    its own calls are on a parameter rather than on a construction and are not matched
-    here either way; the owner's file is skipped regardless.
+    touches the container. The owner's own calls are in the core, outside this scan.
 
     What is forbidden is *driving* one: `start`, `restart` and `stop` each destroy
     whatever session the container holds, and `startup` additionally opens a login page
@@ -135,8 +115,6 @@ def _manager_driver_offenders() -> list[str]:
     """
     hits = []
     for path in _python_sources():
-        if path.name == _OWNER:
-            continue
         tree = ast.parse(path.read_text())
         bound = {
             _dotted(target)
@@ -215,6 +193,26 @@ def test_every_call_into_the_session_owner_carries_the_loaders_url():
     assert not missing, missing
 
 
+def test_a_login_starts_from_the_button_and_the_launcher_and_nothing_recovers():
+    """`establish` is the one call that opens a login, `recover` restarts the container. Break:
+    `get_session().establish(…)` in any third module, or `.recover(` anywhere — red."""
+    sites = {
+        (path.name, method)
+        for path in _python_sources()
+        for method, _call in _owner_calls(path.read_text())
+        if method in {"establish", "recover", "publish"}
+    }
+    assert sites == {("panel_app.py", "establish"), ("gateway_launch.py", "establish")}
+
+
+def test_the_models_module_only_reads_the_session():
+    """`agent.py` is the model's own layer: of the owner it may ask `state()` and nothing else
+    (least privilege; the core holds the same of its own model layer). Break: any other method
+    on `get_session()` there — red."""
+    used = {method for method, _call in _owner_calls((_CLAUDIA / "agent.py").read_text())}
+    assert used == {"state"}
+
+
 def test_the_owner_probe_sees_each_shape():
     """The collector above on each form, and on what must not count."""
     source = (
@@ -237,12 +235,11 @@ def test_only_the_owner_writes_to_a_session_endpoint():
     Scattered across modules they become several authorities over one session, which is
     the condition that made every earlier fix uncover another gap.
     """
-    offenders = _offenders(_SESSION_WRITE_ENDPOINTS, _SESSION_WRITE_ALLOWED)
+    offenders = _offenders(_SESSION_WRITE_ENDPOINTS)
     assert not offenders, (
         "Session-affecting write outside the session owner (the core's):\n  "
         + "\n  ".join(offenders)
-        + "\n\nMove it into the owner, or add it to _SESSION_WRITE_ALLOWED with the "
-        "stage that removes it."
+        + "\n\nNo module here is exempt: the owner writes, reached through get_session()."
     )
 
 
@@ -267,12 +264,12 @@ def test_only_the_owner_mutates_the_container():
     walk catches the real route, which is a method call on a manager object.
     """
     pattern = re.compile(r"""docker["'\s,\]]+\s*["']?(stop|rm|restart|run)\b""")
-    offenders = _offenders(pattern, {}) + _manager_driver_offenders()
+    offenders = _offenders(pattern) + _manager_driver_offenders()
     assert not offenders, (
         "Container mutation outside the session owner (the core's):\n  "
         + "\n  ".join(offenders)
-        + "\n\nConstruct the manager and hand it to GatewaySession.establish/recover "
-        "instead — the owner reads the session before anything touches the container."
+        + "\n\nConstruct the manager and hand it to GatewaySession.establish instead — "
+        "the owner reads the session before anything touches the container."
     )
 
 
@@ -283,31 +280,10 @@ def test_the_login_page_is_opened_from_exactly_one_place():
     the button honoured it in the wrong order and the launcher skipped it entirely, so
     stating it in prose has already been shown to be insufficient.
     """
-    offenders = _offenders(re.compile(r"open_login_page|webbrowser\.open"), {})
+    offenders = _offenders(re.compile(r"open_login_page|webbrowser\.open"))
     assert not offenders, "The login page is opened outside the session owner:\n  " + "\n  ".join(
         offenders
     )
-
-
-def test_every_allowlist_entry_still_exists():
-    """A stale exemption silently widens the rule.
-
-    If the file is gone, or no longer contains a session write, the entry has outlived
-    its purpose and must be deleted — otherwise the allowlist records permission nobody
-    is using and the guard reads as weaker than it is.
-
-    Written as a loop rather than a `parametrize` because the allowlist is now **empty**:
-    `pytest.mark.parametrize` over an empty sequence reports an empty parameter set, so
-    the file's best possible state would have shown up as a warning. A loop over nothing
-    is a pass, which is the correct reading.
-    """
-    for name, stage in sorted(_SESSION_WRITE_ALLOWED.items()):
-        path = _CLAUDIA / name
-        assert path.exists(), f"{name} is allowlisted ({stage}) but no longer exists"
-        assert _SESSION_WRITE_ENDPOINTS.search(path.read_text()), (
-            f"{name} is allowlisted ({stage}) but no longer performs a session write — "
-            "delete the entry."
-        )
 
 
 def test_the_keepalive_script_honours_the_suspend_lock():
