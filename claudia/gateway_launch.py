@@ -8,11 +8,10 @@ button and this CLI all share. One authority, so the three cannot drift.
     python -m claudia.gateway_launch            # bring the session up and confirm it
     python -m claudia.gateway_launch --diagnose # read-only: state + the login timeline
 
-Two things live here that are not presentation, by necessity (gap #93): ClaudIA's own read of
+One thing lives here that is not presentation, by necessity (gap #93): ClaudIA's own read of
 the gateway's log, `read_login_events` — a process spawn, and processes are spawned only here
-and in `tradingview.py` (CLA-SEC-010) — and the startup warning built on it. Neither decides
-anything about the session: the rule is `gateway_preflight`'s, and the owner reads the log
-by itself, with the core's own reader.
+and in `tradingview.py` (CLA-SEC-010). It decides nothing about the session: the rule is
+`gateway_preflight`'s, and the owner reads the log by itself, with the core's own reader.
 
 Until 2026-08-06 this file held the orchestration itself, and before that
 `start-claudia.sh` called `GatewayManager.startup()` with no pre-flight at all. Both are
@@ -29,20 +28,15 @@ from ibkr_core_mcp.gateway import GatewayManager, SessionPhase, get_session
 
 from claudia.env_file import gateway_url
 from claudia.gateway_preflight import (
-    EXIT_FREE,
-    EXIT_REFUSED,
     LOGIN_PHRASES,
     GatewayState,
     LoginEvent,
-    last_login,
     login_events,
     newest_login_index,
     read_state,
     refine_with_log,
     verdict,
 )
-
-log = logging.getLogger(__name__)
 
 # The gateway\'s real log. `docker logs` shows only container start-up chatter and the
 # tickler\'s status codes — verified 2026-08-06 by probing `GET /` (HTTP 302) and finding
@@ -85,31 +79,6 @@ def login_timeline(events: Sequence[LoginEvent] | None, problem: str) -> list[st
             f"{len(events) - len(shown)} earlier not shown):"
         )
     return [head] + [f"  {e.at} UTC  {e.event}{' ' + e.code if e.code else ''}" for e in shown]
-
-
-def warn_if_login_refused(url: str | None = None) -> str | None:
-    """Log a loud error at ClaudIA's start when IBKR refused the gateway's last login (gap #93).
-
-    Beside `gateway_preflight.warn_if_session_borrowed` and in its spirit: provable only — a
-    FREE reading whose log shows the last login refused (`refine_with_log`, the preflight's
-    rule) — and silent otherwise. The operator's 2026-10-07 sequence ended with ClaudIA
-    starting 6.5 minutes after a login IBKR had refused, with nothing on screen saying so.
-    An unreadable log stays silent here: the preflight and `--diagnose` say why. The log is
-    read only after a FREE reading — a live session needs no `docker exec`.
-
-    Returns:
-        The refused login's "YYYY-MM-DD HH:MM:SS" (UTC) when the warning fired, else None.
-    """
-    found = verdict(read_state(url or gateway_url()))
-    if found[0] != EXIT_FREE:
-        return None
-    events, problem = read_login_events()
-    code, headline, guidance = refine_with_log(found, events, problem)
-    last = last_login(events) if events is not None else None
-    if code != EXIT_REFUSED or last is None:
-        return None
-    log.error("%s — %s", headline.upper(), guidance)
-    return last.at
 
 
 def _flags(state: GatewayState) -> str:

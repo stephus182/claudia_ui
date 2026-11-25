@@ -90,7 +90,6 @@ container (`docker exec … grep`): it sends the gateway no request at all.
 
 from __future__ import annotations
 
-import logging
 import re
 import sys
 import warnings
@@ -102,8 +101,6 @@ import requests
 import urllib3
 
 from claudia.env_file import gateway_url
-
-log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -499,49 +496,6 @@ def refine_with_log(
         headline,
         f"{guidance}\n\nThe last login in the gateway's log ({last.at} UTC) was validated by IBKR.",
     )
-
-
-def warn_if_session_borrowed(url: str | None = None) -> str | None:
-    """Log a loud error when another IBKR app **provably** holds the gateway's session.
-
-    Called at startup beside `install_check.warn_if_stale` and
-    `agent.warn_if_model_lacks_operator_channel` — all three catch a condition that lets
-    ClaudIA start cleanly and fail confusingly later.
-
-    ## "Provably", not "probably"
-
-    It fires only on positive evidence: `/sso/validate` returned `RESULT: true` **and**
-    named a `CLIENT_APP`, **and** `/tickle` reports the gateway unauthenticated. That is a
-    session which exists, belongs to something, and is not usable here — not an inference
-    from absence. Every weaker signal was actively misleading when this was diagnosed on
-    2026-08-05: `userId` was populated, `ssoExpires` was renewing, and `competing` was
-    **false**, because the gateway never got far enough to register a claim.
-
-    Silent when the gateway is unreachable or already authenticated — there is nothing to
-    warn about in either, and a warning that fires when it need not is one that gets
-    ignored when it must not.
-
-    Args:
-        url: Gateway base URL. Defaults to the environment's.
-
-    Returns:
-        The owning `CLIENT_APP` when the warning fired, else None.
-    """
-    state = read_state(url or gateway_url())
-    if not (state.reachable and state.sso_valid and state.client_app and not state.authenticated):
-        return None
-    log.error(
-        "LOG OUT OF YOUR IBKR APP FIRST — the gateway is holding an SSO session issued to "
-        "%s (user %s), not to itself, so its login will be rejected no matter how many "
-        "times you retry the two-factor code. Only one brokerage session exists per "
-        "username across Client Portal, TWS and IBKR Mobile. Use the app's **Log Out** "
-        "menu item: closing or swiping it away leaves the server-side session alive. Then "
-        "run `python -m claudia.gateway_preflight` and log in once it no longer names "
-        "another app.",
-        state.client_app,
-        state.sso_user or "unknown",
-    )
-    return state.client_app
 
 
 _MARK = {

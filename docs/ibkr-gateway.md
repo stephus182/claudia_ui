@@ -299,19 +299,22 @@ and `python -m claudia.gateway_launch --diagnose` is the next step.
 
 ### Where the check runs by itself
 
-- **Startup** — `warn_if_session_borrowed()` in `panel_app.main()`, beside
+- **Startup** — `gateway_warnings.warn_if_session_borrowed()` in `panel_app.main()`, beside
   `install_check.warn_if_stale()` and `agent.warn_if_model_lacks_operator_channel()`. It
   fires only on positive proof: valid SSO **and** a named `CLIENT_APP` **and** an
   unauthenticated gateway. Never on absence — a warning that fires when it need not is one
   that gets ignored when it must not. Beside it since 2026-10-12,
-  `gateway_launch.warn_if_login_refused()` (gap #93), on the same terms: a `FREE` reading whose
+  `gateway_warnings.warn_if_login_refused()` (gap #93), on the same terms: a `FREE` reading whose
   log shows the last login refused; silent otherwise, and on a live session the log is not read.
+  Both are ClaudIA's words on the core's readings (core F45). A gateway URL the core refuses —
+  one that is not a loopback host — is logged at ERROR and reads as down: neither warning can
+  stop a start.
 - **The launcher and the IBKR button** — on both, the owner reads the gateway's log by itself
   (gap #93; the callers handed it the read until core F45). From `FREE`, a login IBKR has not
   answered yet opens no second page; a refused last login is named with the remedy before the
-  page opens; during
-  the wait, a login newer than that one which IBKR refuses too ends the wait at once. The page
-  still opens: the remedy needs one gateway login after the website login.
+  page opens; during the wait, a login newer than that one which IBKR refuses too ends the wait
+  at once. The page still opens after a refusal: the remedy needs one gateway login after the
+  website login.
 - **The login window (gap #102, core register F44 — from core 2.2.0)** — `open_login_page()`
   opens a small Chrome window of its own (profile `~/.ibkr_core/login-chrome`, app mode, 540×680,
   not on top — nothing in a browser can pin one) and returns its handle. The owner closes it at
@@ -482,8 +485,9 @@ ibkr_core_mcp/gateway/session.py — the session owner, the core's. Every read, 
                                suspend lock, and every session-affecting write. Start here.
 claudia/gateway_preflight.py — the reader: two GETs -> GatewayState, plus verdicts and the CLI;
                                the log rule (login_events, last_login, refine_with_log) — pure
-claudia/gateway_launch.py    — CLI: `python -m claudia.gateway_launch [--diagnose]`; the one
-                               read of the gateway's own log (read_login_events: docker exec,
+claudia/gateway_warnings.py  — the two start-up warnings, on the core's readings
+claudia/gateway_launch.py    — CLI: `python -m claudia.gateway_launch [--diagnose]`; ClaudIA's
+                               own read of the gateway's log (read_login_events: docker exec,
                                list form, no shell, explicit env — CLA-SEC-010)
 claudia/status.py            — ConnectivityChecker; check_ibkr() is a cached lookup, not a probe
 scripts/ibkr-keepalive.sh    — launchd renewer; honours the suspend lock

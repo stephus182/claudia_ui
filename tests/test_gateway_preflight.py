@@ -5,7 +5,6 @@ services, so a needless re-login is what escalates into IB Key challenge/respons
 whole value is telling those states apart, so each verdict is pinned here.
 """
 
-import logging
 from dataclasses import replace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -29,7 +28,6 @@ from claudia.gateway_preflight import (
     read_state,
     refine_with_log,
     verdict,
-    warn_if_session_borrowed,
 )
 
 
@@ -179,46 +177,6 @@ def test_a_borrowed_session_outranks_the_generic_not_authenticated_verdicts():
     """Ordering matters: 'free to log in' would send the user back into the retry loop."""
     code, _, _ = verdict(replace(_borrowed(), connected=True))
     assert code == EXIT_BORROWED
-
-
-def test_the_startup_warning_fires_only_on_positive_proof(caplog):
-    """Named owner + valid SSO + unauthenticated gateway. Anything less stays silent."""
-    with (
-        patch("claudia.gateway_preflight.read_state", return_value=_borrowed()),
-        caplog.at_level(logging.ERROR, logger="claudia.gateway_preflight"),
-    ):
-        owner = warn_if_session_borrowed("https://x/v1/api")
-    assert owner == "IBKRMOBILE_000.a-000"
-    assert "LOG OUT" in caplog.text
-    assert "ibkruser" in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("label", "state"),
-    [
-        (
-            "authenticated",
-            GatewayState(
-                reachable=True,
-                authenticated=True,
-                connected=True,
-                sso_valid=True,
-                client_app="IBKRMOBILE_000.a-000",
-            ),
-        ),
-        ("unreachable", GatewayState(reachable=False)),
-        ("no sso", GatewayState(reachable=True, sso_valid=False, client_app="")),
-        ("no owner named", GatewayState(reachable=True, sso_valid=True, client_app="")),
-    ],
-)
-def test_the_startup_warning_stays_silent_without_proof(label, state, caplog):
-    """A warning that fires when it need not is one that gets ignored when it must not."""
-    with (
-        patch("claudia.gateway_preflight.read_state", return_value=state),
-        caplog.at_level(logging.ERROR, logger="claudia.gateway_preflight"),
-    ):
-        assert warn_if_session_borrowed("https://x/v1/api") is None
-    assert caplog.text == ""
 
 
 def test_release_is_never_reached_by_the_read_only_path():

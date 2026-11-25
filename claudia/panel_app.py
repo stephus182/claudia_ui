@@ -79,8 +79,7 @@ from claudia.flex_sync import (
     statement_through,
     validate_dataset,
 )
-from claudia.gateway_launch import warn_if_login_refused
-from claudia.gateway_preflight import warn_if_session_borrowed
+from claudia.gateway_warnings import warn_if_login_refused, warn_if_session_borrowed
 from claudia.gdrive_sync import GDriveSync
 from claudia.install_check import warn_if_stale
 from claudia.live_realised import fetch_fills

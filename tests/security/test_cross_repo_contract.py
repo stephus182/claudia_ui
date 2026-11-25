@@ -79,8 +79,10 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
         # ClaudIA's mark on the Gate 2 dialogs, set once at startup (gap #67).
         "set_dialog_icon",
     ),
-    # The refusal table matches the gates' outcomes by these types (gap #67; register F6, F34).
+    # The refusal table matches the gates' outcomes by these types (gap #67; register F6, F34);
+    # `ConfigError` is a gateway URL the core refuses, said at start (core F45).
     "ibkr_core_mcp.exceptions": (
+        "ConfigError",
         "ConfirmationDeclinedError",
         "ConfirmationTimeoutError",
         "HumanAuthError",
@@ -91,6 +93,16 @@ IMPORTED_API: dict[str, tuple[str, ...]] = {
     "ibkr_core_mcp.streaming": ("IBKRWebSocket", "PnLUpdate", "TradeExecution"),
     "ibkr_core_mcp.gateway": ("GatewayManager", "GatewaySession", "SessionPhase", "get_session"),
     "ibkr_core_mcp.gateway.session": ("release_session",),
+    "ibkr_core_mcp.gateway.manager": ("read_login_events",),
+    "ibkr_core_mcp.gateway.preflight": (
+        "EXIT_FREE",
+        "EXIT_REFUSED",
+        "GatewayState",
+        "last_login",
+        "read_state",
+        "refine_with_log",
+        "verdict",
+    ),
     "ibkr_core_mcp.auth": ("BrowserCookieAuth",),
     # Both imported at module level by `gdrive_sync`. `load_or_refresh_credentials` is in
     # neither the core's `__init__` nor its README or consumers guide (checked 2026-09-30):

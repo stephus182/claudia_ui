@@ -638,8 +638,8 @@ oversight.
   self-signed, on the operator's own machine. Better than before, and no more than that: the core's
   session owner turns verification off for a loopback host only and refuses any other before a
   request, where ClaudIA's copy of it did so for any URL. ClaudIA's remaining reader
-  (`gateway_preflight.read_state`: the operator's commands and the two start-up warnings) still
-  does, until it leaves.
+  (`gateway_preflight.read_state`: the operator's commands) still does, until it leaves. A URL the
+  core refuses fails closed and is said, not raised, at start (`gateway_warnings`; 16.5.2, 16.5.3).
 - **A running process's current environment cannot be read on this macOS.** `ps -E` reports the
   environment a process was started with, and nothing at all for a launchd-spawned process; the live
   evidence for CLA-SEC-014 is ClaudIA's and the sidecar child's starting environment, launchd's own
